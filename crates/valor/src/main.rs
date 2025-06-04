@@ -1,6 +1,9 @@
+use std::env;
 use std::sync::Arc;
+use anyhow::Error;
 use log::{error, info};
 use tokio::runtime::Runtime;
+use url::Url;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -28,27 +31,29 @@ struct App {
     state: Option<AppState>,
 }
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+impl App {
+    fn resume(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Error> {
         // Create window object
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes())
-                .unwrap(),
+                .create_window(Window::default_attributes())?,
         );
 
-        let runtime = Runtime::new().unwrap();
+        let runtime = Runtime::new()?;
 
         self.state = Some(AppState {
             render_state: runtime.block_on(RenderState::new(window.clone())),
+            pages: vec![PageState::new(runtime.handle(), Url::parse(&format!("file://{}/assets/test.html", env::current_dir()?.display()))?)],
             runtime,
-            pages: vec![PageState::new("")]
         });
 
         window.request_redraw();
+        Ok(())
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) -> Result<(), Error> {
+
         let state = self.state.as_mut().unwrap();
         match event {
             WindowEvent::CloseRequested => {
@@ -56,15 +61,28 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                if let Err(error) = state.render_state.render() {
-                    error!("Failed to render: {}", error);
-                }
+                state.render_state.render()?;
                 state.render_state.get_window().request_redraw();
             }
             WindowEvent::Resized(size) => {
                 state.render_state.resize(size);
             }
             _ => (),
+        }
+        Ok(())
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if let Err(error) = self.resume(event_loop) {
+            error!("Failed to resume: {error}");
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Err(error) = self.window_event(event_loop, id, event) {
+            error!("Failed to handle event: {error}");
         }
     }
 }

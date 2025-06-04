@@ -17,6 +17,7 @@ wgpu = "25.0.2"
 winit = "0.30.11"
 
 # Webpage handling
+reqwest = "0.12.19"
 html5ever = "0.31"
 url = "2.5.4"
 

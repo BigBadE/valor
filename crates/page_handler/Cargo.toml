@@ -4,5 +4,10 @@ edition.workspace = true
 
 [dependencies]
 url.workspace = true
+reqwest.workspace = true
+
+tokio.workspace = true
+
+anyhow.workspace = true
 
 [features]
