@@ -1,0 +1,17 @@
+[package]
+name = "valor"
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+winit.workspace = true
+
+url.workspace = true
+
+log.workspace = true
+env_logger.workspace = true
+anyhow.workspace = true
+
+page_handler.workspace = true
+wgpu_renderer.workspace = true
+[features]

@@ -1,0 +1,10 @@
+[package]
+name = "wgpu_renderer"
+edition.workspace = true
+
+[dependencies]
+wgpu.workspace = true
+winit.workspace = true
+
+anyhow.workspace = true
+[features]

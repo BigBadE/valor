@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/*"
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+# Task handling
+tokio = { version = "1.45.1", features = ["full"] }
+
+# Rendering
+wgpu = "25.0.2"
+winit = "0.30.11"
+
+# Webpage handling
+html5ever = "0.31"
+url = "2.5.4"
+
+# Util
+log = "0.4.27"
+env_logger = "0.11.8"
+anyhow = "1.0.98"
+
+# Our crates
+page_handler = { path = "crates/page_handler" }
+valor = { path = "crates/valor" }
+wgpu_renderer = { path = "crates/wgpu_renderer" }
+
+[profile.dev]
+opt-level = 1
+debug = 0
+strip = "debuginfo"
+lto = false
+
+[profile.dev.package."*"]
+opt-level = 3

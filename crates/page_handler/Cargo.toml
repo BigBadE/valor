@@ -1,0 +1,8 @@
+[package]
+name = "page_handler"
+edition.workspace = true
+
+[dependencies]
+url.workspace = true
+
+[features]
