@@ -8,7 +8,7 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
-use page_handler::state::PageState;
+use page_handler::state::{HtmlPage, PageState};
 use wgpu_renderer::state::RenderState;
 use crate::state::AppState;
 
@@ -43,7 +43,7 @@ impl App {
 
         self.state = Some(AppState {
             render_state: runtime.block_on(RenderState::new(window.clone())),
-            pages: vec![PageState::new(runtime.handle(), Url::parse(&format!("file://{}/assets/test.html", env::current_dir()?.display()))?)],
+            pages: vec![HtmlPage::new(runtime.handle(), Url::parse(&format!("file://{}/assets/test.html", env::current_dir()?.display()))?)],
             runtime,
         });
 
@@ -53,7 +53,6 @@ impl App {
 
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) -> Result<(), Error> {
-
         let state = self.state.as_mut().unwrap();
         match event {
             WindowEvent::CloseRequested => {

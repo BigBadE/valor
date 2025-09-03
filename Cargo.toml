@@ -10,23 +10,23 @@ edition = "2024"
 
 [workspace.dependencies]
 # Task handling
-tokio = { version = "1.45.1", features = ["full"] }
+tokio = { version = "1.47.1", features = ["full"] }
 
 # Rendering
-wgpu = "25.0.2"
-winit = "0.30.11"
+wgpu = "26.0.1"
+winit = "0.30.12"
 
 # Webpage handling
-reqwest = "0.12.19"
-html5ever = "0.31"
-url = "2.5.4"
+url = "2.5.7"
+reqwest = { version = "0.12.23", features = ["stream"] }
 
 # Util
-log = "0.4.27"
+log = "0.4.28"
 env_logger = "0.11.8"
-anyhow = "1.0.98"
+anyhow = "1.0.99"
 
 # Our crates
+html = { path = "crates/html" }
 page_handler = { path = "crates/page_handler" }
 valor = { path = "crates/valor" }
 wgpu_renderer = { path = "crates/wgpu_renderer" }

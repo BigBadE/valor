@@ -3,8 +3,12 @@ name = "page_handler"
 edition.workspace = true
 
 [dependencies]
+html.workspace = true
+
 url.workspace = true
 reqwest.workspace = true
+
+winit.workspace = true
 
 tokio.workspace = true
 
