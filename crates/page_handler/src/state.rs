@@ -11,10 +11,8 @@ pub struct HtmlPage {
     loader: Option<HTMLParser>,
     // The DOM of the page.
     dom: DOM,
-    // Sender for DOM updates.
-    out_updater: broadcast::Sender<Vec<DOMUpdate>>,
+    // For sending updates to the DOM
     in_updater: mpsc::Sender<Vec<DOMUpdate>>,
-    in_receiver: mpsc::Receiver<Vec<DOMUpdate>>,
     url: Url,
 }
 
@@ -46,20 +44,23 @@ impl HtmlPage {
                     .bytes_stream()
                     .map(|res| res.map_err(|e| anyhow!(e))),
             )),
-            dom: DOM::default(),
-            updater,
+            dom: DOM::new(out_updater, in_receiver),
+            in_updater,
             url,
         })
     }
 
     pub async fn update(&mut self) -> Result<(), Error> {
+        // Handle finishing the loader
         if let Some(true) = self.loader.as_mut().and_then(|loader| Some(loader.is_finished())) {
-            self.master_dom = Some(self.loader
+            self.loader
                 .take()
                 .ok_or_else(|| anyhow!("Loader is finished and None!"))?
                 .finish()
-                .await?);
+                .await?;
         }
+
+        self.dom.update()?;
 
         Ok(())
     }

@@ -1,11 +1,13 @@
 mod html5ever_engine;
 
-use crate::dom::{DOMUpdate, DOM};
+use crate::dom::{DOMNode, DOMUpdate, DOM};
 use crate::parser::html5ever_engine::Html5everEngine;
 use anyhow::{anyhow, Error};
 use bytes::Bytes;
+use indextree::{Arena, NodeId};
+use smallvec::SmallVec;
 use tokio::runtime::Handle;
-use tokio::sync::{broadcast::Sender, mpsc};
+use tokio::sync::{broadcast, broadcast::Sender, mpsc};
 use tokio::task::JoinHandle;
 use tokio_stream::{Stream, StreamExt};
 
@@ -15,12 +17,36 @@ pub struct HTMLParser {
     process_handle: JoinHandle<Result<(), Error>>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub enum ParserNodeKind {
+    #[default]
+    Document,
+    Element { tag: String },
+    Text { text: String },
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ParserDOMNode {
+    pub kind: ParserNodeKind,
+    pub attrs: SmallVec<(String, String), 4>,
+}
+
+#[derive(Debug)]
+pub struct ParserDOMMirror {
+    dom: Arena<ParserDOMNode>,
+    root: NodeId,
+    in_updater: mpsc::Sender<Vec<DOMUpdate>>,
+}
+
 impl HTMLParser {
     pub fn parse<S>(handle: &Handle, in_updater: Sender<Vec<DOMUpdate>>, byte_stream: S) -> Self
     where
         S: Stream<Item = Result<Bytes, Error>> + Send + Unpin + 'static,
     {
-        let process_handle = handle.spawn(HTMLParser::process(in_updater, byte_stream));
+        let process_handle = handle.spawn(HTMLParser::process(ParserDOMMirror {
+
+            in_updater
+        }, byte_stream));
         HTMLParser { process_handle }
     }
 
@@ -61,7 +87,7 @@ impl HTMLParser {
         self.process_handle.is_finished()
     }
 
-    pub async fn finish(self) -> Result<DOM, Error> {
+    pub async fn finish(self) -> Result<(), Error> {
         if !self.process_handle.is_finished() {
             return Err(anyhow!("Expected process to be finished, but it wasn't!"));
         }
