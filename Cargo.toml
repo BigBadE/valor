@@ -1,3 +1,5 @@
+cargo-features = ["codegen-backend"]
+
 [workspace]
 resolver = "3"
 members = [
@@ -11,6 +13,11 @@ edition = "2024"
 [workspace.dependencies]
 # Task handling
 tokio = { version = "1.47.1", features = ["full"] }
+tokio-stream = "0.1.17"
+
+# HTML processing
+html5ever = "0.26.0"
+markup5ever = "0.11.0"
 
 # Rendering
 wgpu = "26.0.1"
@@ -20,7 +27,13 @@ winit = "0.30.12"
 url = "2.5.7"
 reqwest = { version = "0.12.23", features = ["stream"] }
 
-# Util
+# Data types
+bytes = "1.10.1"
+lasso = "0.7.3"
+indextree = "4.7.4"
+smallvec = "2.0.0-alpha.11"
+
+# Logging and error handling
 log = "0.4.28"
 env_logger = "0.11.8"
 anyhow = "1.0.99"
@@ -36,6 +49,7 @@ opt-level = 1
 debug = 0
 strip = "debuginfo"
 lto = false
+codegen-backend = "cranelift"
 
 [profile.dev.package."*"]
 opt-level = 3

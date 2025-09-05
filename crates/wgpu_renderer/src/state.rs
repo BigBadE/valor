@@ -92,6 +92,7 @@ impl RenderState {
             label: None,
             color_attachments: &[Some(RenderPassColorAttachment {
                 view: &texture_view,
+                depth_slice: None,
                 resolve_target: None,
                 ops: Operations {
                     load: LoadOp::Clear(Color::GREEN),

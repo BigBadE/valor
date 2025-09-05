@@ -1,19 +1,19 @@
-use std::env;
-use std::sync::Arc;
+use crate::state::AppState;
 use anyhow::Error;
 use log::{error, info};
+use page_handler::state::HtmlPage;
+use std::env;
+use std::sync::Arc;
 use tokio::runtime::Runtime;
 use url::Url;
+use wgpu_renderer::state::RenderState;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
-use page_handler::state::{HtmlPage, PageState};
-use wgpu_renderer::state::RenderState;
-use crate::state::AppState;
 
-mod window;
 mod state;
+mod window;
 
 pub fn main() {
     env_logger::init();
@@ -34,16 +34,19 @@ struct App {
 impl App {
     fn resume(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Error> {
         // Create window object
-        let window = Arc::new(
-            event_loop
-                .create_window(Window::default_attributes())?,
-        );
+        let window = Arc::new(event_loop.create_window(Window::default_attributes())?);
 
         let runtime = Runtime::new()?;
 
         self.state = Some(AppState {
             render_state: runtime.block_on(RenderState::new(window.clone())),
-            pages: vec![HtmlPage::new(runtime.handle(), Url::parse(&format!("file://{}/assets/test.html", env::current_dir()?.display()))?)],
+            pages: vec![runtime.block_on(HtmlPage::new(
+                runtime.handle(),
+                Url::parse(&format!(
+                    "file://{}/assets/test.html",
+                    env::current_dir()?.display()
+                ))?,
+            ))?],
             runtime,
         });
 
@@ -51,8 +54,12 @@ impl App {
         Ok(())
     }
 
-
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) -> Result<(), Error> {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _id: WindowId,
+        event: WindowEvent,
+    ) -> Result<(), Error> {
         let state = self.state.as_mut().unwrap();
         match event {
             WindowEvent::CloseRequested => {

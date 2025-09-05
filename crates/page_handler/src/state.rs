@@ -1,48 +1,66 @@
-use anyhow::{anyhow, Result as AnyhowResult};
-use html5ever::parse_document;
-use html5ever::tendril::TendrilSink;
-use markup5ever_rcdom::RcDom;
+use anyhow::{anyhow, Error};
+use html::dom::{DOMUpdate, DOM};
+use html::parser::HTMLParser;
 use tokio::runtime::Handle;
-use tokio::task::JoinHandle;
+use tokio::sync::{broadcast, mpsc};
+use tokio_stream::StreamExt;
 use url::Url;
 
 pub struct HtmlPage {
-    dom: RcDom,
-    loader: Option<JoinHandle<()>>,
+    // If none, loading is finished. If some, still streaming.
+    loader: Option<HTMLParser>,
+    // The DOM of the page.
+    dom: DOM,
+    // Sender for DOM updates.
+    out_updater: broadcast::Sender<Vec<DOMUpdate>>,
+    in_updater: mpsc::Sender<Vec<DOMUpdate>>,
+    in_receiver: mpsc::Receiver<Vec<DOMUpdate>>,
     url: Url,
 }
 
 impl HtmlPage {
     /// Create a new HtmlPage by streaming the content from the given URL
-    pub async fn new(handle: &Handle, url: Url) -> AnyhowResult<Self> {
-        let mut response = reqwest::get(url.clone()).await
+    pub async fn new(handle: &Handle, url: Url) -> Result<Self, Error> {
+        let response = reqwest::get(url.clone())
+            .await
             .map_err(|e| anyhow!("Failed to fetch URL {}: {}", url, e))?;
-        
+
         if !response.status().is_success() {
             return Err(anyhow!(
-                "Failed to fetch URL: {} (Status: {})", 
-                url, 
+                "Failed to fetch URL: {} (Status: {})",
+                url,
                 response.status()
             ));
         }
+
+        // For updates from the DOM to subcomponents
+        let (out_updater, _) = broadcast::channel(128);
+        // For updates from subcomponents to the DOM
+        let (in_updater, in_receiver) = mpsc::channel(128);
         
-        // Create HTML parser for streaming
-        let mut parser = parse_document(RcDom::default(), Default::default());
-        
-        // Stream response in chunks and parse progressively
-        while let Some(chunk) = response.chunk().await
-            .map_err(|e| anyhow!("Error reading response chunk: {}", e))? {
-            let chunk_str = String::from_utf8_lossy(&chunk);
-            parser.process(chunk_str.as_ref().into());
-        }
-        
-        // Complete parsing and get the DOM
-        let dom = parser.finish();
-        
-        Ok(Self { dom, loader: Some(handle.spawn(Self::parse_html(url.clone()))), url })
+        Ok(Self {
+            loader: Some(HTMLParser::parse(
+                handle,
+                updater.clone(),
+                response
+                    .bytes_stream()
+                    .map(|res| res.map_err(|e| anyhow!(e))),
+            )),
+            dom: DOM::default(),
+            updater,
+            url,
+        })
     }
 
-    pub async fn parse_html(url: Url) {
+    pub async fn update(&mut self) -> Result<(), Error> {
+        if let Some(true) = self.loader.as_mut().and_then(|loader| Some(loader.is_finished())) {
+            self.master_dom = Some(self.loader
+                .take()
+                .ok_or_else(|| anyhow!("Loader is finished and None!"))?
+                .finish()
+                .await?);
+        }
 
+        Ok(())
     }
 }

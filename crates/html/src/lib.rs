@@ -1,3 +1,2 @@
-pub struct DOM {
-
-}
+pub mod dom;
+pub mod parser;
