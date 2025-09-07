@@ -1,5 +1,5 @@
 use crate::state::AppState;
-use anyhow::Error;
+use anyhow::{anyhow, Error};
 use log::{error, info};
 use page_handler::state::HtmlPage;
 use std::env;
@@ -60,7 +60,7 @@ impl App {
         _id: WindowId,
         event: WindowEvent,
     ) -> Result<(), Error> {
-        let state = self.state.as_mut().unwrap();
+        let state = self.state.as_mut().ok_or_else(|| anyhow!("App state is not set."))?;
         match event {
             WindowEvent::CloseRequested => {
                 info!("The close button was pressed; stopping");
@@ -68,7 +68,6 @@ impl App {
             }
             WindowEvent::RedrawRequested => {
                 state.render_state.render()?;
-                state.render_state.get_window().request_redraw();
             }
             WindowEvent::Resized(size) => {
                 state.render_state.resize(size);
@@ -89,6 +88,16 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if let Err(error) = self.window_event(event_loop, id, event) {
             error!("Failed to handle event: {error}");
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(state) = self.state.as_mut() {
+            for page in &mut state.pages {
+                if let Err(err) = state.runtime.block_on(page.update()) {
+                    error!("Failed to apply page updates: {err:?}");
+                }
+            }
         }
     }
 }

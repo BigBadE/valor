@@ -1,0 +1,12 @@
+[package]
+name = "css"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+html.workspace = true
+
+cssparser.workspace = true
+
+log.workspace = true
+anyhow.workspace = true

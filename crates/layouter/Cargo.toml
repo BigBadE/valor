@@ -1,0 +1,15 @@
+[package]
+name = "layouter"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+smallvec.workspace = true
+html.workspace = true
+css.workspace = true
+
+
+[dev-dependencies]
+tokio.workspace = true

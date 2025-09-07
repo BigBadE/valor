@@ -14,4 +14,14 @@ anyhow.workspace = true
 
 page_handler.workspace = true
 wgpu_renderer.workspace = true
+
+[dev-dependencies]
+html.workspace = true
+layouter.workspace = true
+headless_chrome.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+urlencoding.workspace = true
+once_cell.workspace = true
+
 [features]
