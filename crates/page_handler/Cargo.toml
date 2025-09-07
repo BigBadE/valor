@@ -4,16 +4,21 @@ edition.workspace = true
 
 [dependencies]
 html.workspace = true
+css.workspace = true
+layouter.workspace = true
 
 url.workspace = true
 reqwest.workspace = true
 
-winit.workspace = true
-
-tokio.workspace = true
+ tokio.workspace = true
 tokio-stream.workspace = true
 
+winit.workspace = true
+
 indextree.workspace = true
+bytes.workspace = true
+
+log.workspace = true
 anyhow.workspace = true
 
 [features]
