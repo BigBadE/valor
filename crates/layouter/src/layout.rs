@@ -226,17 +226,6 @@ pub fn layout_node(
                             _ => {}
                         }
                     }
-                    // If there are inline children with real content, lay them out first on a single line
-                    let mut has_real_inline = false;
-                    for c in &inline_children {
-                        match maps.kind_by_key.get(c) {
-                            Some(LayoutNodeKind::InlineText { text }) => {
-                                if text.chars().any(|ch| ch.is_alphanumeric()) { has_real_inline = true; break; }
-                            }
-                            Some(LayoutNodeKind::Block { .. }) => { has_real_inline = true; break; }
-                            _ => {}
-                        }
-                    }
                     if block_children.is_empty() {
                         let mut inline_x = x + if is_html || is_body { 0 } else { pl };
                         let child_y_inline = child_y;
@@ -301,7 +290,7 @@ pub fn layout_node(
             let mut used_height = content_height;
             if let Some(hs) = height_spec { if let SizeSpecified::Px(px) = hs { used_height = px.round() as i32; } }
             // Border-box dimensions
-            let mut border_width = if is_html || is_body { content_width } else { (content_width + pl + pr).max(0) };
+            let border_width = if is_html || is_body { content_width } else { (content_width + pl + pr).max(0) };
             let mut border_height = if is_html || is_body { used_height } else { (used_height + pt + pb).max(0) };
 
             let mut out_top = top;

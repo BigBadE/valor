@@ -1,6 +1,11 @@
 General tips:
 - Don't use full import paths
 - Import at the top of the file instead of in functions, the only exception is matching on an enum
+- Use full variable names, not shorthands like k, v, e, vv, etc...
+- Prefer using functional-style functions over for/while loops and ifs if possible and clean
+- Reduce nesting when possible, invert ifs and break apart functions to prevent too complex of functions
+- Try to keep functions under 50-100 lines if possible
+- Make sure not to repeat over 3 of the same lines of code
 
 Design: Browser Data Flow in Valor
 
