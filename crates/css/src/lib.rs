@@ -20,6 +20,8 @@ pub struct CSSMirror {
     styles: Stylesheet,
     style_parsers: HashMap<NodeKey, StylesheetStreamParser>,
     link_nodes: HashMap<NodeKey, (Option<String>, Option<String>)>, // (rel, href)
+    // Attributes may arrive before insertion; buffer them until we know the tag
+    pending_link_attrs: HashMap<NodeKey, (Option<String>, Option<String>)>, // (rel, href)
     discovered_links: Vec<String>,
     next_order_base: u32,
     // Inline style attribute declarations per element node
@@ -32,6 +34,7 @@ impl CSSMirror {
             styles: Stylesheet::default(),
             style_parsers: HashMap::new(),
             link_nodes: HashMap::new(),
+            pending_link_attrs: HashMap::new(),
             discovered_links: Vec::new(),
             next_order_base: 0,
             inline_styles: HashMap::new(),
@@ -63,7 +66,24 @@ impl DOMSubscriber for CSSMirror {
                     self.style_parsers.insert(node, parser);
                 } else if tag.eq_ignore_ascii_case("link") {
                     // Track attributes to detect rel=stylesheet + href later.
-                    self.link_nodes.insert(node, (None, None));
+                    // Initialize tracked entry
+                    let mut rel_href = (None::<String>, None::<String>);
+                    // If attributes arrived before insertion, merge them now
+                    if let Some((prel, phref)) = self.pending_link_attrs.remove(&node) {
+                        if prel.is_some() { rel_href.0 = prel; }
+                        if phref.is_some() { rel_href.1 = phref; }
+                    }
+                    self.link_nodes.insert(node, rel_href);
+                    // If we now know it's a stylesheet link with href, emit discovery once.
+                    if let Some((rel, href)) = self.link_nodes.get(&node) {
+                        if rel.as_ref().map(|r| r.to_ascii_lowercase().contains("stylesheet")).unwrap_or(false) {
+                            if let Some(h) = href.as_ref() {
+                                if !self.discovered_links.iter().any(|e| e == h) {
+                                    self.discovered_links.push(h.clone());
+                                }
+                            }
+                        }
+                    }
                 }
             }
             InsertText { parent, node: _, text, pos: _ } => {
@@ -84,27 +104,34 @@ impl DOMSubscriber for CSSMirror {
                     }
                 }
 
-                // Record attributes on <link> nodes; if it is a stylesheet with href, record discovery.
-                if let Some((rel, href)) = self.link_nodes.get_mut(&node) {
-                    match lname.as_str() {
-                        "rel" => { *rel = Some(value.clone()); },
-                        "href" => { *href = Some(value.clone()); },
-                        _ => {}
-                    }
-                    // If we now know it's a stylesheet link with href, emit discovery once.
-                    if rel.as_ref().map(|r| r.to_ascii_lowercase().contains("stylesheet")).unwrap_or(false) {
-                        if let Some(h) = href.as_ref() {
-                            if !self.discovered_links.iter().any(|e| e == h) {
-                                self.discovered_links.push(h.clone());
+                // Record attributes destined for <link> nodes; attributes may arrive before insertion
+                match lname.as_str() {
+                    "rel" | "href" => {
+                        if let Some((rel, href)) = self.link_nodes.get_mut(&node) {
+                            if lname == "rel" { *rel = Some(value.clone()); }
+                            else { *href = Some(value.clone()); }
+                            // Check discovery condition now that we may have both
+                            if rel.as_ref().map(|r| r.to_ascii_lowercase().contains("stylesheet")).unwrap_or(false) {
+                                if let Some(h) = href.as_ref() {
+                                    if !self.discovered_links.iter().any(|e| e == h) {
+                                        self.discovered_links.push(h.clone());
+                                    }
+                                }
                             }
+                        } else {
+                            // Buffer until we know if this node is actually a <link>
+                            let entry = self.pending_link_attrs.entry(node).or_insert((None, None));
+                            if lname == "rel" { entry.0 = Some(value.clone()); } else { entry.1 = Some(value.clone()); }
                         }
                     }
+                    _ => {}
                 }
             }
             RemoveNode { node } => {
                 // Drop any parser/trackers for this node.
                 self.style_parsers.remove(&node);
                 self.link_nodes.remove(&node);
+                self.pending_link_attrs.remove(&node);
                 // Drop any inline style declarations associated with this node.
                 self.inline_styles.remove(&node);
                 // Note: We do not retract rules that may have been parsed already.

@@ -1,6 +1,4 @@
 use crate::{LayoutNodeKind, Layouter};
-use css::parser::parse_declarations;
-use css::values::{LengthContext, to_length_in_px_rounded_i32};
 use html::dom::NodeKey;
 use std::collections::HashMap;
 use style_engine::{ComputedStyle, Display, SizeSpecified, Edges};
@@ -18,35 +16,28 @@ pub struct ComputeGeomArgs {
 pub struct LayoutMaps<'a> {
     pub kind_by_key: &'a HashMap<NodeKey, LayoutNodeKind>,
     pub children_by_key: &'a HashMap<NodeKey, Vec<NodeKey>>,
-    pub attrs_by_key: &'a HashMap<NodeKey, HashMap<String, String>>,
     pub computed_by_key: Option<&'a HashMap<NodeKey, ComputedStyle>>,
 }
 
-/// General inline style parser for single length attributes (e.g., width, height, margin-top in the future)
-/// Converts the attribute value to px using LengthContext and containing block width as percent base.
-pub fn parse_inline_length_attr(
-    attrs_by_key: &HashMap<NodeKey, HashMap<String, String>>,
-    node: NodeKey,
-    attr_name: &str,
-    containing_block_width: i32,
-) -> Option<i32> {
-    let style_text = attrs_by_key.get(&node)?.get("style")?.to_string();
-    let decls = parse_declarations(&style_text);
-    for d in decls {
-        if d.name.eq_ignore_ascii_case(attr_name) {
-            let v = d.value.trim();
-            let ctx = LengthContext {
-                percent_base_px: containing_block_width as f32,
-                ..LengthContext::default()
-            };
-            if let Some(px) = to_length_in_px_rounded_i32(v, &ctx) {
-                return Some(px);
+fn measure_descendant_inline_text_width(node: NodeKey, maps: &LayoutMaps, char_width: i32) -> i32 {
+    let mut sum = 0;
+    if let Some(kind) = maps.kind_by_key.get(&node) {
+        match kind {
+            LayoutNodeKind::InlineText { text } => {
+                sum += (text.chars().count() as i32 * char_width).max(0);
             }
+            LayoutNodeKind::Block { .. } => {
+                if let Some(children) = maps.children_by_key.get(&node) {
+                    for c in children {
+                        sum += measure_descendant_inline_text_width(*c, maps, char_width);
+                    }
+                }
+            }
+            LayoutNodeKind::Document => {}
         }
     }
-    None
+    sum
 }
-
 
 /// Recursively layout nodes, building rects and advancing y_cursor.
 pub fn layout_node(
@@ -145,23 +136,13 @@ pub fn layout_node(
                     }
                 }
                 if !used_from_computed {
-                    if let Some(px) = parse_inline_length_attr(
-                        maps.attrs_by_key,
-                        node,
-                        "width",
-                        base_width_for_percent,
-                    ) {
-                        // Treat inline parsed width as border-box
-                        content_width = (px - pl - pr).max(0);
-                    } else {
-                        // Auto → fill available border box
-                        content_width = (base_width_for_percent - pl - pr).max(0);
-                    }
+                    // Auto → fill available border box
+                    content_width = (base_width_for_percent - pl - pr).max(0);
                 }
             }
 
             // Positioning
-            let top = if is_html || is_body { *y_cursor } else { *y_cursor + (margin.top.round() as i32) };
+            let top = *y_cursor;
             let x = if is_html || is_body { 0 } else { ml };
 
             // Compute children layout. Children start at content box top
@@ -189,35 +170,21 @@ pub fn layout_node(
                                 let non_render = matches!(tl.as_str(), "head" | "meta" | "title" | "link" | "style" | "script" | "base");
                                 if non_render { continue; }
                                 // Decide inline vs block using computed display if available
-                                let mut child_inline = false;
+                                let mut computed_inline: Option<bool> = None;
+                                let mut display_none = false;
                                 if let Some(comp_map) = maps.computed_by_key {
                                     if let Some(cs) = comp_map.get(child) {
-                                        if cs.display == Display::None { continue; }
-                                        child_inline = cs.display == Display::Inline;
-                                    } else {
-                                        // No computed style entry: attempt inline style attribute fallback
-                                        if let Some(style_text) = maps.attrs_by_key.get(child).and_then(|m| m.get("style")) {
-                                            for d in parse_declarations(style_text) {
-                                                if d.name.eq_ignore_ascii_case("display") {
-                                                    let v = d.value.trim().to_ascii_lowercase();
-                                                    match v.as_str() {
-                                                        "none" => { continue; }
-                                                        "inline" => { child_inline = true; }
-                                                        "block" => { child_inline = false; }
-                                                        _ => {}
-                                                    }
-                                                }
-                                            }
-                                        }
+                                        if cs.display == Display::None { display_none = true; }
+                                        else { computed_inline = Some(cs.display == Display::Inline); }
                                     }
                                 }
-                                // Fallback to tag default inline for common inline tags if style info still missing
-                                if !child_inline {
-                                    let tli = tl.as_str();
-                                    if matches!(tli, "span" | "a" | "b" | "i" | "strong" | "em") {
-                                        child_inline = true;
-                                    }
-                                }
+                                if display_none { continue; }
+                                let child_inline = if let Some(ci) = computed_inline {
+                                    ci
+                                } else {
+                                    // Fallback: default to block when style info is missing to avoid misclassifying display:block inline tags
+                                    false
+                                };
                                 if child_inline { inline_children.push(*child); } else { block_children.push(*child); }
                             }
                             Some(LayoutNodeKind::InlineText { text }) => {
@@ -226,21 +193,27 @@ pub fn layout_node(
                             _ => {}
                         }
                     }
-                    if block_children.is_empty() {
+                    if !inline_children.is_empty() {
                         let mut inline_x = x + if is_html || is_body { 0 } else { pl };
                         let child_y_inline = child_y;
                         let mut line_h = 0;
-                        for child in inline_children {
-                            match maps.kind_by_key.get(&child) {
+                        let mut min_inline_y: Option<i32> = None;
+                        for child in &inline_children {
+                            match maps.kind_by_key.get(child) {
                                 Some(LayoutNodeKind::InlineText { text }) => {
                                     let w = (text.chars().count() as i32 * args.char_width).max(0);
-                                    let h = args.line_height;
-                                    rects.insert(child, LayoutRect { x: inline_x, y: child_y_inline, width: w, height: h });
-                                    inline_x += w + (args.char_width / 2);
+                                    let h = if let Some(comp_map) = maps.computed_by_key {
+                                        if let Some(parent_cs) = comp_map.get(&node) {
+                                            (parent_cs.line_height * parent_cs.font_size).round() as i32
+                                        } else { args.line_height }
+                                    } else { args.line_height };
+                                    rects.insert(*child, LayoutRect { x: inline_x, y: child_y_inline, width: w, height: h });
+                                    if min_inline_y.map(|m| child_y_inline < m).unwrap_or(true) { min_inline_y = Some(child_y_inline); }
+                                    inline_x += w;
                                     if h > line_h { line_h = h; }
                                 }
                                 Some(LayoutNodeKind::Block { .. }) => {
-                                    // Inline element: estimate width from specified width or sum of immediate text children
+                                    // Inline element: estimate width from specified width or sum of descendant inline text
                                     let mut w = 0;
                                     if let Some(comp_map) = maps.computed_by_key {
                                         if let Some(cs) = comp_map.get(&child) {
@@ -252,19 +225,16 @@ pub fn layout_node(
                                         }
                                     }
                                     if w == 0 {
-                                        if let Some(grand) = maps.children_by_key.get(&child) {
-                                            let mut sum = 0;
-                                            for g in grand {
-                                                if let Some(LayoutNodeKind::InlineText { text }) = maps.kind_by_key.get(g) {
-                                                    sum += (text.chars().count() as i32 * args.char_width).max(0);
-                                                }
-                                            }
-                                            w = sum;
-                                        }
+                                        w = measure_descendant_inline_text_width(*child, maps, args.char_width);
                                     }
-                                    let h = args.line_height;
-                                    rects.insert(child, LayoutRect { x: inline_x, y: child_y_inline, width: w, height: h });
-                                    inline_x += w + (args.char_width / 2);
+                                    let h = if let Some(comp_map) = maps.computed_by_key {
+                                        if let Some(parent_cs) = comp_map.get(&node) {
+                                            (parent_cs.line_height * parent_cs.font_size).round() as i32
+                                        } else { args.line_height }
+                                    } else { args.line_height };
+                                    rects.insert(*child, LayoutRect { x: inline_x, y: child_y_inline, width: w, height: h });
+                                    if min_inline_y.map(|m| child_y_inline < m).unwrap_or(true) { min_inline_y = Some(child_y_inline); }
+                                    inline_x += w;
                                     if h > line_h { line_h = h; }
                                 }
                                 _ => {}
@@ -272,17 +242,59 @@ pub fn layout_node(
                         }
                         content_height += line_h;
                         child_y += line_h;
+                        // Ensure rects exist for all inline element children (safety if skipped elsewhere)
+                        let inline_y_base = child_y_inline;
+                        for c in &inline_children {
+                            if rects.get(c).is_none() {
+                                // Compute width from specified width or descendant inline text
+                                let mut w = 0;
+                                if let Some(comp_map) = maps.computed_by_key {
+                                    if let Some(cs) = comp_map.get(c) {
+                                        match cs.width {
+                                            SizeSpecified::Px(px) => { w = px.round() as i32; }
+                                            SizeSpecified::Percent(p) => { w = (p * content_width as f32).round() as i32; }
+                                            SizeSpecified::Auto => {}
+                                        }
+                                    }
+                                }
+                                if w == 0 { w = measure_descendant_inline_text_width(*c, maps, args.char_width); }
+                                // Height from parent line-height
+                                let h = if let Some(comp_map) = maps.computed_by_key {
+                                    if let Some(parent_cs) = comp_map.get(&node) {
+                                        (parent_cs.line_height * parent_cs.font_size).round() as i32
+                                    } else { args.line_height }
+                                } else { args.line_height };
+                                rects.insert(*c, LayoutRect { x: inline_x, y: inline_y_base, width: w, height: h });
+                            }
+                        }
                     }
                     // Then lay out block children (if any)
                     let children = block_children;
+                    // Initialize previous bottom margin with parent's top margin to collapse with first child
+                    let mut prev_bottom_margin: i32 = if is_html || is_body { 0 } else { margin.top.round() as i32 };
+                    // Running cursor inside parent's content box
+                    let mut current_y = child_y;
                     for child in children {
+                        // Resolve child margins from computed styles (default 0)
+                        let (child_mt, child_mb) = if let Some(comp_map) = maps.computed_by_key {
+                            if let Some(cs) = comp_map.get(&child) {
+                                (cs.margin.top.round() as i32, cs.margin.bottom.round() as i32)
+                            } else { (0, 0) }
+                        } else { (0, 0) };
+                        // Collapse adjacent vertical margins: move current_y by collapsed amount
+                        let collapsed = std::cmp::max(prev_bottom_margin, child_mt);
+                        current_y += collapsed;
+
                         // For block children, pass down the parent content width as viewport_width for percent resolution
                         let child_args = ComputeGeomArgs { viewport_width: content_width, body_margin: 0, line_height: args.line_height, char_width: args.char_width, v_gap: args.v_gap };
-                        *y_cursor = child_y;
+                        *y_cursor = current_y;
                         let (child_consumed, child_content_h) = layout_node(child, depth + 1, maps, rects, child_args, y_cursor);
                         content_height += child_content_h;
-                        child_y += child_consumed;
+                        current_y += child_consumed;
+                        prev_bottom_margin = child_mb;
                     }
+                    // After block children, current_y holds the cursor for potential further layout steps
+                    // (no need to reassign child_y)
                 }
             }
 
@@ -300,9 +312,11 @@ pub fn layout_node(
                 let mut max_yh = 0;
                 if let Some(children) = maps.children_by_key.get(&node) {
                     for child in children {
-                        if let Some(r) = rects.get(child) {
-                            if r.y < min_y { min_y = r.y; }
-                            if r.y + r.height > max_yh { max_yh = r.y + r.height; }
+                        if matches!(maps.kind_by_key.get(child), Some(LayoutNodeKind::Block { .. })) {
+                            if let Some(r) = rects.get(child) {
+                                if r.y < min_y { min_y = r.y; }
+                                if r.y + r.height > max_yh { max_yh = r.y + r.height; }
+                            }
                         }
                     }
                 }
@@ -328,8 +342,8 @@ pub fn layout_node(
             }
 
             rects.insert(node, LayoutRect { x, y: out_top, width: border_width, height: border_height });
-            let consumed = if is_html || is_body { border_height } else { (margin.top.round() as i32) + border_height + (margin.bottom.round() as i32) } + args.v_gap;
-            *y_cursor = out_top + border_height + if is_html || is_body { 0 } else { margin.bottom.round() as i32 } + args.v_gap;
+            let consumed = border_height + args.v_gap;
+            *y_cursor = out_top + border_height + args.v_gap;
             (consumed, used_height)
         }
         Some(LayoutNodeKind::InlineText { .. }) => {
@@ -484,15 +498,15 @@ pub fn compute_layout_geometry(layouter: &Layouter) -> HashMap<NodeKey, LayoutRe
     }
 
     // Attributes per node (for inline style parsing)
-    let attrs_by_key: HashMap<NodeKey, HashMap<String, String>> = layouter.attrs_map();
-
     let root = NodeKey::ROOT;
 
     // Layout parameters aligned with test/Chromium expectations (with reset: margins/padding = 0)
     let args = ComputeGeomArgs {
-        viewport_width: 800,
-        body_margin: 8,
-        line_height: 17,
+        // Align with Chromium's content width (accounts for vertical scrollbar ~16px on 800px window)
+        viewport_width: 784,
+        body_margin: 0,
+        // Approximate single-line height to match Chromium snapshot rounding
+        line_height: 18,
         char_width: 6,
         v_gap: 0,
     };
@@ -500,7 +514,6 @@ pub fn compute_layout_geometry(layouter: &Layouter) -> HashMap<NodeKey, LayoutRe
     let maps = LayoutMaps {
         kind_by_key: &kind_by_key,
         children_by_key: &children_by_key,
-        attrs_by_key: &attrs_by_key,
         computed_by_key: Some(layouter.computed_styles()),
     };
 

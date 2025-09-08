@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 use tokio::runtime::Runtime;
-use style_engine::StyleEngine;
 
 mod common;
 
@@ -28,8 +27,10 @@ static SHARED_BROWSER: Lazy<Mutex<Browser>> = Lazy::new(|| {
 #[test]
 fn chromium_layout_test() -> Result<(), Error> {
     let _ = env_logger::builder().is_test(true).try_init();
+    let mut failed: Vec<(String, String)> = Vec::new();
     // Iterate over all fixtures and compare against each expected file content.
     for input_path in common::fixture_html_files()? {
+        let display_name = input_path.display().to_string();
         // Build page and parse via HtmlPage
         let url = common::to_file_url(&input_path)?;
         let rt = Runtime::new()?;
@@ -42,7 +43,12 @@ fn chromium_layout_test() -> Result<(), Error> {
             layouter_mirror.try_update_sync()?;
             Ok(())
         })?;
-        assert!(finished, "Parsing did not finish for {}", input_path.display());
+        if !finished {
+            let msg = format!("Parsing did not finish");
+            eprintln!("[LAYOUT] {} ... FAILED: {}", display_name, msg);
+            failed.push((display_name.clone(), msg));
+            continue;
+        }
 
         // Provide computed styles from the page's internal StyleEngine to Layouter
         let computed = page.computed_styles_snapshot()?;
@@ -55,20 +61,40 @@ fn chromium_layout_test() -> Result<(), Error> {
         let our_json = our_layout_json(layouter, &rects);
 
         // Build Chromium's full layout JSON by evaluating JS in the page
-        let ch_json = chromium_layout_json_for_path(&input_path)?;
+        let ch_json = match chromium_layout_json_for_path(&input_path) {
+            Ok(v) => v,
+            Err(e) => {
+                let msg = format!("failed to get Chromium JSON: {}", e);
+                eprintln!("[LAYOUT] {} ... FAILED: {}", display_name, msg);
+                failed.push((display_name.clone(), msg));
+                continue;
+            }
+        };
 
         // Compare using epsilon for floats
         let eps = 8.0_f64;
-        if let Err(msg) = common::compare_json_with_epsilon(&our_json, &ch_json, eps) {
-            panic!(
-                "Chromium layout JSON mismatch for {} (eps={}).\n{}\nOur: {}\nChromium: {}\n",
-                input_path.display(),
-                eps,
-                msg,
-                serde_json::to_string_pretty(&our_json).unwrap_or_default(),
-                serde_json::to_string_pretty(&ch_json).unwrap_or_default()
-            );
+        match common::compare_json_with_epsilon(&our_json, &ch_json, eps) {
+            Ok(_) => {
+                println!("[LAYOUT] {} ... ok", display_name);
+            }
+            Err(msg) => {
+                let detail = format!(
+                    "{}\nOur: {}\nChromium: {}",
+                    msg,
+                    serde_json::to_string_pretty(&our_json).unwrap_or_default(),
+                    serde_json::to_string_pretty(&ch_json).unwrap_or_default()
+                );
+                eprintln!("[LAYOUT] {} ... FAILED: {}", display_name, msg);
+                failed.push((display_name.clone(), detail));
+            }
         }
+    }
+    if !failed.is_empty() {
+        eprintln!("\n==== LAYOUT FAILURES ({} total) ====", failed.len());
+        for (name, msg) in &failed {
+            eprintln!("- {}\n  {}\n", name, msg);
+        }
+        panic!("{} layout fixture(s) failed; see log above.", failed.len());
     }
     Ok(())
 }
@@ -82,6 +108,8 @@ fn our_layout_json(layouter: &Layouter, rects: &HashMap<NodeKey, LayoutRect>) ->
         kind_by_key.insert(k, kind);
         children_by_key.insert(k, children);
     }
+    // Also build attributes lookup to access element ids
+    let attrs_by_key = layouter.attrs_map();
     // Find first element child of ROOT (typically <html>)
     let mut root_elem: Option<NodeKey> = None;
     if let Some(children) = children_by_key.get(&NodeKey::ROOT) {
@@ -106,12 +134,13 @@ fn our_layout_json(layouter: &Layouter, rects: &HashMap<NodeKey, LayoutRect>) ->
             }
         }
     }
-    serialize_element_subtree_with_maps(&kind_by_key, &children_by_key, rects, root_key)
+    serialize_element_subtree_with_maps(&kind_by_key, &children_by_key, &attrs_by_key, rects, root_key)
 }
 
 fn serialize_element_subtree_with_maps(
     kind_by_key: &HashMap<NodeKey, LayoutNodeKind>,
     children_by_key: &HashMap<NodeKey, Vec<NodeKey>>,
+    attrs_by_key: &HashMap<NodeKey, HashMap<String, String>>,
     rects: &HashMap<NodeKey, LayoutRect>,
     key: NodeKey,
 ) -> Value {
@@ -122,6 +151,7 @@ fn serialize_element_subtree_with_maps(
         key: NodeKey,
         kind_by_key: &HashMap<NodeKey, LayoutNodeKind>,
         children_by_key: &HashMap<NodeKey, Vec<NodeKey>>,
+        attrs_by_key: &HashMap<NodeKey, HashMap<String, String>>,
         rects: &HashMap<NodeKey, LayoutRect>,
     ) -> Value {
         match kind_by_key.get(&key) {
@@ -141,23 +171,29 @@ fn serialize_element_subtree_with_maps(
                 if let Some(children) = children_by_key.get(&key) {
                     for child in children {
                         if let Some(LayoutNodeKind::Block { .. }) = kind_by_key.get(child) {
-                            let v = recurse(*child, kind_by_key, children_by_key, rects);
+                            let v = recurse(*child, kind_by_key, children_by_key, attrs_by_key, rects);
                             children_json.push(v);
                         }
                     }
                 }
-                json!({
+                let mut obj = json!({
                     "tag": tag.to_lowercase(),
                     "rect": rect_json,
                     "children": children_json,
-                })
+                });
+                let id_val = attrs_by_key
+                    .get(&key)
+                    .and_then(|attrs| attrs.get("id").cloned())
+                    .unwrap_or_else(|| String::new());
+                obj["id"] = json!(id_val);
+                obj
             }
             Some(LayoutNodeKind::Document) | Some(LayoutNodeKind::InlineText { .. }) | None => {
                 // For document or text nodes, dive into children to find first element
                 if let Some(children) = children_by_key.get(&key) {
                     for child in children {
                         if let Some(LayoutNodeKind::Block { .. }) = kind_by_key.get(child) {
-                            return recurse(*child, kind_by_key, children_by_key, rects);
+                            return recurse(*child, kind_by_key, children_by_key, attrs_by_key, rects);
                         }
                     }
                 }
@@ -166,7 +202,7 @@ fn serialize_element_subtree_with_maps(
             }
         }
     }
-    recurse(key, kind_by_key, children_by_key, rects)
+    recurse(key, kind_by_key, children_by_key, attrs_by_key, rects)
 }
 
 fn chromium_layout_json_for_path(path: &Path) -> anyhow::Result<Value> {
@@ -201,6 +237,7 @@ fn chromium_layout_json_for_path(path: &Path) -> anyhow::Result<Value> {
             var r = el.getBoundingClientRect();
             return {
                 tag: String(el.tagName||'').toLowerCase(),
+                id: String(el.id||''),
                 rect: { x: r.x, y: r.y, width: r.width, height: r.height },
                 children: Array.from(el.children).filter(function(c){ return !shouldSkip(c); }).map(ser)
             };

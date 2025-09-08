@@ -4,6 +4,7 @@ Wire CSS into the pipeline so Layouter consumes computed styles for each element
 ---
 
 ### Phase 0 — Define scope and MVP subset
+Checklist:
 - [x] Properties to support first: display, margin/padding/border (physical), width/height, box-sizing, background-color (optional, for debugging), color, font-size, line-height (number/normal), white-space (normal), text-align (left/center/right), font-weight (normal/bold), overflow (visible/hidden), position (static), vertical margins collapse behavior (block only, later).
 - [x] Selector subset: type, id, class, descendant/child combinators; no pseudo-classes/pseudo-elements initially.
 - [x] Origins and cascade order: user-agent < author < user; implement UA and author only initially; include inline style attribute as highest author priority.
@@ -30,7 +31,7 @@ Deliverables:
 Checklist:
 - Simple selector matcher and indexes
   - [x] Implement type/id/class selectors with descendant/child combinators; maintain indexes and basic traversal.
-  - [ ] Acceptance: Author rules from stylesheets match elements in fixtures.
+  - [x] Acceptance: Author rules from stylesheets match elements in fixtures.
 ---
 
 ### Phase 3 — Cascade and computed style model
@@ -53,11 +54,11 @@ Deliverables:
 Checklist:
 - ComputedStyle expansion and cascade
   - Define specified/computed/used model for width/height/margins/padding/display.
-  - Implement cascade that merges UA + author (including inline styles) with specificity and source order.
-  - Acceptance: Inline and <style> rules apply with correct priority.
+  - [x] Implement cascade that merges UA + author (including inline styles) with specificity and source order.
+  - [x] Acceptance: Inline and <style> rules apply with correct priority.
 - Inheritance basics
-  - Implement inheritance for color, font-size, line-height (unitless multiplier) at least.
-  - Acceptance: Inline text line-height derives from computed value.
+  - [x] Implement inheritance for color, font-size, line-height (unitless multiplier) at least.
+  - [x] Acceptance: Inline text line-height derives from computed value.
 
 ---
 
@@ -106,24 +107,24 @@ Deliverables:
 
 Checklist:
 - Immediate correctness and integration
-  - Align body/html margins with tests or computed styles.
-    - Replace hardcoded body_margin with value read from computed styles on html/body, honoring the test CSS reset.
-    - Acceptance: In Chromium comparison, y and height for body/root align within epsilon without ad-hoc offsets.
-  - Vertical block flow and margin collapsing (MVP).
-    - Collapse parent top margin with first child’s top margin; collapse adjacent sibling vertical margins.
-    - Ensure box border-box height derives from content + padding (margins consume flow but are not in the box).
-    - Acceptance: First block child y matches Chromium in box_model.html.
-  - Inline formatting refinement (single-line MVP).
-    - Remove arbitrary inter-item spacing; base widths solely on measured text approximation.
-    - Produce a single line box using line-height; inline boxes participate horizontally.
-    - Acceptance: inline_block.html inline elements’ widths and y align within epsilon.
+  - [x] Align body/html margins with tests or computed styles.
+    - [x] Replace hardcoded body_margin with value read from computed styles on html/body, honoring the test CSS reset.
+    - [x] Acceptance: In Chromium comparison, y and height for body/root align within epsilon without ad-hoc offsets.
+  - [x] Vertical block flow and margin collapsing (MVP).
+    - [x] Collapse parent top margin with first child’s top margin; collapse adjacent sibling vertical margins.
+    - [x] Ensure box border-box height derives from content + padding (margins consume flow but are not in the box).
+    - [x] Acceptance: First block child y matches Chromium in box_model.html.
+  - [x] Inline formatting refinement (single-line MVP).
+    - [x] Remove arbitrary inter-item spacing; base widths solely on measured text approximation.
+    - [x] Produce a single line box using line-height; inline boxes participate horizontally.
+    - [x] Acceptance: inline_block.html inline elements’ widths and y align within epsilon.
 - Used-value resolution consistency (border-box/content sizing)
-  - Adopt a single path for used width/height, assuming box-sizing: border-box under test reset.
-  - Resolve % widths against containing block content width; pass base explicitly to children.
-  - Acceptance: Percent width children (50%) match Chromium under parent width.
+  - [x] Adopt a single path for used width/height, assuming box-sizing: border-box under test reset.
+  - [x] Resolve % widths against containing block content width; pass base explicitly to children.
+  - [x] Acceptance: Percent width children (50%) match Chromium under parent width.
 - Remove layout-time CSS parsing fallbacks in Layouter
-  - Eliminate ad-hoc parsing of inline styles in layout; rely exclusively on StyleEngine’s computed values.
-  - Acceptance: Tests still pass with Layouter depending only on computed styles.
+  - [x] Eliminate ad-hoc parsing of inline styles in layout; rely exclusively on StyleEngine’s computed values.
+  - [x] Acceptance: Tests still pass with Layouter depending only on computed styles.
 
 ---
 
@@ -147,10 +148,11 @@ Checklist:
 ---
 
 ### Phase 8 — Selector coverage and cascade completeness
-1) Add support for attribute selectors, adjacent/sibling combinators.
-2) Add :root, :first-child, :last-child (simple structural) — via DOM mirror data.
-3) Specificity and !important
-    - Implement !important handling; order within origin.
+Checklist:
+- [ ] Add support for attribute selectors, adjacent/sibling combinators.
+- [ ] Add :root, :first-child, :last-child (simple structural) — via DOM mirror data.
+- [ ] Implement !important handling; order within origin.
+- [ ] Acceptance: Complex selectors (attributes and siblings) match correctly in fixtures.
 
 Deliverables:
 - Broader CSS compatibility on common sites and tests.
@@ -158,23 +160,26 @@ Deliverables:
 ---
 
 ### Phase 9 — Performance and memory
-- Rule matching optimization: pre-index selectors by rightmost simple selector; short-circuit on tag/class/id mismatch.
-- Cache match results per node per rule-set epoch, invalidated by relevant attr changes.
-- Avoid full-tree recomputes by using dirty propagation and incremental layout invalidation.
+Checklist:
+- [ ] Rule matching optimization: pre-index selectors by rightmost simple selector; short-circuit on tag/class/id mismatch.
+- [ ] Cache match results per node per rule-set epoch, invalidated by relevant attr changes.
+- [ ] Avoid full-tree recomputes by using dirty propagation and incremental layout invalidation.
+- [ ] Acceptance: Style changes do not trigger full recompute on large trees; spot-check via perf counter.
 
 ---
 
 ### Phase 10 — Testing and validation
-1) Unit tests
-    - Selector matching, specificity, cascade order, inheritance.
-    - ComputedStyle for representative scenarios (inline style, author sheet, UA sheet).
-2) Integration tests
-    - Feed DOMUpdate batches and assert ComputedStyle maps produced by StyleEngine.
-    - Layouter geometry tests: margin/padding/width/height and display none.
-3) Chromium comparison tests
-    - Use existing test harness to compare rects for simple pages; inject a reset to align defaults, or explicitly include UA margin expectations in both engines.
-4) Fuzz/snapshot tests
-    - Generate random DOM + simple styles; assert invariants and stability.
+Checklist:
+- Unit tests
+  - [ ] Selector matching, specificity, cascade order, inheritance.
+  - [ ] ComputedStyle for representative scenarios (inline style, author sheet, UA sheet).
+- Integration tests
+  - [ ] Feed DOMUpdate batches and assert ComputedStyle maps produced by StyleEngine.
+  - [ ] Layouter geometry tests: margin/padding/width/height and display none.
+- Chromium comparison tests
+  - [ ] Use existing test harness to compare rects for simple pages; inject a reset to align defaults, or explicitly include UA margin expectations in both engines.
+- Fuzz/snapshot tests
+  - [ ] Generate random DOM + simple styles; assert invariants and stability.
 
 ---
 

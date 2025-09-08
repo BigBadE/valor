@@ -1,7 +1,7 @@
 use css::parser::StylesheetStreamParser;
 use css::ruledb::RuleDB;
 use css::rulemap::{index_rules, RuleMap, RuleRef};
-use css::selector::{Combinator, ComplexSelector, CompoundSelector, SimpleSelector};
+use css::selector::{Combinator, ComplexSelector, CompoundSelector, SimpleSelector, Specificity};
 use css::types::{Origin, Stylesheet};
 use html::dom::NodeKey;
 use log::info;
@@ -68,6 +68,34 @@ impl StyleEngine {
         }
     }
 
+    /// Recompute computed styles for all known nodes in parent-before-child order.
+    pub fn recompute_all(&mut self) {
+        // Collect nodes and compute depth for ordering
+        let mut items: Vec<(usize, NodeKey)> = self
+            .nodes
+            .keys()
+            .cloned()
+            .map(|k| (self.node_depth(k), k))
+            .collect();
+        items.sort_by_key(|(d, _)| *d);
+        for (_d, k) in items {
+            let cs = self.compute_for_node(k);
+            self.computed.insert(k, cs);
+        }
+    }
+
+    fn node_depth(&self, node: NodeKey) -> usize {
+        let mut depth = 0usize;
+        let mut cur = Some(node);
+        while let Some(k) = cur {
+            cur = self.nodes.get(&k).and_then(|ni| ni.parent);
+            if cur.is_some() {
+                depth += 1;
+            }
+        }
+        depth
+    }
+
     /// Replace the active author stylesheet set with a new snapshot and merge with UA sheet.
     pub fn replace_stylesheet(&mut self, author: Stylesheet) {
         self.author_stylesheet = author;
@@ -77,6 +105,8 @@ impl StyleEngine {
         // Rebuild rule index and recompute matches for all nodes
         self.rebuild_rule_index();
         self.rematch_all_nodes();
+        // Recompute computed styles for all nodes (inheritance-aware)
+        self.recompute_all();
         info!(
             "StyleEngine: merged UA+Author stylesheets (ua_rules={}, author_rules={}, indexed_rules={})",
             self.ua_stylesheet.rules.len(),
@@ -95,27 +125,131 @@ impl StyleEngine {
         self.computed.clone()
     }
 
-    fn compute_for_info(info: &NodeInfo) -> ComputedStyle {
+    fn compute_for_node(&self, node: NodeKey) -> ComputedStyle {
+        // Gather info and parent style
+        let Some(info) = self.nodes.get(&node) else { return ComputedStyle::default(); };
+        let parent_style = info.parent.and_then(|p| self.computed.get(&p)).cloned();
+
+        // Working specified values (before inheritance resolution)
+        let mut display_spec: Option<Display> = None;
+        let mut width_spec: Option<SizeSpecified> = None;
+        let mut height_spec: Option<SizeSpecified> = None;
+        let mut margin_spec: Edges = Edges::default();
+        let mut have_margin = false;
+        let mut padding_spec: Edges = Edges::default();
+        let mut have_padding = false;
+        let mut color_spec: Option<ColorRGBA> = None;
+        let mut font_size_spec: Option<f32> = None; // px
+        enum LHSrc { Normal, Number(f32), Px(f32) }
+        let mut line_height_spec: Option<LHSrc> = None;
+
+        // Apply declarations from matched rules in cascade order
+        if let Some(rule_refs) = self.matches.get(&node) {
+            // Build sortable list of (important, origin, specificity, source_order, prop, value)
+            let mut items: Vec<(bool, Origin, Specificity, u32, String, String)> = Vec::new();
+            for rr in rule_refs {
+                if let Some(rule) = self.stylesheet.rules.get(rr.rule_idx)
+                    && let Some(sel) = rule.selectors.get(rr.selector_idx)
+                {
+                    for d in &rule.declarations {
+                        items.push((d.important, rule.origin, sel.specificity, rule.source_order, d.name.to_ascii_lowercase(), d.value.clone()));
+                    }
+                }
+            }
+            // Sort ascending so later items override
+            items.sort_by(|a, b| a.cmp(b));
+            for (_imp, _origin, _spec, _ord, prop, val_raw) in items {
+                let val = val_raw.trim();
+                match prop.as_str() {
+                    "display" => {
+                        let v = val.to_ascii_lowercase();
+                        display_spec = match v.as_str() {
+                            "none" => Some(Display::None),
+                            "block" => Some(Display::Block),
+                            "inline" => Some(Display::Inline),
+                            _ => display_spec,
+                        };
+                    }
+                    "width" => { width_spec = parse_size_spec(val).or(width_spec); }
+                    "height" => { height_spec = parse_size_spec(val).or(height_spec); }
+                    "margin" => { if let Some(e) = parse_edges_shorthand(val) { margin_spec = e; have_margin = true; } }
+                    "padding" => { if let Some(e) = parse_edges_shorthand(val) { padding_spec = e; have_padding = true; } }
+                    "margin-top" => { if let Some(px) = parse_px(val) { margin_spec.top = px; have_margin = true; } }
+                    "margin-right" => { if let Some(px) = parse_px(val) { margin_spec.right = px; have_margin = true; } }
+                    "margin-bottom" => { if let Some(px) = parse_px(val) { margin_spec.bottom = px; have_margin = true; } }
+                    "margin-left" => { if let Some(px) = parse_px(val) { margin_spec.left = px; have_margin = true; } }
+                    "padding-top" => { if let Some(px) = parse_px(val) { padding_spec.top = px; have_padding = true; } }
+                    "padding-right" => { if let Some(px) = parse_px(val) { padding_spec.right = px; have_padding = true; } }
+                    "padding-bottom" => { if let Some(px) = parse_px(val) { padding_spec.bottom = px; have_padding = true; } }
+                    "padding-left" => { if let Some(px) = parse_px(val) { padding_spec.left = px; have_padding = true; } }
+                    "color" => { if let Some(c) = Self::parse_color(val) { color_spec = Some(c); } }
+                    "font-size" => { if let Some(px) = parse_px(val) { font_size_spec = Some(px); } }
+                    "line-height" => {
+                        let v = val.to_ascii_lowercase();
+                        if v == "normal" { line_height_spec = Some(LHSrc::Normal); }
+                        else if let Ok(n) = v.parse::<f32>() { line_height_spec = Some(LHSrc::Number(n)); }
+                        else if let Some(px) = parse_px(&v) { line_height_spec = Some(LHSrc::Px(px)); }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Inline style overrides (Author, highest priority)
+        if let Some(d) = info.inline_display { display_spec = Some(d); }
+        if let Some(w) = info.inline_width { width_spec = Some(w); }
+        if let Some(h) = info.inline_height { height_spec = Some(h); }
+        if let Some(m) = info.inline_margin { margin_spec = m; have_margin = true; }
+        if let Some(p) = info.inline_padding { padding_spec = p; have_padding = true; }
+
+        // Build computed style with inheritance
         let mut cs = ComputedStyle::default();
-        // UA default
-        cs.display = default_display_for_tag(&info.tag);
-        // Inline style overrides (Author)
-        if let Some(d) = info.inline_display {
-            cs.display = d;
+        // display: default fallback by tag if still unspecified
+        cs.display = display_spec.unwrap_or_else(|| default_display_for_tag(&info.tag));
+        // box model
+        if have_margin { cs.margin = margin_spec; }
+        if have_padding { cs.padding = padding_spec; }
+        cs.width = width_spec.unwrap_or(SizeSpecified::Auto);
+        cs.height = height_spec.unwrap_or(SizeSpecified::Auto);
+        // inherited properties
+        if let Some(ps) = parent_style.as_ref() {
+            cs.color = ps.color;
+            cs.font_size = ps.font_size;
+            cs.line_height = ps.line_height;
         }
-        if let Some(w) = info.inline_width {
-            cs.width = w;
-        }
-        if let Some(h) = info.inline_height {
-            cs.height = h;
-        }
-        if let Some(m) = info.inline_margin {
-            cs.margin = m;
-        }
-        if let Some(p) = info.inline_padding {
-            cs.padding = p;
+        if let Some(c) = color_spec { cs.color = c; }
+        if let Some(fs) = font_size_spec { cs.font_size = fs; }
+        if let Some(lh) = line_height_spec {
+            cs.line_height = match lh {
+                LHSrc::Normal => 1.2,
+                LHSrc::Number(n) => n,
+                LHSrc::Px(px) => {
+                    let fs = if let Some(fs) = font_size_spec { fs } else { cs.font_size };
+                    if fs > 0.0 { px / fs } else { 1.2 }
+                }
+            };
         }
         cs
+    }
+
+    fn parse_color(input: &str) -> Option<ColorRGBA> {
+        let s = input.trim();
+        if s.starts_with('#') {
+            let hex = &s[1..];
+            if hex.len() == 6 {
+                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                return Some(ColorRGBA { r, g, b, a: 255 });
+            }
+        }
+        match s.to_ascii_lowercase().as_str() {
+            "black" => Some(ColorRGBA { r: 0, g: 0, b: 0, a: 255 }),
+            "red" => Some(ColorRGBA { r: 255, g: 0, b: 0, a: 255 }),
+            "green" => Some(ColorRGBA { r: 0, g: 128, b: 0, a: 255 }),
+            "blue" => Some(ColorRGBA { r: 0, g: 0, b: 255, a: 255 }),
+            _ => None,
+        }
     }
 
     fn rebuild_rule_index(&mut self) {

@@ -34,9 +34,8 @@ impl DOMSubscriber for StyleEngine {
                     inline_margin: pending.as_ref().and_then(|p| p.inline_margin),
                     inline_padding: pending.as_ref().and_then(|p| p.inline_padding),
                 };
-                let cs = StyleEngine::compute_for_info(&info);
+                // Store node and link parent→child first
                 self.nodes.insert(node, info);
-                // link parent→child
                 if let Some(pinfo) = self.nodes.get_mut(&parent) {
                     if !pinfo.children.contains(&node) {
                         pinfo.children.push(node);
@@ -58,10 +57,11 @@ impl DOMSubscriber for StyleEngine {
                         },
                     );
                 }
-                self.computed.insert(node, cs);
+                // Update tag index and selector matches, then compute via cascade
                 self.add_tag_index(node, &tag);
-                // Phase 2: recompute selector matches for this node
                 self.rematch_node(node);
+                // Recompute all to ensure parent-first inheritance and cascade consistency
+                self.recompute_all();
             }
             InsertText { .. } => {
                 // No computed style for text nodes at the moment.
@@ -187,10 +187,10 @@ impl DOMSubscriber for StyleEngine {
                     if have_padding {
                         info.inline_padding = Some(padding);
                     }
-                    // Store back and compute (may be overwritten on InsertElement when tag is known)
-                    let cs = StyleEngine::compute_for_info(&info);
+                    // Store back and recompute styles for all nodes to account for inheritance changes
                     self.nodes.insert(node, info);
-                    self.computed.insert(node, cs);
+                    // Inline style changes do not affect selector matching
+                    self.recompute_all();
                 } else if name.eq_ignore_ascii_case("id") {
                     let mut info = if let Some(existing) = self.nodes.get(&node).cloned() {
                         existing
@@ -218,6 +218,7 @@ impl DOMSubscriber for StyleEngine {
                     self.nodes.insert(node, info);
                     self.update_id_index(node, old, new_id);
                     self.rematch_node(node);
+                    self.recompute_all();
                 } else if name.eq_ignore_ascii_case("class") {
                     let mut info = if let Some(existing) = self.nodes.get(&node).cloned() {
                         existing
@@ -245,6 +246,7 @@ impl DOMSubscriber for StyleEngine {
                     self.nodes.insert(node, info);
                     self.update_class_index(node, &old, &new);
                     self.rematch_node(node);
+                    self.recompute_all();
                 }
             }
             RemoveNode { node } => {

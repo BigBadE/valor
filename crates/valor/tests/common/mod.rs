@@ -15,16 +15,47 @@ pub fn fixtures_dir() -> PathBuf {
         .join("fixtures")
 }
 
-/// Discover all .html files under the tests/fixtures directory.
+pub fn fixtures_layout_dir() -> PathBuf {
+    fixtures_dir().join("layout")
+}
+
+pub fn fixtures_css_dir() -> PathBuf {
+    fixtures_dir().join("css")
+}
+
+fn collect_html_recursively(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    let entries = fs::read_dir(dir)
+        .map_err(|e| anyhow!("Failed to read dir {}: {}", dir.display(), e))?;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let p = entry.path();
+        if p.is_dir() {
+            collect_html_recursively(&p, out)?;
+        } else if p.extension().map(|ext| ext.eq_ignore_ascii_case("html")).unwrap_or(false) {
+            out.push(p);
+        }
+    }
+    Ok(())
+}
+
+/// Discover all .html files under the tests/fixtures/layout directory recursively.
 pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
-    let dir = fixtures_dir();
-    let entries = fs::read_dir(&dir)
-        .map_err(|e| anyhow!("Failed to read fixtures dir {}: {}", dir.display(), e))?;
-    let mut files: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().map(|ext| ext.eq_ignore_ascii_case("html")).unwrap_or(false))
-        .collect();
+    let dir = fixtures_layout_dir();
+    let mut files: Vec<PathBuf> = Vec::new();
+    if dir.exists() {
+        collect_html_recursively(&dir, &mut files)?;
+    } else {
+        // Fallback: scan the legacy top-level fixtures dir non-recursively
+        let legacy = fixtures_dir();
+        if legacy.exists() {
+            let entries = fs::read_dir(&legacy)
+                .map_err(|e| anyhow!("Failed to read fixtures dir {}: {}", legacy.display(), e))?;
+            files.extend(entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|ext| ext.eq_ignore_ascii_case("html")).unwrap_or(false))
+            );
+        }
+    }
     files.sort();
     Ok(files)
 }
@@ -73,6 +104,20 @@ pub fn update_until_finished_simple(rt: &Runtime, page: &mut HtmlPage) -> Result
 /// - Arrays/Objects must have identical structure and are compared recursively.
 /// Returns Ok(()) if equal under epsilon; Err with a path-detailed message otherwise.
 pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> Result<(), String> {
+    fn extract_id_label(v: &Value) -> Option<String> {
+        if let Value::Object(map) = v {
+            if let Some(Value::Object(attrs)) = map.get("attrs") {
+                if let Some(Value::String(id)) = attrs.get("id") {
+                    return Some(format!("#{}", id));
+                }
+            }
+            if let Some(Value::String(id)) = map.get("id") {
+                return Some(format!("#{}", id));
+            }
+        }
+        None
+    }
+
     fn helper(a: &Value, b: &Value, eps: f64, path: &mut Vec<String>) -> Result<(), String> {
         use serde_json::Value::*;
         match (a, b) {
@@ -96,7 +141,14 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
                     return Err(format!("{}: array length mismatch: {} != {}", format_path(path), xa.len(), ya.len()));
                 }
                 for (i, (xe, ye)) in xa.iter().zip(ya.iter()).enumerate() {
-                    path.push(format!("[{}]", i));
+                    // If this array is a children array, try to label with element id instead of numeric index
+                    let is_children_ctx = path.last().map(|s| s == ".children").unwrap_or(false);
+                    if is_children_ctx {
+                        let label = extract_id_label(xe).or_else(|| extract_id_label(ye)).unwrap_or_else(|| i.to_string());
+                        path.push(format!("[{}]", label));
+                    } else {
+                        path.push(format!("[{}]", i));
+                    }
                     let r = helper(xe, ye, eps, path);
                     path.pop();
                     if r.is_err() { return r; }

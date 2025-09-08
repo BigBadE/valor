@@ -71,9 +71,9 @@ impl TreeSink for ValorSink {
         id
     }
 
-    fn create_comment(&self, text: StrTendril) -> Self::Handle {
-        // Represent comments as text nodes for now
-        self.dom.borrow_mut().mirror_mut().new_text(text.to_string())
+    fn create_comment(&self, _text: StrTendril) -> Self::Handle {
+        // Ignore comment content; produce an empty text node so it doesn't affect layout
+        self.dom.borrow_mut().mirror_mut().new_text(String::new())
     }
 
     fn create_pi(&self, _target: StrTendril, data: StrTendril) -> Self::Handle {
