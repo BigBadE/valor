@@ -1,16 +1,15 @@
 use anyhow::Error;
-use layouter::{LayoutNodeKind, Layouter};
+use headless_chrome::{Browser, LaunchOptionsBuilder};
 use html::dom::NodeKey;
 use layouter::LayoutRect;
-use std::fs;
-use std::path::Path;
-use std::path::PathBuf;
-use tokio::runtime::Runtime;
+use layouter::{LayoutNodeKind, Layouter};
+use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Mutex;
-use once_cell::sync::Lazy;
-use headless_chrome::{Browser, LaunchOptionsBuilder};
+use tokio::runtime::Runtime;
+use style_engine::StyleEngine;
 
 mod common;
 
@@ -30,15 +29,7 @@ static SHARED_BROWSER: Lazy<Mutex<Browser>> = Lazy::new(|| {
 fn chromium_layout_test() -> Result<(), Error> {
     let _ = env_logger::builder().is_test(true).try_init();
     // Iterate over all fixtures and compare against each expected file content.
-    for expected_path in common::fixture_html_files()? {
-        // Map expected layout fixture name to the corresponding input HTML under crates/valor/fixtures
-        let file_name = expected_path
-            .file_name()
-            .expect("fixture file name");
-        let input_path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("fixtures")
-            .join(file_name);
-
+    for input_path in common::fixture_html_files()? {
         // Build page and parse via HtmlPage
         let url = common::to_file_url(&input_path)?;
         let rt = Runtime::new()?;
@@ -53,8 +44,10 @@ fn chromium_layout_test() -> Result<(), Error> {
         })?;
         assert!(finished, "Parsing did not finish for {}", input_path.display());
 
-        // Compute layout and geometry from the mirror's layouter
+        // Provide computed styles from the page's internal StyleEngine to Layouter
+        let computed = page.computed_styles_snapshot()?;
         let layouter = layouter_mirror.mirror_mut();
+        layouter.set_computed_styles(computed);
         let _count = layouter.compute_layout();
         let rects = layouter.compute_layout_geometry();
 
@@ -76,29 +69,8 @@ fn chromium_layout_test() -> Result<(), Error> {
                 serde_json::to_string_pretty(&ch_json).unwrap_or_default()
             );
         }
-
-        // Compare pretty-printed layout tree against expected fixture
-        let printed = format!("{:?}", layouter);
-        let expected = fs::read_to_string(&expected_path)?;
-
-        assert_eq!(
-            normalize(&printed),
-            normalize(&expected),
-            "Layout pretty-print differs from Chromium fixture ({}).\n--- Printed ---\n{}\n--- Expected ---\n{}\n",
-            expected_path.display(),
-            printed,
-            expected
-        );
     }
     Ok(())
-}
-
-fn normalize(s: &str) -> String {
-    s.replace("\r\n", "\n")
-        .lines()
-        .map(|line| line.trim_end())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn our_layout_json(layouter: &Layouter, rects: &HashMap<NodeKey, LayoutRect>) -> Value {

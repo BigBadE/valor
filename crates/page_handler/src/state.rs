@@ -10,6 +10,7 @@ use url::Url;
 use css::CSSMirror;
 use css::types::Stylesheet;
 use layouter::Layouter;
+use style_engine::StyleEngine;
 
 pub struct HtmlPage {
     // If none, loading is finished. If some, still streaming.
@@ -18,6 +19,8 @@ pub struct HtmlPage {
     dom: DOM,
     // Mirror that collects CSS from the DOM stream.
     css_mirror: DOMMirror<CSSMirror>,
+    // StyleEngine mirror that will compute styles (skeleton for now).
+    style_engine_mirror: DOMMirror<StyleEngine>,
     // Layouter mirror that maintains a layout tree from DOM updates.
     layouter_mirror: DOMMirror<Layouter>,
     // For sending updates to the DOM
@@ -49,6 +52,8 @@ impl HtmlPage {
 
         // Create and attach the CSS mirror to observe DOM updates
         let css_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), CSSMirror::new());
+        // Create and attach the StyleEngine mirror to observe DOM updates
+        let style_engine_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), StyleEngine::new());
         // Create and attach the Layouter mirror to observe DOM updates
         let layouter_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), Layouter::new());
         
@@ -56,6 +61,7 @@ impl HtmlPage {
             loader: Some(loader),
             dom,
             css_mirror,
+            style_engine_mirror,
             layouter_mirror,
             in_updater,
             url
@@ -84,9 +90,15 @@ impl HtmlPage {
         // Drain CSS mirror after DOM broadcast
         self.css_mirror.update().await?;
 
-        // Forward current stylesheet to layouter
+        // Forward current stylesheet to style engine and drain it
         let current_styles = self.css_mirror.mirror_mut().styles().clone();
+        self.style_engine_mirror.mirror_mut().replace_stylesheet(current_styles.clone());
+        self.style_engine_mirror.update().await?;
+
+        // Forward current stylesheet and computed styles to layouter
+        let computed = self.style_engine_mirror.mirror_mut().computed_snapshot();
         self.layouter_mirror.mirror_mut().set_stylesheet(current_styles);
+        self.layouter_mirror.mirror_mut().set_computed_styles(computed);
         // Drain layouter updates after DOM broadcast
         self.layouter_mirror.update().await?;
         // Compute layout – can be used by renderer later
@@ -104,6 +116,12 @@ impl HtmlPage {
         // For blocking-thread callers, keep it non-async
         self.css_mirror.try_update_sync()?;
         Ok(self.css_mirror.mirror_mut().styles().clone())
+    }
+
+    /// Drain StyleEngine mirror and return a snapshot clone of computed styles per node.
+    pub fn computed_styles_snapshot(&mut self) -> Result<std::collections::HashMap<html::dom::NodeKey, style_engine::ComputedStyle>, Error> {
+        self.style_engine_mirror.try_update_sync()?;
+        Ok(self.style_engine_mirror.mirror_mut().computed_snapshot())
     }
 
     /// Drain CSS mirror and return a snapshot clone of discovered external stylesheet URLs

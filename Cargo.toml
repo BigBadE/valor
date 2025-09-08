@@ -49,6 +49,7 @@ html = { path = "crates/html" }
 layouter = { path = "crates/layouter" }
 page_handler = { path = "crates/page_handler" }
 wgpu_renderer = { path = "crates/wgpu_renderer" }
+style_engine = { path = "crates/style_engine" }
 
 
 [profile.dev]

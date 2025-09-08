@@ -23,5 +23,6 @@ serde.workspace = true
 serde_json.workspace = true
 urlencoding.workspace = true
 once_cell.workspace = true
+style_engine.workspace = true
 
 [features]

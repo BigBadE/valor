@@ -1,0 +1,9 @@
+[package]
+name = "style_engine"
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+html.workspace = true
+css.workspace = true
+log.workspace = true

@@ -8,6 +8,8 @@ pub mod parser;
 pub mod rulemap;
 pub mod selector;
 pub mod types;
+pub mod values;
+pub mod ruledb;
 
 /// A DOM mirror that discovers styles from the DOM stream.
 /// - Aggregates inline <style> contents via a streaming CSS parser.

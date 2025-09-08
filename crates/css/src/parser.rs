@@ -104,11 +104,8 @@ impl<'i> CssQualifiedRuleParser<'i> for TopLevelParser {
     }
 
     fn parse_block<'t>(&mut self, prelude: Self::Prelude, _start: &ParserState, input: &mut Parser<'i, 't>) -> Result<Self::QualifiedRule, ParseError<'i, Self::Error>> {
-        let mut decls: Vec<Declaration> = Vec::new();
-        let _: Result<_, ParseError<'_, ()>> = input.parse_nested_block(|block| {
-            decls = parse_declarations_from_block(block);
-            Ok(())
-        });
+        // The provided `input` is already scoped to the contents of the block.
+        let decls: Vec<Declaration> = parse_declarations_from_block(input);
         let selectors = parse_selector_list(&prelude);
         if !selectors.is_empty() && !decls.is_empty() {
             let rule = StyleRule {

@@ -4,6 +4,7 @@ use html::dom::NodeKey;
 use log::{debug, trace, warn};
 use std::collections::HashMap;
 use css::types::Stylesheet;
+use style_engine::ComputedStyle;
 
 mod layout;
 mod printing;
@@ -41,6 +42,7 @@ pub struct Layouter {
     nodes: HashMap<NodeKey, LayoutNode>,
     root: NodeKey,
     stylesheet: Stylesheet,
+    computed: HashMap<NodeKey, ComputedStyle>,
 }
 
 impl Layouter {
@@ -48,10 +50,27 @@ impl Layouter {
         let mut nodes = HashMap::new();
         // Seed root node
         nodes.insert(NodeKey::ROOT, LayoutNode::new_document());
-        Self { nodes, root: NodeKey::ROOT, stylesheet: Stylesheet::default() }
+        Self { nodes, root: NodeKey::ROOT, stylesheet: Stylesheet::default(), computed: HashMap::new() }
     }
 
     pub fn root(&self) -> NodeKey { self.root }
+
+    /// Replace the current computed styles snapshot (from StyleEngine).
+    pub fn set_computed_styles(&mut self, map: HashMap<NodeKey, ComputedStyle>) {
+        self.computed = map;
+    }
+
+    /// Read-only access to computed styles.
+    pub fn computed_styles(&self) -> &HashMap<NodeKey, ComputedStyle> { &self.computed }
+
+    /// Return a cloned map of attributes per node (for layout/style resolution).
+    pub fn attrs_map(&self) -> HashMap<NodeKey, HashMap<String, String>> {
+        let mut out = HashMap::new();
+        for (k, n) in self.nodes.iter() {
+            out.insert(*k, n.attrs.clone());
+        }
+        out
+    }
 
     /// Internal implementation for applying a single DOM update to the layout tree mirror.
     fn apply_update_impl(&mut self, update: DOMUpdate) -> Result<(), Error> {
