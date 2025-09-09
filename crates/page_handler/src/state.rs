@@ -51,7 +51,7 @@ impl HtmlPage {
         );
 
         // Create and attach the CSS mirror to observe DOM updates
-        let css_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), CSSMirror::new());
+        let css_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), CSSMirror::with_base(url.clone()));
         // Create and attach the StyleEngine mirror to observe DOM updates
         let style_engine_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), StyleEngine::new());
         // Create and attach the Layouter mirror to observe DOM updates
@@ -95,10 +95,13 @@ impl HtmlPage {
         self.style_engine_mirror.mirror_mut().replace_stylesheet(current_styles.clone());
         self.style_engine_mirror.update().await?;
 
-        // Forward current stylesheet and computed styles to layouter
-        let computed = self.style_engine_mirror.mirror_mut().computed_snapshot();
-        self.layouter_mirror.mirror_mut().set_stylesheet(current_styles);
-        self.layouter_mirror.mirror_mut().set_computed_styles(computed);
+        // Forward current stylesheet and computed styles to layouter only when styles changed
+        let style_changed = self.style_engine_mirror.mirror_mut().take_and_clear_style_changed();
+        if style_changed {
+            let computed = self.style_engine_mirror.mirror_mut().computed_snapshot();
+            self.layouter_mirror.mirror_mut().set_stylesheet(current_styles);
+            self.layouter_mirror.mirror_mut().set_computed_styles(computed);
+        }
         // Drain layouter updates after DOM broadcast
         self.layouter_mirror.update().await?;
         // Compute layout – can be used by renderer later

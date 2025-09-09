@@ -1,4 +1,4 @@
-use crate::selector::{Combinator, ComplexSelector, CompoundSelector, SimpleSelector, Specificity};
+use crate::selector::{Combinator, ComplexSelector, CompoundSelector, SimpleSelector, Specificity, PseudoClass};
 use crate::types::{Declaration, Origin, StyleRule, Stylesheet};
 use cssparser::{AtRuleParser as CssAtRuleParser, BasicParseErrorKind, CowRcStr, DeclarationParser as CssDeclarationParser, ParseError, Parser, ParserInput, ParserState, QualifiedRuleParser as CssQualifiedRuleParser, RuleBodyItemParser as CssRuleBodyItemParser, RuleBodyParser as CssRuleBodyParser, StyleSheetParser};
 use std::borrow::Cow;
@@ -16,11 +16,23 @@ impl StylesheetStreamParser {
         Self { origin, next_source_order: order_base, buffer: String::new(), scan_pos: 0 }
     }
 
+    /// Return the next source order value that will be assigned to the next parsed rule.
+    pub fn next_source_order(&self) -> u32 {
+        self.next_source_order
+    }
+
     /// Feed a chunk of CSS text. Any fully-formed rules found in the
     /// accumulated buffer are parsed and appended to the provided stylesheet.
     pub fn push_chunk(&mut self, chunk: &str, out: &mut Stylesheet) {
         self.buffer.push_str(chunk);
         self.process_available(out);
+    }
+
+    /// Finish parsing and return any collected rules together with the final next_source_order.
+    pub fn finish_with_next(mut self) -> (Stylesheet, u32) {
+        let mut sheet = Stylesheet { rules: Vec::new() };
+        self.process_available(&mut sheet);
+        (sheet, self.next_source_order)
     }
 
     /// Finish parsing and return any collected rules. This will attempt to
@@ -32,6 +44,7 @@ impl StylesheetStreamParser {
         sheet
     }
 
+    /// Parse any fully available rules from the buffered CSS and append them to `out`.
     fn process_available(&mut self, out: &mut Stylesheet) {
         let tail = &self.buffer[self.scan_pos..];
         if tail.is_empty() { return; }
@@ -291,6 +304,46 @@ fn parse_complex_selector(input: &str) -> Option<ComplexSelector> {
             '.' => {
                 i += 1; let (ident, ni) = read_ident(&chars, i); i = ni; if !ident.is_empty() { current.simples.push(SimpleSelector::Class(ident)); }
             }
+            ':' => {
+                i += 1; let (ident, ni) = read_ident(&chars, i); i = ni;
+                let ident_lc = ident.to_ascii_lowercase();
+                let pc = match ident_lc.as_str() {
+                    "root" => Some(PseudoClass::Root),
+                    "first-child" => Some(PseudoClass::FirstChild),
+                    "last-child" => Some(PseudoClass::LastChild),
+                    _ => None,
+                };
+                if let Some(pc) = pc { current.simples.push(SimpleSelector::PseudoClass(pc)); }
+            }
+            '[' => {
+                // parse attribute selector [name] or [name=value]
+                i += 1; // skip '['
+                // skip whitespace
+                while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+                let (name, mut ni) = read_ident(&chars, i); i = ni;
+                // skip whitespace
+                while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+                let mut op_value: Option<(String, String)> = None;
+                if i < chars.len() && chars[i] == '=' {
+                    i += 1; // skip '='
+                    // skip whitespace
+                    while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+                    // read value: quoted or ident
+                    if i < chars.len() && (chars[i] == '"' || chars[i] == '\'') {
+                        let quote = chars[i]; i += 1; let mut val = String::new();
+                        while i < chars.len() && chars[i] != quote { val.push(chars[i]); i += 1; }
+                        if i < chars.len() && chars[i] == quote { i += 1; }
+                        op_value = Some(("=".to_string(), val));
+                    } else {
+                        let (val, ni2) = read_ident(&chars, i); i = ni2; op_value = Some(("=".to_string(), val));
+                    }
+                    // skip whitespace
+                    while i < chars.len() && chars[i].is_whitespace() { i += 1; }
+                }
+                // consume closing ']'
+                if i < chars.len() && chars[i] == ']' { i += 1; }
+                if !name.is_empty() { current.simples.push(SimpleSelector::Attribute { name, op_value }); }
+            }
             _ => {
                 // type selector (ident)
                 let (ident, ni) = read_ident(&chars, i);
@@ -316,13 +369,15 @@ fn parse_complex_selector(input: &str) -> Option<ComplexSelector> {
 
     // compute specificity
     let mut a = 0u32; // ids
-    let mut b = 0u32; // classes/attributes/pseudos (we only do class)
+    let mut b = 0u32; // classes/attributes/pseudos
     let mut c = 0u32; // type/universal (universal counts as 0 usually; we'll count type only)
     for (comp, _) in &sequence {
         for s in &comp.simples {
             match s {
                 SimpleSelector::Id(_) => a += 1,
                 SimpleSelector::Class(_) => b += 1,
+                SimpleSelector::Attribute { .. } => b += 1,
+                SimpleSelector::PseudoClass(_) => b += 1,
                 SimpleSelector::Type(_) => c += 1,
                 SimpleSelector::Universal => {}
             }
@@ -333,12 +388,29 @@ fn parse_complex_selector(input: &str) -> Option<ComplexSelector> {
 }
 
 fn read_ident(chars: &[char], mut i: usize) -> (String, usize) {
-    let start = i;
+    // Support simple CSS escapes (\\x) and non-ASCII ident characters.
+    let mut out = String::new();
     while i < chars.len() {
         let c = chars[i];
-        if c.is_alphanumeric() || c == '-' || c == '_' { i += 1; } else { break; }
+        if c == '\\' {
+            // Consume escape and include next character literally if present.
+            if i + 1 < chars.len() {
+                out.push(chars[i + 1]);
+                i += 2;
+            } else {
+                // Lone backslash at end; stop to avoid infinite loop.
+                i += 1;
+            }
+            continue;
+        }
+        if c.is_alphanumeric() || c == '-' || c == '_' || (c as u32) >= 0x80 {
+            out.push(c);
+            i += 1;
+        } else {
+            break;
+        }
     }
-    (chars[start..i].iter().collect(), i)
+    (out, i)
 }
 
 pub fn parse_declarations(block: &str) -> Vec<Declaration> {
@@ -423,4 +495,46 @@ fn read_css_value(chars: &[char], mut i: usize) -> (String, usize) {
         }
     }
     (out, i)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::selector::{SimpleSelector, Combinator};
+
+    fn has_class(comp: &CompoundSelector, name: &str) -> bool {
+        comp.simples.iter().any(|s| matches!(s, SimpleSelector::Class(c) if c == name))
+    }
+
+    #[test]
+    fn selector_parsing_escaped_plus_in_class() {
+        let list = parse_selector_list(".foo\\+bar");
+        assert_eq!(list.len(), 1, "Expected one selector");
+        let sel = &list[0];
+        let right = sel.rightmost_compound().expect("rightmost compound");
+        assert!(has_class(right, "foo+bar"), "Expected class with escaped plus to parse as 'foo+bar' but got {:?}", right);
+    }
+
+    #[test]
+    fn selector_parsing_unicode_tag() {
+        let list = parse_selector_list("タグ");
+        assert_eq!(list.len(), 1);
+        let sel = &list[0];
+        let right = sel.rightmost_compound().unwrap();
+        assert!(right.simples.iter().any(|s| matches!(s, SimpleSelector::Type(t) if t == "タグ")));
+    }
+
+    #[test]
+    fn selector_parsing_combinators_child_then_descendant() {
+        let list = parse_selector_list("div > .a .b");
+        assert_eq!(list.len(), 1);
+        let sel = &list[0];
+        // sequence should have multiple compounds; last should have class b
+        let right = sel.rightmost_compound().unwrap();
+        assert!(has_class(right, ".b".trim_start_matches('.')) == true || has_class(right, "b"));
+        // Ensure there is at least one explicit Child combinator captured
+        let has_child = sel.sequence.iter().any(|(_, comb)| comb == &Some(Combinator::Child));
+        assert!(has_child, "Expected to capture a Child combinator in sequence: {:?}", sel.sequence);
+    }
 }

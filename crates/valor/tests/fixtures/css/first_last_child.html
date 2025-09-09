@@ -1,0 +1,19 @@
+<!doctype html>
+<head>
+  <meta charset="utf-8">
+  <title>First/Last Child Selectors</title>
+  <style>
+    :root { color: rgb(0,0,0); }
+    div:first-child { display: none; }
+    ul li:last-child { width: 150px; }
+  </style>
+</head>
+<body>
+  <div id="first">Should be hidden</div>
+  <div id="second">Visible</div>
+  <ul>
+    <li>A</li>
+    <li>B</li>
+    <li>C</li>
+  </ul>
+</body>

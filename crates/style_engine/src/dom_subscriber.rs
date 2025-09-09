@@ -1,10 +1,113 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use anyhow::Error;
 use css::parser::parse_declarations;
 use html::dom::updating::{DOMSubscriber, DOMUpdate};
-use crate::{parse_edges_shorthand, parse_px, parse_size_spec, Display, Edges, NodeInfo, SizeSpecified, StyleEngine};
+use crate::{NodeInfo, StyleEngine};
+use html::dom::NodeKey;
 
+impl StyleEngine {
+    /// Construct a placeholder NodeInfo with empty/default fields.
+    fn placeholder_node_info() -> NodeInfo {
+        NodeInfo {
+            tag: String::new(),
+            id: None,
+            classes: HashSet::new(),
+            attributes: HashMap::new(),
+            parent: None,
+            children: Vec::new(),
+        }
+    }
+
+    /// Ensure the parent→child relationship is recorded, creating a placeholder parent if needed.
+    fn ensure_parent_child_link(&mut self, parent: NodeKey, child: NodeKey, pos: usize) {
+        if let Some(parent_info) = self.nodes.get_mut(&parent) {
+            if !parent_info.children.contains(&child) {
+                let idx = pos.min(parent_info.children.len());
+                parent_info.children.insert(idx, child);
+            }
+        } else {
+            let mut placeholder = Self::placeholder_node_info();
+            placeholder.children = vec![child];
+            self.nodes.insert(parent, placeholder);
+        }
+    }
+    /// Return an existing NodeInfo clone for the node, or a placeholder if unknown.
+    fn get_node_info_or_placeholder(&self, node: NodeKey) -> NodeInfo {
+        self.nodes.get(&node).cloned().unwrap_or_else(Self::placeholder_node_info)
+    }
+
+    /// Handle insertion of an element node into the DOM stream.
+    fn handle_insert_element(&mut self, parent: NodeKey, node: NodeKey, tag: &str, pos: usize) {
+        // Merge with any pending info that may have arrived via SetAttr before InsertElement
+        let pending = self.nodes.get(&node).cloned();
+        let info = NodeInfo {
+            tag: tag.to_ascii_lowercase(),
+            id: pending.as_ref().and_then(|p| p.id.clone()),
+            classes: pending.as_ref().map(|p| p.classes.clone()).unwrap_or_default(),
+            attributes: pending.as_ref().map(|p| p.attributes.clone()).unwrap_or_default(),
+            parent: Some(parent),
+            children: pending.as_ref().map(|p| p.children.clone()).unwrap_or_default(),
+        };
+        self.nodes.insert(node, info);
+        self.ensure_parent_child_link(parent, node, pos);
+        self.add_tag_index(node, tag);
+        self.rematch_node(node, true);
+        // Defer recomputation; mark node dirty for batch recompute
+        self.mark_dirty(node);
+    }
+
+    /// Parse and store inline declarations once; recompute styles.
+    fn handle_set_attr_style(&mut self, node: NodeKey, value: &str) {
+        let declarations = parse_declarations(value);
+        if declarations.is_empty() {
+            self.inline_decls.remove(&node);
+        } else {
+            self.inline_decls.insert(node, declarations);
+        }
+        // Record attribute for [style] presence and value selectors
+        let mut info = self.get_node_info_or_placeholder(node);
+        info.attributes.insert("style".to_string(), value.to_string());
+        self.nodes.insert(node, info);
+        // Inline styles do not affect selector matching; mark subtree dirty for inheritance.
+        self.mark_subtree_dirty(node);
+    }
+
+    /// Handle setting the `id` attribute: update indices and rematch selectors.
+    fn handle_set_attr_id(&mut self, node: NodeKey, value: &str) {
+        let mut info = self.get_node_info_or_placeholder(node);
+        let old_id = info.id.clone();
+        let new_id = if value.is_empty() { None } else { Some(value.to_string()) };
+        info.id = new_id.clone();
+        self.nodes.insert(node, info);
+        self.update_id_index(node, old_id, new_id);
+        self.rematch_node(node, true);
+        // Conservatively mark node and descendants dirty because inheritance can affect children.
+        self.mark_subtree_dirty(node);
+    }
+
+    /// Handle setting the `class` attribute: update indices and rematch selectors.
+    fn handle_set_attr_class(&mut self, node: NodeKey, value: &str) {
+        let mut info = self.get_node_info_or_placeholder(node);
+        let old_classes = info.classes.clone();
+        let new_classes: HashSet<String> = value
+            .split_whitespace()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        info.classes = new_classes.clone();
+        self.nodes.insert(node, info);
+        self.update_class_index(node, &old_classes, &new_classes);
+        self.rematch_node(node, true);
+        // Conservatively mark node and descendants dirty because inheritance can affect children.
+        self.mark_subtree_dirty(node);
+    }
+}
+
+/// DOMSubscriber implementation that mirrors DOM updates into the StyleEngine state
+/// and keeps style-related indices and computed styles in sync.
 impl DOMSubscriber for StyleEngine {
+    /// Apply a single DOMUpdate to the StyleEngine mirror, keeping indices and
+    /// computed styles in sync. Large cases are delegated to smaller helpers.
     fn apply_update(&mut self, update: DOMUpdate) -> Result<(), Error> {
         use DOMUpdate::*;
         match update {
@@ -12,248 +115,36 @@ impl DOMSubscriber for StyleEngine {
                 parent,
                 node,
                 tag,
-                pos: _,
+                pos,
             } => {
-                // Merge with any pending inline info that may have arrived via SetAttr before InsertElement
-                let pending = self.nodes.get(&node).cloned();
-                let info = NodeInfo {
-                    tag: tag.clone(),
-                    id: pending.as_ref().and_then(|p| p.id.clone()),
-                    classes: pending
-                        .as_ref()
-                        .map(|p| p.classes.clone())
-                        .unwrap_or_default(),
-                    parent: Some(parent),
-                    children: pending
-                        .as_ref()
-                        .map(|p| p.children.clone())
-                        .unwrap_or_default(),
-                    inline_display: pending.as_ref().and_then(|p| p.inline_display),
-                    inline_width: pending.as_ref().and_then(|p| p.inline_width),
-                    inline_height: pending.as_ref().and_then(|p| p.inline_height),
-                    inline_margin: pending.as_ref().and_then(|p| p.inline_margin),
-                    inline_padding: pending.as_ref().and_then(|p| p.inline_padding),
-                };
-                // Store node and link parent→child first
-                self.nodes.insert(node, info);
-                if let Some(pinfo) = self.nodes.get_mut(&parent) {
-                    if !pinfo.children.contains(&node) {
-                        pinfo.children.push(node);
-                    }
-                } else {
-                    self.nodes.insert(
-                        parent,
-                        NodeInfo {
-                            tag: String::new(),
-                            id: None,
-                            classes: HashSet::new(),
-                            parent: None,
-                            children: vec![node],
-                            inline_display: None,
-                            inline_width: None,
-                            inline_height: None,
-                            inline_margin: None,
-                            inline_padding: None,
-                        },
-                    );
-                }
-                // Update tag index and selector matches, then compute via cascade
-                self.add_tag_index(node, &tag);
-                self.rematch_node(node);
-                // Recompute all to ensure parent-first inheritance and cascade consistency
-                self.recompute_all();
+                self.handle_insert_element(parent, node, &tag, pos);
             }
             InsertText { .. } => {
                 // No computed style for text nodes at the moment.
             }
             SetAttr { node, name, value } => {
-                // Track inline style overrides (display, width, height, margin/padding)
                 if name.eq_ignore_ascii_case("style") {
-                    let parsed = parse_declarations(&value);
-                    // Start from existing or new placeholder info
-                    let mut info = if let Some(existing) = self.nodes.get(&node).cloned() {
-                        existing
-                    } else {
-                        NodeInfo {
-                            tag: String::new(),
-                            id: None,
-                            classes: HashSet::new(),
-                            parent: None,
-                            children: Vec::new(),
-                            inline_display: None,
-                            inline_width: None,
-                            inline_height: None,
-                            inline_margin: None,
-                            inline_padding: None,
-                        }
-                    };
-                    let mut inline_display: Option<Display> = info.inline_display;
-                    let mut inline_width: Option<SizeSpecified> = info.inline_width;
-                    let mut inline_height: Option<SizeSpecified> = info.inline_height;
-                    let mut margin: Edges = info.inline_margin.unwrap_or_default();
-                    let mut have_margin = info.inline_margin.is_some();
-                    let mut padding: Edges = info.inline_padding.unwrap_or_default();
-                    let mut have_padding = info.inline_padding.is_some();
-                    for d in parsed {
-                        let prop = d.name.to_ascii_lowercase();
-                        let val = d.value.trim();
-                        match prop.as_str() {
-                            "display" => {
-                                let v = val.to_ascii_lowercase();
-                                inline_display = match v.as_str() {
-                                    "none" => Some(Display::None),
-                                    "block" => Some(Display::Block),
-                                    "inline" => Some(Display::Inline),
-                                    _ => inline_display,
-                                };
-                            }
-                            "width" => {
-                                let v = val.to_ascii_lowercase();
-                                inline_width = parse_size_spec(&v).or(inline_width);
-                            }
-                            "height" => {
-                                let v = val.to_ascii_lowercase();
-                                inline_height = parse_size_spec(&v).or(inline_height);
-                            }
-                            "margin" => {
-                                if let Some(e) = parse_edges_shorthand(val) {
-                                    margin = e;
-                                    have_margin = true;
-                                }
-                            }
-                            "padding" => {
-                                if let Some(e) = parse_edges_shorthand(val) {
-                                    padding = e;
-                                    have_padding = true;
-                                }
-                            }
-                            "margin-top" => {
-                                if let Some(px) = parse_px(val) {
-                                    margin.top = px;
-                                    have_margin = true;
-                                }
-                            }
-                            "margin-right" => {
-                                if let Some(px) = parse_px(val) {
-                                    margin.right = px;
-                                    have_margin = true;
-                                }
-                            }
-                            "margin-bottom" => {
-                                if let Some(px) = parse_px(val) {
-                                    margin.bottom = px;
-                                    have_margin = true;
-                                }
-                            }
-                            "margin-left" => {
-                                if let Some(px) = parse_px(val) {
-                                    margin.left = px;
-                                    have_margin = true;
-                                }
-                            }
-                            "padding-top" => {
-                                if let Some(px) = parse_px(val) {
-                                    padding.top = px;
-                                    have_padding = true;
-                                }
-                            }
-                            "padding-right" => {
-                                if let Some(px) = parse_px(val) {
-                                    padding.right = px;
-                                    have_padding = true;
-                                }
-                            }
-                            "padding-bottom" => {
-                                if let Some(px) = parse_px(val) {
-                                    padding.bottom = px;
-                                    have_padding = true;
-                                }
-                            }
-                            "padding-left" => {
-                                if let Some(px) = parse_px(val) {
-                                    padding.left = px;
-                                    have_padding = true;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    info.inline_display = inline_display;
-                    info.inline_width = inline_width;
-                    info.inline_height = inline_height;
-                    if have_margin {
-                        info.inline_margin = Some(margin);
-                    }
-                    if have_padding {
-                        info.inline_padding = Some(padding);
-                    }
-                    // Store back and recompute styles for all nodes to account for inheritance changes
-                    self.nodes.insert(node, info);
-                    // Inline style changes do not affect selector matching
-                    self.recompute_all();
+                    self.handle_set_attr_style(node, &value);
                 } else if name.eq_ignore_ascii_case("id") {
-                    let mut info = if let Some(existing) = self.nodes.get(&node).cloned() {
-                        existing
-                    } else {
-                        NodeInfo {
-                            tag: String::new(),
-                            id: None,
-                            classes: HashSet::new(),
-                            parent: None,
-                            children: Vec::new(),
-                            inline_display: None,
-                            inline_width: None,
-                            inline_height: None,
-                            inline_margin: None,
-                            inline_padding: None,
-                        }
-                    };
-                    let old = info.id.clone();
-                    let new_id = if value.is_empty() {
-                        None
-                    } else {
-                        Some(value.clone())
-                    };
-                    info.id = new_id.clone();
-                    self.nodes.insert(node, info);
-                    self.update_id_index(node, old, new_id);
-                    self.rematch_node(node);
-                    self.recompute_all();
+                    self.handle_set_attr_id(node, &value);
                 } else if name.eq_ignore_ascii_case("class") {
-                    let mut info = if let Some(existing) = self.nodes.get(&node).cloned() {
-                        existing
-                    } else {
-                        NodeInfo {
-                            tag: String::new(),
-                            id: None,
-                            classes: HashSet::new(),
-                            parent: None,
-                            children: Vec::new(),
-                            inline_display: None,
-                            inline_width: None,
-                            inline_height: None,
-                            inline_margin: None,
-                            inline_padding: None,
-                        }
-                    };
-                    let old = info.classes.clone();
-                    let new: HashSet<String> = value
-                        .split_whitespace()
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                        .collect();
-                    info.classes = new.clone();
+                    self.handle_set_attr_class(node, &value);
+                } else {
+                    // Generic attribute: record it for attribute selectors and rematch
+                    let mut info = self.get_node_info_or_placeholder(node);
+                    info.attributes.insert(name.to_ascii_lowercase(), value.clone());
                     self.nodes.insert(node, info);
-                    self.update_class_index(node, &old, &new);
-                    self.rematch_node(node);
-                    self.recompute_all();
+                    self.rematch_node(node, true);
+                    // Attribute changes do not affect inheritance; only node needs recompute
+                    self.mark_dirty(node);
                 }
             }
             RemoveNode { node } => {
                 self.remove_node_recursive(node);
             }
             EndOfDocument => {
-                // No-op for now; future work: finalize and broadcast updates
+                // Flush pending style recomputations at batch end.
+                self.recompute_dirty();
             }
         }
         Ok(())

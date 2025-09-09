@@ -14,3 +14,4 @@ style_engine.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+env_logger.workspace = true

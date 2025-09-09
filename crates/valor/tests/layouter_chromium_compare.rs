@@ -78,14 +78,9 @@ fn chromium_layout_test() -> Result<(), Error> {
                 println!("[LAYOUT] {} ... ok", display_name);
             }
             Err(msg) => {
-                let detail = format!(
-                    "{}\nOur: {}\nChromium: {}",
-                    msg,
-                    serde_json::to_string_pretty(&our_json).unwrap_or_default(),
-                    serde_json::to_string_pretty(&ch_json).unwrap_or_default()
-                );
+                // The comparison message already contains the precise path and the element snippets for both sides.
                 eprintln!("[LAYOUT] {} ... FAILED: {}", display_name, msg);
-                failed.push((display_name.clone(), detail));
+                failed.push((display_name.clone(), msg));
             }
         }
     }

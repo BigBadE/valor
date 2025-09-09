@@ -44,8 +44,8 @@ fn css_mirror_link_discovery() -> Result<(), Error> {
     // Snapshot discovered external stylesheet links
     let links = page.discovered_stylesheets_snapshot()?;
     assert!(
-        links.iter().any(|s| s == "test.css"),
-        "Expected discovered href 'test.css', discovered: {:?}",
+        links.iter().any(|s| s.ends_with("test.css")),
+        "Expected discovered href ending with 'test.css', discovered: {:?}",
         links
     );
 

@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use html::dom::NodeKey;
 use html::dom::updating::{DOMSubscriber, DOMUpdate};
-use crate::parser::{StylesheetStreamParser, parse_declarations};
-use crate::types::{Origin, Stylesheet, Declaration};
+use crate::parser::StylesheetStreamParser;
+use crate::types::{Origin, Stylesheet, StyleRule};
+use url::Url;
 
 pub mod parser;
 pub mod rulemap;
@@ -14,18 +15,19 @@ pub mod ruledb;
 /// A DOM mirror that discovers styles from the DOM stream.
 /// - Aggregates inline <style> contents via a streaming CSS parser.
 /// - Records discovered external stylesheets from <link rel="stylesheet" href="...">.
-/// Note: Removing a <style> node after rules were added is not yet retracting
-/// previously added rules; future work can switch to per-node sheets and lazy merge.
+/// - Tracks rules per <style> node and retracts them when the node is removed.
 pub struct CSSMirror {
     styles: Stylesheet,
     style_parsers: HashMap<NodeKey, StylesheetStreamParser>,
+    /// Per-<style> node collected stylesheet (rules parsed for that node only).
+    style_sheets: HashMap<NodeKey, Stylesheet>,
     link_nodes: HashMap<NodeKey, (Option<String>, Option<String>)>, // (rel, href)
     // Attributes may arrive before insertion; buffer them until we know the tag
     pending_link_attrs: HashMap<NodeKey, (Option<String>, Option<String>)>, // (rel, href)
     discovered_links: Vec<String>,
     next_order_base: u32,
-    // Inline style attribute declarations per element node
-    inline_styles: HashMap<NodeKey, Vec<Declaration>>,
+    /// Base URL of the document used to resolve relative hrefs in <link>.
+    base_url: Url,
 }
 
 impl CSSMirror {
@@ -33,11 +35,26 @@ impl CSSMirror {
         Self {
             styles: Stylesheet::default(),
             style_parsers: HashMap::new(),
+            style_sheets: HashMap::new(),
             link_nodes: HashMap::new(),
             pending_link_attrs: HashMap::new(),
             discovered_links: Vec::new(),
             next_order_base: 0,
-            inline_styles: HashMap::new(),
+            base_url: Url::parse("about:blank").unwrap(),
+        }
+    }
+
+    /// Create a CSSMirror configured with a document base URL for resolving <link href>.
+    pub fn with_base(base_url: Url) -> Self {
+        Self {
+            styles: Stylesheet::default(),
+            style_parsers: HashMap::new(),
+            style_sheets: HashMap::new(),
+            link_nodes: HashMap::new(),
+            pending_link_attrs: HashMap::new(),
+            discovered_links: Vec::new(),
+            next_order_base: 0,
+            base_url,
         }
     }
 
@@ -47,9 +64,35 @@ impl CSSMirror {
     /// Discovered external stylesheet hrefs (no fetching yet).
     pub fn discovered_stylesheets(&self) -> &[String] { &self.discovered_links }
 
-    /// Inline style attribute declarations for a given element node, if present.
-    pub fn inline_declarations(&self, node: &NodeKey) -> Option<&[Declaration]> {
-        self.inline_styles.get(node).map(|v| v.as_slice())
+    /// Return true if the rel attribute contains the token "stylesheet" (ASCII case-insensitive).
+    fn rel_has_stylesheet_token(rel: &str) -> bool {
+        rel.split_whitespace().any(|t| t.eq_ignore_ascii_case("stylesheet"))
+    }
+
+    /// Try to discover and record a stylesheet link given rel/href optionals.
+    fn try_discover_stylesheet(&mut self, rel: &Option<String>, href: &Option<String>) {
+        let Some(rel_str) = rel.as_ref() else { return; };
+        if !Self::rel_has_stylesheet_token(rel_str) { return; }
+        let Some(href_str) = href.as_ref() else { return; };
+        // Resolve to absolute URL
+        let resolved: Option<Url> = Url::parse(href_str).ok().or_else(|| self.base_url.join(href_str).ok());
+        if let Some(abs) = resolved {
+            let abs_s = abs.to_string();
+            if !self.discovered_links.iter().any(|s| s == &abs_s) {
+                self.discovered_links.push(abs_s);
+            }
+        }
+    }
+
+    /// Rebuild the aggregate stylesheet from all per-<style> node sheets.
+    fn rebuild_aggregate(&mut self) {
+        let mut all_rules: Vec<StyleRule> = Vec::new();
+        for sheet in self.style_sheets.values() {
+            all_rules.extend(sheet.rules.clone());
+        }
+        // Sort by source_order to stabilize cascade
+        all_rules.sort_by_key(|r| r.source_order);
+        self.styles.rules = all_rules;
     }
 }
 
@@ -59,11 +102,10 @@ impl DOMSubscriber for CSSMirror {
         match update {
             InsertElement { parent: _, node, tag, pos: _ } => {
                 if tag.eq_ignore_ascii_case("style") {
-                    // Start a new stream parser for this <style> element.
+                    // Start a new stream parser for this <style> element and initialize its per-node sheet.
                     let parser = StylesheetStreamParser::new(Origin::Author, self.next_order_base);
-                    // Bump order base by a large window to avoid overlaps across style blocks.
-                    self.next_order_base = self.next_order_base.saturating_add(1_000_000);
                     self.style_parsers.insert(node, parser);
+                    self.style_sheets.entry(node).or_insert_with(Stylesheet::default);
                 } else if tag.eq_ignore_ascii_case("link") {
                     // Track attributes to detect rel=stylesheet + href later.
                     // Initialize tracked entry
@@ -75,49 +117,34 @@ impl DOMSubscriber for CSSMirror {
                     }
                     self.link_nodes.insert(node, rel_href);
                     // If we now know it's a stylesheet link with href, emit discovery once.
-                    if let Some((rel, href)) = self.link_nodes.get(&node) {
-                        if rel.as_ref().map(|r| r.to_ascii_lowercase().contains("stylesheet")).unwrap_or(false) {
-                            if let Some(h) = href.as_ref() {
-                                if !self.discovered_links.iter().any(|e| e == h) {
-                                    self.discovered_links.push(h.clone());
-                                }
-                            }
-                        }
+                    if let Some((rel, href)) = self.link_nodes.get(&node).cloned() {
+                        self.try_discover_stylesheet(&rel, &href);
                     }
                 }
             }
             InsertText { parent, node: _, text, pos: _ } => {
-                // If text is a child of a <style> element, feed it.
+                // If text is a child of a <style> element, feed it into that node's sheet.
                 if let Some(parser) = self.style_parsers.get_mut(&parent) {
-                    parser.push_chunk(&text, &mut self.styles);
+                    let sheet = self.style_sheets.entry(parent).or_insert_with(Stylesheet::default);
+                    parser.push_chunk(&text, sheet);
+                    // Advance the global source-order counter based on the parser's position
+                    self.next_order_base = self.next_order_base.max(parser.next_source_order());
+                    // Rebuild aggregate to expose newly parsed complete rules immediately.
+                    self.rebuild_aggregate();
                 }
             }
             SetAttr { node, name, value } => {
                 let lname = name.to_ascii_lowercase();
-                // Handle inline style attribute
-                if lname.as_str() == "style" {
-                    let decls = parse_declarations(&value);
-                    if decls.is_empty() {
-                        self.inline_styles.remove(&node);
-                    } else {
-                        self.inline_styles.insert(node, decls);
-                    }
-                }
-
                 // Record attributes destined for <link> nodes; attributes may arrive before insertion
                 match lname.as_str() {
                     "rel" | "href" => {
                         if let Some((rel, href)) = self.link_nodes.get_mut(&node) {
                             if lname == "rel" { *rel = Some(value.clone()); }
                             else { *href = Some(value.clone()); }
-                            // Check discovery condition now that we may have both
-                            if rel.as_ref().map(|r| r.to_ascii_lowercase().contains("stylesheet")).unwrap_or(false) {
-                                if let Some(h) = href.as_ref() {
-                                    if !self.discovered_links.iter().any(|e| e == h) {
-                                        self.discovered_links.push(h.clone());
-                                    }
-                                }
-                            }
+                            // Check discovery condition now that we may have both (avoid borrow conflict by cloning)
+                            let rel_clone = rel.clone();
+                            let href_clone = href.clone();
+                            self.try_discover_stylesheet(&rel_clone, &href_clone);
                         } else {
                             // Buffer until we know if this node is actually a <link>
                             let entry = self.pending_link_attrs.entry(node).or_insert((None, None));
@@ -132,18 +159,24 @@ impl DOMSubscriber for CSSMirror {
                 self.style_parsers.remove(&node);
                 self.link_nodes.remove(&node);
                 self.pending_link_attrs.remove(&node);
-                // Drop any inline style declarations associated with this node.
-                self.inline_styles.remove(&node);
-                // Note: We do not retract rules that may have been parsed already.
+                // Retract any rules that came from this <style> node.
+                self.style_sheets.remove(&node);
+                self.rebuild_aggregate();
             }
             EndOfDocument => {
-                // Finalize any remaining style parsers and append their rules.
+                // Finalize any remaining style parsers and append their rules to per-node sheets.
                 let mut remaining = std::mem::take(&mut self.style_parsers);
-                for (_k, parser) in remaining.drain() {
-                    let extra = parser.finish();
-                    // Merge rules preserving their source_order
-                    self.styles.rules.extend(extra.rules);
+                for (k, parser) in remaining.drain() {
+                    let (extra, next) = parser.finish_with_next();
+                    // Merge rules into the node's sheet preserving their source_order
+                    let sheet = self.style_sheets.entry(k).or_insert_with(Stylesheet::default);
+                    let mut extra_rules = extra.rules;
+                    sheet.rules.append(&mut extra_rules);
+                    // Advance the global counter to the parser's final position
+                    if next > self.next_order_base { self.next_order_base = next; }
                 }
+                // Rebuild aggregate once all parsers are finalized.
+                self.rebuild_aggregate();
             }
         }
         Ok(())

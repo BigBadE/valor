@@ -19,17 +19,25 @@ pub struct LayoutMaps<'a> {
     pub computed_by_key: Option<&'a HashMap<NodeKey, ComputedStyle>>,
 }
 
-fn measure_descendant_inline_text_width(node: NodeKey, maps: &LayoutMaps, char_width: i32) -> i32 {
+fn measure_descendant_inline_text_width(node: NodeKey, maps: &LayoutMaps, char_width: i32, base_font_size: f32) -> i32 {
     let mut sum = 0;
+    // Use the node's own computed font size if available; otherwise inherit base_font_size
+    let mut current_font_size = base_font_size;
+    if let Some(comp_map) = maps.computed_by_key {
+        if let Some(cs) = comp_map.get(&node) {
+            current_font_size = cs.font_size;
+        }
+    }
     if let Some(kind) = maps.kind_by_key.get(&node) {
         match kind {
             LayoutNodeKind::InlineText { text } => {
-                sum += (text.chars().count() as i32 * char_width).max(0);
+                let scale = current_font_size / 16.0;
+                sum += ((text.chars().count() as f32 * char_width as f32) * scale).round() as i32;
             }
             LayoutNodeKind::Block { .. } => {
                 if let Some(children) = maps.children_by_key.get(&node) {
                     for c in children {
-                        sum += measure_descendant_inline_text_width(*c, maps, char_width);
+                        sum += measure_descendant_inline_text_width(*c, maps, char_width, current_font_size);
                     }
                 }
             }
@@ -116,28 +124,28 @@ pub fn layout_node(
 
             let base_width_for_percent = if is_html || is_body { container_content_width } else { (container_content_width - ml - mr).max(0) };
 
-            let mut content_width = if is_html || is_body { container_content_width } else { base_width_for_percent };
-
-            if !is_html && !is_body {
-                let mut used_from_computed = false;
-                if let Some(ws) = width_spec {
-                    match ws {
-                        SizeSpecified::Auto => { /* resolve in fallback */ }
-                        SizeSpecified::Px(px) => {
-                            // Border-box semantics: content width is specified minus padding
-                            content_width = (px.round() as i32 - pl - pr).max(0);
-                            used_from_computed = true;
-                        }
-                        SizeSpecified::Percent(p) => {
-                            let bw = (p * base_width_for_percent as f32).round() as i32;
-                            content_width = (bw - pl - pr).max(0);
-                            used_from_computed = true;
-                        }
+            // Resolve width with border-box semantics (CSS reset sets box-sizing: border-box)
+            let mut content_width: i32;
+            let mut border_width: i32;
+            if is_html || is_body {
+                content_width = container_content_width;
+                border_width = container_content_width;
+            } else {
+                match width_spec {
+                    Some(SizeSpecified::Px(px)) => {
+                        border_width = px.round() as i32;
+                        content_width = (border_width - pl - pr).max(0);
                     }
-                }
-                if !used_from_computed {
-                    // Auto → fill available border box
-                    content_width = (base_width_for_percent - pl - pr).max(0);
+                    Some(SizeSpecified::Percent(p)) => {
+                        let bw = (p * base_width_for_percent as f32).round() as i32;
+                        border_width = bw;
+                        content_width = (border_width - pl - pr).max(0);
+                    }
+                    _ => {
+                        // Auto → fill available content box (available width minus padding)
+                        content_width = (base_width_for_percent - pl - pr).max(0);
+                        border_width = (content_width + pl + pr).max(0);
+                    }
                 }
             }
 
@@ -148,6 +156,8 @@ pub fn layout_node(
             // Compute children layout. Children start at content box top
             let mut content_height = 0;
             let mut child_y = top + if is_html || is_body { 0 } else { pt };
+            // Track collapsed delta for parent's top adjustment (first child's top margin collapsing with parent)
+            let mut first_collapsed_delta: i32 = 0;
             if let Some(children) = maps.children_by_key.get(&node) {
                 // For the html element, only lay out the body element (ignore others)
                 if is_html {
@@ -163,6 +173,8 @@ pub fn layout_node(
                     // For other blocks, determine if there are any rendering block children
                     let mut block_children: Vec<NodeKey> = Vec::new();
                     let mut inline_children: Vec<NodeKey> = Vec::new();
+                    let mut sep_has_space: Vec<bool> = Vec::new();
+                    let mut space_pending = false;
                     for child in children {
                         match maps.kind_by_key.get(child) {
                             Some(LayoutNodeKind::Block { tag }) => {
@@ -179,38 +191,63 @@ pub fn layout_node(
                                     }
                                 }
                                 if display_none { continue; }
-                                let child_inline = if let Some(ci) = computed_inline {
-                                    ci
+                                let child_inline = if let Some(ci) = computed_inline { ci } else { false };
+                                if child_inline {
+                                    inline_children.push(*child);
+                                    sep_has_space.push(space_pending);
+                                    space_pending = false;
                                 } else {
-                                    // Fallback: default to block when style info is missing to avoid misclassifying display:block inline tags
-                                    false
-                                };
-                                if child_inline { inline_children.push(*child); } else { block_children.push(*child); }
+                                    block_children.push(*child);
+                                    // block children break inline run; reset pending space
+                                    space_pending = false;
+                                }
                             }
                             Some(LayoutNodeKind::InlineText { text }) => {
-                                if !text.trim().is_empty() { inline_children.push(*child); }
+                                if text.trim().is_empty() {
+                                    // whitespace collapses; mark pending space between inline content
+                                    space_pending = true;
+                                } else {
+                                    inline_children.push(*child);
+                                    sep_has_space.push(space_pending);
+                                    space_pending = false;
+                                }
                             }
                             _ => {}
                         }
                     }
                     if !inline_children.is_empty() {
                         let mut inline_x = x + if is_html || is_body { 0 } else { pl };
-                        let child_y_inline = child_y;
-                        let mut line_h = 0;
+                        let mut child_y_inline = child_y;
+                        let parent_line_h = if let Some(comp_map) = maps.computed_by_key {
+                            if let Some(parent_cs) = comp_map.get(&node) {
+                                (parent_cs.line_height * parent_cs.font_size).round() as i32
+                            } else { args.line_height }
+                        } else { args.line_height };
+                        let line_h = parent_line_h;
                         let mut min_inline_y: Option<i32> = None;
-                        for child in &inline_children {
+                        let parent_font_size: f32 = if let Some(comp_map) = maps.computed_by_key { comp_map.get(&node).map(|cs| cs.font_size).unwrap_or(16.0) } else { 16.0 };
+                        let space_w: i32 = ((1.0_f32 * args.char_width as f32) * (parent_font_size / 16.0)).round() as i32;
+                        let line_start_x = inline_x;
+                        for (i, child) in inline_children.iter().enumerate() {
+                            // Insert a collapsed space between inline items (approximation)
+                            if i > 0 { inline_x += space_w; }
                             match maps.kind_by_key.get(child) {
                                 Some(LayoutNodeKind::InlineText { text }) => {
-                                    let w = (text.chars().count() as i32 * args.char_width).max(0);
-                                    let h = if let Some(comp_map) = maps.computed_by_key {
-                                        if let Some(parent_cs) = comp_map.get(&node) {
-                                            (parent_cs.line_height * parent_cs.font_size).round() as i32
-                                        } else { args.line_height }
-                                    } else { args.line_height };
-                                    rects.insert(*child, LayoutRect { x: inline_x, y: child_y_inline, width: w, height: h });
-                                    if min_inline_y.map(|m| child_y_inline < m).unwrap_or(true) { min_inline_y = Some(child_y_inline); }
+                                    let scale = parent_font_size / 16.0;
+                                    let w = ((text.chars().count() as f32 * args.char_width as f32) * scale).round() as i32;
+                                    // Wrap to next line if exceeds content width
+                                    if inline_x + w > line_start_x + content_width {
+                                        // move to next line
+                                        child_y_inline += line_h;
+                                        content_height += line_h;
+                                        inline_x = line_start_x;
+                                    }
+                                    let child_h = (parent_font_size * 1.1).round() as i32;
+                                    let y_off = ((parent_line_h - child_h) / 2).max(0);
+                                    let y = child_y_inline + y_off;
+                                    rects.insert(*child, LayoutRect { x: inline_x, y, width: w, height: child_h });
+                                    if min_inline_y.map(|m| y < m).unwrap_or(true) { min_inline_y = Some(y); }
                                     inline_x += w;
-                                    if h > line_h { line_h = h; }
                                 }
                                 Some(LayoutNodeKind::Block { .. }) => {
                                     // Inline element: estimate width from specified width or sum of descendant inline text
@@ -225,21 +262,27 @@ pub fn layout_node(
                                         }
                                     }
                                     if w == 0 {
-                                        w = measure_descendant_inline_text_width(*child, maps, args.char_width);
+                                        let child_font_size: f32 = if let Some(comp_map) = maps.computed_by_key { comp_map.get(&child).map(|cs| cs.font_size).unwrap_or(parent_font_size) } else { parent_font_size };
+                                        w = measure_descendant_inline_text_width(*child, maps, args.char_width, child_font_size);
                                     }
-                                    let h = if let Some(comp_map) = maps.computed_by_key {
-                                        if let Some(parent_cs) = comp_map.get(&node) {
-                                            (parent_cs.line_height * parent_cs.font_size).round() as i32
-                                        } else { args.line_height }
-                                    } else { args.line_height };
-                                    rects.insert(*child, LayoutRect { x: inline_x, y: child_y_inline, width: w, height: h });
-                                    if min_inline_y.map(|m| child_y_inline < m).unwrap_or(true) { min_inline_y = Some(child_y_inline); }
+                                    // Wrap to next line if exceeds content width
+                                    if inline_x + w > line_start_x + content_width {
+                                        child_y_inline += line_h;
+                                        content_height += line_h;
+                                        inline_x = line_start_x;
+                                    }
+                                    let child_font_size: f32 = if let Some(comp_map) = maps.computed_by_key { comp_map.get(&child).map(|cs| cs.font_size).unwrap_or(parent_font_size) } else { parent_font_size };
+                                    let child_h = (child_font_size * 1.1).round() as i32;
+                                    let y_off = ((parent_line_h - child_h) / 2).max(0);
+                                    let y = child_y_inline + y_off;
+                                    rects.insert(*child, LayoutRect { x: inline_x, y, width: w, height: child_h });
+                                    if min_inline_y.map(|m| y < m).unwrap_or(true) { min_inline_y = Some(y); }
                                     inline_x += w;
-                                    if h > line_h { line_h = h; }
                                 }
                                 _ => {}
                             }
                         }
+                        // Account for the first line height
                         content_height += line_h;
                         child_y += line_h;
                         // Ensure rects exist for all inline element children (safety if skipped elsewhere)
@@ -257,7 +300,7 @@ pub fn layout_node(
                                         }
                                     }
                                 }
-                                if w == 0 { w = measure_descendant_inline_text_width(*c, maps, args.char_width); }
+                                if w == 0 { w = measure_descendant_inline_text_width(*c, maps, args.char_width, parent_font_size); }
                                 // Height from parent line-height
                                 let h = if let Some(comp_map) = maps.computed_by_key {
                                     if let Some(parent_cs) = comp_map.get(&node) {
@@ -270,10 +313,12 @@ pub fn layout_node(
                     }
                     // Then lay out block children (if any)
                     let children = block_children;
-                    // Initialize previous bottom margin with parent's top margin to collapse with first child
-                    let mut prev_bottom_margin: i32 = if is_html || is_body { 0 } else { margin.top.round() as i32 };
+                    // Prepare for margin collapsing: handle first child specially against parent's top margin
+                    let parent_mt_i32: i32 = if is_html || is_body { 0 } else { margin.top.round() as i32 };
+                    let mut prev_bottom_margin: i32 = 0;
                     // Running cursor inside parent's content box
                     let mut current_y = child_y;
+                    let mut is_first_block = true;
                     for child in children {
                         // Resolve child margins from computed styles (default 0)
                         let (child_mt, child_mb) = if let Some(comp_map) = maps.computed_by_key {
@@ -281,16 +326,30 @@ pub fn layout_node(
                                 (cs.margin.top.round() as i32, cs.margin.bottom.round() as i32)
                             } else { (0, 0) }
                         } else { (0, 0) };
-                        // Collapse adjacent vertical margins: move current_y by collapsed amount
-                        let collapsed = std::cmp::max(prev_bottom_margin, child_mt);
-                        current_y += collapsed;
+                        // Collapse adjacent vertical margins: on first child, collapse against parent's top margin
+                        let was_first = is_first_block;
+                        if was_first {
+                            let delta = std::cmp::max(parent_mt_i32, child_mt) - parent_mt_i32;
+                            first_collapsed_delta = delta;
+                            current_y = child_y + delta;
+                            is_first_block = false;
+                        } else {
+                            let collapsed = std::cmp::max(prev_bottom_margin, child_mt);
+                            current_y += collapsed;
+                        }
 
                         // For block children, pass down the parent content width as viewport_width for percent resolution
                         let child_args = ComputeGeomArgs { viewport_width: content_width, body_margin: 0, line_height: args.line_height, char_width: args.char_width, v_gap: args.v_gap };
+                        let top_passed = current_y;
                         *y_cursor = current_y;
                         let (child_consumed, child_content_h) = layout_node(child, depth + 1, maps, rects, child_args, y_cursor);
                         content_height += child_content_h;
-                        current_y += child_consumed;
+                        let mut next_y = if let Some(r) = rects.get(&child) {
+                            r.y + child_consumed
+                        } else {
+                            current_y + child_consumed
+                        };
+                        current_y = next_y;
                         prev_bottom_margin = child_mb;
                     }
                     // After block children, current_y holds the cursor for potential further layout steps
@@ -301,8 +360,7 @@ pub fn layout_node(
             // Height resolution
             let mut used_height = content_height;
             if let Some(hs) = height_spec { if let SizeSpecified::Px(px) = hs { used_height = px.round() as i32; } }
-            // Border-box dimensions
-            let border_width = if is_html || is_body { content_width } else { (content_width + pl + pr).max(0) };
+            // Border-box dimensions (use previously resolved border_width)
             let mut border_height = if is_html || is_body { used_height } else { (used_height + pt + pb).max(0) };
 
             let mut out_top = top;
@@ -338,6 +396,22 @@ pub fn layout_node(
                             }
                         }
                     }
+                }
+            } else {
+                // For regular blocks, align the parent's top to the minimum y of its block children (if any),
+                // so collapsed top margins are reflected in getBoundingClientRect.
+                if let Some(children) = maps.children_by_key.get(&node) {
+                    let mut min_y = i32::MAX;
+                    for child in children {
+                        if matches!(maps.kind_by_key.get(child), Some(LayoutNodeKind::Block { .. })) {
+                            if let Some(r) = rects.get(child) {
+                                if r.y < min_y { min_y = r.y; }
+                            }
+                        }
+                    }
+                    if min_y != i32::MAX { out_top = min_y; } else { out_top = top; }
+                } else {
+                    out_top = top;
                 }
             }
 
@@ -507,7 +581,7 @@ pub fn compute_layout_geometry(layouter: &Layouter) -> HashMap<NodeKey, LayoutRe
         body_margin: 0,
         // Approximate single-line height to match Chromium snapshot rounding
         line_height: 18,
-        char_width: 6,
+        char_width: 9,
         v_gap: 0,
     };
 

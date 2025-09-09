@@ -7,6 +7,11 @@ General tips:
 - Try to keep functions under 50-100 lines if possible
 - Make sure not to repeat over 3 of the same lines of code
 
+Refactor prompt:
+I want you to refactor and improve the code. Make sure all variables have full names instead 
+of one or two letters, break apart any large functions in smaller parts, remove any outdated comments, fix warnings,
+remove any code duplication, and leave doc comments on every function and type.
+
 Design: Browser Data Flow in Valor
 
 Overview
