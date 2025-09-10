@@ -1,6 +1,5 @@
 use std::collections::HashMap;
-use html::dom::NodeKey;
-use html::dom::updating::{DOMSubscriber, DOMUpdate};
+use js::{NodeKey, DOMSubscriber, DOMUpdate};
 use crate::parser::StylesheetStreamParser;
 use crate::types::{Origin, Stylesheet, StyleRule};
 use url::Url;

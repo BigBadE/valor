@@ -1,5 +1,5 @@
 use crate::{LayoutNodeKind, Layouter};
-use html::dom::NodeKey;
+use js::NodeKey;
 use std::collections::HashMap;
 use style_engine::{ComputedStyle, Display, SizeSpecified, Edges};
 

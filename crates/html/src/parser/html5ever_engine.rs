@@ -1,4 +1,4 @@
-use crate::dom::updating::{DOMMirror, DOMUpdate};
+use js::{DOMMirror, DOMUpdate};
 use crate::parser::ParserDOMMirror;
 use anyhow::Error;
 use html5ever::parse_document;
@@ -25,11 +25,14 @@ impl html5ever::tree_builder::ElemName for OwnedElemName {
 pub struct ValorSink {
     pub(crate) dom: RefCell<DOMMirror<ParserDOMMirror>>,
     element_names: RefCell<HashMap<NodeId, QualName>>,
+    script_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    // Track inline script text by node id; bool = has src (external)
+    script_nodes: RefCell<HashMap<NodeId, (bool, String)>>,
 }
 
 impl ValorSink {
-    pub fn new(dom: DOMMirror<ParserDOMMirror>) -> Self {
-        Self { dom: RefCell::new(dom), element_names: RefCell::new(HashMap::new()) }
+    pub fn new(dom: DOMMirror<ParserDOMMirror>, script_tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
+        Self { dom: RefCell::new(dom), element_names: RefCell::new(HashMap::new()), script_tx, script_nodes: RefCell::new(HashMap::new()) }
     }
 }
 
@@ -62,11 +65,20 @@ impl TreeSink for ValorSink {
             domm.new_element(name.local.to_string())
         };
         // Track the element's qualified name for correct elem_name reporting
-        self.element_names.borrow_mut().insert(id, name);
+        self.element_names.borrow_mut().insert(id, name.clone());
+        let mut is_script = name.ns == ns!(html) && name.local.eq(&local_name!("script"));
+        let mut has_src = false;
         for a in attrs {
+            let local = a.name.local.to_string();
+            if is_script && a.name.local.eq(&local_name!("src")) {
+                has_src = true;
+            }
             let mut dom = self.dom.borrow_mut();
             let domm = dom.mirror_mut();
-            domm.set_attr(id, a.name.local.to_string(), a.value.to_string());
+            domm.set_attr(id, local, a.value.to_string());
+        }
+        if is_script {
+            self.script_nodes.borrow_mut().insert(id, (has_src, String::new()));
         }
         id
     }
@@ -87,6 +99,13 @@ impl TreeSink for ValorSink {
                 self.dom.borrow_mut().mirror_mut().append_child(*parent, node);
             }
             NodeOrText::AppendText(text) => {
+                // If appending under a <script> without src, collect the text
+                if let Some(entry) = self.script_nodes.borrow_mut().get_mut(parent) {
+                    let (has_src, buf) = entry;
+                    if !*has_src {
+                        buf.push_str(text.as_ref());
+                    }
+                }
                 let node = self.dom.borrow_mut().mirror_mut().new_text(text.to_string());
                 self.dom.borrow_mut().mirror_mut().append_child(*parent, node);
             }
@@ -113,7 +132,13 @@ impl TreeSink for ValorSink {
 
     fn mark_script_already_started(&self, _node: &Self::Handle) {}
 
-    fn pop(&self, _node: &Self::Handle) {}
+    fn pop(&self, node: &Self::Handle) {
+        if let Some((has_src, buf)) = self.script_nodes.borrow_mut().remove(node) {
+            if !has_src {
+                let _ = self.script_tx.send(buf);
+            }
+        }
+    }
 
     fn get_template_contents(&self, target: &Self::Handle) -> Self::Handle {
         // We don't model template contents specially; return the node itself
@@ -144,6 +169,11 @@ impl TreeSink for ValorSink {
             if !self.dom.borrow_mut().mirror_mut().has_attr(*target, &name) {
                 self.dom.borrow_mut().mirror_mut().set_attr(*target, name.clone(), a.value.to_string());
             }
+            if a.name.local.eq(&local_name!("src")) {
+                if let Some((has_src, _)) = self.script_nodes.borrow_mut().get_mut(target) {
+                    *has_src = true;
+                }
+            }
         }
     }
 
@@ -169,8 +199,8 @@ impl Html5everEngine {
         self.parser.tokenizer.sink.sink.dom.borrow_mut()
     }
 
-    pub fn new(dom: DOMMirror<ParserDOMMirror>) -> Self {
-        let sink = ValorSink::new(dom);
+    pub fn new(dom: DOMMirror<ParserDOMMirror>, script_tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
+        let sink = ValorSink::new(dom, script_tx);
         let parser = parse_document(sink, Default::default());
         Self { parser }
     }

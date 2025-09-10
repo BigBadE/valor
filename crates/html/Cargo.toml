@@ -4,6 +4,7 @@ edition.workspace = true
 
 [dependencies]
 html5ever.workspace = true
+js.workspace = true
 
  tokio.workspace = true
  tokio-stream.workspace = true

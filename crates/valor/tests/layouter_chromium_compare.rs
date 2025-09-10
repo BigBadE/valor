@@ -1,6 +1,6 @@
 use anyhow::Error;
 use headless_chrome::{Browser, LaunchOptionsBuilder};
-use html::dom::NodeKey;
+use js::NodeKey;
 use layouter::LayoutRect;
 use layouter::{LayoutNodeKind, Layouter};
 use once_cell::sync::Lazy;
@@ -26,7 +26,11 @@ static SHARED_BROWSER: Lazy<Mutex<Browser>> = Lazy::new(|| {
 
 #[test]
 fn chromium_layout_test() -> Result<(), Error> {
-    let _ = env_logger::builder().is_test(true).try_init();
+    // Initialize logger to show logs during tests (including JS console.* forwarded via log)
+    let _ = env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .is_test(false)
+        .try_init();
     let mut failed: Vec<(String, String)> = Vec::new();
     // Iterate over all fixtures and compare against each expected file content.
     for input_path in common::fixture_html_files()? {

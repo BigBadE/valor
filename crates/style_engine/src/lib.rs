@@ -1,13 +1,15 @@
 use css::parser::StylesheetStreamParser;
 use css::ruledb::RuleDB;
-use css::rulemap::{index_rules, RuleMap, RuleRef};
-use css::selector::{Combinator, ComplexSelector, CompoundSelector, SimpleSelector, Specificity, PseudoClass};
-use css::types::{Origin, Stylesheet, Declaration};
-use html::dom::NodeKey;
+use css::rulemap::{RuleMap, RuleRef, index_rules};
+use css::selector::{
+    Combinator, ComplexSelector, CompoundSelector, PseudoClass, SimpleSelector, Specificity,
+};
+use css::types::{Declaration, Origin, Stylesheet};
+use csscolorparser::Color as CssColor;
+use js::NodeKey;
 use log::{info, warn};
 use std::collections::HashMap;
 use std::collections::HashSet;
-use csscolorparser::Color as CssColor;
 
 mod computed_style;
 mod dom_subscriber;
@@ -32,7 +34,7 @@ struct NodeInfo {
 pub type ComputedMap = HashMap<NodeKey, ComputedStyle>;
 
 /// StyleEngine is a DOM subscriber that will own selector matching,
-/// cascade and computed style generation in future steps.
+/// cascade, and computed style generation in future steps.
 /// For now it installs a minimal UA stylesheet, accepts Author Stylesheet updates,
 /// merges them, and mirrors DOM updates while computing a very small subset:
 /// - display defaults by tag (UA)
@@ -63,6 +65,8 @@ pub struct StyleEngine {
     /// Performance counters for recompute_dirty invocations.
     last_dirty_recompute_count: u64,
     total_dirty_recompute_count: u64,
+    /// Nodes whose computed styles changed in the last recompute_dirty; drained by take_changed_nodes().
+    changed_nodes: HashSet<NodeKey>,
 }
 
 impl StyleEngine {
@@ -89,6 +93,7 @@ impl StyleEngine {
             node_match_epoch: HashMap::new(),
             last_dirty_recompute_count: 0,
             total_dirty_recompute_count: 0,
+            changed_nodes: HashSet::new(),
         }
     }
 
@@ -146,18 +151,26 @@ impl StyleEngine {
             .collect();
         items.sort_by_key(|(d, _)| *d);
         self.last_dirty_recompute_count = items.len() as u64;
-        self.total_dirty_recompute_count = self.total_dirty_recompute_count.saturating_add(self.last_dirty_recompute_count);
+        self.total_dirty_recompute_count = self
+            .total_dirty_recompute_count
+            .saturating_add(self.last_dirty_recompute_count);
         let mut any_changed = false;
+        self.changed_nodes.clear();
         for (_d, k) in items {
             let new_cs = self.compute_for_node(k);
             let changed = match self.computed.get(&k) {
                 Some(old) => old != &new_cs,
                 None => true,
             };
-            if changed { any_changed = true; }
+            if changed {
+                any_changed = true;
+                self.changed_nodes.insert(k);
+            }
             self.computed.insert(k, new_cs);
         }
-        if any_changed { self.style_changed = true; }
+        if any_changed {
+            self.style_changed = true;
+        }
         self.dirty_nodes.clear();
     }
 
@@ -195,11 +208,17 @@ impl StyleEngine {
     }
 
     /// Read-only access to the current merged stylesheet snapshot.
-    pub fn perf_last_dirty_recompute_count(&self) -> u64 { self.last_dirty_recompute_count }
+    pub fn perf_last_dirty_recompute_count(&self) -> u64 {
+        self.last_dirty_recompute_count
+    }
     /// Cumulative dirty recompute count across batches.
-    pub fn perf_total_dirty_recompute_count(&self) -> u64 { self.total_dirty_recompute_count }
+    pub fn perf_total_dirty_recompute_count(&self) -> u64 {
+        self.total_dirty_recompute_count
+    }
     /// Current rules epoch value.
-    pub fn current_rules_epoch(&self) -> u64 { self.rules_epoch }
+    pub fn current_rules_epoch(&self) -> u64 {
+        self.rules_epoch
+    }
 
     /// Read-only access to the current merged stylesheet snapshot.
     pub fn stylesheet(&self) -> &Stylesheet {
@@ -211,6 +230,11 @@ impl StyleEngine {
         self.computed.clone()
     }
 
+    /// Resolve the first NodeKey associated with the given element id, if any.
+    pub fn resolve_first_node_by_id(&self, id: &str) -> Option<NodeKey> {
+        self.nodes_by_id.get(id).and_then(|v| v.first().copied())
+    }
+
     /// Return whether styles changed since the last check and clear the flag.
     pub fn take_and_clear_style_changed(&mut self) -> bool {
         let changed = self.style_changed;
@@ -218,9 +242,18 @@ impl StyleEngine {
         changed
     }
 
+    /// Drain and return the set of nodes whose computed styles changed during the last recomputation.
+    pub fn take_changed_nodes(&mut self) -> Vec<NodeKey> {
+        let out: Vec<NodeKey> = self.changed_nodes.iter().cloned().collect();
+        self.changed_nodes.clear();
+        out
+    }
+
     fn compute_for_node(&self, node: NodeKey) -> ComputedStyle {
         // Gather info and parent style
-        let Some(info) = self.nodes.get(&node) else { return ComputedStyle::default(); };
+        let Some(info) = self.nodes.get(&node) else {
+            return ComputedStyle::default();
+        };
         let parent_style = info.parent.and_then(|p| self.computed.get(&p)).cloned();
 
         // Working specified values (before inheritance resolution)
@@ -237,7 +270,11 @@ impl StyleEngine {
         let mut have_padding = false;
         let mut color_spec: Option<ColorRGBA> = None;
         let mut font_size_spec: Option<f32> = None; // px
-        enum LHSrc { Normal, Number(f32), Px(f32) }
+        enum LHSrc {
+            Normal,
+            Number(f32),
+            Px(f32),
+        }
         let mut line_height_spec: Option<LHSrc> = None;
 
         // Apply declarations from matched rules and inline style in cascade order
@@ -250,19 +287,28 @@ impl StyleEngine {
                     for d in &rule.declarations {
                         let importance_rank: u8 = if d.important { 1 } else { 0 }; // important later
                         let origin_rank: u8 = if d.important {
-                            match rule.origin { // important: UA < Author < User
+                            match rule.origin {
+                                // important: UA < Author < User
                                 Origin::UA => 0,
                                 Origin::Author => 1,
                                 Origin::User => 2,
                             }
                         } else {
-                            match rule.origin { // normal: UA < User < Author
+                            match rule.origin {
+                                // normal: UA < User < Author
                                 Origin::UA => 0,
                                 Origin::User => 1,
                                 Origin::Author => 2,
                             }
                         };
-                        items.push((importance_rank, origin_rank, sel.specificity, rule.source_order, d.name.to_ascii_lowercase(), d.value.clone()));
+                        items.push((
+                            importance_rank,
+                            origin_rank,
+                            sel.specificity,
+                            rule.source_order,
+                            d.name.to_ascii_lowercase(),
+                            d.value.clone(),
+                        ));
                     }
                 }
             }
@@ -272,7 +318,14 @@ impl StyleEngine {
             for d in decls {
                 let importance_rank: u8 = if d.important { 1 } else { 0 };
                 let origin_rank: u8 = if d.important { 1 } else { 2 }; // inline: important rank like Author important, normal above Author normal via specificity
-                items.push((importance_rank, origin_rank, Specificity(u32::MAX), u32::MAX, d.name.to_ascii_lowercase(), d.value.clone()));
+                items.push((
+                    importance_rank,
+                    origin_rank,
+                    Specificity(u32::MAX),
+                    u32::MAX,
+                    d.name.to_ascii_lowercase(),
+                    d.value.clone(),
+                ));
             }
         }
         // Sort ascending so later items override
@@ -289,23 +342,89 @@ impl StyleEngine {
                         _ => display_spec,
                     };
                 }
-                "width" => { width_spec = parse_size_spec(val).or(width_spec); }
-                "height" => { height_spec = parse_size_spec(val).or(height_spec); }
-                "min-width" => { min_width_spec = parse_size_spec(val).or(min_width_spec); }
-                "max-width" => { max_width_spec = parse_size_spec(val).or(max_width_spec); }
-                "min-height" => { min_height_spec = parse_size_spec(val).or(min_height_spec); }
-                "max-height" => { max_height_spec = parse_size_spec(val).or(max_height_spec); }
-                "margin" => { if let Some(e) = parse_edges_shorthand(val) { margin_spec = e; have_margin = true; } }
-                "padding" => { if let Some(e) = parse_edges_shorthand(val) { padding_spec = e; have_padding = true; } }
-                "margin-top" => { if let Some(px) = parse_px(val) { margin_spec.top = px; have_margin = true; } }
-                "margin-right" => { if let Some(px) = parse_px(val) { margin_spec.right = px; have_margin = true; } }
-                "margin-bottom" => { if let Some(px) = parse_px(val) { margin_spec.bottom = px; have_margin = true; } }
-                "margin-left" => { if let Some(px) = parse_px(val) { margin_spec.left = px; have_margin = true; } }
-                "padding-top" => { if let Some(px) = parse_px(val) { padding_spec.top = px; have_padding = true; } }
-                "padding-right" => { if let Some(px) = parse_px(val) { padding_spec.right = px; have_padding = true; } }
-                "padding-bottom" => { if let Some(px) = parse_px(val) { padding_spec.bottom = px; have_padding = true; } }
-                "padding-left" => { if let Some(px) = parse_px(val) { padding_spec.left = px; have_padding = true; } }
-                "color" => { if let Some(c) = Self::parse_color(val) { color_spec = Some(c); } }
+                "width" => {
+                    width_spec = parse_size_spec(val).or(width_spec);
+                }
+                "height" => {
+                    height_spec = parse_size_spec(val).or(height_spec);
+                }
+                "min-width" => {
+                    min_width_spec = parse_size_spec(val).or(min_width_spec);
+                }
+                "max-width" => {
+                    max_width_spec = parse_size_spec(val).or(max_width_spec);
+                }
+                "min-height" => {
+                    min_height_spec = parse_size_spec(val).or(min_height_spec);
+                }
+                "max-height" => {
+                    max_height_spec = parse_size_spec(val).or(max_height_spec);
+                }
+                "margin" => {
+                    if let Some(e) = parse_edges_shorthand(val) {
+                        margin_spec = e;
+                        have_margin = true;
+                    }
+                }
+                "padding" => {
+                    if let Some(e) = parse_edges_shorthand(val) {
+                        padding_spec = e;
+                        have_padding = true;
+                    }
+                }
+                "margin-top" => {
+                    if let Some(px) = parse_px(val) {
+                        margin_spec.top = px;
+                        have_margin = true;
+                    }
+                }
+                "margin-right" => {
+                    if let Some(px) = parse_px(val) {
+                        margin_spec.right = px;
+                        have_margin = true;
+                    }
+                }
+                "margin-bottom" => {
+                    if let Some(px) = parse_px(val) {
+                        margin_spec.bottom = px;
+                        have_margin = true;
+                    }
+                }
+                "margin-left" => {
+                    if let Some(px) = parse_px(val) {
+                        margin_spec.left = px;
+                        have_margin = true;
+                    }
+                }
+                "padding-top" => {
+                    if let Some(px) = parse_px(val) {
+                        padding_spec.top = px;
+                        have_padding = true;
+                    }
+                }
+                "padding-right" => {
+                    if let Some(px) = parse_px(val) {
+                        padding_spec.right = px;
+                        have_padding = true;
+                    }
+                }
+                "padding-bottom" => {
+                    if let Some(px) = parse_px(val) {
+                        padding_spec.bottom = px;
+                        have_padding = true;
+                    }
+                }
+                "padding-left" => {
+                    if let Some(px) = parse_px(val) {
+                        padding_spec.left = px;
+                        have_padding = true;
+                    }
+                }
+                "color" => {
+                    if let Some(c) = Self::parse_color(val) {
+                        color_spec = Some(c);
+                    }
+                }
                 "font-size" => {
                     // Support px, bare number (px), em/ex relative to parent font-size
                     let parent_fs = parent_style.as_ref().map(|ps| ps.font_size).unwrap_or(16.0);
@@ -313,20 +432,34 @@ impl StyleEngine {
                     let parsed_px = if let Some(px) = parse_px(&v) {
                         Some(px)
                     } else if let Some(em_str) = v.strip_suffix("em") {
-                        if let Ok(n) = em_str.trim().parse::<f32>() { Some(n * parent_fs) } else { None }
+                        if let Ok(n) = em_str.trim().parse::<f32>() {
+                            Some(n * parent_fs)
+                        } else {
+                            None
+                        }
                     } else if let Some(ex_str) = v.strip_suffix("ex") {
                         // Approximate 1ex ≈ 0.5em
-                        if let Ok(n) = ex_str.trim().parse::<f32>() { Some(n * parent_fs * 0.5) } else { None }
+                        if let Ok(n) = ex_str.trim().parse::<f32>() {
+                            Some(n * parent_fs * 0.5)
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     };
-                    if let Some(px) = parsed_px { font_size_spec = Some(px); }
+                    if let Some(px) = parsed_px {
+                        font_size_spec = Some(px);
+                    }
                 }
                 "line-height" => {
                     let v = val.to_ascii_lowercase();
-                    if v == "normal" { line_height_spec = Some(LHSrc::Normal); }
-                    else if let Ok(n) = v.parse::<f32>() { line_height_spec = Some(LHSrc::Number(n)); }
-                    else if let Some(px) = parse_px(&v) { line_height_spec = Some(LHSrc::Px(px)); }
+                    if v == "normal" {
+                        line_height_spec = Some(LHSrc::Normal);
+                    } else if let Ok(n) = v.parse::<f32>() {
+                        line_height_spec = Some(LHSrc::Number(n));
+                    } else if let Some(px) = parse_px(&v) {
+                        line_height_spec = Some(LHSrc::Px(px));
+                    }
                 }
                 _ => {}
             }
@@ -337,8 +470,12 @@ impl StyleEngine {
         // display: default fallback by tag if still unspecified
         cs.display = display_spec.unwrap_or_else(|| default_display_for_tag(&info.tag));
         // box model
-        if have_margin { cs.margin = margin_spec; }
-        if have_padding { cs.padding = padding_spec; }
+        if have_margin {
+            cs.margin = margin_spec;
+        }
+        if have_padding {
+            cs.padding = padding_spec;
+        }
         cs.width = width_spec.unwrap_or(SizeSpecified::Auto);
         cs.height = height_spec.unwrap_or(SizeSpecified::Auto);
         // inherited properties
@@ -347,14 +484,22 @@ impl StyleEngine {
             cs.font_size = ps.font_size;
             cs.line_height = ps.line_height;
         }
-        if let Some(c) = color_spec { cs.color = c; }
-        if let Some(fs) = font_size_spec { cs.font_size = fs; }
+        if let Some(c) = color_spec {
+            cs.color = c;
+        }
+        if let Some(fs) = font_size_spec {
+            cs.font_size = fs;
+        }
         if let Some(lh) = line_height_spec {
             cs.line_height = match lh {
                 LHSrc::Normal => 1.2,
                 LHSrc::Number(n) => n,
                 LHSrc::Px(px) => {
-                    let fs = if let Some(fs) = font_size_spec { fs } else { cs.font_size };
+                    let fs = if let Some(fs) = font_size_spec {
+                        fs
+                    } else {
+                        cs.font_size
+                    };
                     if fs > 0.0 { px / fs } else { 1.2 }
                 }
             };
@@ -420,7 +565,12 @@ impl StyleEngine {
     fn parse_color(input: &str) -> Option<ColorRGBA> {
         let parsed: CssColor = input.parse().ok()?;
         let rgba = parsed.to_rgba8();
-        Some(ColorRGBA { red: rgba[0], green: rgba[1], blue: rgba[2], alpha: rgba[3] })
+        Some(ColorRGBA {
+            red: rgba[0].clone(),
+            green: rgba[1].clone(),
+            blue: rgba[2].clone(),
+            alpha: rgba[3].clone(),
+        })
     }
 
     fn rebuild_rule_index(&mut self) {
@@ -451,7 +601,9 @@ impl StyleEngine {
         // If not forced and matches for this node are up-to-date for the current rules epoch, skip.
         if !force {
             if let Some(ep) = self.node_match_epoch.get(&node) {
-                if *ep == self.rules_epoch { return; }
+                if *ep == self.rules_epoch {
+                    return;
+                }
             }
         }
         // Build candidates from rule_index using id, classes, tag and universal
@@ -487,7 +639,10 @@ impl StyleEngine {
                 if Self::selector_has_unsupported(sel) {
                     let key = (rr.rule_idx, rr.selector_idx);
                     if !self.warned_selectors.contains(&key) {
-                        warn!("Unsupported selector feature encountered (siblings) in rule {} selector {} — selector will not match until implemented", rr.rule_idx, rr.selector_idx);
+                        warn!(
+                            "Unsupported selector feature encountered (siblings) in rule {} selector {} — selector will not match until implemented",
+                            rr.rule_idx, rr.selector_idx
+                        );
                         self.warned_selectors.insert(key);
                     }
                 }
@@ -547,30 +702,50 @@ impl StyleEngine {
                 }
                 Combinator::NextSibling => {
                     // E + F, we are at F (current). Find immediate previous element sibling and match E (comp)
-                    let Some(parent) = self.nodes.get(&current).and_then(|ni| ni.parent) else { return false; };
-                    let Some(pi) = self.nodes.get(&parent) else { return false; };
+                    let Some(parent) = self.nodes.get(&current).and_then(|ni| ni.parent) else {
+                        return false;
+                    };
+                    let Some(pi) = self.nodes.get(&parent) else {
+                        return false;
+                    };
                     // find index of current in parent's children
                     let mut found_match = false;
                     if let Some(pos) = pi.children.iter().position(|k| *k == current) {
                         if pos > 0 {
                             let prev = pi.children[pos - 1];
-                            if self.match_compound(prev, comp) { current = prev; found_match = true; }
+                            if self.match_compound(prev, comp) {
+                                current = prev;
+                                found_match = true;
+                            }
                         }
                     }
-                    if !found_match { return false; }
+                    if !found_match {
+                        return false;
+                    }
                 }
                 Combinator::SubsequentSibling => {
                     // E ~ F, we are at F. Any previous sibling matching E is OK.
-                    let Some(parent) = self.nodes.get(&current).and_then(|ni| ni.parent) else { return false; };
-                    let Some(pi) = self.nodes.get(&parent) else { return false; };
+                    let Some(parent) = self.nodes.get(&current).and_then(|ni| ni.parent) else {
+                        return false;
+                    };
+                    let Some(pi) = self.nodes.get(&parent) else {
+                        return false;
+                    };
                     let mut matched_prev = None;
                     if let Some(pos) = pi.children.iter().position(|k| *k == current) {
                         for i in (0..pos).rev() {
                             let sib = pi.children[i];
-                            if self.match_compound(sib, comp) { matched_prev = Some(sib); break; }
+                            if self.match_compound(sib, comp) {
+                                matched_prev = Some(sib);
+                                break;
+                            }
                         }
                     }
-                    if let Some(m) = matched_prev { current = m; } else { return false; }
+                    if let Some(m) = matched_prev {
+                        current = m;
+                    } else {
+                        return false;
+                    }
                 }
             }
             idx -= 1;
@@ -604,10 +779,14 @@ impl StyleEngine {
                     let key = name.to_ascii_lowercase();
                     match op_value {
                         None => {
-                            if !info.attributes.contains_key(&key) { return false; }
+                            if !info.attributes.contains_key(&key) {
+                                return false;
+                            }
                         }
                         Some((op, val)) => {
-                            if op != "=" { return false; }
+                            if op != "=" {
+                                return false;
+                            }
                             match info.attributes.get(&key) {
                                 Some(v) if v == val => {}
                                 _ => return false,
@@ -615,29 +794,47 @@ impl StyleEngine {
                         }
                     }
                 }
-                SimpleSelector::PseudoClass(pc) => {
-                    match pc {
-                        PseudoClass::Root => {
-                            if info.parent.is_some() { return false; }
-                        }
-                        PseudoClass::FirstChild => {
-                            if let Some(parent) = info.parent {
-                                if let Some(pi) = self.nodes.get(&parent) {
-                                    if let Some(first) = pi.children.first() { if *first != node { return false; } }
-                                    else { return false; }
-                                } else { return false; }
-                            } else { return false; }
-                        }
-                        PseudoClass::LastChild => {
-                            if let Some(parent) = info.parent {
-                                if let Some(pi) = self.nodes.get(&parent) {
-                                    if let Some(last) = pi.children.last() { if *last != node { return false; } }
-                                    else { return false; }
-                                } else { return false; }
-                            } else { return false; }
+                SimpleSelector::PseudoClass(pc) => match pc {
+                    PseudoClass::Root => {
+                        if info.parent.is_some() {
+                            return false;
                         }
                     }
-                }
+                    PseudoClass::FirstChild => {
+                        if let Some(parent) = info.parent {
+                            if let Some(pi) = self.nodes.get(&parent) {
+                                if let Some(first) = pi.children.first() {
+                                    if *first != node {
+                                        return false;
+                                    }
+                                } else {
+                                    return false;
+                                }
+                            } else {
+                                return false;
+                            }
+                        } else {
+                            return false;
+                        }
+                    }
+                    PseudoClass::LastChild => {
+                        if let Some(parent) = info.parent {
+                            if let Some(pi) = self.nodes.get(&parent) {
+                                if let Some(last) = pi.children.last() {
+                                    if *last != node {
+                                        return false;
+                                    }
+                                } else {
+                                    return false;
+                                }
+                            } else {
+                                return false;
+                            }
+                        } else {
+                            return false;
+                        }
+                    }
+                },
             }
         }
         true
@@ -700,7 +897,9 @@ impl StyleEngine {
                 v.retain(|k| *k != node);
             }
             self.matches.remove(&node);
-            if self.computed.remove(&node).is_some() { self.style_changed = true; }
+            if self.computed.remove(&node).is_some() {
+                self.style_changed = true;
+            }
             self.inline_decls.remove(&node);
             // Remove from dirty set if present
             self.dirty_nodes.remove(&node);

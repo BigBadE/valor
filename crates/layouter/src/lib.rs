@@ -1,8 +1,8 @@
 use anyhow::Error;
-use html::dom::updating::{DOMUpdate, DOMSubscriber, DOMMirror};
-use html::dom::NodeKey;
+use js::{DOMUpdate, DOMSubscriber, DOMMirror, NodeKey};
 use log::{debug, trace, warn};
 use std::collections::HashMap;
+use std::time::Instant;
 use css::types::Stylesheet;
 use style_engine::ComputedStyle;
 
@@ -38,30 +38,125 @@ impl LayoutNode {
     }
 }
 
+/// Layouter mirrors the DOM and computes layout geometry.
+/// It now tracks dirtiness for incremental layout groundwork.
 pub struct Layouter {
     nodes: HashMap<NodeKey, LayoutNode>,
     root: NodeKey,
     stylesheet: Stylesheet,
     computed: HashMap<NodeKey, ComputedStyle>,
+    /// Global flag indicating that some change requires a layout recompute.
+    layout_dirty: bool,
+    /// Monotonic epoch incremented on each change affecting layout.
+    last_change_epoch: u64,
+    /// Per-node dirty flags used for incremental reflow (groundwork only).
+    dirty_map: HashMap<NodeKey, DirtyKind>,
+    /// Cached per-node layout geometry for incremental reflow.
+    cached_layout: HashMap<NodeKey, LayoutRect>,
+    /// Dirty rectangles produced by the last layout computation (for renderer integration).
+    dirty_rects: Vec<LayoutRect>,
+    /// Telemetry: total number of DOM updates applied to the layouter mirror.
+    perf_updates_applied: u64,
+    /// Telemetry: number of nodes reflowed in the last compute.
+    perf_nodes_reflowed_last: u64,
+    /// Telemetry: cumulative nodes reflowed across computes.
+    perf_nodes_reflowed_total: u64,
+    /// Telemetry: number of dirty subtrees processed in the last compute.
+    perf_dirty_subtrees_last: u64,
+    /// Telemetry: last layout time in milliseconds.
+    perf_layout_time_last_ms: u64,
+    /// Telemetry: cumulative layout time in milliseconds.
+    perf_layout_time_total_ms: u64,
+}
+
+/// Kinds of dirtiness that can affect layout. Multiple flags can be combined.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct DirtyKind(u8);
+
+impl DirtyKind {
+    /// No dirtiness.
+    pub const NONE: DirtyKind = DirtyKind(0);
+    /// Structural changes: insertion/removal/reparenting.
+    pub const STRUCTURE: DirtyKind = DirtyKind(1 << 0);
+    /// Style changes: attributes/computed styles affecting layout.
+    pub const STYLE: DirtyKind = DirtyKind(1 << 1);
+    /// Geometry changes: size/position potentially altered.
+    pub const GEOMETRY: DirtyKind = DirtyKind(1 << 2);
+
+    /// Combine two dirty kinds.
+    pub fn or(self, other: DirtyKind) -> DirtyKind { DirtyKind(self.0 | other.0) }
+    /// Check if a flag is present.
+    pub fn contains(self, other: DirtyKind) -> bool { (self.0 & other.0) != 0 }
 }
 
 impl Layouter {
+    /// Create a new Layouter with an empty tree seeded with the Document root.
     pub fn new() -> Self {
         let mut nodes = HashMap::new();
         // Seed root node
         nodes.insert(NodeKey::ROOT, LayoutNode::new_document());
-        Self { nodes, root: NodeKey::ROOT, stylesheet: Stylesheet::default(), computed: HashMap::new() }
+        Self {
+            nodes,
+            root: NodeKey::ROOT,
+            stylesheet: Stylesheet::default(),
+            computed: HashMap::new(),
+            layout_dirty: false,
+            last_change_epoch: 0,
+            dirty_map: HashMap::new(),
+            cached_layout: HashMap::new(),
+            dirty_rects: Vec::new(),
+            perf_updates_applied: 0,
+            perf_nodes_reflowed_last: 0,
+            perf_nodes_reflowed_total: 0,
+            perf_dirty_subtrees_last: 0,
+            perf_layout_time_last_ms: 0,
+            perf_layout_time_total_ms: 0,
+        }
     }
 
     pub fn root(&self) -> NodeKey { self.root }
 
     /// Replace the current computed styles snapshot (from StyleEngine).
+    /// This does not automatically mark dirty; HtmlPage decides when styles changed.
     pub fn set_computed_styles(&mut self, map: HashMap<NodeKey, ComputedStyle>) {
         self.computed = map;
     }
 
+    /// Mark a node as dirty with the provided kind(s) and set the global layout flag.
+    pub fn mark_dirty(&mut self, node: NodeKey, kind: DirtyKind) {
+        let entry = self.dirty_map.entry(node).or_insert(DirtyKind::NONE);
+        *entry = entry.or(kind);
+        self.layout_dirty = true;
+        self.last_change_epoch = self.last_change_epoch.wrapping_add(1);
+    }
+
+    /// Mark all ancestors of the given node (up to the root) as dirty with the provided kind(s).
+    pub fn mark_ancestors_dirty(&mut self, mut node: NodeKey, kind: DirtyKind) {
+        // Walk parent chain; if node is missing, stop.
+        while let Some(parent_key) = self.nodes.get(&node).and_then(|n| n.parent) {
+            self.mark_dirty(parent_key, kind);
+            if parent_key == NodeKey::ROOT { break; }
+            node = parent_key;
+        }
+    }
+
+    /// Atomically read and clear the global layout dirty flag.
+    pub fn take_and_clear_layout_dirty(&mut self) -> bool {
+        let was_dirty = self.layout_dirty;
+        self.layout_dirty = false;
+        was_dirty
+    }
+
     /// Read-only access to computed styles.
     pub fn computed_styles(&self) -> &HashMap<NodeKey, ComputedStyle> { &self.computed }
+
+    /// Mark multiple nodes as style-dirty and mark ancestors geometry-dirty (used when StyleEngine reports changes).
+    pub fn mark_nodes_style_dirty(&mut self, nodes: &[NodeKey]) {
+        for &node in nodes {
+            self.mark_dirty(node, DirtyKind::STYLE);
+            self.mark_ancestors_dirty(node, DirtyKind::GEOMETRY);
+        }
+    }
 
     /// Return a cloned map of attributes per node (for layout/style resolution).
     pub fn attrs_map(&self) -> HashMap<NodeKey, HashMap<String, String>> {
@@ -72,8 +167,35 @@ impl Layouter {
         out
     }
 
+    /// Drain and return dirty rectangles computed by the last layout pass.
+    pub fn take_dirty_rects(&mut self) -> Vec<LayoutRect> {
+        let mut out = Vec::new();
+        std::mem::swap(&mut out, &mut self.dirty_rects);
+        out
+    }
+
+    /// Return the current dirty kind flags for a node (for testing/inspection).
+    pub fn dirty_kind_of(&self, node: NodeKey) -> DirtyKind {
+        *self.dirty_map.get(&node).unwrap_or(&DirtyKind::NONE)
+    }
+
+    /// Performance counter: total DOM updates applied to the layouter mirror.
+    pub fn perf_updates_applied(&self) -> u64 { self.perf_updates_applied }
+    /// Performance counter: nodes reflowed in the last layout compute.
+    pub fn perf_nodes_reflowed_last(&self) -> u64 { self.perf_nodes_reflowed_last }
+    /// Performance counter: cumulative nodes reflowed across computes.
+    pub fn perf_nodes_reflowed_total(&self) -> u64 { self.perf_nodes_reflowed_total }
+    /// Performance counter: number of dirty subtrees processed in the last compute.
+    pub fn perf_dirty_subtrees_last(&self) -> u64 { self.perf_dirty_subtrees_last }
+    /// Performance metric: time spent in the last layout compute in milliseconds.
+    pub fn perf_layout_time_last_ms(&self) -> u64 { self.perf_layout_time_last_ms }
+    /// Performance metric: cumulative layout time in milliseconds.
+    pub fn perf_layout_time_total_ms(&self) -> u64 { self.perf_layout_time_total_ms }
+
     /// Internal implementation for applying a single DOM update to the layout tree mirror.
     fn apply_update_impl(&mut self, update: DOMUpdate) -> Result<(), Error> {
+        // Telemetry: count every DOM update applied to the layouter mirror
+        self.perf_updates_applied = self.perf_updates_applied.saturating_add(1);
         use DOMUpdate::*;
         match update {
             InsertElement { parent, node, tag, pos } => {
@@ -97,6 +219,10 @@ impl Layouter {
                 } else {
                     parent_children.insert(pos, node);
                 }
+                // Invalidate: structure and geometry changed at parent and node
+                self.mark_dirty(node, DirtyKind::STRUCTURE.or(DirtyKind::GEOMETRY));
+                self.mark_dirty(parent, DirtyKind::GEOMETRY);
+                self.mark_ancestors_dirty(parent, DirtyKind::GEOMETRY);
             }
             InsertText { parent, node, text, pos } => {
                 trace!("InsertText parent={:?} node={:?} text='{}' pos={}", parent, node, text.replace("\n", "\\n"), pos);
@@ -119,15 +245,30 @@ impl Layouter {
                 } else {
                     parent_children.insert(pos, node);
                 }
+                // Invalidate: text affects inline layout -> geometry for parent and ancestors
+                self.mark_dirty(node, DirtyKind::STRUCTURE.or(DirtyKind::GEOMETRY));
+                self.mark_dirty(parent, DirtyKind::GEOMETRY);
+                self.mark_ancestors_dirty(parent, DirtyKind::GEOMETRY);
             }
             SetAttr { node, name, value } => {
                 trace!("SetAttr node={:?} {}='{}'", node, name, value);
                 let entry = self.nodes.entry(node).or_insert_with(LayoutNode::new_document);
                 entry.attrs.insert(name, value);
+                // Conservative: any attribute may affect layout/style
+                self.mark_dirty(node, DirtyKind::STYLE);
+                self.mark_ancestors_dirty(node, DirtyKind::GEOMETRY);
             }
             RemoveNode { node } => {
                 trace!("RemoveNode node={:?}", node);
+                let parent = self.nodes.get(&node).and_then(|n| n.parent);
                 self.remove_node_recursive(node);
+                if let Some(p) = parent {
+                    self.mark_dirty(p, DirtyKind::STRUCTURE.or(DirtyKind::GEOMETRY));
+                    self.mark_ancestors_dirty(p, DirtyKind::GEOMETRY);
+                } else {
+                    // If we do not know the parent, mark root as geometry-dirty as a fallback
+                    self.mark_dirty(NodeKey::ROOT, DirtyKind::GEOMETRY);
+                }
             }
             EndOfDocument => {
                 debug!("EndOfDocument received by layouter");
@@ -155,8 +296,13 @@ impl Layouter {
     pub fn stylesheet(&self) -> &Stylesheet { &self.stylesheet }
 
     /// Compute layout using the dedicated layout module.
-    pub fn compute_layout(&self) -> usize {
-        layout::compute_layout(self)
+    /// Compute layout using either incremental reflow or full layout as a fallback.
+    /// Returns the number of nodes (boxes) processed. This may be the count of
+    /// reflowed nodes in incremental mode or total laid-out nodes in full mode.
+    pub fn compute_layout(&mut self) -> usize {
+        // Fallback threshold: if too many dirty roots, do full layout
+        let fallback_threshold: f32 = 0.3;
+        self.compute_layout_incremental(fallback_threshold)
     }
 
     /// Compute per-node layout geometry (x, y, width, height) for the current tree.
@@ -205,3 +351,147 @@ impl DOMSubscriber for Layouter {
 }
 
 pub type LayouterMirror = DOMMirror<Layouter>;
+impl Layouter {
+    /// Enumerate minimal set of dirty roots: nodes that have STRUCTURE or STYLE dirtiness
+    /// and whose parent is not dirty in those kinds.
+    fn dirty_roots(&self) -> Vec<NodeKey> {
+        let mut candidates: Vec<NodeKey> = self
+            .dirty_map
+            .iter()
+            .filter_map(|(k, kind)| if kind.contains(DirtyKind::STRUCTURE) || kind.contains(DirtyKind::STYLE) { Some(*k) } else { None })
+            .collect();
+        candidates.sort_by_key(|k| k.0);
+        let dirty_set: std::collections::HashSet<NodeKey> = candidates.iter().cloned().collect();
+        candidates
+            .into_iter()
+            .filter(|k| {
+                let parent = self.nodes.get(k).and_then(|n| n.parent);
+                match parent {
+                    Some(p) => !dirty_set.contains(&p),
+                    None => true,
+                }
+            })
+            .collect()
+    }
+
+    /// Clear all per-node dirty flags.
+    fn clear_dirty_flags(&mut self) { self.dirty_map.clear(); }
+
+    /// Collect all nodes in the subtree rooted at `node`, including the root.
+    fn collect_subtree_keys(&self, node: NodeKey, out: &mut Vec<NodeKey>) {
+        out.push(node);
+        if let Some(n) = self.nodes.get(&node) {
+            for child in &n.children {
+                self.collect_subtree_keys(*child, out);
+            }
+        }
+    }
+
+    /// Full layout pass: recompute count and update cached geometry for all nodes.
+    fn compute_layout_full(&mut self) -> usize {
+        let start = Instant::now();
+        // Keep old cache for diffing
+        let old_cache = self.cached_layout.clone();
+        let count = layout::compute_layout(self);
+        let new_rects = layout::compute_layout_geometry(self);
+        // Compute dirty rects by comparing old and new per node
+        let mut dirty: Vec<LayoutRect> = Vec::new();
+        // Changes/removals
+        for (k, old_rect) in old_cache.iter() {
+            match new_rects.get(k) {
+                Some(new_rect) if new_rect != old_rect => {
+                    dirty.push(*old_rect);
+                    dirty.push(*new_rect);
+                }
+                None => {
+                    dirty.push(*old_rect);
+                }
+                _ => {}
+            }
+        }
+        // Additions
+        for (k, new_rect) in new_rects.iter() {
+            if !old_cache.contains_key(k) {
+                dirty.push(*new_rect);
+            }
+        }
+        self.cached_layout = new_rects;
+        self.clear_dirty_flags();
+        self.dirty_rects = dirty;
+        // Telemetry
+        self.perf_nodes_reflowed_last = self.dirty_rects.len() as u64; // proxy: changed nodes* (approx)
+        self.perf_nodes_reflowed_total = self.perf_nodes_reflowed_total.saturating_add(self.perf_nodes_reflowed_last);
+        self.perf_dirty_subtrees_last = 1; // full pass treated as one big subtree
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        self.perf_layout_time_last_ms = elapsed_ms;
+        self.perf_layout_time_total_ms = self.perf_layout_time_total_ms.saturating_add(elapsed_ms);
+        count
+    }
+
+    /// Incremental layout: attempt to limit work to dirty subtrees; fallback to full if too large.
+    fn compute_layout_incremental(&mut self, fallback_threshold: f32) -> usize {
+        // If we do not yet have a cache, run a full pass.
+        if self.cached_layout.is_empty() {
+            return self.compute_layout_full();
+        }
+        let start = Instant::now();
+        let total_nodes = self.nodes.len().saturating_sub(1).max(1);
+        let roots = self.dirty_roots();
+        if roots.is_empty() {
+            self.dirty_rects.clear();
+            self.perf_nodes_reflowed_last = 0;
+            self.perf_dirty_subtrees_last = 0;
+            self.perf_layout_time_last_ms = 0;
+            return 0;
+        }
+        if (roots.len() as f32) / (total_nodes as f32) >= fallback_threshold {
+            return self.compute_layout_full();
+        }
+        // MVP approach: compute a fresh geometry snapshot for correctness,
+        // then selectively update the cache for nodes in dirty subtrees.
+        let new_rects = layout::compute_layout_geometry(self);
+        let mut reflowed_nodes: usize = 0;
+        let mut dirty: Vec<LayoutRect> = Vec::new();
+        for root in &roots {
+            let mut subtree: Vec<NodeKey> = Vec::new();
+            self.collect_subtree_keys(*root, &mut subtree);
+            for k in subtree {
+                let old = self.cached_layout.get(&k).cloned();
+                match new_rects.get(&k) {
+                    Some(r) => {
+                        let old_rect = old;
+                        if old_rect.map(|o| o != *r).unwrap_or(true) {
+                            reflowed_nodes = reflowed_nodes.saturating_add(1);
+                            if let Some(o) = old_rect { dirty.push(o); }
+                            dirty.push(*r);
+                        }
+                        self.cached_layout.insert(k, *r);
+                    }
+                    None => {
+                        if let Some(o) = old { dirty.push(o); }
+                        if self.cached_layout.remove(&k).is_some() {
+                            reflowed_nodes = reflowed_nodes.saturating_add(1);
+                        }
+                    }
+                }
+            }
+        }
+        self.clear_dirty_flags();
+        self.dirty_rects = dirty;
+        // Telemetry
+        self.perf_nodes_reflowed_last = reflowed_nodes as u64;
+        self.perf_nodes_reflowed_total = self.perf_nodes_reflowed_total.saturating_add(self.perf_nodes_reflowed_last);
+        self.perf_dirty_subtrees_last = roots.len() as u64;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        self.perf_layout_time_last_ms = elapsed_ms;
+        self.perf_layout_time_total_ms = self.perf_layout_time_total_ms.saturating_add(elapsed_ms);
+        reflowed_nodes
+    }
+
+    /// Print current dirty state for debugging purposes.
+    pub fn print_dirty_state(&self) {
+        for (k, kind) in &self.dirty_map {
+            log::trace!("Dirty node {:?}: kind={:?}", k, kind);
+        }
+    }
+}

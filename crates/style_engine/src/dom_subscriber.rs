@@ -1,9 +1,8 @@
 use std::collections::{HashSet, HashMap};
 use anyhow::Error;
 use css::parser::parse_declarations;
-use html::dom::updating::{DOMSubscriber, DOMUpdate};
+use js::{DOMSubscriber, DOMUpdate, NodeKey};
 use crate::{NodeInfo, StyleEngine};
-use html::dom::NodeKey;
 
 impl StyleEngine {
     /// Construct a placeholder NodeInfo with empty/default fields.

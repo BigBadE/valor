@@ -1,4 +1,3 @@
-pub mod updating;
 mod printing;
 
 use anyhow::Error;
@@ -6,87 +5,9 @@ use indextree::{Arena, NodeId};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
-use crate::dom::updating::DOMUpdate;
+use js::{DOMUpdate, NodeKey, KeySpace, NodeKeyManager};
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub struct NodeKey(pub u64);
-
-impl NodeKey {
-    pub const ROOT: NodeKey = NodeKey(0);
-    #[inline]
-    pub fn pack(epoch: u16, shard: u8, counter: u64) -> Self {
-        let c = counter & ((1u64 << 40) - 1);
-        NodeKey(((epoch as u64) << 48) | ((shard as u64) << 40) | c)
-    }
-    #[inline]
-    pub fn epoch(self) -> u16 {
-        (self.0 >> 48) as u16
-    }
-    #[inline]
-    pub fn shard(self) -> u8 {
-        ((self.0 >> 40) & 0xFF) as u8
-    }
-    #[inline]
-    pub fn counter(self) -> u64 {
-        self.0 & ((1u64 << 40) - 1)
-    }
-}
-
-#[derive(Debug)]
-pub struct KeySpace {
-    epoch: u16,
-    next_shard_id: u8,
-}
-
-impl KeySpace {
-    pub fn new() -> Self {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default();
-        // Use low 16 bits of nanos+secs for a cheap epoch; good enough per-process
-        let epoch = (((now.as_secs() as u32) ^ now.subsec_nanos()) & 0xFFFF) as u16;
-        Self {
-            epoch,
-            next_shard_id: 1,
-        }
-    }
-    pub fn register_manager<L: Eq + Hash + Copy>(&mut self) -> NodeKeyManager<L> {
-        let shard = self.next_shard_id;
-        self.next_shard_id = self.next_shard_id.wrapping_add(1);
-        NodeKeyManager::new(self.epoch, shard)
-    }
-    pub fn epoch(&self) -> u16 {
-        self.epoch
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct NodeKeyManager<L: Eq + Hash + Copy> {
-    epoch: u16,
-    shard: u8,
-    counter: u64,
-    map: HashMap<L, NodeKey>,
-}
-
-impl<L: Eq + Hash + Copy> NodeKeyManager<L> {
-    fn new(epoch: u16, shard: u8) -> Self {
-        Self { epoch, shard, counter: 1, map: HashMap::new() }
-    }
-    #[inline]
-    pub fn key_of(&mut self, id: L) -> NodeKey {
-        if let Some(&k) = self.map.get(&id) { return k; }
-        let key = NodeKey::pack(self.epoch, self.shard, self.counter);
-        self.counter = self.counter.wrapping_add(1);
-        self.map.insert(id, key);
-        key
-    }
-    #[inline]
-    pub fn seed(&mut self, id: L, key: NodeKey) {
-        self.map.insert(id, key);
-    }
-}
 
 #[derive(Debug, Clone, Default)]
 pub enum NodeKind {
@@ -140,9 +61,32 @@ impl DOM {
 
     pub async fn update(&mut self) -> Result<(), Error> {
         while let Ok(batch) = self.in_receiver.try_recv() {
+            // Apply and collect simple counts for test-printing diagnostics
+            let mut insert_element_count = 0usize;
+            let mut insert_text_count = 0usize;
+            let mut set_attr_count = 0usize;
+            let mut remove_node_count = 0usize;
+            let mut end_of_document_count = 0usize;
             for update in &batch {
+                match update {
+                    DOMUpdate::InsertElement { .. } => insert_element_count += 1,
+                    DOMUpdate::InsertText { .. } => insert_text_count += 1,
+                    DOMUpdate::SetAttr { .. } => set_attr_count += 1,
+                    DOMUpdate::RemoveNode { .. } => remove_node_count += 1,
+                    DOMUpdate::EndOfDocument => end_of_document_count += 1,
+                }
                 self.apply_update(update);
             }
+            // Test printing: summarize the batch we just applied
+            log::info!(
+                "DOM.update: applied batch_size={} InsertElement={} InsertText={} SetAttr={} RemoveNode={} EndOfDocument={}",
+                batch.len(),
+                insert_element_count,
+                insert_text_count,
+                set_attr_count,
+                remove_node_count,
+                end_of_document_count
+            );
             // Send update to mirrors, ignoring it if there's no listeners.
             let _ = self.out_updater.send(batch);
         }

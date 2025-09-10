@@ -5,6 +5,9 @@ edition.workspace = true
 [dependencies]
 wgpu.workspace = true
 winit.workspace = true
-
+html.workspace = true
+js.workspace = true
 anyhow.workspace = true
+bytemuck.workspace = true
+glyphon.workspace = true
 [features]

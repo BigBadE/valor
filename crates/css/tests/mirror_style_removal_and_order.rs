@@ -1,6 +1,5 @@
 use css::CSSMirror;
-use html::dom::NodeKey;
-use html::dom::updating::{DOMSubscriber, DOMUpdate};
+use js::{NodeKey, DOMUpdate, DOMSubscriber};
 
 #[test]
 fn style_removal_retracts_rules() {

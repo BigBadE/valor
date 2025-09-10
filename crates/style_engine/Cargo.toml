@@ -5,6 +5,7 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 html.workspace = true
+js.workspace = true
 css.workspace = true
 log.workspace = true
 csscolorparser = "0.6"

@@ -20,6 +20,8 @@ cssparser = "0.35.0"
 # Rendering
 wgpu = "26.0.1"
 winit = "0.30.12"
+bytemuck = { version = "1.18.0", features = ["derive"] }
+glyphon ={ git = "https://github.com/grovesNL/glyphon", rev = "724ab57edbd6c59ba219cd99cf89925d056392db" }
 
 # Webpage handling
 url = "2.5.7"
@@ -50,6 +52,8 @@ layouter = { path = "crates/layouter" }
 page_handler = { path = "crates/page_handler" }
 wgpu_renderer = { path = "crates/wgpu_renderer" }
 style_engine = { path = "crates/style_engine" }
+js_engine_v8 = { path = "crates/js_engine_v8" }
+js = { path = "crates/js" }
 
 
 [profile.dev]

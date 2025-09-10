@@ -1,5 +1,4 @@
-use html::dom::NodeKey;
-use html::dom::updating::{DOMSubscriber, DOMUpdate};
+use js::{NodeKey, DOMUpdate, DOMSubscriber};
 use layouter::Layouter;
 use std::collections::HashMap;
 use style_engine::{ComputedStyle, Display};

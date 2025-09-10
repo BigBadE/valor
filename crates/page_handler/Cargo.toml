@@ -7,6 +7,9 @@ html.workspace = true
 css.workspace = true
 layouter.workspace = true
 style_engine.workspace = true
+wgpu_renderer.workspace = true
+js_engine_v8.workspace = true
+js.workspace = true
 
 url.workspace = true
 reqwest.workspace = true

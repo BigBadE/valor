@@ -1,7 +1,6 @@
 use css::parser::StylesheetStreamParser;
 use css::types::{Origin, Stylesheet};
-use html::dom::NodeKey;
-use html::dom::updating::{DOMSubscriber, DOMUpdate};
+use js::{NodeKey, DOMUpdate, DOMSubscriber};
 use style_engine::{ComputedStyle, Display, StyleEngine};
 
 fn build_stylesheet(css_text: &str) -> Stylesheet {

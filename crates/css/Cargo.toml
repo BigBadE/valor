@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 html.workspace = true
+js.workspace = true
 
 cssparser.workspace = true
 

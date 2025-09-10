@@ -43,7 +43,7 @@ impl App {
             pages: vec![runtime.block_on(HtmlPage::new(
                 runtime.handle(),
                 Url::parse(&format!(
-                    "file://{}/assets/test.html",
+                    "file://{}/crates/valor/tests/fixtures/layout/js/index.html",
                     env::current_dir()?.display()
                 ))?,
             ))?],
@@ -67,6 +67,7 @@ impl App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                info!("App: RedrawRequested -> render()");
                 state.render_state.render()?;
             }
             WindowEvent::Resized(size) => {
@@ -98,6 +99,20 @@ impl ApplicationHandler for App {
                     error!("Failed to apply page updates: {err:?}");
                 }
             }
+            // Build and install the current display and text lists from the first page
+            if let Some(first_page) = state.pages.get_mut(0) {
+                match first_page.display_list_snapshot() {
+                    Ok(list) => state.render_state.set_display_list(list),
+                    Err(err) => error!("Failed to build display list: {err:?}"),
+                }
+                match first_page.text_list_snapshot() {
+                    Ok(text) => state.render_state.set_text_list(text),
+                    Err(err) => error!("Failed to build text list: {err:?}"),
+                }
+            }
+            // Schedule a redraw so the latest display list is rendered
+            info!("App: requesting redraw");
+            state.render_state.get_window().request_redraw();
         }
     }
 }

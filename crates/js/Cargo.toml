@@ -1,0 +1,13 @@
+[package]
+name = "js"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[lib]
+name = "js"
+path = "src/lib.rs"

@@ -94,3 +94,6 @@ rustflags = [
 # This is not enabled by default, you need to copy this file to `config.toml`.
 [alias]
 ci = "run --package ci --"
+
+[build]
+jobs = 7

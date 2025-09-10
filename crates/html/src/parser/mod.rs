@@ -1,6 +1,6 @@
 mod html5ever_engine;
 
-use crate::dom::{NodeKey, NodeKeyManager};
+use js::{NodeKey, NodeKeyManager};
 use crate::parser::html5ever_engine::Html5everEngine;
 use anyhow::{anyhow, Error};
 use bytes::Bytes;
@@ -10,10 +10,12 @@ use std::collections::HashMap;
 use log::{trace, warn};
 use tokio::runtime::Handle;
 use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::task;
 use tokio::task::JoinHandle;
 use tokio_stream::{Stream, StreamExt};
-use crate::dom::updating::{DOMMirror, DOMSubscriber, DOMUpdate};
+use js::{DOMMirror, DOMSubscriber, DOMUpdate};
+use js::DOMUpdate::*;
 
 /// This is the parser itself, the DOM has refs here, and is
 /// responsible for sending DOM updates to the tree
@@ -196,7 +198,7 @@ impl DOMSubscriber for ParserDOMMirror {
 
 impl HTMLParser {
     pub fn parse<S>(handle: &Handle, in_updater: mpsc::Sender<Vec<DOMUpdate>>, mut keyman: NodeKeyManager<NodeId>, byte_stream: S,
-                    dom_updates: broadcast::Receiver<Vec<DOMUpdate>>) -> Self
+                    dom_updates: broadcast::Receiver<Vec<DOMUpdate>>, script_tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self
     where
         S: Stream<Item = Result<Bytes, Error>> + Send + Unpin + 'static,
     {
@@ -219,13 +221,14 @@ impl HTMLParser {
 
         // Wrap the parser mirror with DOMMirror so it can receive runtime DOM updates
         let dom_mirror = DOMMirror::new(mirror_out, dom_updates, mirror);
-        let process_handle = handle.spawn(HTMLParser::process(dom_mirror, byte_stream));
+        let process_handle = handle.spawn(HTMLParser::process(dom_mirror, byte_stream, script_tx));
         HTMLParser { process_handle }
     }
 
     pub async fn process<S: Stream<Item = Result<Bytes, Error>> + Send + Unpin + 'static>(
         dom: DOMMirror<ParserDOMMirror>,
         mut byte_stream: S,
+        script_tx: tokio::sync::mpsc::UnboundedSender<String>,
     ) -> Result<(), Error> {
         trace!("Started processing!");
         // This function is a bit complicated due to html5ever not being Send
@@ -234,7 +237,7 @@ impl HTMLParser {
 
             // Blocking parser worker: owns the non-Send html5ever engine
             let parser_worker = task::spawn_blocking(move || {
-                let mut engine = Html5everEngine::new(dom);
+                let mut engine = Html5everEngine::new(dom, script_tx);
                 loop {
                     engine.try_update_sync()?;
                     match rx.blocking_recv() {
