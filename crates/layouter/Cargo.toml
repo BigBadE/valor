@@ -3,6 +3,14 @@ name = "layouter"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Phase 0 gating flags; currently placeholders to allow conditional compilation as subsystems grow.
+default = ["style_engine_full"]
+style_engine_full = []
+shaping = []
+retained_display_list = []
+compositor = []
+
 [dependencies]
 anyhow.workspace = true
 log.workspace = true
@@ -16,3 +24,4 @@ style_engine.workspace = true
 [dev-dependencies]
 tokio.workspace = true
 env_logger.workspace = true
+criterion = "0.5"

@@ -2,6 +2,12 @@
 name = "wgpu_renderer"
 edition.workspace = true
 
+[features]
+# Phase 0: feature flags for renderer subsystems.
+default = []
+retained_display_list = []
+compositor = []
+
 [dependencies]
 wgpu.workspace = true
 winit.workspace = true
@@ -10,4 +16,3 @@ js.workspace = true
 anyhow.workspace = true
 bytemuck.workspace = true
 glyphon.workspace = true
-[features]

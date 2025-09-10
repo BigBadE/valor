@@ -1,5 +1,5 @@
 use layouter::Layouter;
-use js::{NodeKey, DOMUpdate, DOMSubscriber};
+use js::{NodeKey, DOMUpdate};
 
 fn contains(kind: layouter::DirtyKind, needle: layouter::DirtyKind) -> bool { kind.contains(needle) }
 

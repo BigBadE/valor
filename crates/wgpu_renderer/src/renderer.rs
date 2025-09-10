@@ -1,6 +1,5 @@
 use anyhow::Error;
 use js::{DOMSubscriber, DOMUpdate, NodeKey};
-use js::DOMUpdate::*;
 use std::collections::HashMap;
 
 /// A simple rectangle draw command in device-independent pixel space.

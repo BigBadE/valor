@@ -1,4 +1,4 @@
-use js::{NodeKey, DOMUpdate, DOMSubscriber};
+use js::{NodeKey, DOMUpdate};
 use layouter::Layouter;
 use std::collections::HashMap;
 use style_engine::{ComputedStyle, Display};

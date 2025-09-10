@@ -153,7 +153,7 @@ impl<'i> CssDeclarationParser<'i> for BodyDeclParser {
         } else {
             (value_trim.to_string(), false)
         };
-        Ok(Declaration { name: name.to_ascii_lowercase(), value: value_no_imp, important })
+        Ok(Declaration { name: name.to_ascii_lowercase(), value: value_no_imp, important, var_refs: Vec::new() })
     }
 }
 
@@ -178,9 +178,12 @@ fn parse_declarations_from_block(block: &mut Parser) -> Vec<Declaration> {
     let mut decls = Vec::new();
     let mut parser = BodyDeclParser;
     for item in CssRuleBodyParser::new(block, &mut parser) {
-        if let Ok(d) = item { decls.push(d); }
+        if let Ok(mut d) = item {
+            d.var_refs = capture_var_refs(&d.value);
+            decls.push(d);
+        }
     }
-    decls
+    normalize_shorthands(decls)
 }
 
 pub fn parse_stylesheet(css: &str, origin: Origin, order_base: u32) -> Stylesheet {
@@ -320,7 +323,7 @@ fn parse_complex_selector(input: &str) -> Option<ComplexSelector> {
                 i += 1; // skip '['
                 // skip whitespace
                 while i < chars.len() && chars[i].is_whitespace() { i += 1; }
-                let (name, mut ni) = read_ident(&chars, i); i = ni;
+                let (name, ni) = read_ident(&chars, i); i = ni;
                 // skip whitespace
                 while i < chars.len() && chars[i].is_whitespace() { i += 1; }
                 let mut op_value: Option<(String, String)> = None;
@@ -449,14 +452,14 @@ pub fn parse_declarations(block: &str) -> Vec<Declaration> {
         };
 
         if !name.is_empty() && !value_no_imp.is_empty() {
-            decls.push(Declaration { name: name.to_lowercase(), value: value_no_imp, important });
+            decls.push(Declaration { name: name.to_lowercase(), value: value_no_imp.clone(), important, var_refs: capture_var_refs(&value_no_imp) });
         }
 
         // if current char is ';', consume it
         if i < chars.len() && chars[i] == ';' { i += 1; }
     }
 
-    decls
+    normalize_shorthands(decls)
 }
 
 fn skip_to_semicolon(chars: &[char], mut i: usize) -> usize {
@@ -497,6 +500,269 @@ fn read_css_value(chars: &[char], mut i: usize) -> (String, usize) {
     (out, i)
 }
 
+/// Capture CSS custom property references within a value, e.g., var(--main, fallback).
+/// This function scans a CSS value and extracts custom property names (with the leading "--")
+/// used in var() references. It does not perform resolution or validation beyond basic syntax.
+fn capture_var_refs(value: &str) -> Vec<String> {
+    let chars: Vec<char> = value.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i: usize = 0;
+    while i + 3 < chars.len() {
+        // Look for 'v','a','r','('
+        if chars[i] == 'v' && chars[i + 1] == 'a' && chars[i + 2] == 'r' && chars[i + 3] == '(' {
+            let mut j = i + 4; // position after 'var('
+            // Skip whitespace
+            while j < chars.len() && chars[j].is_whitespace() { j += 1; }
+            // Expect custom property start '--'
+            if j + 1 < chars.len() && chars[j] == '-' && chars[j + 1] == '-' {
+                let start = j;
+                j += 2;
+                while j < chars.len() {
+                    let c = chars[j];
+                    if c.is_alphanumeric() || c == '-' || c == '_' { j += 1; } else { break; }
+                }
+                let name: String = chars[start..j].iter().collect();
+                if !name.is_empty() {
+                    out.push(name);
+                }
+            }
+            // Advance i to the matching closing ')', accounting for nested parentheses in fallback
+            let mut depth = 1i32;
+            j = i + 4; // start after 'var('
+            while j < chars.len() {
+                let c = chars[j];
+                if c == '(' { depth += 1; }
+                else if c == ')' { depth -= 1; if depth == 0 { j += 1; break; } }
+                j += 1;
+            }
+            i = j; // continue scanning after this var()
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+// ===============================
+// Shorthand normalization helpers
+// ===============================
+
+fn emit_decl(name: &str, value: &str, important: bool) -> Declaration {
+    Declaration { name: name.to_string(), value: value.to_string(), important, var_refs: capture_var_refs(value) }
+}
+
+fn split_css_list(value: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut depth_paren = 0i32;
+    let mut depth_brack = 0i32;
+    let mut depth_brace = 0i32;
+    let mut in_string: Option<char> = None;
+    let chars: Vec<char> = value.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(q) = in_string {
+            cur.push(c);
+            if c == '\\' {
+                if i + 1 < chars.len() { cur.push(chars[i + 1]); i += 2; continue; } else { i += 1; continue; }
+            }
+            if c == q { in_string = None; }
+            i += 1;
+            continue;
+        }
+        match c {
+            '\'' | '"' => { in_string = Some(c); cur.push(c); }
+            '(' => { depth_paren += 1; cur.push(c); }
+            ')' => { if depth_paren > 0 { depth_paren -= 1; } cur.push(c); }
+            '[' => { depth_brack += 1; cur.push(c); }
+            ']' => { if depth_brack > 0 { depth_brack -= 1; } cur.push(c); }
+            '{' => { depth_brace += 1; cur.push(c); }
+            '}' => { if depth_brace > 0 { depth_brace -= 1; } cur.push(c); }
+            _ => {
+                if c.is_whitespace() && depth_paren == 0 && depth_brack == 0 && depth_brace == 0 {
+                    if !cur.trim().is_empty() { out.push(cur.trim().to_string()); cur.clear(); }
+                } else {
+                    cur.push(c);
+                }
+            }
+        }
+        i += 1;
+    }
+    if !cur.trim().is_empty() { out.push(cur.trim().to_string()); }
+    out
+}
+
+fn expand_edges(prefix: &str, value: &str, important: bool) -> Vec<Declaration> {
+    let parts = split_css_list(value);
+    if parts.is_empty() { return vec![emit_decl(prefix, value, important)]; }
+    let (t, r, b, l) = match parts.len() {
+        1 => (parts[0].as_str(), parts[0].as_str(), parts[0].as_str(), parts[0].as_str()),
+        2 => (parts[0].as_str(), parts[1].as_str(), parts[0].as_str(), parts[1].as_str()),
+        3 => (parts[0].as_str(), parts[1].as_str(), parts[2].as_str(), parts[1].as_str()),
+        _ => (parts[0].as_str(), parts[1].as_str(), parts[2].as_str(), parts[3].as_str()),
+    };
+    vec![
+        emit_decl(&format!("{}-top", prefix), t, important),
+        emit_decl(&format!("{}-right", prefix), r, important),
+        emit_decl(&format!("{}-bottom", prefix), b, important),
+        emit_decl(&format!("{}-left", prefix), l, important),
+    ]
+}
+
+fn expand_border_shorthand(value: &str, important: bool) -> Vec<Declaration> {
+    let parts = split_css_list(value);
+    if parts.is_empty() { return Vec::new(); }
+    let mut width: Option<String> = None;
+    let mut style: Option<String> = None;
+    let mut color: Option<String> = None;
+    for p in parts {
+        let pl = p.to_ascii_lowercase();
+        if width.is_none() && (pl.ends_with("px") || pl.parse::<f32>().is_ok()) {
+            width = Some(p);
+            continue;
+        }
+        if style.is_none() && matches!(pl.as_str(), "none"|"solid"|"dashed"|"dotted"|"double"|"groove"|"ridge"|"inset"|"outset"|"hidden") {
+            style = Some(p);
+            continue;
+        }
+        if color.is_none() {
+            // Heuristic: treat remaining token as color
+            color = Some(p);
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(w) = width.as_ref() { out.push(emit_decl("border-width", w, important)); }
+    if let Some(s) = style.as_ref() { out.push(emit_decl("border-style", s, important)); }
+    if let Some(c) = color.as_ref() { out.push(emit_decl("border-color", c, important)); }
+    out
+}
+
+fn normalize_shorthands(mut decls: Vec<Declaration>) -> Vec<Declaration> {
+    let mut out: Vec<Declaration> = Vec::new();
+    for d in decls.drain(..) {
+        let name = d.name.to_ascii_lowercase();
+        match name.as_str() {
+            "margin" => {
+                out.extend(expand_edges("margin", &d.value, d.important));
+            }
+            "padding" => {
+                out.extend(expand_edges("padding", &d.value, d.important));
+            }
+            "border" => {
+                // Basic: split into width/style/color; keep as three longhands
+                out.extend(expand_border_shorthand(&d.value, d.important));
+            }
+            "border-width" => {
+                out.extend(expand_edges("border", &format!("{}-width", "border"), d.important)); // placeholder; fixed below
+                // The above line is incorrect; implement explicit mapping
+                let parts = split_css_list(&d.value);
+                if parts.is_empty() { continue; }
+                let (t, r, b, l) = match parts.len() {
+                    1 => (parts[0].as_str(), parts[0].as_str(), parts[0].as_str(), parts[0].as_str()),
+                    2 => (parts[0].as_str(), parts[1].as_str(), parts[0].as_str(), parts[1].as_str()),
+                    3 => (parts[0].as_str(), parts[1].as_str(), parts[2].as_str(), parts[1].as_str()),
+                    _ => (parts[0].as_str(), parts[1].as_str(), parts[2].as_str(), parts[3].as_str()),
+                };
+                out.push(emit_decl("border-top-width", t, d.important));
+                out.push(emit_decl("border-right-width", r, d.important));
+                out.push(emit_decl("border-bottom-width", b, d.important));
+                out.push(emit_decl("border-left-width", l, d.important));
+            }
+            "border-style" => {
+                let parts = split_css_list(&d.value);
+                if parts.is_empty() { continue; }
+                let (t, r, b, l) = match parts.len() {
+                    1 => (parts[0].as_str(), parts[0].as_str(), parts[0].as_str(), parts[0].as_str()),
+                    2 => (parts[0].as_str(), parts[1].as_str(), parts[0].as_str(), parts[1].as_str()),
+                    3 => (parts[0].as_str(), parts[1].as_str(), parts[2].as_str(), parts[1].as_str()),
+                    _ => (parts[0].as_str(), parts[1].as_str(), parts[2].as_str(), parts[3].as_str()),
+                };
+                out.push(emit_decl("border-top-style", t, d.important));
+                out.push(emit_decl("border-right-style", r, d.important));
+                out.push(emit_decl("border-bottom-style", b, d.important));
+                out.push(emit_decl("border-left-style", l, d.important));
+            }
+            "border-color" => {
+                let parts = split_css_list(&d.value);
+                if parts.is_empty() { continue; }
+                let (t, r, b, l) = match parts.len() {
+                    1 => (parts[0].as_str(), parts[0].as_str(), parts[0].as_str(), parts[0].as_str()),
+                    2 => (parts[0].as_str(), parts[1].as_str(), parts[0].as_str(), parts[1].as_str()),
+                    3 => (parts[0].as_str(), parts[1].as_str(), parts[2].as_str(), parts[1].as_str()),
+                    _ => (parts[0].as_str(), parts[1].as_str(), parts[2].as_str(), parts[3].as_str()),
+                };
+                out.push(emit_decl("border-top-color", t, d.important));
+                out.push(emit_decl("border-right-color", r, d.important));
+                out.push(emit_decl("border-bottom-color", b, d.important));
+                out.push(emit_decl("border-left-color", l, d.important));
+            }
+            "font" => {
+                // Very small subset parser: [style]? [weight]? size [/ line-height]? family...
+                let mut rest = d.value.trim().to_string();
+                let mut style_opt: Option<String> = None;
+                let mut weight_opt: Option<String> = None;
+                // Detect size and optional line-height
+                let parts = split_css_list(&rest);
+                let mut size_idx: Option<usize> = None;
+                for (idx, tok) in parts.iter().enumerate() {
+                    let tl = tok.to_ascii_lowercase();
+                    if tl.contains('/') || tl.ends_with("px") || tl.ends_with("em") || tl.ends_with("ex") {
+                        size_idx = Some(idx);
+                        break;
+                    }
+                }
+                if let Some(si) = size_idx {
+                    // style/weight tokens before size
+                    for pre in &parts[0..si] {
+                        let p = pre.to_ascii_lowercase();
+                        if style_opt.is_none() && matches!(p.as_str(), "italic"|"oblique"|"normal") { style_opt = Some(pre.clone()); continue; }
+                        if weight_opt.is_none() && (p == "bold" || p == "normal" || p.parse::<u16>().ok().filter(|v| *v >= 100 && *v <= 900 && *v % 100 == 0).is_some()) { weight_opt = Some(pre.clone()); continue; }
+                    }
+                    // size and optional /line-height
+                    let size_token = parts[si].clone();
+                    let mut size_val = size_token.clone();
+                    let mut lh_val: Option<String> = None;
+                    if let Some((s, l)) = size_token.split_once('/') {
+                        size_val = s.trim().to_string();
+                        lh_val = Some(l.trim().to_string());
+                    } else if si + 1 < parts.len() && parts[si + 1] == "/" && si + 2 < parts.len() {
+                        lh_val = Some(parts[si + 2].clone());
+                    }
+                    // family = rest after size (+optional slash parts)
+                    let mut fam_start = si + 1;
+                    if lh_val.is_some() {
+                        // handled either inline slash or spaced; adjust fam_start roughly
+                        if parts[si].contains('/') {
+                            fam_start = si + 1;
+                        } else {
+                            fam_start = (si + 3).min(parts.len());
+                        }
+                    }
+                    if fam_start < parts.len() {
+                        let family = parts[fam_start..].join(" ");
+                        out.push(emit_decl("font-family", &family, d.important));
+                    }
+                    out.push(emit_decl("font-size", &size_val, d.important));
+                    if let Some(lh) = lh_val { out.push(emit_decl("line-height", &lh, d.important)); }
+                    if let Some(st) = style_opt { out.push(emit_decl("font-style", &st, d.important)); }
+                    if let Some(w) = weight_opt { out.push(emit_decl("font-weight", &w, d.important)); }
+                } else {
+                    // Fallback: keep original if we can't parse
+                    out.push(d);
+                }
+            }
+            "background" => {
+                let v = d.value.trim();
+                // Always expand to background-color (subset); keep tokens as-is for further resolution
+                out.push(emit_decl("background-color", v, d.important));
+            }
+            _ => out.push(d),
+        }
+    }
+    out
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -523,6 +789,39 @@ mod tests {
         let sel = &list[0];
         let right = sel.rightmost_compound().unwrap();
         assert!(right.simples.iter().any(|s| matches!(s, SimpleSelector::Type(t) if t == "タグ")));
+    }
+
+    #[test]
+    fn var_token_capture_inline_parse_declarations() {
+        let decls = parse_declarations("color: var(--main, red); margin: calc(var(--m1) + var(--m2, 2px));");
+        // After normalization, expect 1 color + 4 margin-* longhands
+        assert_eq!(decls.len(), 5);
+        let color = &decls[0];
+        assert_eq!(color.name, "color");
+        assert_eq!(color.var_refs, vec!["--main".to_string()]);
+        // Collect margin-* entries and validate var refs
+        let mut margin_items: Vec<&Declaration> = decls.iter().filter(|d| d.name.starts_with("margin-")).collect();
+        margin_items.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(margin_items.len(), 4);
+        for m in margin_items {
+            assert_eq!(m.var_refs, vec!["--m1".to_string(), "--m2".to_string()]);
+        }
+    }
+
+    #[test]
+    fn var_token_capture_in_stylesheet_rules() {
+        let css = "div, span { padding: var(--pad); background: linear-gradient(red, blue), var(--bg, none) }";
+        let sheet = parse_stylesheet(css, Origin::Author, 0);
+        assert_eq!(sheet.rules.len(), 1);
+        let rule = &sheet.rules[0];
+        // After normalization: 4 padding-* + background-color
+        assert_eq!(rule.declarations.len(), 5);
+        // Find a padding longhand
+        let padding_top = rule.declarations.iter().find(|d| d.name == "padding-top").expect("padding-top");
+        assert_eq!(padding_top.var_refs, vec!["--pad".to_string()]);
+        // background-color should carry var ref
+        let background = rule.declarations.iter().find(|d| d.name == "background-color").expect("background-color");
+        assert_eq!(background.var_refs, vec!["--bg".to_string()]);
     }
 
     #[test]

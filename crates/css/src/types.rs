@@ -12,6 +12,8 @@ pub struct Declaration {
     pub name: String,
     pub value: String,
     pub important: bool,
+    /// Custom property references captured from the value (e.g., "--main" in var(--main)).
+    pub var_refs: Vec<String>,
 }
 
 #[derive(Clone, Debug)]

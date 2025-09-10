@@ -213,7 +213,7 @@ fn fuzz_basic_invariants_hold() {
             // Color bytes are already u8, but we ensure no unexpected values via simple checks.
             // Display must be one of the enum variants we know; matching forces exhaustive handling.
             match display {
-                Display::None | Display::Block | Display::Inline => {}
+                Display::None | Display::Block | Display::Inline | Display::Flex | Display::InlineFlex => {}
             }
         }
     }

@@ -199,7 +199,10 @@ impl HtmlPage {
         // Forward current stylesheet to style engine and drain it
         let current_styles = self.css_mirror.mirror_mut().styles().clone();
         self.style_engine_mirror.mirror_mut().replace_stylesheet(current_styles.clone());
+        // Drain DOM-driven style updates first
         self.style_engine_mirror.update().await?;
+        // Coalesce and recompute dirty styles once per tick after draining updates
+        self.style_engine_mirror.mirror_mut().recompute_dirty();
 
         // Forward current stylesheet and computed styles to layouter only when styles changed
         let style_changed = self.style_engine_mirror.mirror_mut().take_and_clear_style_changed();

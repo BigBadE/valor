@@ -2,6 +2,11 @@
 name = "style_engine"
 edition.workspace = true
 
+[features]
+# Phase 0: feature gate to allow a reduced style engine in the future.
+default = ["full"]
+full = []
+
 [dependencies]
 anyhow.workspace = true
 html.workspace = true

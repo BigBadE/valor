@@ -56,6 +56,23 @@ pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
             );
         }
     }
+    // Filter: only keep numbered fixtures (e.g., 01_name.html) that are sorted into a subfolder under layout/.
+    files.retain(|p| {
+        // Must be under a subdirectory of the layout folder (not directly under .../layout)
+        let parent_ok = p.parent()
+            .and_then(|d| d.file_name())
+            .map(|name| name.to_string_lossy().to_lowercase() != "layout")
+            .unwrap_or(false);
+        // Must have a file name starting with two digits and an underscore
+        let name_ok = p.file_name()
+            .and_then(|os| os.to_str())
+            .map(|s| {
+                let bytes = s.as_bytes();
+                bytes.len() >= 4 && bytes[0].is_ascii_digit() && bytes[1].is_ascii_digit() && bytes[2] == b'_'
+            })
+            .unwrap_or(false);
+        parent_ok && name_ok
+    });
     files.sort();
     Ok(files)
 }

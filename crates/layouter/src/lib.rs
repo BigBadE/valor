@@ -6,7 +6,7 @@ use std::time::Instant;
 use css::types::Stylesheet;
 use style_engine::ComputedStyle;
 
-mod layout;
+pub mod layout;
 mod printing;
 
 pub use layout::LayoutRect;

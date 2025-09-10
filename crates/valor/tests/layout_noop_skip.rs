@@ -1,5 +1,4 @@
 use anyhow::Error;
-use url::Url;
 use crate::common::{create_page, update_until_finished_simple};
 use tokio::runtime::Runtime;
 
@@ -16,8 +15,8 @@ fn layout_is_skipped_on_noop_tick() -> Result<(), Error> {
     let rt = Runtime::new()?;
     // Use the JS fixture already in the repository
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests").join("fixtures").join("layout").join("js").join("index.html");
-    let url = crate::common::to_file_url(&path)?;
+        .join("tests").join("fixtures").join("layout").join("basics").join("01_auto_width.html");
+    let url = common::to_file_url(&path)?;
     let mut page = create_page(&rt, url)?;
 
     // Drive parsing & initial layout to completion

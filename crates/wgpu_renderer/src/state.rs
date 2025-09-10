@@ -27,6 +27,7 @@ pub struct RenderState {
     swash_cache: SwashCache,
     text_atlas: TextAtlas,
     text_renderer: TextRenderer,
+    #[allow(dead_code)]
     glyphon_cache: Cache,
     viewport: Viewport,
 }
