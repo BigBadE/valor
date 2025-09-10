@@ -10,12 +10,10 @@ use std::collections::HashMap;
 use log::{trace, warn};
 use tokio::runtime::Handle;
 use tokio::sync::{broadcast, mpsc};
-use tokio::sync::mpsc::UnboundedSender;
 use tokio::task;
 use tokio::task::JoinHandle;
 use tokio_stream::{Stream, StreamExt};
 use js::{DOMMirror, DOMSubscriber, DOMUpdate};
-use js::DOMUpdate::*;
 
 /// This is the parser itself, the DOM has refs here, and is
 /// responsible for sending DOM updates to the tree
