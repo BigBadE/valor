@@ -138,24 +138,27 @@ impl HtmlPage {
         self.loader.is_none()
     }
 
-    pub async fn update(&mut self) -> Result<(), Error> {
-        // Drain and execute any pending inline scripts from the parser
+    /// Execute any pending inline scripts from the parser
+    fn execute_pending_scripts(&mut self) {
         loop {
             match self.script_rx.try_recv() {
-                Ok(script_src) => {
-                    let url = format!("inline:script-{}", self.script_counter);
+                Ok(script_source) => {
+                    let script_url = format!("inline:script-{}", self.script_counter);
                     self.script_counter = self.script_counter.wrapping_add(1);
                     // Test printing: log inline script execution
-                    info!("HtmlPage: executing {} (length={} bytes)", url, script_src.len());
-                    let _ = self.js_engine.eval_script(&script_src, &url);
+                    info!("HtmlPage: executing {} (length={} bytes)", script_url, script_source.len());
+                    let _ = self.js_engine.eval_script(&script_source, &script_url);
                     let _ = self.js_engine.run_jobs();
                 }
                 Err(UnboundedTryRecvError::Empty) => break,
                 Err(UnboundedTryRecvError::Disconnected) => break,
             }
         }
+    }
 
-        if let Some(true) = self.loader.as_ref().map(|l| l.is_finished()) {
+    /// Finalize DOM loading if the loader has finished
+    async fn finalize_dom_loading_if_needed(&mut self) -> Result<(), Error> {
+        if let Some(true) = self.loader.as_ref().map(|loader| loader.is_finished()) {
             let loader = self
                 .loader
                 .take()
@@ -163,13 +166,11 @@ impl HtmlPage {
             trace!("Loader finished, finalizing DOM");
             loader.finish().await?;
         }
+        Ok(())
+    }
 
-        // Apply any pending DOM updates
-        self.dom.update().await?;
-        // Keep the DOM index mirror in sync before any JS queries (e.g., getElementById)
-        self.dom_index_mirror.update().await?;
-
-        // If parsing is fully finished and we haven't fired DOMContentLoaded yet, dispatch it now.
+    /// Handle DOM content loaded event if parsing is finished and not yet fired
+    async fn handle_dom_content_loaded_if_needed(&mut self) -> Result<(), Error> {
         if self.loader.is_none() && !self.dom_content_loaded_fired {
             info!("HtmlPage: dispatching DOMContentLoaded");
             let _ = self
@@ -185,7 +186,11 @@ impl HtmlPage {
             // Keep the DOM index mirror in sync after listener-driven changes
             self.dom_index_mirror.update().await?;
         }
+        Ok(())
+    }
 
+    /// Process CSS and style updates, returning whether styles have changed
+    async fn process_css_and_styles(&mut self) -> Result<bool, Error> {
         // Drain DOM index mirror to keep getElement* lookups up-to-date
         self.dom_index_mirror.update().await?;
         // Drain CSS mirror after DOM broadcast
@@ -200,9 +205,9 @@ impl HtmlPage {
         let style_changed = self.style_engine_mirror.mirror_mut().take_and_clear_style_changed();
         if style_changed {
             // Provide computed styles and stylesheet snapshot
-            let computed = self.style_engine_mirror.mirror_mut().computed_snapshot();
+            let computed_styles = self.style_engine_mirror.mirror_mut().computed_snapshot();
             self.layouter_mirror.mirror_mut().set_stylesheet(current_styles);
-            self.layouter_mirror.mirror_mut().set_computed_styles(computed);
+            self.layouter_mirror.mirror_mut().set_computed_styles(computed_styles);
             // Mark nodes whose computed styles changed as STYLE-dirty in layouter
             let changed_nodes = self.style_engine_mirror.mirror_mut().take_changed_nodes();
             if !changed_nodes.is_empty() {
@@ -211,21 +216,28 @@ impl HtmlPage {
         }
         // Drain layouter updates after DOM broadcast
         self.layouter_mirror.update().await?;
-        // Compute layout only when there were style or DOM changes (incremental groundwork)
+
+        Ok(style_changed)
+    }
+
+    /// Compute layout with debouncing logic and forward dirty rectangles to renderer
+    fn compute_layout_with_debouncing(&mut self, style_changed: bool) -> Result<(), Error> {
+        // Determine if layout should run based on style or DOM changes
         let mut should_layout = style_changed || self.layouter_mirror.mirror_mut().take_and_clear_layout_dirty();
+        
         // Optional debounce: coalesce micro-changes if configured
         if should_layout {
-            if let Some(debounce) = self.layout_debounce {
-                let now = std::time::Instant::now();
+            if let Some(debounce_duration) = self.layout_debounce {
+                let current_time = std::time::Instant::now();
                 match self.layout_debounce_deadline {
                     None => {
-                        self.layout_debounce_deadline = Some(now + debounce);
+                        self.layout_debounce_deadline = Some(current_time + debounce_duration);
                         // Defer layout this tick
                         should_layout = false;
-                        trace!("Debouncing layout for {:?}", debounce);
+                        trace!("Debouncing layout for {:?}", debounce_duration);
                     }
                     Some(deadline) => {
-                        if now < deadline {
+                        if current_time < deadline {
                             should_layout = false;
                         } else {
                             self.layout_debounce_deadline = None;
@@ -234,29 +246,61 @@ impl HtmlPage {
                 }
             }
         }
+        
         if should_layout {
             let node_count = self.layouter_mirror.mirror_mut().compute_layout();
-            let lay = self.layouter_mirror.mirror_mut();
-            let reflowed = lay.perf_nodes_reflowed_last();
-            let dirty_subtrees = lay.perf_dirty_subtrees_last();
-            let t_last = lay.perf_layout_time_last_ms();
-            let updates_applied = lay.perf_updates_applied();
+            let layouter = self.layouter_mirror.mirror_mut();
+            let nodes_reflowed = layouter.perf_nodes_reflowed_last();
+            let dirty_subtrees = layouter.perf_dirty_subtrees_last();
+            let layout_time_ms = layouter.perf_layout_time_last_ms();
+            let updates_applied = layouter.perf_updates_applied();
             info!(
                 "Layout: processed={node_count}, reflowed_nodes={}, dirty_subtrees={}, time_ms={}, updates_applied_total={}",
-                reflowed, dirty_subtrees, t_last, updates_applied
+                nodes_reflowed, dirty_subtrees, layout_time_ms, updates_applied
             );
-            // Forward dirty rectangles to the renderer for partial redraws (Phase 5)
-            let dirty_rects_i32 = lay.take_dirty_rects();
-            if !dirty_rects_i32.is_empty() {
-                let dirty_rects: Vec<DrawRect> = dirty_rects_i32
+            
+            // Forward dirty rectangles to the renderer for partial redraws
+            let dirty_rectangles_i32 = layouter.take_dirty_rects();
+            if !dirty_rectangles_i32.is_empty() {
+                let dirty_rectangles: Vec<DrawRect> = dirty_rectangles_i32
                     .into_iter()
-                    .map(|r| DrawRect { x: r.x as f32, y: r.y as f32, width: r.width as f32, height: r.height as f32, color: [0.0, 0.0, 0.0] })
+                    .map(|rect| DrawRect { 
+                        x: rect.x as f32, 
+                        y: rect.y as f32, 
+                        width: rect.width as f32, 
+                        height: rect.height as f32, 
+                        color: [0.0, 0.0, 0.0] 
+                    })
                     .collect();
-                self.renderer_mirror.mirror_mut().set_dirty_rects(dirty_rects);
+                self.renderer_mirror.mirror_mut().set_dirty_rects(dirty_rectangles);
             }
         } else {
             trace!("Layout skipped: no DOM/style changes in this tick");
         }
+        
+        Ok(())
+    }
+
+    pub async fn update(&mut self) -> Result<(), Error> {
+        // Drain and execute any pending inline scripts from the parser
+        self.execute_pending_scripts();
+
+        // Finalize DOM loading if the loader has finished
+        self.finalize_dom_loading_if_needed().await?;
+
+        // Apply any pending DOM updates
+        self.dom.update().await?;
+        // Keep the DOM index mirror in sync before any JS queries (e.g., getElementById)
+        self.dom_index_mirror.update().await?;
+
+        // Handle DOM content loaded event if needed
+        self.handle_dom_content_loaded_if_needed().await?;
+
+        // Process CSS and style updates
+        let style_changed = self.process_css_and_styles().await?;
+        
+        // Compute layout with debouncing and forward dirty rectangles
+        self.compute_layout_with_debouncing(style_changed)?;
 
         // Drain renderer mirror after DOM broadcast so the scene graph stays in sync
         self.renderer_mirror.update().await?;
@@ -310,7 +354,7 @@ impl HtmlPage {
         // Compute geometry for all nodes
         let rects = self.layouter_mirror.mirror_mut().compute_layout_geometry();
         // Access computed styles (already forwarded to layouter in update())
-        let computed_map = self.layouter_mirror.mirror_mut().computed_styles().clone();
+        let _computed_map = self.layouter_mirror.mirror_mut().computed_styles().clone();
         // Use stable, document-order traversal from the layouter snapshot to avoid flicker
         let snapshot = self.layouter_mirror.mirror_mut().snapshot();
 

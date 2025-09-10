@@ -392,7 +392,7 @@ impl Layouter {
         let start = Instant::now();
         // Keep old cache for diffing
         let old_cache = self.cached_layout.clone();
-        let count = layout::compute_layout(self);
+        let count = layout::compute_simple_layout(self);
         let new_rects = layout::compute_layout_geometry(self);
         // Compute dirty rects by comparing old and new per node
         let mut dirty: Vec<LayoutRect> = Vec::new();
