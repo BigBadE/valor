@@ -66,7 +66,7 @@ impl TreeSink for ValorSink {
         };
         // Track the element's qualified name for correct elem_name reporting
         self.element_names.borrow_mut().insert(id, name.clone());
-        let mut is_script = name.ns == ns!(html) && name.local.eq(&local_name!("script"));
+        let is_script = name.ns == ns!(html) && name.local.eq(&local_name!("script"));
         let mut has_src = false;
         for a in attrs {
             let local = a.name.local.to_string();
