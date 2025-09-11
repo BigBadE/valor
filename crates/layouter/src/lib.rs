@@ -1,7 +1,7 @@
 use anyhow::Error;
 use js::{DOMUpdate, DOMSubscriber, DOMMirror, NodeKey};
 use log::{debug, trace, warn};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque, HashSet};
 use std::time::Instant;
 use css::types::Stylesheet;
 use style_engine::ComputedStyle;
@@ -51,8 +51,14 @@ pub struct Layouter {
     last_change_epoch: u64,
     /// Per-node dirty flags used for incremental reflow (groundwork only).
     dirty_map: HashMap<NodeKey, DirtyKind>,
+    /// A queue of dirty roots to schedule incremental reflow in a stable order.
+    dirty_roots_queue: VecDeque<NodeKey>,
+    /// Set for O(1) containment checks for the dirty roots queue.
+    dirty_root_set: HashSet<NodeKey>,
     /// Cached per-node layout geometry for incremental reflow.
     cached_layout: HashMap<NodeKey, LayoutRect>,
+    /// Cached ancestor constraints per node: (inline_available, block_available).
+    constraints_cache: HashMap<NodeKey, (i32, i32)>,
     /// Dirty rectangles produced by the last layout computation (for renderer integration).
     dirty_rects: Vec<LayoutRect>,
     /// Telemetry: total number of DOM updates applied to the layouter mirror.
@@ -69,9 +75,11 @@ pub struct Layouter {
     perf_layout_time_total_ms: u64,
 }
 
-/// Kinds of dirtiness that can affect layout. Multiple flags can be combined.
+/// Kinds of dirtiness and metadata flags that can affect layout and paint.
+/// Multiple flags can be combined. For backward-compatibility, GEOMETRY and
+/// LAYOUT share the same bit.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct DirtyKind(u8);
+pub struct DirtyKind(u32);
 
 impl DirtyKind {
     /// No dirtiness.
@@ -80,13 +88,27 @@ impl DirtyKind {
     pub const STRUCTURE: DirtyKind = DirtyKind(1 << 0);
     /// Style changes: attributes/computed styles affecting layout.
     pub const STYLE: DirtyKind = DirtyKind(1 << 1);
-    /// Geometry changes: size/position potentially altered.
+    /// Layout/geometry changes: size/position potentially altered.
+    pub const LAYOUT: DirtyKind = DirtyKind(1 << 2);
+    /// Alias for legacy callers; same bit as LAYOUT.
     pub const GEOMETRY: DirtyKind = DirtyKind(1 << 2);
+    /// Paint-only changes: color/decoration changes that do not affect layout.
+    pub const PAINT: DirtyKind = DirtyKind(1 << 3);
+
+    // Axis qualifiers (optional metadata)
+    pub const INLINE_AXIS: DirtyKind = DirtyKind(1 << 4);
+    pub const BLOCK_AXIS: DirtyKind = DirtyKind(1 << 5);
+
+    // Reason qualifiers (optional metadata)
+    pub const REASON_TEXT: DirtyKind = DirtyKind(1 << 6);
+    pub const REASON_ATTR: DirtyKind = DirtyKind(1 << 7);
+    pub const REASON_STYLE: DirtyKind = DirtyKind(1 << 8);
+    pub const REASON_STRUCTURE: DirtyKind = DirtyKind(1 << 9);
 
     /// Combine two dirty kinds.
     pub fn or(self, other: DirtyKind) -> DirtyKind { DirtyKind(self.0 | other.0) }
-    /// Check if a flag is present.
-    pub fn contains(self, other: DirtyKind) -> bool { (self.0 & other.0) != 0 }
+    /// Check if all flags in `other` are present.
+    pub fn contains(self, other: DirtyKind) -> bool { (self.0 & other.0) == other.0 }
 }
 
 impl Layouter {
@@ -103,7 +125,10 @@ impl Layouter {
             layout_dirty: false,
             last_change_epoch: 0,
             dirty_map: HashMap::new(),
+            dirty_roots_queue: VecDeque::new(),
+            dirty_root_set: HashSet::new(),
             cached_layout: HashMap::new(),
+            constraints_cache: HashMap::new(),
             dirty_rects: Vec::new(),
             perf_updates_applied: 0,
             perf_nodes_reflowed_last: 0,
@@ -126,8 +151,31 @@ impl Layouter {
     pub fn mark_dirty(&mut self, node: NodeKey, kind: DirtyKind) {
         let entry = self.dirty_map.entry(node).or_insert(DirtyKind::NONE);
         *entry = entry.or(kind);
+        // Enqueue as a dirty root candidate for STRUCTURE or STYLE changes
+        if kind.contains(DirtyKind::STRUCTURE) || kind.contains(DirtyKind::STYLE) {
+            self.enqueue_dirty_root_candidate(node);
+        }
         self.layout_dirty = true;
         self.last_change_epoch = self.last_change_epoch.wrapping_add(1);
+    }
+
+    /// Enqueue a node as a dirty root candidate (deduplicated). This queue will be
+    /// compacted into minimal roots before reflow.
+    fn enqueue_dirty_root_candidate(&mut self, node: NodeKey) {
+        if self.dirty_root_set.contains(&node) { return; }
+        self.dirty_roots_queue.push_back(node);
+        self.dirty_root_set.insert(node);
+    }
+
+    /// Rebuild the dirty roots queue from the current dirty_map to ensure minimal
+    /// roots (exclude nodes whose parent is also dirty in STRUCTURE or STYLE).
+    fn rebuild_dirty_roots_queue(&mut self) {
+        self.dirty_roots_queue.clear();
+        self.dirty_root_set.clear();
+        for r in self.dirty_roots() {
+            self.dirty_roots_queue.push_back(r);
+            self.dirty_root_set.insert(r);
+        }
     }
 
     /// Mark all ancestors of the given node (up to the root) as dirty with the provided kind(s).
@@ -153,8 +201,18 @@ impl Layouter {
     /// Mark multiple nodes as style-dirty and mark ancestors geometry-dirty (used when StyleEngine reports changes).
     pub fn mark_nodes_style_dirty(&mut self, nodes: &[NodeKey]) {
         for &node in nodes {
-            self.mark_dirty(node, DirtyKind::STYLE);
-            self.mark_ancestors_dirty(node, DirtyKind::GEOMETRY);
+            // Mark node style/layout dirty on both axes; record reason for observability
+            let node_flags = DirtyKind::STYLE
+                .or(DirtyKind::LAYOUT)
+                .or(DirtyKind::INLINE_AXIS)
+                .or(DirtyKind::BLOCK_AXIS)
+                .or(DirtyKind::REASON_STYLE);
+            self.mark_dirty(node, node_flags);
+            // Ancestors typically need block-axis reflow
+            let ancestor_flags = DirtyKind::LAYOUT
+                .or(DirtyKind::BLOCK_AXIS)
+                .or(DirtyKind::REASON_STYLE);
+            self.mark_ancestors_dirty(node, ancestor_flags);
         }
     }
 
@@ -219,10 +277,17 @@ impl Layouter {
                 } else {
                     parent_children.insert(pos, node);
                 }
-                // Invalidate: structure and geometry changed at parent and node
-                self.mark_dirty(node, DirtyKind::STRUCTURE.or(DirtyKind::GEOMETRY));
-                self.mark_dirty(parent, DirtyKind::GEOMETRY);
-                self.mark_ancestors_dirty(parent, DirtyKind::GEOMETRY);
+                // Invalidate: element structure affects block-axis layout
+                let node_flags = DirtyKind::STRUCTURE
+                    .or(DirtyKind::LAYOUT)
+                    .or(DirtyKind::BLOCK_AXIS)
+                    .or(DirtyKind::REASON_STRUCTURE);
+                self.mark_dirty(node, node_flags);
+                let parent_flags = DirtyKind::LAYOUT
+                    .or(DirtyKind::BLOCK_AXIS)
+                    .or(DirtyKind::REASON_STRUCTURE);
+                self.mark_dirty(parent, parent_flags);
+                self.mark_ancestors_dirty(parent, parent_flags);
             }
             InsertText { parent, node, text, pos } => {
                 trace!("InsertText parent={:?} node={:?} text='{}' pos={}", parent, node, text.replace("\n", "\\n"), pos);
@@ -245,29 +310,45 @@ impl Layouter {
                 } else {
                     parent_children.insert(pos, node);
                 }
-                // Invalidate: text affects inline layout -> geometry for parent and ancestors
-                self.mark_dirty(node, DirtyKind::STRUCTURE.or(DirtyKind::GEOMETRY));
-                self.mark_dirty(parent, DirtyKind::GEOMETRY);
-                self.mark_ancestors_dirty(parent, DirtyKind::GEOMETRY);
+                // Invalidate: text affects inline-axis layout
+                let node_flags = DirtyKind::STRUCTURE
+                    .or(DirtyKind::LAYOUT)
+                    .or(DirtyKind::INLINE_AXIS)
+                    .or(DirtyKind::REASON_TEXT);
+                self.mark_dirty(node, node_flags);
+                let parent_flags = DirtyKind::LAYOUT
+                    .or(DirtyKind::INLINE_AXIS)
+                    .or(DirtyKind::REASON_TEXT);
+                self.mark_dirty(parent, parent_flags);
+                self.mark_ancestors_dirty(parent, parent_flags);
             }
             SetAttr { node, name, value } => {
                 trace!("SetAttr node={:?} {}='{}'", node, name, value);
                 let entry = self.nodes.entry(node).or_insert_with(LayoutNode::new_document);
                 entry.attrs.insert(name, value);
-                // Conservative: any attribute may affect layout/style
-                self.mark_dirty(node, DirtyKind::STYLE);
-                self.mark_ancestors_dirty(node, DirtyKind::GEOMETRY);
+                // Conservative: any attribute may affect style; mark paint and potential layout
+                let node_flags = DirtyKind::STYLE
+                    .or(DirtyKind::PAINT)
+                    .or(DirtyKind::LAYOUT)
+                    .or(DirtyKind::REASON_ATTR);
+                self.mark_dirty(node, node_flags);
+                let ancestor_flags = DirtyKind::LAYOUT.or(DirtyKind::REASON_ATTR);
+                self.mark_ancestors_dirty(node, ancestor_flags);
             }
             RemoveNode { node } => {
                 trace!("RemoveNode node={:?}", node);
                 let parent = self.nodes.get(&node).and_then(|n| n.parent);
                 self.remove_node_recursive(node);
                 if let Some(p) = parent {
-                    self.mark_dirty(p, DirtyKind::STRUCTURE.or(DirtyKind::GEOMETRY));
-                    self.mark_ancestors_dirty(p, DirtyKind::GEOMETRY);
+                    let parent_flags = DirtyKind::STRUCTURE
+                        .or(DirtyKind::LAYOUT)
+                        .or(DirtyKind::BLOCK_AXIS)
+                        .or(DirtyKind::REASON_STRUCTURE);
+                    self.mark_dirty(p, parent_flags);
+                    self.mark_ancestors_dirty(p, parent_flags);
                 } else {
-                    // If we do not know the parent, mark root as geometry-dirty as a fallback
-                    self.mark_dirty(NodeKey::ROOT, DirtyKind::GEOMETRY);
+                    // If we do not know the parent, mark root as layout-dirty as a fallback
+                    self.mark_dirty(NodeKey::ROOT, DirtyKind::LAYOUT.or(DirtyKind::REASON_STRUCTURE));
                 }
             }
             EndOfDocument => {
@@ -303,6 +384,20 @@ impl Layouter {
         // Fallback threshold: if too many dirty roots, do full layout
         let fallback_threshold: f32 = 0.3;
         self.compute_layout_incremental(fallback_threshold)
+    }
+
+    /// Force a full layout pass. Intended for benchmarks and diagnostics.
+    /// Returns the number of boxes processed across the entire tree.
+    pub fn compute_layout_full_for_bench(&mut self) -> usize {
+        self.compute_layout_full()
+    }
+
+    /// Force an incremental layout pass without fallback to full.
+    /// If no cached layout is available yet, this will perform a full pass internally.
+    /// Returns the number of nodes reflowed in the incremental pass.
+    pub fn compute_layout_incremental_for_bench(&mut self) -> usize {
+        // Use a threshold above 1.0 to disable fallback due to dirty-root ratio.
+        self.compute_layout_incremental(1.1)
     }
 
     /// Compute per-node layout geometry (x, y, width, height) for the current tree.
@@ -394,6 +489,13 @@ impl Layouter {
         let old_cache = self.cached_layout.clone();
         let count = layout::compute_simple_layout(self);
         let new_rects = layout::compute_layout_geometry(self);
+        // Build a simple constraints cache: inherit parent border-box width as available space
+        let mut constraints: HashMap<NodeKey, (i32, i32)> = HashMap::new();
+        for (k, n) in self.nodes.iter() {
+            let parent_width = n.parent.and_then(|p| new_rects.get(&p).map(|r| r.width)).unwrap_or(800);
+            constraints.insert(*k, (parent_width, parent_width));
+        }
+        self.constraints_cache = constraints;
         // Compute dirty rects by comparing old and new per node
         let mut dirty: Vec<LayoutRect> = Vec::new();
         // Changes/removals
@@ -436,7 +538,8 @@ impl Layouter {
         }
         let start = Instant::now();
         let total_nodes = self.nodes.len().saturating_sub(1).max(1);
-        let roots = self.dirty_roots();
+        if self.dirty_roots_queue.is_empty() { self.rebuild_dirty_roots_queue(); }
+        let roots: Vec<NodeKey> = self.dirty_roots_queue.iter().cloned().collect();
         if roots.is_empty() {
             self.dirty_rects.clear();
             self.perf_nodes_reflowed_last = 0;
@@ -450,22 +553,43 @@ impl Layouter {
         // MVP approach: compute a fresh geometry snapshot for correctness,
         // then selectively update the cache for nodes in dirty subtrees.
         let new_rects = layout::compute_layout_geometry(self);
+        // Update constraints cache (approximate) from new rects using parent width
+        let mut constraints: HashMap<NodeKey, (i32, i32)> = HashMap::new();
+        for (k, n) in self.nodes.iter() {
+            let parent_width = n.parent.and_then(|p| new_rects.get(&p).map(|r| r.width)).unwrap_or(800);
+            constraints.insert(*k, (parent_width, parent_width));
+        }
+        self.constraints_cache = constraints;
         let mut reflowed_nodes: usize = 0;
         let mut dirty: Vec<LayoutRect> = Vec::new();
-        for root in &roots {
-            let mut subtree: Vec<NodeKey> = Vec::new();
-            self.collect_subtree_keys(*root, &mut subtree);
-            for k in subtree {
-                let old = self.cached_layout.get(&k).cloned();
-                match new_rects.get(&k) {
+        #[cfg(feature = "parallel_layout")]
+        {
+            use rayon::prelude::*;
+            let subtrees: Vec<Vec<NodeKey>> = roots
+                .iter()
+                .map(|r| {
+                    let mut v = Vec::new();
+                    self.collect_subtree_keys(*r, &mut v);
+                    v
+                })
+                .collect();
+            let diffs: Vec<(NodeKey, Option<LayoutRect>, Option<LayoutRect>)> = subtrees
+                .par_iter()
+                .flat_map(|sub| {
+                    sub.iter()
+                        .map(|k| (*k, self.cached_layout.get(k).cloned(), new_rects.get(k).cloned()))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            for (k, old, new_opt) in diffs {
+                match new_opt {
                     Some(r) => {
-                        let old_rect = old;
-                        if old_rect.map(|o| o != *r).unwrap_or(true) {
+                        if old.map(|o| o != r).unwrap_or(true) {
                             reflowed_nodes = reflowed_nodes.saturating_add(1);
-                            if let Some(o) = old_rect { dirty.push(o); }
-                            dirty.push(*r);
+                            if let Some(o) = old { dirty.push(o); }
+                            dirty.push(r);
                         }
-                        self.cached_layout.insert(k, *r);
+                        self.cached_layout.insert(k, r);
                     }
                     None => {
                         if let Some(o) = old { dirty.push(o); }
@@ -476,7 +600,37 @@ impl Layouter {
                 }
             }
         }
+        #[cfg(not(feature = "parallel_layout"))]
+        {
+            for root in &roots {
+                let mut subtree: Vec<NodeKey> = Vec::new();
+                self.collect_subtree_keys(*root, &mut subtree);
+                for k in subtree {
+                    let old = self.cached_layout.get(&k).cloned();
+                    match new_rects.get(&k) {
+                        Some(r) => {
+                            let old_rect = old;
+                            if old_rect.map(|o| o != *r).unwrap_or(true) {
+                                reflowed_nodes = reflowed_nodes.saturating_add(1);
+                                if let Some(o) = old_rect { dirty.push(o); }
+                                dirty.push(*r);
+                            }
+                            self.cached_layout.insert(k, *r);
+                        }
+                        None => {
+                            if let Some(o) = old { dirty.push(o); }
+                            if self.cached_layout.remove(&k).is_some() {
+                                reflowed_nodes = reflowed_nodes.saturating_add(1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         self.clear_dirty_flags();
+        // Clear scheduled roots after processing so future mutations re-enqueue
+        self.dirty_roots_queue.clear();
+        self.dirty_root_set.clear();
         self.dirty_rects = dirty;
         // Telemetry
         self.perf_nodes_reflowed_last = reflowed_nodes as u64;

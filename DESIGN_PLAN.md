@@ -111,11 +111,12 @@ Risks/Notes
 ## Phase 4 — Text Shaping and Internationalization
 Focus: accuracy of text layout.
 
-- [ ] Integrate HarfBuzz for shaping; create text run building from computed font + script.
-- [ ] Font system: font fallback chain, font cache (per face+size+features), font loading (@font-face minimal).
-- [ ] Line breaking using UAX #14 rules; hyphenation hooks; whitespace processing per CSS Text 3.
-- [ ] Bidirectional (Unicode Bidi) reordering for inline content; isolate formatting characters.
-- [ ] Measure text using glyph metrics; replace char_width approximations.
+- [x] Integrate HarfBuzz for shaping; create text run building from computed font + script.
+- [x] Font system: font fallback chain, font cache (per face+size+features), font loading (@font-face minimal).
+- [x] Line breaking using UAX #14 rules; hyphenation hooks; whitespace processing per CSS Text 3.
+- [x] Bidirectional (Unicode Bidi) reordering for inline content; isolate formatting characters.
+- [x] Measure text using glyph metrics; replace char_width approximations.
+- [x] Basic whitespace collapsing (white-space: normal approximation) in layout and rendering.
 
 Exit Criteria
 - Internationalized sample pages render with correct shaping and line breaks (Latin, Arabic, CJK), visual parity on core cases.
@@ -127,12 +128,12 @@ Risks/Notes
 ## Phase 5 — Incremental & Parallel Layout
 Focus: robust invalidation, partial reflow, and scheduling.
 
-- [ ] Expand DirtyKind into distinct style/layout/paint dirty bits; track reasons and axes (inline/block).
-- [ ] Maintain a queue of dirty roots; topologically schedule partial reflow.
-- [ ] Cache ancestor constraints (available inline/block size) to isolate layout to affected subtrees.
-- [ ] Coalesce DOM/style updates per frame; integrate with a FrameScheduler (16.6ms budget target).
-- [ ] Explore parallel layout of independent subtrees (read-only shared state; careful with fonts/style cache).
-- [ ] Benchmarks to measure partial vs full reflow wins.
+- [x] Expand DirtyKind into distinct style/layout/paint dirty bits; track reasons and axes (inline/block).
+- [x] Maintain a queue of dirty roots; topologically schedule partial reflow.
+- [x] Cache ancestor constraints (available inline/block size) to isolate layout to affected subtrees.
+- [x] Coalesce DOM/style updates per frame; integrate with a FrameScheduler (16.6ms budget target).
+- [x] Explore parallel layout of independent subtrees (read-only shared state; careful with fonts/style cache).
+- [x] Benchmarks to measure partial vs full reflow wins.
 
 Exit Criteria
 - Typical DOM mutations (class toggle, text edit) invalidate and reflow only minimal regions; perf improves vs baseline.

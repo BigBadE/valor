@@ -6,7 +6,8 @@ edition.workspace = true
 # Phase 0: top-level feature flags to enable/disable subsystems.
 default = ["style_engine_full"]
 style_engine_full = ["style_engine/full"]
-shaping = []
+# Enable shaping in layouter when top-level shaping is on
+shaping = ["layouter/shaping"]
 retained_display_list = ["wgpu_renderer/retained_display_list"]
 compositor = ["wgpu_renderer/compositor"]
 

@@ -16,6 +16,32 @@ use layouter::Layouter;
 use style_engine::StyleEngine;
 use wgpu_renderer::{Renderer, DrawRect, DrawText};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// Simple frame scheduler to coalesce layout work per frame with a given time budget.
+struct FrameScheduler {
+    budget: Duration,
+    last_frame_start: Option<Instant>,
+}
+
+impl FrameScheduler {
+    fn new(budget: Duration) -> Self { Self { budget, last_frame_start: None } }
+    /// Returns true if a new frame budget window has started and we can run layout now.
+    fn allow(&mut self) -> bool {
+        let now = Instant::now();
+        match self.last_frame_start {
+            None => { self.last_frame_start = Some(now); true }
+            Some(start) => {
+                if now.duration_since(start) >= self.budget {
+                    self.last_frame_start = Some(now);
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+}
 
 pub struct HtmlPage {
     // If none, loading is finished. If some, still streaming.
@@ -44,6 +70,8 @@ pub struct HtmlPage {
     // Optional layout debounce to coalesce micro-changes across updates (Phase 4 start)
     layout_debounce: Option<std::time::Duration>,
     layout_debounce_deadline: Option<std::time::Instant>,
+    // Frame scheduler to coalesce layout per frame with a budget (Phase 5)
+    frame_scheduler: FrameScheduler,
     // Whether we've dispatched DOMContentLoaded to JS listeners.
     dom_content_loaded_fired: bool,
 }
@@ -112,6 +140,10 @@ impl HtmlPage {
         let bindings = js::build_default_bindings();
         let _ = js_engine.install_bindings(host_context, &bindings);
 
+        // Frame scheduler budget (ms), default to ~16ms per 60Hz frame
+        let frame_budget_ms = std::env::var("VALOR_FRAME_BUDGET_MS").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(16);
+        let frame_scheduler = FrameScheduler::new(Duration::from_millis(frame_budget_ms.max(1)));
+
         Ok(Self {
             loader: Some(loader),
             dom,
@@ -127,6 +159,7 @@ impl HtmlPage {
             url,
             layout_debounce,
             layout_debounce_deadline: None,
+            frame_scheduler,
             dom_content_loaded_fired: false,
         })
     }
@@ -251,6 +284,11 @@ impl HtmlPage {
         }
         
         if should_layout {
+            // Respect frame budget: run layout at most once per frame window
+            if !self.frame_scheduler.allow() {
+                trace!("Layout skipped due to frame budget ({:?})", self.frame_scheduler.budget);
+                return Ok(());
+            }
             let node_count = self.layouter_mirror.mirror_mut().compute_layout();
             let layouter = self.layouter_mirror.mirror_mut();
             let nodes_reflowed = layouter.perf_nodes_reflowed_last();
@@ -401,10 +439,14 @@ impl HtmlPage {
                     } else {
                         (16.0, [0.0, 0.0, 0.0])
                     };
+                    // Collapse whitespace to better match inline layout approximation
+                    let collapsed = layouter::layout::collapse_whitespace(&text);
+                    // Apply bidi reordering for display when shaping is disabled (no-op otherwise)
+                    let display_text = layouter::layout::reorder_bidi_for_display(&collapsed);
                     list.push(DrawText {
                         x: rect.x as f32,
                         y: rect.y as f32,
-                        text,
+                        text: display_text,
                         color: color_rgb,
                         font_size,
                     });

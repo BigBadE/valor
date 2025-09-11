@@ -107,61 +107,117 @@ pub(crate) fn layout_flex_children(
         items.push(Item { key: *child, base, min: min_px, max: max_px, grow: flex_grow.max(0.0), shrink: flex_shrink.max(0.0), height });
     }
 
-    // Step 2: Distribute free space using grow/shrink.
+    // Step 2: Distribute free space using grow/shrink with iterative freezing.
     let total_base: i32 = items.iter().map(|it| it.base).sum();
-    let mut sizes: Vec<i32> = items.iter().map(|it| it.base).collect();
+    let mut integer_sizes: Vec<i32> = items.iter().map(|it| it.base).collect();
     let mut free_space: i32 = content_width - total_base;
 
-    if free_space > 0 {
-        let total_grow: f32 = items.iter().map(|it| it.grow).sum();
-        if total_grow > 0.0 {
-            let mut remaining = free_space as f32;
-            for (idx, it) in items.iter().enumerate() {
-                let share = (free_space as f32) * (it.grow / total_grow);
-                let delta = share.round();
-                sizes[idx] = (sizes[idx] as f32 + delta).round() as i32;
-                remaining -= delta;
+    // Helper: finalize float sizes to integers, distributing rounding remainder to the first items.
+    let mut finalize_sizes = |float_sizes: &Vec<f32>, constraints: &Vec<(i32, i32)>, must_fit: bool| -> Vec<i32> {
+        let mut rounded: Vec<i32> = float_sizes.iter().map(|v| v.round() as i32).collect();
+        // If we don't need to fit to container (e.g., grow=0 and positive free space), just clamp and return.
+        if !must_fit {
+            for (idx, (min_px, max_px)) in constraints.iter().enumerate() {
+                rounded[idx] = rounded[idx].clamp(*min_px, *max_px);
             }
-            // If rounding left pixels, add to last item
-            if remaining.abs() >= 1.0 {
-                if let Some(last) = sizes.last_mut() { *last += remaining.round() as i32; }
+            return rounded;
+        }
+        // Adjust rounding to exactly match container width if needed.
+        let mut sum_after_round: i32 = rounded.iter().sum();
+        let mut diff: i32 = content_width - sum_after_round;
+        if diff == 0 {
+            for (idx, (min_px, max_px)) in constraints.iter().enumerate() {
+                rounded[idx] = rounded[idx].clamp(*min_px, *max_px);
+            }
+            return rounded;
+        }
+        // Prefer distributing remainder starting from the first items to match Chromium behavior.
+        // Ensure we do not violate min/max when adjusting.
+        let n = rounded.len();
+        if diff > 0 {
+            let mut i = 0;
+            while diff > 0 && i < n {
+                let (min_px, max_px) = constraints[i];
+                if rounded[i] < max_px {
+                    rounded[i] += 1;
+                    diff -= 1;
+                }
+                i += 1;
+            }
+        } else {
+            let mut i = 0;
+            while diff < 0 && i < n {
+                let (min_px, max_px) = constraints[i];
+                if rounded[i] > min_px {
+                    rounded[i] -= 1;
+                    diff += 1;
+                }
+                i += 1;
             }
         }
-    } else if free_space < 0 {
-        let total_shrink_factor: f32 = items.iter().map(|it| it.shrink * (it.base as f32)).sum();
-        if total_shrink_factor > 0.0 {
-            let deficit = (-free_space) as f32;
-            let mut distributed = 0.0f32;
-            for (idx, it) in items.iter().enumerate() {
-                let factor = it.shrink * (it.base as f32);
-                let share = deficit * (factor / total_shrink_factor);
-                let delta = share.round();
-                sizes[idx] = (sizes[idx] as f32 - delta).round() as i32;
-                distributed += delta;
-            }
-            // Clamp to min sizes and adjust if necessary
-            for (idx, it) in items.iter().enumerate() {
-                if sizes[idx] < it.min { sizes[idx] = it.min; }
-            }
-            // Ensure we don't exceed container due to clamping; soft adjustment on last item
-            let total_after: i32 = sizes.iter().sum();
-            let overflow = total_after - content_width;
-            if overflow > 0 { if let Some(last) = sizes.last_mut() { *last = (*last - overflow).max(items.last().map(|it| it.min).unwrap_or(0)); } }
+        // Final clamp safety.
+        for (idx, (min_px, max_px)) in constraints.iter().enumerate() {
+            rounded[idx] = rounded[idx].clamp(*min_px, *max_px);
         }
+        rounded
+    };
+
+    // No distribution needed when there is positive free space but no grow, or negative free space but no shrink factors.
+    let total_grow: f32 = items.iter().map(|it| it.grow).sum();
+    let total_shrink_factor: f32 = items.iter().map(|it| it.shrink * (it.base as f32)).sum();
+
+    if free_space == 0 || (free_space > 0 && total_grow == 0.0) || (free_space < 0 && total_shrink_factor == 0.0) {
+        // Keep base sizes as-is (respecting min/max) and do not force-fit to container width.
+        for (idx, it) in items.iter().enumerate() {
+            integer_sizes[idx] = integer_sizes[idx].clamp(it.min, it.max);
+        }
+    } else {
+        // Iteratively distribute into float sizes with freezing.
+        let mut float_sizes: Vec<f32> = items.iter().map(|it| it.base as f32).collect();
+        let mut frozen: Vec<bool> = vec![false; items.len()];
+        let mut iterations = 0;
+        loop {
+            iterations += 1;
+            if iterations > 8 { break; }
+            // Compute remaining free space and eligible weight sum.
+            let current_sum: f32 = float_sizes.iter().sum();
+            let remaining: f32 = (content_width as f32) - current_sum;
+            // If free space nearly consumed or nothing to distribute, stop.
+            if remaining.abs() < 0.5 { break; }
+            let mut total_weight: f32 = 0.0;
+            for (idx, it) in items.iter().enumerate() {
+                if frozen[idx] { continue; }
+                let w = if free_space > 0 { it.grow } else { it.shrink * (it.base as f32) };
+                if w > 0.0 { total_weight += w; }
+            }
+            if total_weight <= 0.0 { break; }
+            // Propose new sizes
+            let mut any_newly_frozen = false;
+            for (idx, it) in items.iter().enumerate() {
+                if frozen[idx] { continue; }
+                let weight = if free_space > 0 { it.grow } else { it.shrink * (it.base as f32) };
+                if weight <= 0.0 { continue; }
+                let share = remaining * (weight / total_weight);
+                let proposed = float_sizes[idx] + share;
+                let min_px = it.min as f32;
+                let max_px = it.max as f32;
+                // Clamp to constraints; if we clamp, freeze this item.
+                let clamped = proposed.clamp(min_px, max_px);
+                float_sizes[idx] = clamped;
+                if (clamped - proposed).abs() > 0.0001 {
+                    frozen[idx] = true;
+                    any_newly_frozen = true;
+                }
+            }
+            if !any_newly_frozen { break; }
+        }
+        // Build constraints vector for finalization
+        let constraints: Vec<(i32, i32)> = items.iter().map(|it| (it.min, it.max)).collect();
+        let must_fit = true; // In grow/shrink distribution cases we want to consume remaining space fully.
+        integer_sizes = finalize_sizes(&float_sizes, &constraints, must_fit);
     }
 
-    // Enforce max constraints after distribution
-    for (idx, it) in items.iter().enumerate() { sizes[idx] = sizes[idx].clamp(it.min, it.max); }
-    // After rounding and clamping, the sum can drift from the container width by ±1.
-    // Correct by adjusting the last item's width within its constraints.
-    let sum_after: i32 = sizes.iter().sum();
-    if sum_after != content_width {
-        let diff: i32 = content_width - sum_after;
-        if let Some((last_size, last_item)) = sizes.last_mut().zip(items.last()) {
-            let new_last = (*last_size + diff).clamp(last_item.min, last_item.max);
-            *last_size = new_last;
-        }
-    }
+    let sizes = integer_sizes;
 
     // Step 3: Position items along x and align along y.
     let mut x = x_start;

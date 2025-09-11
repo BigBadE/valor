@@ -43,7 +43,7 @@ impl App {
             pages: vec![runtime.block_on(HtmlPage::new(
                 runtime.handle(),
                 Url::parse(&format!(
-                    "file://{}/crates/valor/tests/fixtures/layout/js/index.html",
+                    "file://{}/assets/home.html",
                     env::current_dir()?.display()
                 ))?,
             ))?],

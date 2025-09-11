@@ -9,8 +9,7 @@ log = { workspace = true }
 tokio = { workspace = true, optional = true }
 js = { workspace = true }
 
-# V8 is on by default; build with rusty_v8 always.
-rusty_v8 = "0.32.1"
+rusty_v8.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync"] }

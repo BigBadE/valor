@@ -7,6 +7,7 @@ use crate::LayoutNodeKind;
 use super::args::{ComputeGeomArgs, LayoutMaps};
 use super::geometry::LayoutRect;
 use super::styles::LayoutStyles;
+use super::text::{measure_text_width, collapse_whitespace};
 
 /// Returns true if the provided tag is a non-rendering element that should be skipped.
 pub(crate) fn is_non_rendering_tag(tag: &str) -> bool {
@@ -34,8 +35,9 @@ pub(crate) fn measure_descendant_inline_text_width(
     if let Some(kind) = maps.kind_by_key.get(&node) {
         match kind {
             LayoutNodeKind::InlineText { text } => {
-                let scale = current_font_size / 16.0;
-                sum += ((text.chars().count() as f32 * char_width as f32) * scale).round() as i32;
+                let collapsed = collapse_whitespace(text);
+                let metrics = measure_text_width(&collapsed, current_font_size, char_width);
+                sum += metrics.width;
             }
             LayoutNodeKind::Block { .. } => {
                 if let Some(children) = maps.children_by_key.get(&node) {
@@ -101,7 +103,10 @@ pub(crate) fn layout_block_children(
         let _top_passed = current_y;
         *y_cursor = current_y;
         let (child_consumed, child_content_height) = super::compute::layout_node(*child, depth + 1, maps, rects, child_args, y_cursor);
-        content_height += child_content_height;
+        // Accumulate the child's used outer height (consumed), not just its content height,
+        // so the parent's content height reflects actual occupied space.
+        let _ = child_content_height; // retained for clarity; used for future refinements
+        content_height += child_consumed;
         
         let next_y = if let Some(rect) = rects.get(child) { rect.y + child_consumed } else { current_y + child_consumed };
         current_y = next_y;

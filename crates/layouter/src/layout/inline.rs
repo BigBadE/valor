@@ -8,6 +8,7 @@ use crate::LayoutNodeKind;
 use super::args::{ComputeGeomArgs, LayoutMaps};
 use super::geometry::LayoutRect;
 use super::block::measure_descendant_inline_text_width;
+use super::text::{measure_text_width, collapse_whitespace, greedy_line_break_widths};
 
 /// Layout inline children with line wrapping and positioning.
 /// Returns (additional_content_height, updated_child_y).
@@ -54,24 +55,39 @@ pub(crate) fn layout_inline_children(
         
         match maps.kind_by_key.get(child) {
             Some(LayoutNodeKind::InlineText { text }) => {
-                let scale = parent_font_size / 16.0;
-                let width = ((text.chars().count() as f32 * args.char_width as f32) * scale).round() as i32;
-                
-                // Wrap to next line if exceeds content width
-                if inline_x + width > line_start_x + content_width {
-                    child_y_inline += line_height;
-                    additional_content_height += line_height;
-                    inline_x = line_start_x;
+                // Collapse whitespace per CSS Text 3 (simplified)
+                let collapsed = collapse_whitespace(text);
+                let metrics = measure_text_width(&collapsed, parent_font_size, args.char_width);
+                let child_height = metrics.line_height;
+                // Greedy UAX #14 line breaking: compute line widths for this text node
+                let remaining = (line_start_x + content_width - inline_x).max(0);
+                let line_widths = greedy_line_break_widths(&collapsed, parent_font_size, args.char_width, remaining, content_width);
+                if line_widths.is_empty() {
+                    continue;
                 }
-                
-                let child_height = (parent_font_size * 1.1).round() as i32;
+                // Wrap lines, updating inline cursor and content height
+                let line_count = line_widths.len() as i32;
+                if line_count > 1 {
+                    // We are starting mid-line; the first width consumes remaining space.
+                    // Subsequent lines occupy full width except possibly the last.
+                    additional_content_height += (line_count - 1) * line_height;
+                    child_y_inline += (line_count - 1) * line_height;
+                }
+                let first_line_width = line_widths[0];
+                let last_line_width = *line_widths.last().unwrap();
                 let y_offset = ((parent_line_height - child_height) / 2).max(0);
                 let y_position = child_y_inline + y_offset;
-                
-                rects.insert(*child, LayoutRect { x: inline_x, y: y_position, width, height: child_height });
-                
+                // Bounding rect covering all lines for this node
+                let bounding_width = if line_count == 1 { first_line_width } else { content_width };
+                let bounding_height = child_height * line_count;
+                rects.insert(*child, LayoutRect { x: inline_x, y: y_position, width: bounding_width, height: bounding_height });
                 if min_inline_y.map(|min_y| y_position < min_y).unwrap_or(true) { min_inline_y = Some(y_position); }
-                inline_x += width;
+                // Advance inline cursor: end at last line's width on its line
+                if line_count == 1 {
+                    inline_x += first_line_width;
+                } else {
+                    inline_x = line_start_x + last_line_width;
+                }
             }
             Some(LayoutNodeKind::Block { .. }) => {
                 // Inline element: estimate width from specified width or sum of descendant inline text

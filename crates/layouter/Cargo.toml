@@ -6,10 +6,11 @@ edition = "2024"
 [features]
 # Phase 0 gating flags; currently placeholders to allow conditional compilation as subsystems grow.
 default = ["style_engine_full"]
-style_engine_full = []
+style_engine_full = ["shaping", "retained_display_list", "compositor", "parallel_layout"]
 shaping = []
 retained_display_list = []
 compositor = []
+parallel_layout = []
 
 [dependencies]
 anyhow.workspace = true
@@ -19,9 +20,22 @@ html.workspace = true
 js.workspace = true
 css.workspace = true
 style_engine.workspace = true
-
+once_cell.workspace = true
+unicode-linebreak.workspace = true
+unicode-bidi.workspace = true
+glyphon.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
 env_logger.workspace = true
-criterion = "0.5"
+criterion.workspace = true
+
+[[bench]]
+name = "layout_baseline"
+harness = false
+
+
+[[bench]]
+name = "partial_vs_full"
+harness = false
