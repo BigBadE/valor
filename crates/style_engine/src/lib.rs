@@ -591,6 +591,37 @@ impl StyleEngine {
                         _ => AlignItems::Stretch,
                     });
                 }
+                // Flex shorthand: flex: <grow> <shrink> <basis> | none | auto | initial
+                "flex" => {
+                    let v = val.trim().to_ascii_lowercase();
+                    if v == "none" {
+                        flex_grow_spec = Some(0.0);
+                        flex_shrink_spec = Some(0.0);
+                        flex_basis_spec = Some(SizeSpecified::Auto);
+                    } else if v == "auto" {
+                        flex_grow_spec = Some(1.0);
+                        flex_shrink_spec = Some(1.0);
+                        flex_basis_spec = Some(SizeSpecified::Auto);
+                    } else if v == "initial" {
+                        flex_grow_spec = Some(0.0);
+                        flex_shrink_spec = Some(1.0);
+                        flex_basis_spec = Some(SizeSpecified::Auto);
+                    } else {
+                        let parts: Vec<&str> = v.split_whitespace().filter(|p| !p.is_empty()).collect();
+                        if !parts.is_empty() {
+                            // First part: grow (number)
+                            if let Ok(n) = parts[0].parse::<f32>() { if n >= 0.0 { flex_grow_spec = Some(n); } }
+                            // Second part: shrink (number)
+                            if parts.len() >= 2 {
+                                if let Ok(n) = parts[1].parse::<f32>() { if n >= 0.0 { flex_shrink_spec = Some(n); } }
+                            }
+                            // Third part: basis (size)
+                            if parts.len() >= 3 {
+                                if let Some(spec) = parse_size_spec(parts[2]) { flex_basis_spec = Some(spec); }
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }

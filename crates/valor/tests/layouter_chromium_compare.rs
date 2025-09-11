@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 use tokio::runtime::Runtime;
+use std::ffi::OsStr;
 
 mod common;
 
@@ -17,6 +18,11 @@ static SHARED_BROWSER: Lazy<Mutex<Browser>> = Lazy::new(|| {
     let launch_opts = LaunchOptionsBuilder::default()
         .headless(true)
         .window_size(Some((800, 600)))
+        // Stabilize CSS pixel metrics across platforms: force device scale factor and disable overlay scrollbars
+        .args(vec![
+            OsStr::new("--force-device-scale-factor=1"),
+            OsStr::new("--disable-features=OverlayScrollbar"),
+        ])
         .build()
         .expect("Failed to build LaunchOptions for headless_chrome");
     let browser = Browser::new(launch_opts)
