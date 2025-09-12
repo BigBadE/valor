@@ -97,13 +97,41 @@ where
     F: FnMut(&mut HtmlPage) -> Result<()>,
 {
     let mut finished = page.parsing_finished();
-    for _ in 0..10_000 {
-        rt.block_on(page.update())?;
+    // Bound each async update with a small timeout to avoid hangs inside the update path during tests.
+    // This keeps the test harness responsive even if an await-point stalls.
+    let per_tick_timeout = Duration::from_millis(25);
+    // Also enforce a hard wall-clock budget for the whole helper to avoid very long stalls if every tick times out.
+    let start_time = std::time::Instant::now();
+    let max_total_time = Duration::from_secs(15);
+    let mut timed_out_ticks: u32 = 0;
+    for iter in 0..10_000 {
+        // Abort if we exceeded the total time budget
+        if start_time.elapsed() > max_total_time {
+            eprintln!("update_until_finished: exceeded total time budget after {} iters ({} timeouts)", iter, timed_out_ticks);
+            break;
+        }
+        // Run one update tick with a timeout guard. If it times out, continue trying rather than hanging.
+        let update_result: Result<Result<(), anyhow::Error>, tokio::time::error::Elapsed> = rt.block_on(async {
+            tokio::time::timeout(per_tick_timeout, page.update()).await
+        });
+        match update_result {
+            Ok(Ok(())) => { /* progressed */ }
+            Ok(Err(err)) => { return Err(err); }
+            Err(_elapsed) => {
+                timed_out_ticks = timed_out_ticks.saturating_add(1);
+            }
+        }
+        println!("3!");
+        // Allow the caller to drain mirrors or perform additional per-tick work.
         per_tick(page)?;
         if page.parsing_finished() {
             finished = true;
             break;
         }
+        if iter % 500 == 0 {
+            eprintln!("update_until_finished: iter={} finished={} timeouts={} elapsed_ms={}", iter, finished, timed_out_ticks, start_time.elapsed().as_millis());
+        }
+        println!("4!");
         // Yield to background tasks without requiring a Tokio reactor on this thread
         std::thread::sleep(Duration::from_millis(1));
     }

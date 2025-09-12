@@ -5,6 +5,7 @@ use std::collections::{HashMap, VecDeque, HashSet};
 use std::time::Instant;
 use css::types::Stylesheet;
 use style_engine::ComputedStyle;
+use tracing::info_span;
 
 pub mod layout;
 mod printing;
@@ -73,6 +74,22 @@ pub struct Layouter {
     perf_layout_time_last_ms: u64,
     /// Telemetry: cumulative layout time in milliseconds.
     perf_layout_time_total_ms: u64,
+    /// Telemetry: number of line boxes produced in the last compute (approximate).
+    perf_line_boxes_last: u64,
+    /// Telemetry: cumulative line boxes across computes (approximate).
+    perf_line_boxes_total: u64,
+    /// Telemetry: number of shaped text runs in the last compute (approximate).
+    perf_shaped_runs_last: u64,
+    /// Telemetry: cumulative shaped text runs across computes (approximate).
+    perf_shaped_runs_total: u64,
+    /// Telemetry: number of layout early-outs in the last tick (1 if layout was skipped, else 0).
+    perf_early_outs_last: u64,
+    /// Telemetry: cumulative layout early-outs across ticks.
+    perf_early_outs_total: u64,
+    /// Optional cap: maximum dirty roots to process per tick; remainder stays queued for next frames.
+    max_dirty_roots_per_tick: Option<usize>,
+    /// Scratch arena for building dirty rectangle lists without repeated allocations (simple Vec reuse).
+    scratch_rects: Vec<LayoutRect>,
 }
 
 /// Kinds of dirtiness and metadata flags that can affect layout and paint.
@@ -136,6 +153,14 @@ impl Layouter {
             perf_dirty_subtrees_last: 0,
             perf_layout_time_last_ms: 0,
             perf_layout_time_total_ms: 0,
+            perf_line_boxes_last: 0,
+            perf_line_boxes_total: 0,
+            perf_shaped_runs_last: 0,
+            perf_shaped_runs_total: 0,
+            perf_early_outs_last: 0,
+            perf_early_outs_total: 0,
+            max_dirty_roots_per_tick: std::env::var("VALOR_MAX_DIRTY_ROOTS_PER_TICK").ok().and_then(|s| s.parse::<usize>().ok()).filter(|v| *v > 0),
+            scratch_rects: Vec::new(),
         }
     }
 
@@ -198,6 +223,12 @@ impl Layouter {
     /// Read-only access to computed styles.
     pub fn computed_styles(&self) -> &HashMap<NodeKey, ComputedStyle> { &self.computed }
 
+    /// Returns true if there is material per-node dirtiness pending (ignores the coarse global flag).
+    /// This checks whether any node is currently marked dirty or any dirty roots are scheduled.
+    pub fn has_material_dirty(&self) -> bool {
+        !self.dirty_map.is_empty() || !self.dirty_roots_queue.is_empty()
+    }
+
     /// Mark multiple nodes as style-dirty and mark ancestors geometry-dirty (used when StyleEngine reports changes).
     pub fn mark_nodes_style_dirty(&mut self, nodes: &[NodeKey]) {
         for &node in nodes {
@@ -249,6 +280,31 @@ impl Layouter {
     pub fn perf_layout_time_last_ms(&self) -> u64 { self.perf_layout_time_last_ms }
     /// Performance metric: cumulative layout time in milliseconds.
     pub fn perf_layout_time_total_ms(&self) -> u64 { self.perf_layout_time_total_ms }
+    /// Performance counter: number of line boxes produced in the last compute (approximate).
+    pub fn perf_line_boxes_last(&self) -> u64 { self.perf_line_boxes_last }
+    /// Performance counter: cumulative line boxes across computes (approximate).
+    pub fn perf_line_boxes_total(&self) -> u64 { self.perf_line_boxes_total }
+    /// Performance counter: shaped text runs in the last compute (approximate).
+    pub fn perf_shaped_runs_last(&self) -> u64 { self.perf_shaped_runs_last }
+    /// Performance counter: cumulative shaped text runs across computes (approximate).
+    pub fn perf_shaped_runs_total(&self) -> u64 { self.perf_shaped_runs_total }
+    /// Performance counter: early-outs in the last tick (1 if layout was skipped, else 0).
+    pub fn perf_early_outs_last(&self) -> u64 { self.perf_early_outs_last }
+    /// Performance counter: cumulative early-outs across ticks.
+    pub fn perf_early_outs_total(&self) -> u64 { self.perf_early_outs_total }
+
+    /// Mark that a layout tick performed no work and reset last-tick perf metrics to zero.
+    pub fn mark_noop_layout_tick(&mut self) {
+        self.perf_nodes_reflowed_last = 0;
+        self.perf_dirty_subtrees_last = 0;
+        self.perf_layout_time_last_ms = 0;
+        // Treat skipped layout as an early-out for diagnostics
+        self.perf_early_outs_last = 1;
+        self.perf_early_outs_total = self.perf_early_outs_total.saturating_add(1);
+        // Reset text-related counters when no layout work occurred this tick
+        self.perf_line_boxes_last = 0;
+        self.perf_shaped_runs_last = 0;
+    }
 
     /// Internal implementation for applying a single DOM update to the layout tree mirror.
     fn apply_update_impl(&mut self, update: DOMUpdate) -> Result<(), Error> {
@@ -325,15 +381,35 @@ impl Layouter {
             SetAttr { node, name, value } => {
                 trace!("SetAttr node={:?} {}='{}'", node, name, value);
                 let entry = self.nodes.entry(node).or_insert_with(LayoutNode::new_document);
-                entry.attrs.insert(name, value);
-                // Conservative: any attribute may affect style; mark paint and potential layout
-                let node_flags = DirtyKind::STYLE
-                    .or(DirtyKind::PAINT)
-                    .or(DirtyKind::LAYOUT)
-                    .or(DirtyKind::REASON_ATTR);
-                self.mark_dirty(node, node_flags);
-                let ancestor_flags = DirtyKind::LAYOUT.or(DirtyKind::REASON_ATTR);
-                self.mark_ancestors_dirty(node, ancestor_flags);
+                entry.attrs.insert(name.clone(), value);
+                // Classify attribute for targeted invalidation to avoid unnecessary layout work
+                let lname = name.to_ascii_lowercase();
+                if lname == "id" || lname == "class" || lname.starts_with("data-") || lname.starts_with("aria-") || lname == "role" {
+                    // These affect selector matching and paint, but not geometry directly
+                    let node_flags = DirtyKind::STYLE
+                        .or(DirtyKind::PAINT)
+                        .or(DirtyKind::REASON_ATTR);
+                    self.mark_dirty(node, node_flags);
+                    // Do not mark ancestors for layout
+                } else if lname == "style" {
+                    // Inline style can affect both layout and paint
+                    let node_flags = DirtyKind::STYLE
+                        .or(DirtyKind::PAINT)
+                        .or(DirtyKind::LAYOUT)
+                        .or(DirtyKind::REASON_ATTR);
+                    self.mark_dirty(node, node_flags);
+                    let ancestor_flags = DirtyKind::LAYOUT.or(DirtyKind::REASON_ATTR);
+                    self.mark_ancestors_dirty(node, ancestor_flags);
+                } else {
+                    // Conservative default: may affect layout (e.g., width/height attributes)
+                    let node_flags = DirtyKind::STYLE
+                        .or(DirtyKind::PAINT)
+                        .or(DirtyKind::LAYOUT)
+                        .or(DirtyKind::REASON_ATTR);
+                    self.mark_dirty(node, node_flags);
+                    let ancestor_flags = DirtyKind::LAYOUT.or(DirtyKind::REASON_ATTR);
+                    self.mark_ancestors_dirty(node, ancestor_flags);
+                }
             }
             RemoveNode { node } => {
                 trace!("RemoveNode node={:?}", node);
@@ -381,6 +457,7 @@ impl Layouter {
     /// Returns the number of nodes (boxes) processed. This may be the count of
     /// reflowed nodes in incremental mode or total laid-out nodes in full mode.
     pub fn compute_layout(&mut self) -> usize {
+        let _span = info_span!("layouter.compute_layout").entered();
         // Fallback threshold: if too many dirty roots, do full layout
         let fallback_threshold: f32 = 0.3;
         self.compute_layout_incremental(fallback_threshold)
@@ -484,6 +561,8 @@ impl Layouter {
 
     /// Full layout pass: recompute count and update cached geometry for all nodes.
     fn compute_layout_full(&mut self) -> usize {
+        let _span = info_span!("layouter.compute_layout_full").entered();
+        const EST_LINE_HEIGHT: i32 = 18;
         let start = Instant::now();
         // Keep old cache for diffing
         let old_cache = self.cached_layout.clone();
@@ -496,8 +575,8 @@ impl Layouter {
             constraints.insert(*k, (parent_width, parent_width));
         }
         self.constraints_cache = constraints;
-        // Compute dirty rects by comparing old and new per node
-        let mut dirty: Vec<LayoutRect> = Vec::new();
+        // Compute dirty rects by comparing old and new per node; build locally then reuse arena capacity
+        let mut dirty: Vec<LayoutRect> = Vec::with_capacity(self.scratch_rects.capacity().max(16));
         // Changes/removals
         for (k, old_rect) in old_cache.iter() {
             match new_rects.get(k) {
@@ -519,7 +598,13 @@ impl Layouter {
         }
         self.cached_layout = new_rects;
         self.clear_dirty_flags();
-        self.dirty_rects = dirty;
+        // Clear scheduled roots since a full pass supersedes any incremental plan
+        self.dirty_roots_queue.clear();
+        self.dirty_root_set.clear();
+        // Move built dirty rects into the scratch arena and then publish
+        self.scratch_rects.clear();
+        self.scratch_rects.append(&mut dirty);
+        self.dirty_rects = std::mem::take(&mut self.scratch_rects);
         // Telemetry
         self.perf_nodes_reflowed_last = self.dirty_rects.len() as u64; // proxy: changed nodes* (approx)
         self.perf_nodes_reflowed_total = self.perf_nodes_reflowed_total.saturating_add(self.perf_nodes_reflowed_last);
@@ -527,11 +612,16 @@ impl Layouter {
         let elapsed_ms = start.elapsed().as_millis() as u64;
         self.perf_layout_time_last_ms = elapsed_ms;
         self.perf_layout_time_total_ms = self.perf_layout_time_total_ms.saturating_add(elapsed_ms);
+        // Update text diagnostics counters (approximate)
+        let rects_snapshot = self.cached_layout.clone();
+        self.update_text_perf_counters_from_rects(&rects_snapshot, EST_LINE_HEIGHT);
         count
     }
 
     /// Incremental layout: attempt to limit work to dirty subtrees; fallback to full if too large.
     fn compute_layout_incremental(&mut self, fallback_threshold: f32) -> usize {
+        let _span = info_span!("layouter.compute_layout_incremental").entered();
+        const EST_LINE_HEIGHT: i32 = 18;
         // If we do not yet have a cache, run a full pass.
         if self.cached_layout.is_empty() {
             return self.compute_layout_full();
@@ -539,16 +629,34 @@ impl Layouter {
         let start = Instant::now();
         let total_nodes = self.nodes.len().saturating_sub(1).max(1);
         if self.dirty_roots_queue.is_empty() { self.rebuild_dirty_roots_queue(); }
-        let roots: Vec<NodeKey> = self.dirty_roots_queue.iter().cloned().collect();
-        if roots.is_empty() {
+        let total_roots = self.dirty_roots_queue.len();
+        if total_roots == 0 {
             self.dirty_rects.clear();
             self.perf_nodes_reflowed_last = 0;
             self.perf_dirty_subtrees_last = 0;
             self.perf_layout_time_last_ms = 0;
+            // Count this as an early-out
+            self.perf_early_outs_last = 1;
+            self.perf_early_outs_total = self.perf_early_outs_total.saturating_add(1);
+            // Reset text counters for this tick
+            self.perf_line_boxes_last = 0;
+            self.perf_shaped_runs_last = 0;
             return 0;
         }
-        if (roots.len() as f32) / (total_nodes as f32) >= fallback_threshold {
+        if (total_roots as f32) / (total_nodes as f32) >= fallback_threshold {
+            // For a full fallback, clear the incremental queue entirely.
+            self.dirty_roots_queue.clear();
+            self.dirty_root_set.clear();
             return self.compute_layout_full();
+        }
+        // Apply per-tick cap: drain up to max_dirty_roots_per_tick, keeping the rest queued for next frames.
+        let cap = self.max_dirty_roots_per_tick.unwrap_or(usize::MAX);
+        let mut roots: Vec<NodeKey> = Vec::new();
+        for _ in 0..cap {
+            if let Some(r) = self.dirty_roots_queue.pop_front() {
+                self.dirty_root_set.remove(&r);
+                roots.push(r);
+            } else { break; }
         }
         // MVP approach: compute a fresh geometry snapshot for correctness,
         // then selectively update the cache for nodes in dirty subtrees.
@@ -561,7 +669,7 @@ impl Layouter {
         }
         self.constraints_cache = constraints;
         let mut reflowed_nodes: usize = 0;
-        let mut dirty: Vec<LayoutRect> = Vec::new();
+        let mut dirty: Vec<LayoutRect> = Vec::with_capacity(self.scratch_rects.capacity().max(16));
         #[cfg(feature = "parallel_layout")]
         {
             use rayon::prelude::*;
@@ -628,10 +736,9 @@ impl Layouter {
             }
         }
         self.clear_dirty_flags();
-        // Clear scheduled roots after processing so future mutations re-enqueue
-        self.dirty_roots_queue.clear();
-        self.dirty_root_set.clear();
-        self.dirty_rects = dirty;
+        // Do not clear the entire queue here: any unprocessed roots remain queued for the next frame.
+        // Roots processed in this tick were already popped from the queue above.
+        self.dirty_rects = std::mem::take(&mut self.scratch_rects);
         // Telemetry
         self.perf_nodes_reflowed_last = reflowed_nodes as u64;
         self.perf_nodes_reflowed_total = self.perf_nodes_reflowed_total.saturating_add(self.perf_nodes_reflowed_last);
@@ -639,6 +746,8 @@ impl Layouter {
         let elapsed_ms = start.elapsed().as_millis() as u64;
         self.perf_layout_time_last_ms = elapsed_ms;
         self.perf_layout_time_total_ms = self.perf_layout_time_total_ms.saturating_add(elapsed_ms);
+        // Update text diagnostics counters (approximate) from this frame's geometry
+        self.update_text_perf_counters_from_rects(&new_rects, EST_LINE_HEIGHT);
         reflowed_nodes
     }
 
@@ -647,5 +756,33 @@ impl Layouter {
         for (k, kind) in &self.dirty_map {
             log::trace!("Dirty node {:?}: kind={:?}", k, kind);
         }
+    }
+}
+
+
+impl Layouter {
+    /// Update text-related performance counters (line boxes and shaped runs)
+    /// by scanning inline text nodes that produced geometry in the provided rects map.
+    /// The line box count is approximated using an estimated line height.
+    fn update_text_perf_counters_from_rects(&mut self, rects: &HashMap<NodeKey, LayoutRect>, est_line_height: i32) {
+        let mut line_boxes: u64 = 0;
+        let mut shaped_runs: u64 = 0;
+        for (key, node) in self.nodes.iter() {
+            if let LayoutNodeKind::InlineText { text } = &node.kind {
+                if text.trim().is_empty() { continue; }
+                if let Some(r) = rects.get(key) {
+                    shaped_runs = shaped_runs.saturating_add(1);
+                    let lh = est_line_height.max(1);
+                    let lines_here = ((r.height.max(0) + (lh - 1)) / lh) as u64;
+                    line_boxes = line_boxes.saturating_add(lines_here);
+                }
+            }
+        }
+        self.perf_line_boxes_last = line_boxes;
+        self.perf_line_boxes_total = self.perf_line_boxes_total.saturating_add(line_boxes);
+        self.perf_shaped_runs_last = shaped_runs;
+        self.perf_shaped_runs_total = self.perf_shaped_runs_total.saturating_add(shaped_runs);
+        // A compute that reached here is not considered an early-out
+        self.perf_early_outs_last = 0;
     }
 }

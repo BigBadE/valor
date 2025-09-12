@@ -99,15 +99,11 @@ impl ApplicationHandler for App {
                     error!("Failed to apply page updates: {err:?}");
                 }
             }
-            // Build and install the current display and text lists from the first page
+            // Build and install the current retained display list from the first page
             if let Some(first_page) = state.pages.get_mut(0) {
-                match first_page.display_list_snapshot() {
-                    Ok(list) => state.render_state.set_display_list(list),
-                    Err(err) => error!("Failed to build display list: {err:?}"),
-                }
-                match first_page.text_list_snapshot() {
-                    Ok(text) => state.render_state.set_text_list(text),
-                    Err(err) => error!("Failed to build text list: {err:?}"),
+                match first_page.display_list_retained_snapshot() {
+                    Ok(dl) => state.render_state.set_retained_display_list(dl),
+                    Err(err) => error!("Failed to build retained display list: {err:?}"),
                 }
             }
             // Schedule a redraw so the latest display list is rendered

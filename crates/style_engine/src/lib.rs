@@ -8,6 +8,7 @@ use css::types::{Declaration, Origin, Stylesheet};
 use csscolorparser::Color as CssColor;
 use js::NodeKey;
 use log::{info, warn};
+use tracing::info_span;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -128,17 +129,19 @@ impl StyleCache {
 pub struct StyleEngine {
     ua_stylesheet: Stylesheet,
     author_stylesheet: Stylesheet,
+    /// Stable hash of the current author stylesheet to make updates idempotent.
+    author_stylesheet_hash: u64,
     stylesheet: Stylesheet,
     ruledb: RuleDB,
     nodes: HashMap<NodeKey, NodeInfo>,
-    computed: HashMap<NodeKey, Arc<ComputedStyle>>,
+    computed: HashMap<NodeKey, Arc<ComputedStyle>>, 
     style_cache: StyleCache,
     rule_index: RuleMap,
-    matches: HashMap<NodeKey, Vec<RuleRef>>,
-    nodes_by_id: HashMap<String, Vec<NodeKey>>,
-    nodes_by_class: HashMap<String, Vec<NodeKey>>,
-    nodes_by_tag: HashMap<String, Vec<NodeKey>>,
-    inline_decls: HashMap<NodeKey, Vec<Declaration>>,
+    matches: HashMap<NodeKey, Vec<RuleRef>>, 
+    nodes_by_id: HashMap<String, Vec<NodeKey>>, 
+    nodes_by_class: HashMap<String, Vec<NodeKey>>, 
+    nodes_by_tag: HashMap<String, Vec<NodeKey>>, 
+    inline_decls: HashMap<NodeKey, Vec<Declaration>>, 
     /// Nodes that need recomputation at the next batch flush.
     dirty_nodes: HashSet<NodeKey>,
     /// Selectors we've already warned about for unsupported features, keyed by (rule_idx, selector_idx).
@@ -162,6 +165,7 @@ impl StyleEngine {
         let ua_stylesheet = build_ua_stylesheet();
         Self {
             author_stylesheet: Stylesheet::default(),
+            author_stylesheet_hash: Self::hash_stylesheet(&Stylesheet::default()),
             stylesheet: ua_stylesheet.clone(),
             ruledb: RuleDB::from_stylesheet(&ua_stylesheet),
             ua_stylesheet,
@@ -227,8 +231,12 @@ impl StyleEngine {
 
     /// Recompute all nodes currently marked as dirty in parent-before-child order and clear the set.
     pub fn recompute_dirty(&mut self) {
+        let _span = info_span!("style_engine.recompute_dirty").entered();
+        let start = std::time::Instant::now();
         if self.dirty_nodes.is_empty() {
             self.last_dirty_recompute_count = 0;
+            // Trace a zero-work pass for diagnostics
+            log::trace!("StyleEngine::recompute_dirty: no dirty nodes");
             return;
         }
         // Order dirty nodes by depth so parents are computed before children for inheritance.
@@ -262,6 +270,13 @@ impl StyleEngine {
             self.style_changed = true;
         }
         self.dirty_nodes.clear();
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        log::trace!(
+            "StyleEngine::recompute_dirty: processed={} changed={} time_ms={}",
+            self.last_dirty_recompute_count,
+            self.changed_nodes.len(),
+            elapsed_ms
+        );
     }
 
     fn node_depth(&self, node: NodeKey) -> usize {
@@ -276,9 +291,40 @@ impl StyleEngine {
         depth
     }
 
+    /// Compute a stable structural hash of a Stylesheet for idempotent updates.
+    fn hash_stylesheet(sheet: &Stylesheet) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        hasher.write(&(sheet.rules.len() as u64).to_le_bytes());
+        for rule in &sheet.rules {
+            // Origin and source order
+            let origin_tag: u8 = match rule.origin { Origin::UA => 0, Origin::User => 1, Origin::Author => 2 };
+            hasher.write(&[origin_tag]);
+            hasher.write(&rule.source_order.to_le_bytes());
+            // Selectors (debug string for determinism within build)
+            for sel in &rule.selectors {
+                let s = format!("{:?}", sel);
+                hasher.write(s.as_bytes());
+            }
+            // Declarations
+            for decl in &rule.declarations {
+                hasher.write(decl.name.as_bytes());
+                hasher.write(decl.value.as_bytes());
+                hasher.write(&[if decl.important { 1 } else { 0 }]);
+                for v in &decl.var_refs { hasher.write(v.as_bytes()); }
+            }
+        }
+        hasher.finish()
+    }
+
     /// Replace the active author stylesheet set with a new snapshot and merge with UA sheet.
     pub fn replace_stylesheet(&mut self, author: Stylesheet) {
+        // Idempotence: skip work if author stylesheet content has not changed
+        let incoming_hash = Self::hash_stylesheet(&author);
+        if incoming_hash == self.author_stylesheet_hash {
+            return;
+        }
         self.author_stylesheet = author;
+        self.author_stylesheet_hash = incoming_hash;
         self.stylesheet = merge_stylesheets(&self.ua_stylesheet, &self.author_stylesheet);
         // Rebuild RuleDB for the merged stylesheet
         self.ruledb = RuleDB::from_stylesheet(&self.stylesheet);

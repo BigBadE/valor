@@ -94,6 +94,8 @@ rustflags = [
 # This is not enabled by default, you need to copy this file to `config.toml`.
 [alias]
 ci = "run --package ci --"
+bench-save = "run -p benchhist -- save"
+bench-compare = "run -p benchhist -- compare"
 
 [build]
 jobs = 7

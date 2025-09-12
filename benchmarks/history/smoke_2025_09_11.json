@@ -1,0 +1,34 @@
+{
+  "name": "smoke_2025_09_11",
+  "timestamp_unix_secs": 1757629858,
+  "means": [
+    {
+      "id": "layout_reflow/full_reflow/2000",
+      "mean_point_estimate": 8427655.571428575
+    },
+    {
+      "id": "layout_reflow/full_reflow/500",
+      "mean_point_estimate": 1863992.368108688
+    },
+    {
+      "id": "layout_reflow/full_reflow/5000",
+      "mean_point_estimate": 25219211.0
+    },
+    {
+      "id": "layout_reflow/partial_reflow_1pct_attr/2000",
+      "mean_point_estimate": 7437990.857142858
+    },
+    {
+      "id": "layout_reflow/partial_reflow_1pct_attr/500",
+      "mean_point_estimate": 1655195.69563094
+    },
+    {
+      "id": "layout_reflow/partial_reflow_1pct_attr/5000",
+      "mean_point_estimate": 20352189.66666667
+    },
+    {
+      "id": "layouter_small_dom_compute",
+      "mean_point_estimate": 19454.58481546765
+    }
+  ]
+}

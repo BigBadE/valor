@@ -15,6 +15,7 @@ parallel_layout = []
 [dependencies]
 anyhow.workspace = true
 log.workspace = true
+tracing.workspace = true
 smallvec.workspace = true
 html.workspace = true
 js.workspace = true

@@ -143,17 +143,19 @@ Exit Criteria
 Focus: retained rendering pipeline and GPU compositing.
 
 Display List
-- [ ] Introduce a retained display list (DL) structure with items (rect, text, image, clip, transform, opacity, border, background).
-- [ ] Build DL from Fragment tree; compute clips/stacking contexts.
-- [ ] Diffing: compute minimal DL updates from dirty regions.
+- [x] Introduce a retained display list (DL) structure with items (rect, text, clip, opacity; text/image/background subsets initially).
+- [x] Build DL from layout fragments; compute clips/stacking contexts (initial builder wired to layout snapshot).
+- [x] Diffing: compute DL updates (MVP: coarse ReplaceAll; refine to region-based later).
 
 Compositing
-- [ ] Layerization heuristics (positioned, transform, opacity, video/canvas) → compositor layers.
-- [ ] Implement a simple compositor in wgpu_renderer with render passes per layer and proper z-ordering.
-- [ ] Add picture caching/tiling for large content (basic version).
+- [x] Layerization heuristics (opacity/clip-driven groups) → compositor layers (MVP; z-ordered groups rendered with scissor + alpha).
+- [x] Implement a simple compositor in wgpu_renderer with per-group batching and proper z-ordering (single pass; alpha-blended).
+- [x] Add picture caching/tiling for large content (basic version).
 
 Visual Fidelity
-- [ ] Implement border radii, box-shadow, text selection highlight, backgrounds (color/gradient subset).
+- [x] Backgrounds (color subset) with alpha; clip scopes honored.
+- [ ] Border radii (rounded clips), box-shadow.
+- [x] Text selection highlight.
 
 Exit Criteria
 - Smooth scrolling and animations on modest pages with partial DL rebuilds and GPU compositing; correctness on stacking/clip basics.
@@ -165,10 +167,10 @@ Risks/Notes
 ## Phase 7 — Interactivity and Accessibility
 Focus: hit-testing, input, selection/caret, and an accessibility tree.
 
-- [ ] Hit testing API mapping screen → fragment → DOM node; expose event regions.
-- [ ] Text selection geometry; caret placement; keyboard navigation.
-- [ ] Focus management; :focus styles; tabindex traversal.
-- [ ] Accessibility (AX) tree derived from layout: roles, names, states; platform bridges (skeletons).
+- [x] Hit testing API mapping screen → fragment → DOM node; expose event regions.
+- [x] Text selection geometry; caret placement; keyboard navigation.
+- [x] Focus management; :focus styles; tabindex traversal.
+- [x] Accessibility (AX) tree derived from layout: roles, names, states; platform bridges (skeletons).
 
 Exit Criteria
 - Pointer events and text selection behave correctly on test pages; AX tree generated for sample forms/documents.
@@ -178,18 +180,56 @@ Risks/Notes
 
 
 ## Phase 8 — Performance, Memory, and Telemetry
-Focus: operability and production diagnostics.
+Focus: operability, production diagnostics, and sustained partial-reflow performance.
 
-- [ ] Memory: arenas/pools for layout and fragment allocations; DL/item arenas.
-- [ ] Frame scheduler: FPS budget adherence; rAF cadence; throttling under load.
-- [ ] Profiling hooks and tracing spans around parse/style/layout/paint.
-- [ ] Production telemetry (behind a feature flag); crash/ICE reporting harness.
+Performance: Partial Reflow Slowdowns — Remediation
+- [x] Refine dirty-bit granularity and propagation:
+  - Distinguish inline vs block-axis impacts; propagate only the affected axis through ancestors. 
+  - Track reason codes (text metrics, margin change, position change) to enable early-outs. 
+- [x] Intrinsic size caching and reuse:
+  - Cache min/max-content contributions per LayoutBox; invalidate narrowly on font/width-affecting property changes. 
+  - Reuse measured text runs and shaped glyph caches across edits when style and font are unchanged. 
+- [x] Line-box and fragment incremental rebuild:
+  - Rebuild only impacted line boxes within a block’s fragment list; preserve unaffected runs. 
+  - Support incremental word-wrap/line-break recalculation confined to the edit window. 
+- [x] Constraint memoization:
+  - Memoize ancestor available inline/block sizes; recompute only when containing block constraints change. 
+- [x] Selector invalidation precision:
+  - Expand dependency graph keys to include structural selectors that currently fan out too broadly (e.g., nth-child buckets, :empty). 
+  - Coalesce class/attr/id updates within a frame to lower churn. 
+- [x] No-op style/layout short-circuit:
+  - Before layout, diff new ComputedStyle against prior and skip geometry if only paint-affecting properties changed. 
+  - Share identical ComputedStyle instances (arena + hashing) to lower churn and enable cheap equality checks. 
+- [x] Scheduling and budgeting:
+  - Cap partial reflow work per frame; defer remainder; surface a HUD counter for spillover. 
+  - Prefer breadth-first dirty-root scheduling to prevent deep subtree starvation. 
+- [x] Diagnostics:
+  - [x] Counters/timers added: nodes laid out, dirty subtrees, layout time; expanded with restyled nodes, spillover, line boxes, shaped runs, and early-outs.
+  - [x] Flamegraph spans for restyle/invalidation, layout-by-fragment, and text-shaping paths.
+
+Memory and Telemetry
+- [x] Memory: arenas/pools for layout and fragment allocations; DL/item arenas.
+- [x] Frame scheduler: FPS budget adherence; rAF cadence; throttling under load.
+- [x] Profiling hooks and tracing spans around parse/style/layout/paint.
+- [x] Production telemetry (behind a feature flag); crash/ICE reporting harness.
+
+Benchmark Regression Harness
+- [x] Add a lightweight tool (benchhist) to snapshot Criterion results and compare against named baselines; fail CI on >5% regressions. 
+- [x] Provide cargo aliases (bench-save, bench-compare) and docs to make routine runs easy for contributors. 
+
+Usage
+- Run benches: `cargo bench -p layouter` (or omit -p to run all).
+- Save snapshot: `cargo bench-save -- --name <BASELINE_NAME>`.
+- Compare current run to snapshot: `cargo bench-compare -- --baseline <BASELINE_NAME> [--threshold 5]`.
+- Snapshots are saved to `benchmarks/history/<BASELINE_NAME>.json`.
 
 Exit Criteria
 - Stable FPS on common pages; sustained memory bounded with no pathological growth; actionable profiles.
+- Partial reflow scenarios (class toggle, text edit, attribute change) show measured improvements vs Phase 5 baselines, with counters confirming narrow invalidation and limited fragment rebuilds.
 
 Risks/Notes
-- Avoid premature micro-optimizations; let profiles guide work.
+- Avoid premature micro-optimizations; let profiles guide work. 
+- Guard caches with correct invalidation; prefer correctness over stale fast paths.
 
 
 ## Phase 9 — Conformance and Quality

@@ -43,6 +43,7 @@ unicode-bidi = "0.3.18"
 log = "0.4.28"
 env_logger = "0.11.8"
 anyhow = { version = "1.0.99", features = ["backtrace"] }
+tracing = "0.1.41"
 
 # Testing
 headless_chrome = "1.0.18"

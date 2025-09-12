@@ -3,32 +3,13 @@ use headless_chrome::{Browser, LaunchOptionsBuilder};
 use js::NodeKey;
 use layouter::LayoutRect;
 use layouter::{LayoutNodeKind, Layouter};
-use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
 use tokio::runtime::Runtime;
 use std::ffi::OsStr;
 
 mod common;
-
-// Shared headless Chrome browser for all test files
-static SHARED_BROWSER: Lazy<Mutex<Browser>> = Lazy::new(|| {
-    let launch_opts = LaunchOptionsBuilder::default()
-        .headless(true)
-        .window_size(Some((800, 600)))
-        // Stabilize CSS pixel metrics across platforms: force device scale factor and disable overlay scrollbars
-        .args(vec![
-            OsStr::new("--force-device-scale-factor=1"),
-            OsStr::new("--disable-features=OverlayScrollbar"),
-        ])
-        .build()
-        .expect("Failed to build LaunchOptions for headless_chrome");
-    let browser = Browser::new(launch_opts)
-        .expect("Failed to launch shared headless Chrome browser");
-    Mutex::new(browser)
-});
 
 #[test]
 fn chromium_layout_test() -> Result<(), Error> {
@@ -37,6 +18,25 @@ fn chromium_layout_test() -> Result<(), Error> {
         .filter_level(log::LevelFilter::Info)
         .is_test(false)
         .try_init();
+
+    // Launch a fresh headless Chrome instance for this test and drop it at the end to avoid hanging threads.
+    let launch_opts = LaunchOptionsBuilder::default()
+        .headless(true)
+        .window_size(Some((800, 600)))
+        .idle_browser_timeout(std::time::Duration::from_secs(300))
+        .args(vec![
+            OsStr::new("--force-device-scale-factor=1"),
+            OsStr::new("--disable-features=OverlayScrollbar"),
+            OsStr::new("--allow-file-access-from-files"),
+            // Improve stability in CI/headless environments
+            OsStr::new("--disable-gpu"),
+            OsStr::new("--disable-dev-shm-usage"),
+            OsStr::new("--no-sandbox"),
+        ])
+        .build()
+        .expect("Failed to build LaunchOptions for headless_chrome");
+    let browser = Browser::new(launch_opts).expect("Failed to launch headless Chrome browser");
+
     let mut failed: Vec<(String, String)> = Vec::new();
     // Iterate over all fixtures and compare against each expected file content.
     for input_path in common::fixture_html_files()? {
@@ -71,7 +71,7 @@ fn chromium_layout_test() -> Result<(), Error> {
         let our_json = our_layout_json(layouter, &rects);
 
         // Build Chromium's full layout JSON by evaluating JS in the page
-        let ch_json = match chromium_layout_json_for_path(&input_path) {
+        let ch_json = match chromium_layout_json_for_path(&browser, &input_path) {
             Ok(v) => v,
             Err(e) => {
                 let msg = format!("failed to get Chromium JSON: {}", e);
@@ -210,21 +210,16 @@ fn serialize_element_subtree_with_maps(
     recurse(key, kind_by_key, children_by_key, attrs_by_key, rects)
 }
 
-fn chromium_layout_json_for_path(path: &Path) -> anyhow::Result<Value> {
+fn chromium_layout_json_for_path(browser: &Browser, path: &Path) -> anyhow::Result<Value> {
     // Convert the file path to a file:// URL
     let url = common::to_file_url(path)?;
 
-    // Reuse the shared headless Chrome browser; open a fresh tab per file
-    let tab = {
-        let browser_guard = SHARED_BROWSER
-            .lock()
-            .expect("Failed to lock shared headless Chrome browser");
-        let tab = browser_guard.new_tab()?;
-        drop(browser_guard); // release lock early
-        tab
-    };
+    // Open a fresh tab per file from the provided browser
+    let tab = browser.new_tab()?;
 
-    tab.navigate_to(url.as_str())?;
+    // Use an owned String to avoid any possibility of truncated/borrowed URL issues in downstream logging/transport.
+    let url_string = url.as_str().to_owned();
+    tab.navigate_to(&url_string)?;
     tab.wait_until_navigated()?;
 
     // Inject CSS Reset for consistent defaults

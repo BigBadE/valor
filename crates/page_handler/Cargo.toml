@@ -23,6 +23,7 @@ indextree.workspace = true
 bytes.workspace = true
 
 log.workspace = true
+tracing.workspace = true
 anyhow.workspace = true
 
 [features]

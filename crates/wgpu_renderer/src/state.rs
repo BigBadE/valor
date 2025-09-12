@@ -5,7 +5,9 @@ use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 use crate::renderer::{DrawRect, DrawText};
+use crate::display_list::{DisplayList, DisplayItem, batch_display_list};
 use glyphon::{FontSystem, SwashCache, TextAtlas, TextRenderer, Buffer as GlyphonBuffer, Metrics, Attrs, Shaping, TextArea, TextBounds, Color as GlyphonColor, Viewport, Cache, Resolution};
+use tracing::info_span;
 
 
 /// RenderState owns the GPU device/surface and a minimal pipeline to draw rectangles from layout.
@@ -22,6 +24,9 @@ pub struct RenderState {
     vertex_count: u32,
     display_list: Vec<DrawRect>,
     text_list: Vec<crate::renderer::DrawText>,
+    /// Retained display list for Phase 6. When set via set_retained_display_list,
+    /// it becomes the source of truth and is flattened into the immediate lists.
+    retained_display_list: Option<DisplayList>,
     // Glyphon text rendering state
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -30,6 +35,14 @@ pub struct RenderState {
     #[allow(dead_code)]
     glyphon_cache: Cache,
     viewport: Viewport,
+    /// Cached GPU buffers per retained-DL batch; reused when the DL is unchanged between frames.
+    cached_batches: Option<Vec<(Option<(u32, u32, u32, u32)>, Buffer, u32)>>,
+    /// Last retained display list used to populate the cache, for equality-based no-op detection.
+    last_retained_list: Option<DisplayList>,
+    /// Number of times retained-DL batches were rebuilt this session.
+    cache_builds: u64,
+    /// Number of times we reused cached batches without rebuilding.
+    cache_reuses: u64,
 }
 
 impl RenderState {
@@ -88,6 +101,7 @@ impl RenderState {
             vertex_count,
             display_list: Vec::new(),
             text_list: Vec::new(),
+            retained_display_list: None,
             // Glyphon text state
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
@@ -95,11 +109,18 @@ impl RenderState {
             text_renderer: text_renderer_local,
             glyphon_cache: glyphon_cache_local,
             viewport: viewport_local,
+            cached_batches: None,
+            last_retained_list: None,
+            cache_builds: 0,
+            cache_reuses: 0,
         }
     }
 
     /// Window getter for integrations that require it.
     pub fn get_window(&self) -> &Window { &self.window }
+
+    /// Return (cache_builds, cache_reuses) for retained display list batches.
+    pub fn cache_stats(&self) -> (u64, u64) { (self.cache_builds, self.cache_reuses) }
 
     /// Configure the swapchain/surface to match the current size and formats.
     fn configure_surface(&self) {
@@ -121,6 +142,9 @@ impl RenderState {
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
         self.size = new_size;
         self.configure_surface();
+        // Invalidate cached batches since framebuffer dimensions have changed
+        self.cached_batches = None;
+        self.last_retained_list = None;
     }
 
     /// Update the current display list to be drawn each frame.
@@ -134,8 +158,24 @@ impl RenderState {
         self.text_list = list;
     }
 
+    /// Install a retained display list as the source of truth for rendering.
+    /// When set, render() will prefer drawing directly from the retained list
+    /// (with clip support) rather than the immediate lists.
+    pub fn set_retained_display_list(&mut self, list: DisplayList) {
+        // Invalidate cached batches only if the list has changed
+        if self.last_retained_list.as_ref() != Some(&list) {
+            self.cached_batches = None;
+        }
+        self.retained_display_list = Some(list);
+        // Clear immediate lists; they will be ignored when retained list is present.
+        self.display_list.clear();
+        self.text_list.clear();
+    }
+
     /// Prepare glyphon buffers for the current text list and upload glyphs into the atlas.
     fn glyphon_prepare(&mut self) {
+        let _span = info_span!("renderer.glyphon_prepare").entered();
+        let start = std::time::Instant::now();
         let framebuffer_width = self.size.width;
         let framebuffer_height = self.size.height;
         // Build buffers first
@@ -168,50 +208,53 @@ impl RenderState {
             areas,
             &mut self.swash_cache,
         );
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        if cfg!(debug_assertions) {
+            eprintln!("glyphon_prepare: text_items={} time_ms={}", self.text_list.len(), elapsed_ms);
+        }
     }
 
     /// Render a frame by clearing and drawing quads from the current display list.
     pub fn render(&mut self) -> Result<(), anyhow::Error> {
+        let _span = info_span!("renderer.render").entered();
+        let use_retained = self.retained_display_list.is_some();
         let surface_texture = self.surface.get_current_texture()?;
         let texture_view = surface_texture.texture.create_view(&TextureViewDescriptor {
             format: Some(self.render_format),
             ..Default::default()
         });
 
-        // Build vertex data from rects (two triangles per rect)
+        // Build vertex data depending on retained vs immediate path
         let fw = self.size.width.max(1) as f32;
         let fh = self.size.height.max(1) as f32;
 
-        let mut vertices: Vec<Vertex> = Vec::with_capacity(self.display_list.len() * 6);
-        for rect in &self.display_list {
-            if rect.width <= 0.0 || rect.height <= 0.0 { continue; }
-            let x0 = (rect.x / fw) * 2.0 - 1.0;
-            let x1 = ((rect.x + rect.width) / fw) * 2.0 - 1.0;
-            let y0 = 1.0 - (rect.y / fh) * 2.0;
-            let y1 = 1.0 - ((rect.y + rect.height) / fh) * 2.0;
-            let c = rect.color;
-            // Triangle 1
-            vertices.push(Vertex { position: [x0, y0], color: c });
-            vertices.push(Vertex { position: [x1, y0], color: c });
-            vertices.push(Vertex { position: [x0, y1], color: c });
-            // Triangle 2
-            vertices.push(Vertex { position: [x1, y0], color: c });
-            vertices.push(Vertex { position: [x1, y1], color: c });
-            vertices.push(Vertex { position: [x0, y1], color: c });
+        // Helper to convert a rect into two triangles worth of vertices (NDC space)
+        let push_rect_vertices = |out: &mut Vec<Vertex>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]| {
+            if w <= 0.0 || h <= 0.0 { return; }
+            let x0 = (x / fw) * 2.0 - 1.0;
+            let x1 = ((x + w) / fw) * 2.0 - 1.0;
+            let y0 = 1.0 - (y / fh) * 2.0;
+            let y1 = 1.0 - ((y + h) / fh) * 2.0;
+            let c = color;
+            out.push(Vertex { position: [x0, y0], color: c });
+            out.push(Vertex { position: [x1, y0], color: c });
+            out.push(Vertex { position: [x0, y1], color: c });
+            out.push(Vertex { position: [x1, y0], color: c });
+            out.push(Vertex { position: [x1, y1], color: c });
+            out.push(Vertex { position: [x0, y1], color: c });
+        };
+
+        // Prepare text via glyphon (from retained DL if present, otherwise existing text_list)
+        if use_retained {
+            if let Some(dl) = &self.retained_display_list {
+                self.text_list = dl.items.iter().filter_map(|item| {
+                    if let DisplayItem::Text { x, y, text, color, font_size } = item {
+                        Some(DrawText { x: *x, y: *y, text: text.clone(), color: *color, font_size: *font_size })
+                    } else { None }
+                }).collect();
+            }
         }
-
-        // Prepare text via glyphon (atlas + GPU buffers)
         self.glyphon_prepare();
-
-        // Upload/replace vertex buffer each frame (rectangles only for now)
-        let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
-        let vertex_buffer = self.device.create_buffer_init(&util::BufferInitDescriptor {
-            label: Some("rect-vertices"),
-            contents: vertex_bytes,
-            usage: BufferUsages::VERTEX,
-        });
-        self.vertex_buffer = vertex_buffer;
-        self.vertex_count = vertices.len() as u32;
 
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
@@ -221,10 +264,7 @@ impl RenderState {
                     view: &texture_view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
-                        store: StoreOp::Store,
-                    },
+                    ops: Operations { load: LoadOp::Clear(Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }), store: StoreOp::Store },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -232,10 +272,62 @@ impl RenderState {
             });
 
             pass.set_pipeline(&self.pipeline);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            if self.vertex_count > 0 {
-                pass.draw(0..self.vertex_count, 0..1);
+
+            if use_retained {
+                // Use (or build) cached GPU buffers for retained DL batches.
+                let need_rebuild = if let (Some(prev), Some(cur)) = (&self.last_retained_list, &self.retained_display_list) {
+                    prev != cur
+                } else { true };
+                if need_rebuild {
+                    if let Some(dl) = &self.retained_display_list {
+                        let batches = batch_display_list(dl, self.size.width, self.size.height);
+                        let mut cache: Vec<(Option<(u32,u32,u32,u32)>, Buffer, u32)> = Vec::with_capacity(batches.len());
+                        for b in batches.into_iter() {
+                            let mut vertices: Vec<Vertex> = Vec::with_capacity(b.quads.len() * 6);
+                            for q in b.quads.iter() {
+                                push_rect_vertices(&mut vertices, q.x, q.y, q.width, q.height, q.color);
+                            }
+                            if vertices.is_empty() {
+                                // Store an empty draw to preserve batch/scissor alignment
+                                cache.push((b.scissor, self.device.create_buffer(&BufferDescriptor { label: Some("empty-batch"), size: 4, usage: BufferUsages::VERTEX, mapped_at_creation: false }), 0));
+                                continue;
+                            }
+                            let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
+                            let vertex_buffer = self.device.create_buffer_init(&util::BufferInitDescriptor { label: Some("rect-batch"), contents: vertex_bytes, usage: BufferUsages::VERTEX });
+                            cache.push((b.scissor, vertex_buffer, vertices.len() as u32));
+                        }
+                        self.cached_batches = Some(cache);
+                        self.last_retained_list = self.retained_display_list.clone();
+                        // Stats: count cache builds
+                        self.cache_builds = self.cache_builds.wrapping_add(1);
+                    }
+                }
+                if let Some(ref cache) = self.cached_batches {
+                    if !need_rebuild { self.cache_reuses = self.cache_reuses.wrapping_add(1); }
+                    for (scissor_opt, buffer, count) in cache.iter() {
+                        pass.set_vertex_buffer(0, buffer.slice(..));
+                        match scissor_opt {
+                            Some((x, y, w, h)) => pass.set_scissor_rect(*x, *y, *w, *h),
+                            None => pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1)),
+                        }
+                        if *count > 0 { pass.draw(0..*count, 0..1); }
+                    }
+                }
+            } else {
+                // Immediate path: batch all rects into one draw call as before
+                let mut vertices: Vec<Vertex> = Vec::with_capacity(self.display_list.len() * 6);
+                for rect in &self.display_list {
+                    let rgba = [rect.color[0], rect.color[1], rect.color[2], 1.0];
+                    push_rect_vertices(&mut vertices, rect.x, rect.y, rect.width, rect.height, rgba);
+                }
+                let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
+                let vertex_buffer = self.device.create_buffer_init(&util::BufferInitDescriptor { label: Some("rect-vertices"), contents: vertex_bytes, usage: BufferUsages::VERTEX });
+                self.vertex_buffer = vertex_buffer;
+                self.vertex_count = vertices.len() as u32;
+                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                if self.vertex_count > 0 { pass.draw(0..self.vertex_count, 0..1); }
             }
+
             // Render prepared glyphon text on top of rectangles
             let _ = self.text_renderer.render(&self.text_atlas, &self.viewport, &mut pass);
         }
@@ -260,8 +352,8 @@ fn build_pipeline_and_buffers(device: &Device, render_format: TextureFormat) -> 
         attributes: &[
             // position (vec2<f32>)
             VertexAttribute { format: VertexFormat::Float32x2, offset: 0, shader_location: 0 },
-            // color (vec3<f32>)
-            VertexAttribute { format: VertexFormat::Float32x3, offset: 8, shader_location: 1 },
+            // color (vec4<f32>)
+            VertexAttribute { format: VertexFormat::Float32x4, offset: 8, shader_location: 1 },
         ],
     }];
 
@@ -289,9 +381,9 @@ fn build_pipeline_and_buffers(device: &Device, render_format: TextureFormat) -> 
     });
 
     let vertices: [Vertex; 3] = [
-        Vertex { position: [-0.5, -0.5], color: [1.0, 0.2, 0.2] },
-        Vertex { position: [0.5, -0.5], color: [0.2, 1.0, 0.2] },
-        Vertex { position: [0.0, 0.5], color: [0.2, 0.4, 1.0] },
+        Vertex { position: [-0.5, -0.5], color: [1.0, 0.2, 0.2, 1.0] },
+        Vertex { position: [0.5, -0.5], color: [0.2, 1.0, 0.2, 1.0] },
+        Vertex { position: [0.0, 0.5], color: [0.2, 0.4, 1.0, 1.0] },
     ];
     let vertex_bytes = bytemuck::cast_slice(&vertices);
     let vertex_buffer = device.create_buffer_init(&util::BufferInitDescriptor {
@@ -308,18 +400,18 @@ fn build_pipeline_and_buffers(device: &Device, render_format: TextureFormat) -> 
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 2],
-    color: [f32; 3],
+    color: [f32; 4],
 }
 
-/// Minimal WGSL shader that passes through a colored triangle.
+/// Minimal WGSL shader that passes through a colored triangle with alpha.
 const SHADER_WGSL: &str = r#"
 struct VertexOut {
     @builtin(position) pos: vec4<f32>,
-    @location(0) color: vec3<f32>,
+    @location(0) color: vec4<f32>,
 };
 
 @vertex
-fn vs_main(@location(0) position: vec2<f32>, @location(1) color: vec3<f32>) -> VertexOut {
+fn vs_main(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> VertexOut {
     var out: VertexOut;
     out.pos = vec4<f32>(position, 0.0, 1.0);
     out.color = color;
@@ -328,6 +420,6 @@ fn vs_main(@location(0) position: vec2<f32>, @location(1) color: vec3<f32>) -> V
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.color, 1.0);
+    return in.color;
 }
 "#;

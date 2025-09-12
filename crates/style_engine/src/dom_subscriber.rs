@@ -51,8 +51,11 @@ impl StyleEngine {
         self.ensure_parent_child_link(parent, node, pos);
         self.add_tag_index(node, tag);
         self.rematch_node(node, true);
-        // Defer recomputation; mark node dirty for batch recompute
+        // Also rematch the parent to handle :empty and nth-child families precisely
+        self.rematch_node(parent, true);
+        // Defer recomputation; mark node dirty for batch recompute and parent for potential :empty change
         self.mark_dirty(node);
+        self.mark_dirty(parent);
     }
 
     /// Parse and store inline declarations once; recompute styles.
@@ -139,7 +142,13 @@ impl DOMSubscriber for StyleEngine {
                 }
             }
             RemoveNode { node } => {
+                // Capture parent to refine selector invalidation for :empty/nth-child
+                let parent = self.nodes.get(&node).and_then(|n| n.parent);
                 self.remove_node_recursive(node);
+                if let Some(p) = parent {
+                    self.rematch_node(p, true);
+                    self.mark_dirty(p);
+                }
             }
             EndOfDocument => {
                 // Flush pending style recomputations at batch end.

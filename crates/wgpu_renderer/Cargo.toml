@@ -16,3 +16,4 @@ js.workspace = true
 anyhow.workspace = true
 bytemuck.workspace = true
 glyphon.workspace = true
+tracing.workspace = true
