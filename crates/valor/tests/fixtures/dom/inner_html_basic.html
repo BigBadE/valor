@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>innerHTML Basic</title>
+<div id="out"></div>
+<script>
+// Exercise innerHTML setter and getter
+ document.addEventListener('DOMContentLoaded', function(){
+   var out = document.getElementById('out');
+   out.innerHTML = "<span id='a' class='x y'>A</span><b>B</b>";
+   var a = document.getElementById('a');
+   var countB = document.querySelectorAll('b').length;
+   // Also include the serialized innerHTML with whitespace squeezed for stable compare
+   var serialized = String(out.innerHTML).replace(/\s+/g, '');
+   out.textContent = a.textContent + "," + countB + "," + serialized;
+ });
+</script>

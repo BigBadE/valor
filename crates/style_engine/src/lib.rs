@@ -1,5 +1,6 @@
 use css::parser::StylesheetStreamParser;
 use css::ruledb::RuleDB;
+use css::parser::parse_declarations;
 use css::rulemap::{RuleMap, RuleRef, index_rules};
 use css::selector::{
     Combinator, ComplexSelector, CompoundSelector, PseudoClass, SimpleSelector, Specificity,
@@ -12,7 +13,7 @@ use tracing::info_span;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::hash::{Hasher, Hash};
+use std::hash::Hasher;
 use std::collections::hash_map::DefaultHasher;
 
 mod computed_style;
@@ -755,6 +756,23 @@ impl StyleEngine {
         }
         // Collect candidate nodes from id/class/tag keys in the rule index.
         let mut candidates: HashSet<NodeKey> = HashSet::new();
+
+        // If we have id/class selectors but the corresponding node indexes are still empty,
+        // conservatively rematch all nodes. This covers ordering where DOM attrs were not yet
+        // observed when the stylesheet was merged.
+        let have_id_selectors = !self.rule_index.by_id.is_empty();
+        let have_class_selectors = !self.rule_index.by_class.is_empty();
+        let id_index_empty = self.nodes_by_id.is_empty();
+        let class_index_empty = self.nodes_by_class.is_empty();
+        if (have_id_selectors && id_index_empty) || (have_class_selectors && class_index_empty) {
+            let keys: Vec<NodeKey> = self.nodes.keys().cloned().collect();
+            for k in keys {
+                self.rematch_node(k, false);
+                self.mark_subtree_dirty(k);
+            }
+            return;
+        }
+
         for id in self.rule_index.by_id.keys() {
             if let Some(nodes) = self.nodes_by_id.get(id) {
                 candidates.extend(nodes.iter().copied());
@@ -991,12 +1009,16 @@ impl StyleEngine {
                     }
                 }
                 SimpleSelector::Id(id) => {
-                    if info.id.as_ref().map(|v| v == id).unwrap_or(false) == false {
+                    let id_matches = info.id.as_ref().map(|v| v == id).unwrap_or(false)
+                        || info.attributes.get("id").map(|v| v == id).unwrap_or(false);
+                    if !id_matches {
                         return false;
                     }
                 }
                 SimpleSelector::Class(c) => {
-                    if !info.classes.contains(c) {
+                    let class_matches = info.classes.contains(c)
+                        || info.attributes.get("class").map(|v| v.split_whitespace().any(|tok| tok == c)).unwrap_or(false);
+                    if !class_matches {
                         return false;
                     }
                 }
@@ -1341,5 +1363,196 @@ impl StyleEngine {
             Some(out)
         }
         resolve_recursive(input, env, &mut Vec::new(), 0)
+    }
+}
+
+impl StyleEngine {
+    /// Force a full selector rematch and recompute of computed styles for all known nodes.
+    /// This is a conservative operation used by tests/snapshots to ensure that freshly
+    /// parsed stylesheets and DOM attributes (id/class/tag) are fully reflected in the
+    /// computed styles map, regardless of prior incremental epochs.
+    pub fn force_full_restyle(&mut self) {
+        self.rematch_all_nodes();
+        self.recompute_dirty();
+    }
+}
+
+
+impl StyleEngine {
+    /// Synchronize attributes from an external map (e.g., Layouter mirror) into the StyleEngine node store.
+    /// This is a safety net for cases where DOM attribute updates were observed out of order by this mirror.
+    /// It updates id/class indices and generic attributes without altering parent/children links.
+    pub fn sync_attrs_from_map(&mut self, attrs: &HashMap<NodeKey, HashMap<String, String>>) {
+        for (node, map) in attrs {
+            // Merge attributes onto NodeInfo
+            let mut info = self.nodes.get(node).cloned().unwrap_or_else(|| NodeInfo {
+                tag: String::new(),
+                id: None,
+                classes: HashSet::new(),
+                attributes: HashMap::new(),
+                parent: None,
+                children: Vec::new(),
+            });
+            // Update id index if id differs
+            let new_id_opt = map.get("id").cloned();
+            let new_id_norm = new_id_opt.clone();
+            if new_id_norm != info.id {
+                let old_id = info.id.clone();
+                info.id = new_id_norm.clone();
+                self.update_id_index(*node, old_id, new_id_norm);
+            }
+            // Update class index if class differs
+            let new_classes: HashSet<String> = map
+                .get("class")
+                .map(|s| s.split_whitespace().filter(|t| !t.is_empty()).map(|t| t.to_string()).collect())
+                .unwrap_or_default();
+            if new_classes != info.classes {
+                let old = info.classes.clone();
+                info.classes = new_classes.clone();
+                self.update_class_index(*node, &old, &new_classes);
+            }
+            // Merge generic attributes (lowercased keys)
+            for (k, v) in map.iter() {
+                info.attributes.insert(k.to_ascii_lowercase(), v.clone());
+            }
+            self.nodes.insert(*node, info);
+        }
+    }
+}
+
+impl StyleEngine {
+    /// Rebuild the StyleEngine's internal node inventory from an external snapshot.
+    ///
+    /// This method is intended for deterministic test-time synchronization, where we
+    /// have a complete, instantaneous snapshot of the layout mirror. It reconstructs
+    /// the minimal element tree (tags, parent/children) and attribute maps, repopulates
+    /// id/class/tag indexes, and marks all nodes dirty so a subsequent stylesheet merge
+    /// and restyle produces up-to-date computed styles.
+    ///
+    /// Parameters:
+    /// - tags_by_key: element NodeKey -> tag name (lower/any case acceptable; normalized here)
+    /// - children_by_key: parent NodeKey -> Vec<NodeKey> listing element children only (non-elements filtered out)
+    /// - attrs_by_key: NodeKey -> lowercased attribute map (id/class/style included when available)
+    pub fn rebuild_from_layout_snapshot(
+        &mut self,
+        tags_by_key: &std::collections::HashMap<js::NodeKey, String>,
+        children_by_key: &std::collections::HashMap<js::NodeKey, Vec<js::NodeKey>>,
+        attrs_by_key: &std::collections::HashMap<js::NodeKey, std::collections::HashMap<String, String>>,
+    ) {
+        use js::NodeKey;
+        use std::collections::{HashMap, HashSet};
+
+        // Reset core stores and indexes
+        self.nodes.clear();
+        self.nodes_by_id.clear();
+        self.nodes_by_class.clear();
+        self.nodes_by_tag.clear();
+        self.matches.clear();
+        self.node_match_epoch.clear();
+        self.dirty_nodes.clear();
+        self.changed_nodes.clear();
+        self.style_changed = false;
+        self.inline_decls.clear();
+
+        // 1) Create NodeInfo entries for all elements from tags_by_key and attrs
+        for (node_key, tag_name) in tags_by_key.iter() {
+            let mut info = NodeInfo {
+                tag: tag_name.to_ascii_lowercase(),
+                id: None,
+                classes: HashSet::new(),
+                attributes: HashMap::new(),
+                parent: None,
+                children: Vec::new(),
+            };
+            if let Some(attrs) = attrs_by_key.get(node_key) {
+                // id
+                if let Some(id_val) = attrs.get("id") {
+                    if !id_val.is_empty() {
+                        info.id = Some(id_val.clone());
+                    }
+                }
+                // class list
+                if let Some(class_val) = attrs.get("class") {
+                    info.classes = class_val
+                        .split_whitespace()
+                        .filter(|t| !t.is_empty())
+                        .map(|t| t.to_string())
+                        .collect();
+                }
+                // copy attributes (lowercase keys)
+                for (name, value) in attrs.iter() {
+                    info.attributes.insert(name.to_ascii_lowercase(), value.clone());
+                }
+                // inline style parsing (so snapshot path has inline decls even if DOM ordering differed)
+                if let Some(style_value) = attrs.get("style") {
+                    let declarations = parse_declarations(style_value);
+                    if !declarations.is_empty() {
+                        self.inline_decls.insert(*node_key, declarations);
+                    }
+                }
+            }
+            self.nodes.insert(*node_key, info);
+        }
+
+        // Ensure ROOT exists in the nodes map as a placeholder when referenced in children_by_key
+        if children_by_key.contains_key(&NodeKey::ROOT) && !self.nodes.contains_key(&NodeKey::ROOT) {
+            self.nodes.insert(NodeKey::ROOT, NodeInfo {
+                tag: String::new(), id: None, classes: HashSet::new(), attributes: HashMap::new(), parent: None, children: Vec::new()
+            });
+        }
+
+        // 2) Establish parent/children links (only between element nodes present in tags_by_key)
+        for (parent_key, child_list) in children_by_key.iter() {
+            // Filter to element children only
+            let filtered_children: Vec<NodeKey> = child_list
+                .iter()
+                .copied()
+                .filter(|child| tags_by_key.contains_key(child))
+                .collect();
+
+            // Assign parent for each child; if parent is non-element, fall back to ROOT
+            for child in &filtered_children {
+                if let Some(child_info) = self.nodes.get_mut(child) {
+                    if tags_by_key.contains_key(parent_key) {
+                        child_info.parent = Some(*parent_key);
+                    } else {
+                        // If parent is not an element (e.g., Document), set to ROOT if not already set
+                        if child_info.parent.is_none() {
+                            child_info.parent = Some(NodeKey::ROOT);
+                        }
+                    }
+                }
+            }
+
+            // Record children on element parent only
+            if tags_by_key.contains_key(parent_key) {
+                if let Some(parent_info) = self.nodes.get_mut(parent_key) {
+                    parent_info.children = filtered_children;
+                }
+            }
+        }
+
+        // 3) Rebuild id/class/tag indexes and mark all nodes dirty for recompute
+        //    Collect immutable copies first to avoid aliasing conflicts while mutating maps.
+        let mut index_items: Vec<(js::NodeKey, Option<String>, Vec<String>, String)> = Vec::with_capacity(self.nodes.len());
+        for (node_key, info) in self.nodes.iter() {
+            let classes_vec: Vec<String> = info.classes.iter().cloned().collect();
+            index_items.push((*node_key, info.id.clone(), classes_vec, info.tag.clone()));
+        }
+        for (node_key, id_opt, classes_vec, tag_name) in index_items {
+            if let Some(id_val) = id_opt {
+                self.nodes_by_id.entry(id_val).or_default().push(node_key);
+            }
+            for class in classes_vec {
+                self.nodes_by_class.entry(class).or_default().push(node_key);
+            }
+            if !tag_name.is_empty() {
+                self.nodes_by_tag.entry(tag_name.to_ascii_lowercase()).or_default().push(node_key);
+            }
+            self.dirty_nodes.insert(node_key);
+        }
+
+        // Signal that styles need recomputation but let the caller drive rematch/recompute sequencing
+        self.style_changed = true;
     }
 }

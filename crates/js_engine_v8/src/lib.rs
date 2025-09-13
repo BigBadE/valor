@@ -10,7 +10,6 @@ use js::JsEngine; // Use the engine-agnostic trait from js crate
 use rusty_v8 as v8;
 use std::convert::TryFrom;
 
-
 /// Dispatcher for host-bound functions installed through HostBindings.
 fn host_fn_dispatch(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let data = match args.data() { Some(d) => d, None => { rv.set(v8::undefined(scope).into()); return; } };
@@ -72,6 +71,9 @@ pub struct V8Engine {
     inner: Option<v8::Global<v8::Context>>,
     isolate: Option<OwnedIsolateWithHandleScope>,
     stubs_installed: bool,
+    base_url: Option<String>,
+    /// Registry of compiled ES modules keyed by absolute URL/specifier.
+    module_map: std::collections::HashMap<String, v8::Global<v8::Module>>,
 }
 
 impl Default for V8Engine {
@@ -80,6 +82,8 @@ impl Default for V8Engine {
             inner: None,
             isolate: None,
             stubs_installed: false,
+            base_url: None,
+            module_map: std::collections::HashMap::new(),
         }
     }
 }
@@ -111,6 +115,8 @@ impl V8Engine {
             inner: Some(global_context),
             isolate: Some(owned),
             stubs_installed: false,
+            base_url: None,
+            module_map: std::collections::HashMap::new(),
         })
     }
 
@@ -164,7 +170,34 @@ impl V8Engine {
                 } else {
                     exc_str.clone()
                 };
-                Console::exception(message, stack.as_deref());
+                Console::exception(message.clone(), stack.as_deref());
+                // Also propagate to window.onerror if present (Phase 6: error propagation)
+                // Build a small JS snippet that calls window.onerror(message, url, 0, 0)
+                fn escape_js(s: &str) -> String {
+                    let mut out = String::with_capacity(s.len() + 8);
+                    for ch in s.chars() {
+                        match ch {
+                            '\\' => out.push_str("\\\\"),
+                            '"' => out.push_str("\\\""),
+                            '\n' => out.push_str("\\n"),
+                            '\r' => out.push_str("\\r"),
+                            _ => out.push(ch),
+                        }
+                    }
+                    out
+                }
+                let msg_lit = format!("\"{}\"", escape_js(&message));
+                let url_lit = format!("\"{}\"", escape_js(url));
+                let call_onerror = format!(
+                    "(function(m,u){{try{{if(typeof window!=='undefined'&&typeof window.onerror==='function'){{window.onerror(m,u,0,0);}}}}catch(_o){{}}}})({},{});",
+                    msg_lit, url_lit
+                );
+                // Best-effort: attempt to invoke handler; ignore failures
+                if let Some(code2) = v8::String::new(tc, &call_onerror) {
+                    let undefined2: v8::Local<v8::Value> = v8::undefined(tc).into();
+                    let origin2 = v8::ScriptOrigin::new(tc, name.into(), 0, 0, false, 0, undefined2, false, false, false);
+                    let _ = v8::Script::compile(tc, code2, Some(&origin2)).and_then(|s| s.run(tc));
+                }
             }
             return Err(anyhow!("v8 failed"));
         }
@@ -196,7 +229,6 @@ impl V8Engine {
             JSValue::String(s) => v8::String::new(scope, s).unwrap().into(),
         }
     }
-
 
     /// Wrap a `HostFnKind` as a V8 `Function`.
     fn make_v8_callback<'s>(
@@ -251,10 +283,12 @@ impl V8Engine {
                 let function = Self::make_v8_callback(scope, host_context.clone(), function_kind.clone());
                 let key = v8::String::new(scope, function_name).unwrap();
                 let _ = target_obj.set(scope, key.into(), function.into());
-                // Expose host getElementById for the runtime wrapper to call directly, avoiding stale closures.
-                if *namespace_name == "document" && *function_name == "getElementById" {
-                    let host_key = v8::String::new(scope, "__valorHost_getElementById").unwrap();
-                    let _ = target_obj.set(scope, host_key.into(), function.into());
+                // Expose host functions under __valorHost_* for the runtime wrapper to call directly.
+                if *namespace_name == "document" {
+                    let host_alias = format!("__valorHost_{}", function_name);
+                    if let Some(alias_key) = v8::String::new(scope, &host_alias) {
+                        let _ = target_obj.set(scope, alias_key.into(), function.into());
+                    }
                 }
             }
         }
@@ -265,6 +299,14 @@ impl V8Engine {
 impl JsEngine for V8Engine {
     fn eval_script(&mut self, source: &str, url: &str) -> Result<()> {
         // Ensure stubs exist so basic console/document calls don't throw
+        let _ = self.ensure_stubs();
+        self.run_script_internal(source, url)
+    }
+
+    fn eval_module(&mut self, source: &str, url: &str) -> Result<()> {
+        // Minimal module support for Phase 6: evaluate pre-bundled side-effect code
+        // using the classic script path. A future iteration can switch to true V8
+        // module compilation and instantiation once the static import graph is wired.
         let _ = self.ensure_stubs();
         self.run_script_internal(source, url)
     }
@@ -297,8 +339,47 @@ impl JsEngine for V8Engine {
                 } else {
                     exc_str.clone()
                 };
-                Console::exception(message, stack.as_deref());
-                return Err(anyhow!("v8 microtask exception"));
+                Console::exception(message.clone(), stack.as_deref());
+                // Dispatch to window.onunhandledrejection if present (basic Phase 6 feature)
+                fn escape_js(s: &str) -> String {
+                    let mut out = String::with_capacity(s.len() + 8);
+                    for ch in s.chars() {
+                        match ch {
+                            '\\' => out.push_str("\\\\"),
+                            '"' => out.push_str("\\\""),
+                            '\n' => out.push_str("\\n"),
+                            '\r' => out.push_str("\\r"),
+                            _ => out.push(ch),
+                        }
+                    }
+                    out
+                }
+                let msg_lit = format!("\"{}\"", escape_js(&message));
+                let call_unhandled = format!(
+                    "(function(m){{try{{if(typeof window!=='undefined'&&typeof window.onunhandledrejection==='function'){{window.onunhandledrejection({{type:'unhandledrejection', reason:m}});}}}}catch(_ ){{}}}})({});",
+                    msg_lit
+                );
+                if let Some(code2) = v8::String::new(tc, &call_unhandled) {
+                    let origin2_name = v8::String::new(tc, "valor://unhandledrejection").unwrap();
+                    let undefined2: v8::Local<v8::Value> = v8::undefined(tc).into();
+                    let origin2 = v8::ScriptOrigin::new(tc, origin2_name.into(), 0, 0, false, 0, undefined2, false, false, false);
+                    let _ = v8::Script::compile(tc, code2, Some(&origin2)).and_then(|s| s.run(tc));
+                }
+                // Also notify window.onerror for visibility, mirroring classic script errors
+                let msg_lit = format!("\"{}\"", escape_js(&message));
+                let url_lit = "\"valor://microtask\"".to_string();
+                let call_onerror = format!(
+                    "(function(m,u){{try{{if(typeof window!=='undefined'&&typeof window.onerror==='function'){{window.onerror(m,u,0,0);}}}}catch(_o){{}}}})({},{});",
+                    msg_lit, url_lit
+                );
+                if let Some(code3) = v8::String::new(tc, &call_onerror) {
+                    let undefined3: v8::Local<v8::Value> = v8::undefined(tc).into();
+                    let origin3_name = v8::String::new(tc, "valor://microtask").unwrap();
+                    let origin3 = v8::ScriptOrigin::new(tc, origin3_name.into(), 0, 0, false, 0, undefined3, false, false, false);
+                    let _ = v8::Script::compile(tc, code3, Some(&origin3)).and_then(|s| s.run(tc));
+                }
+                // Do not propagate as a hard error; browsers don't crash on unhandled rejections.
+                // We already logged to console and invoked the handler if any.
             }
         }
         Ok(())

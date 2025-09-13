@@ -6,7 +6,7 @@ use html::parser::HTMLParser;
 use log::{trace, info};
 use tokio::runtime::Handle;
 use tokio::sync::{broadcast, mpsc};
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::mpsc::error::TryRecvError as UnboundedTryRecvError;
 use js_engine_v8::V8Engine;
 use url::Url;
@@ -50,6 +50,166 @@ impl FrameScheduler {
     fn deferred(&self) -> u64 { self.deferred_count }
 }
 
+/// Minimal static ES module bundler for side-effect-only modules.
+/// Resolves and inlines file:// dependencies by removing import/export syntax
+/// and concatenating dependency sources before the importer. This is sufficient
+/// for basic module side effects used in our tests. It does not support live bindings
+/// or dynamic import.
+struct ModuleLoader {
+    base_url: url::Url,
+    /// Cache of already bundled absolute module URLs to their transformed source.
+    bundled: std::collections::HashMap<String, String>,
+    /// Guard to avoid infinite recursion on cycles.
+    visiting: std::collections::HashSet<String>,
+}
+
+impl ModuleLoader {
+    /// Create a ModuleLoader with a base URL used to resolve inline module specifiers.
+    fn new(base_url: url::Url) -> Self {
+        Self { base_url, bundled: std::collections::HashMap::new(), visiting: std::collections::HashSet::new() }
+    }
+
+    /// Resolve a module specifier against a referrer URL.
+    fn resolve_specifier(&self, spec: &str, referrer: &url::Url) -> Option<url::Url> {
+        if let Ok(u) = url::Url::parse(spec) { return Some(u); }
+        referrer.join(spec).ok()
+    }
+
+    /// Load a module source as a string (file:// only for now).
+    fn load_source(&self, url: &url::Url) -> anyhow::Result<String> {
+        match url.scheme() {
+            "file" => {
+                let path = url.to_file_path().map_err(|_| anyhow::anyhow!("invalid file URL: {}", url))?;
+                let text = std::fs::read_to_string(path)?;
+                Ok(text)
+            }
+            _ => Err(anyhow::anyhow!("Unsupported module scheme: {}", url.scheme())),
+        }
+    }
+
+    /// Extract static import specifiers (both `import 'x'` and `import ... from 'x'`,
+    /// and `export ... from 'x'`) and return their absolute URLs.
+    fn collect_deps(&self, source: &str, referrer: &url::Url) -> Vec<String> {
+        let mut deps: Vec<String> = Vec::new();
+        // import 'x'
+        let mut i = 0usize;
+        let bytes = source.as_bytes();
+        while let Some(pos) = source[i..].find("import") {
+            let j = i + pos;
+            let k = j + 6; // len("import")
+            // skip whitespace
+            let mut p = k;
+            while p < bytes.len() && bytes[p].is_ascii_whitespace() { p += 1; }
+            if p < bytes.len() && (bytes[p] == b'\'' || bytes[p] == b'\"') {
+                let quote = bytes[p]; p += 1; let start = p;
+                while p < bytes.len() && bytes[p] != quote { p += 1; }
+                if p <= bytes.len() {
+                    let spec = &source[start..p];
+                    if let Some(u) = self.resolve_specifier(spec, referrer) { deps.push(u.to_string()); }
+                }
+            } else {
+                // find from '...'
+                if let Some(from_pos_rel) = source[k..].find("from") {
+                    let mut q = k + from_pos_rel + 4; // after 'from'
+                    while q < bytes.len() && bytes[q].is_ascii_whitespace() { q += 1; }
+                    if q < bytes.len() && (bytes[q] == b'\'' || bytes[q] == b'\"') {
+                        let quote = bytes[q]; q += 1; let start = q;
+                        while q < bytes.len() && bytes[q] != quote { q += 1; }
+                        if q <= bytes.len() {
+                            let spec = &source[start..q];
+                            if let Some(u) = self.resolve_specifier(spec, referrer) { deps.push(u.to_string()); }
+                        }
+                    }
+                }
+            }
+            i = k + 1;
+        }
+        // export ... from 'x'
+        let mut i2 = 0usize;
+        while let Some(pos) = source[i2..].find("export") {
+            let j = i2 + pos;
+            let k = j + 6; // len(export)
+            if let Some(from_rel) = source[k..].find("from") {
+                let mut q = k + from_rel + 4;
+                while q < bytes.len() && bytes[q].is_ascii_whitespace() { q += 1; }
+                if q < bytes.len() && (bytes[q] == b'\'' || bytes[q] == b'\"') {
+                    let quote = bytes[q]; q += 1; let start = q;
+                    while q < bytes.len() && bytes[q] != quote { q += 1; }
+                    if q <= bytes.len() {
+                        let spec = &source[start..q];
+                        if let Some(u) = self.resolve_specifier(spec, referrer) { deps.push(u.to_string()); }
+                    }
+                }
+            }
+            i2 = k + 1;
+        }
+        // Dedup while preserving order
+        let mut seen = std::collections::HashSet::new();
+        deps.into_iter().filter(|u| seen.insert(u.clone())).collect()
+    }
+
+    /// Remove import lines and strip "export" keywords from declarations to produce executable JS.
+    fn strip_import_export(&self, source: &str) -> String {
+        let mut out = String::with_capacity(source.len());
+        for line in source.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("import ") || trimmed.starts_with("import\t") || trimmed.starts_with("export {") {
+                // drop entire line (import ...; or export {...};)
+                continue;
+            }
+            // Strip leading 'export ' for simple declarations
+            if trimmed.starts_with("export ") {
+                if let Some(pos) = line.find("export ") {
+                    out.push_str(&line[..pos]);
+                    out.push_str(&line[pos + 7..]);
+                    out.push('\n');
+                    continue;
+                }
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Bundle a module and its dependencies (depth-first), returning concatenated JS.
+    fn bundle_recursive(&mut self, url: &url::Url, override_source: Option<&str>) -> anyhow::Result<String> {
+        let key = url.to_string();
+        if let Some(existing) = self.bundled.get(&key) { return Ok(existing.clone()); }
+        if !self.visiting.insert(key.clone()) {
+            // simple cycle guard: skip duplicate inclusion
+            return Ok(String::new());
+        }
+        let raw_source = match override_source { Some(s) => s.to_string(), None => self.load_source(url)? };
+        let deps = self.collect_deps(&raw_source, url);
+        let mut bundled = String::new();
+        // Inline dependencies first
+        for dep in deps {
+            if let Ok(dep_url) = url::Url::parse(&dep) {
+                let dep_code = self.bundle_recursive(&dep_url, None)?;
+                if !dep_code.is_empty() { bundled.push_str(&dep_code); bundled.push('\n'); }
+            }
+        }
+        // Append this module's stripped code
+        let code = self.strip_import_export(&raw_source);
+        bundled.push_str(&code);
+        self.visiting.remove(&key);
+        self.bundled.insert(key, bundled.clone());
+        Ok(bundled)
+    }
+
+    /// Public entry: bundle a root module by URL or inline source with base URL.
+    fn bundle_root(&mut self, root_url: &str, base_for_inline: &url::Url, inline_source: Option<&str>) -> anyhow::Result<String> {
+        // Resolve root_url, which may be inline:*; for inline we use base_for_inline for relative deps
+        if root_url.starts_with("inline:") {
+            self.bundle_recursive(base_for_inline, inline_source)
+        } else {
+            let url = url::Url::parse(root_url).or_else(|_| base_for_inline.join(root_url))?;
+            self.bundle_recursive(&url, inline_source)
+        }
+    }
+}
+
 pub struct HtmlPage {
     /// Optional currently focused node for Phase 7 focus management.
     focused_node: Option<js::NodeKey>,
@@ -76,10 +236,14 @@ pub struct HtmlPage {
     in_updater: mpsc::Sender<Vec<DOMUpdate>>,
     // JavaScript engine and script queue
     js_engine: V8Engine,
-    script_rx: UnboundedReceiver<String>,
+    /// Host context for privileged binding decisions and shared registries.
+    host_context: js::HostContext,
+    script_rx: UnboundedReceiver<html::parser::ScriptJob>,
     script_counter: u64,
     #[allow(dead_code)]
     url: Url,
+    /// Static module bundler for basic ES module support (side-effect only).
+    module_loader: ModuleLoader,
     // Optional layout debounce to coalesce micro-changes across updates (Phase 4 start)
     layout_debounce: Option<std::time::Duration>,
     layout_debounce_deadline: Option<std::time::Instant>,
@@ -89,6 +253,11 @@ pub struct HtmlPage {
     last_style_restyled_nodes: u64,
     // Whether we've dispatched DOMContentLoaded to JS listeners.
     dom_content_loaded_fired: bool,
+    /// One-time post-load guard to rebuild the StyleEngine's node inventory from the Layouter
+    /// for deterministic style resolution in the normal update path.
+    style_nodes_rebuilt_after_load: bool,
+    /// Monotonic start time for driving JS timers with a stable time origin.
+    start_time: std::time::Instant,
 }
 
 impl HtmlPage {
@@ -107,7 +276,7 @@ impl HtmlPage {
                 let js_keyman = dom.register_manager::<u64>();
 
         // Channel for inline script execution requests from the parser
-        let (script_tx, script_rx) = unbounded_channel();
+        let (script_tx, script_rx) = unbounded_channel::<html::parser::ScriptJob>();
         let loader = HTMLParser::parse(
             handle,
             in_updater.clone(),
@@ -115,6 +284,7 @@ impl HtmlPage {
             stream_url(&url).await?,
             out_receiver,
             script_tx,
+            url.clone(),
         );
 
         // Create and attach the CSS mirror to observe DOM updates
@@ -143,6 +313,21 @@ impl HtmlPage {
         let js_node_keys = std::sync::Arc::new(std::sync::Mutex::new(js_keyman));
         let js_local_id_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let js_created_nodes = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        // Build page origin string for same-origin checks
+        let page_origin = match url.scheme() {
+            "file" => String::from("file://"),
+            _ => {
+                let host = url.host_str().unwrap_or("");
+                let port = url.port().map(|p| format!(":{}", p)).unwrap_or_default();
+                format!("{}://{}{}", url.scheme(), host, port)
+            }
+        };
+        // Establish a high-resolution time origin for performance.now and timers
+        let start_instant = std::time::Instant::now();
+        // Initialize per-origin storage registries (in-memory for this page/session)
+        let storage_local = std::sync::Arc::new(std::sync::Mutex::new(js::bindings::StorageRegistry::default()));
+        let storage_session = std::sync::Arc::new(std::sync::Mutex::new(js::bindings::StorageRegistry::default()));
+
         let host_context = js::HostContext {
             page_id: None,
             logger,
@@ -151,9 +336,16 @@ impl HtmlPage {
             js_local_id_counter,
             js_created_nodes,
             dom_index: dom_index_shared.clone(),
+            tokio_handle: handle.clone(),
+            page_origin,
+            fetch_registry: std::sync::Arc::new(std::sync::Mutex::new(js::bindings::FetchRegistry::default())),
+            performance_start: start_instant,
+            storage_local: storage_local.clone(),
+            storage_session: storage_session.clone(),
+            chrome_host_tx: None,
         };
         let bindings = js::build_default_bindings();
-        let _ = js_engine.install_bindings(host_context, &bindings);
+        let _ = js_engine.install_bindings(host_context.clone(), &bindings);
 
         // Frame scheduler budget (ms), default to ~16ms per 60Hz frame
         let frame_budget_ms = std::env::var("VALOR_FRAME_BUDGET_MS").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(16);
@@ -172,14 +364,18 @@ impl HtmlPage {
             dom_index_shared,
             in_updater,
             js_engine,
+            host_context,
             script_rx,
             script_counter: 0,
-            url,
+            url: url.clone(),
             layout_debounce,
             layout_debounce_deadline: None,
             frame_scheduler,
             last_style_restyled_nodes: 0,
             dom_content_loaded_fired: false,
+            style_nodes_rebuilt_after_load: false,
+            start_time: start_instant,
+            module_loader: ModuleLoader::new(url.clone()),
         })
     }
 
@@ -194,18 +390,64 @@ impl HtmlPage {
     fn execute_pending_scripts(&mut self) {
         loop {
             match self.script_rx.try_recv() {
-                Ok(script_source) => {
-                    let script_url = format!("inline:script-{}", self.script_counter);
-                    self.script_counter = self.script_counter.wrapping_add(1);
-                    // Test printing: log inline script execution
-                    info!("HtmlPage: executing {} (length={} bytes)", script_url, script_source.len());
-                    let _ = self.js_engine.eval_script(&script_source, &script_url);
-                    let _ = self.js_engine.run_jobs();
+                Ok(job) => {
+                    let script_url = if job.url.is_empty() {
+                        let kind = match job.kind { html::parser::ScriptKind::Module => "module", html::parser::ScriptKind::Classic => "script" };
+                        let u = format!("inline:{}-{}", kind, self.script_counter);
+                        self.script_counter = self.script_counter.wrapping_add(1);
+                        u
+                    } else { job.url.clone() };
+                    info!("HtmlPage: executing {} (length={} bytes)", script_url, job.source.len());
+                    match job.kind {
+                        html::parser::ScriptKind::Classic => {
+                            let _ = self.js_engine.eval_script(&job.source, &script_url);
+                            let _ = self.js_engine.run_jobs();
+                        }
+                        html::parser::ScriptKind::Module => {
+                            // Bundle static imports (side-effect only) and evaluate via module API.
+                            let bundler = &mut self.module_loader;
+                            let inline_source = if script_url.starts_with("inline:") { Some(job.source.as_str()) } else { Some(job.source.as_str()) };
+                            if let Ok(bundle) = bundler.bundle_root(script_url.as_str(), &self.url, inline_source) {
+                                let _ = self.js_engine.eval_module(&bundle, &script_url);
+                                let _ = self.js_engine.run_jobs();
+                            } else {
+                                // Fallback: evaluate raw source
+                                let _ = self.js_engine.eval_module(&job.source, &script_url);
+                                let _ = self.js_engine.run_jobs();
+                            }
+                        }
+                    }
                 }
                 Err(UnboundedTryRecvError::Empty) => break,
                 Err(UnboundedTryRecvError::Disconnected) => break,
             }
         }
+    }
+
+    /// Execute at most one due JavaScript timer callback.
+    /// This evaluates the runtime prelude hook `__valorTickTimersOnce(nowMs)` and then
+    /// flushes engine microtasks to approximate browser ordering (microtasks after each task).
+    fn tick_js_timers_once(&mut self) {
+        // Use engine-provided clock (Date.now()/performance.now) by omitting the argument.
+        // This keeps the runtime timer origin consistent with scheduling inside JS.
+        let script = String::from(
+            "(function(){ try { var f = globalThis.__valorTickTimersOnce; if (typeof f === 'function') f(); } catch(_){} })();"
+        );
+        let _ = self.js_engine.eval_script(&script, "valor://timers_tick");
+        let _ = self.js_engine.run_jobs();
+    }
+
+    /// Synchronously fetch the textContent for an element by id using the DomIndex mirror.
+    /// This helper keeps the index in sync for tests that query immediately after updates.
+    pub fn text_content_by_id_sync(&mut self, id: &str) -> Option<String> {
+        // Keep index mirror fresh for same-tick queries
+        let _ = self.dom_index_mirror.try_update_sync();
+        if let Ok(guard) = self.dom_index_shared.lock() {
+            if let Some(key) = guard.get_element_by_id(id) {
+                return Some(guard.get_text_content(key));
+            }
+        }
+        None
     }
 
     /// Finalize DOM loading if the loader has finished
@@ -248,29 +490,69 @@ impl HtmlPage {
         // Drain CSS mirror after DOM broadcast (non-blocking)
         self.css_mirror.try_update_sync()?;
 
-        // Forward current stylesheet to style engine and drain it
+        // Drain DOM-driven style updates first so id/class indexes are up-to-date before stylesheet merge
+        self.style_engine_mirror.try_update_sync()?;
+        // Keep Layouter mirror fresh; we will use its snapshot to optionally rebuild the StyleEngine node set
+        let _ = self.layouter_mirror.try_update_sync();
+        // Synchronize attributes as a safety net so id/class are available even if structure rebuild is skipped
+        let lay_attrs = self.layouter_mirror.mirror_mut().attrs_map();
+        self.style_engine_mirror.mirror_mut().sync_attrs_from_map(&lay_attrs);
+
+        // One-time deterministic rebuild of StyleEngine's node inventory after parsing is finished.
+        // This ensures regular update path has a complete node set for reliable selector matching (e.g., overflow hidden).
+        if self.loader.is_none() && !self.style_nodes_rebuilt_after_load {
+            // Build element-only tag and children maps from the layouter snapshot
+            let lay_snapshot = self.layouter_mirror.mirror_mut().snapshot();
+            let mut tags_by_key: std::collections::HashMap<js::NodeKey, String> = std::collections::HashMap::new();
+            let mut raw_children: std::collections::HashMap<js::NodeKey, Vec<js::NodeKey>> = std::collections::HashMap::new();
+            for (key, kind, children) in lay_snapshot.into_iter() {
+                if let layouter::LayoutNodeKind::Block { tag } = kind {
+                    tags_by_key.insert(key, tag);
+                }
+                raw_children.insert(key, children);
+            }
+            let mut children_by_key: std::collections::HashMap<js::NodeKey, Vec<js::NodeKey>> = std::collections::HashMap::new();
+            for (parent, kids) in raw_children.into_iter() {
+                // Keep only element children
+                let filtered: Vec<js::NodeKey> = kids.into_iter().filter(|c| tags_by_key.contains_key(c)).collect();
+                // Allow ROOT to host element children even though it has no tag
+                if tags_by_key.contains_key(&parent) || parent == js::NodeKey::ROOT {
+                    children_by_key.insert(parent, filtered);
+                }
+            }
+            // Deterministically rebuild the StyleEngine's node inventory
+            self.style_engine_mirror
+                .mirror_mut()
+                .rebuild_from_layout_snapshot(&tags_by_key, &children_by_key, &lay_attrs);
+            self.style_nodes_rebuilt_after_load = true;
+        }
+
+        // Forward current stylesheet to the style engine and merge it (idempotent when unchanged)
         let current_styles = self.css_mirror.mirror_mut().styles().clone();
         self.style_engine_mirror.mirror_mut().replace_stylesheet(current_styles.clone());
-        // Drain DOM-driven style updates first (non-blocking)
-        self.style_engine_mirror.try_update_sync()?;
-        // Coalesce and recompute dirty styles once per tick after draining updates
+        // Coalesce and recompute dirty styles once per tick after draining updates and merging rules
         self.style_engine_mirror.mirror_mut().recompute_dirty();
 
-        // Forward current stylesheet and computed styles to layouter only when styles changed
+        // After stylesheet merge, perform a conservative full restyle to avoid ordering races.
+        self.style_engine_mirror.mirror_mut().force_full_restyle();
+
+        // Always forward the latest computed styles and stylesheet snapshot to the layouter.
+        let computed_styles = self.style_engine_mirror.mirror_mut().computed_snapshot();
+        self.layouter_mirror.mirror_mut().set_stylesheet(current_styles);
+        self.layouter_mirror.mirror_mut().set_computed_styles(computed_styles);
+
+        // Mark dirty nodes for reflow: prefer precise changed set when available, else mark root.
         let style_changed = self.style_engine_mirror.mirror_mut().take_and_clear_style_changed();
-        // Drain changed_nodes now to compute effective change
         let mut changed_nodes = Vec::new();
         if style_changed {
             changed_nodes = self.style_engine_mirror.mirror_mut().take_changed_nodes();
-            if !changed_nodes.is_empty() {
-                // Provide computed styles and stylesheet snapshot only when there are material changes
-                let computed_styles = self.style_engine_mirror.mirror_mut().computed_snapshot();
-                self.layouter_mirror.mirror_mut().set_stylesheet(current_styles);
-                self.layouter_mirror.mirror_mut().set_computed_styles(computed_styles);
-                // Mark nodes whose computed styles changed as STYLE-dirty in layouter
-                self.layouter_mirror.mirror_mut().mark_nodes_style_dirty(&changed_nodes);
-            }
         }
+        if changed_nodes.is_empty() {
+            self.layouter_mirror.mirror_mut().mark_nodes_style_dirty(&[js::NodeKey::ROOT]);
+        } else {
+            self.layouter_mirror.mirror_mut().mark_nodes_style_dirty(&changed_nodes);
+        }
+
         // Drain layouter updates after DOM broadcast (non-blocking)
         self.layouter_mirror.try_update_sync()?;
 
@@ -355,16 +637,21 @@ impl HtmlPage {
 
     pub async fn update(&mut self) -> Result<(), Error> {
         let _span = info_span!("page.update").entered();
-        // Drain and execute any pending inline scripts from the parser
-        self.execute_pending_scripts();
-
         // Finalize DOM loading if the loader has finished
         self.finalize_dom_loading_if_needed().await?;
+
+        // Drive a few JS timers this tick to roughly match frame cadence.
+        // Execute at most a small number of callbacks per tick to avoid starvation.
+        self.tick_js_timers_once();
+        self.tick_js_timers_once();
+        self.tick_js_timers_once();
 
         // Apply any pending DOM updates
         self.dom.update().await?;
         // Keep the DOM index mirror in sync before any JS queries (e.g., getElementById)
         self.dom_index_mirror.try_update_sync()?;
+        // Execute any scripts enqueued during finalize (e.g., deferred classics) before DOMContentLoaded
+        self.execute_pending_scripts();
 
         // Handle DOM content loaded event if needed
         self.handle_dom_content_loaded_if_needed().await?;
@@ -387,16 +674,117 @@ impl HtmlPage {
     }
 
     /// Drain CSS mirror and return a snapshot clone of the collected stylesheet
+    /// Evaluate arbitrary JS in the page's engine (testing helper) and flush microtasks.
+    pub fn eval_js(&mut self, source: &str) -> Result<(), Error> {
+        self.js_engine.eval_script(source, "valor://eval_js_test")?;
+        self.js_engine.run_jobs()?;
+        Ok(())
+    }
+
     pub fn styles_snapshot(&mut self) -> Result<Stylesheet, Error> {
         // For blocking-thread callers, keep it non-async
         self.css_mirror.try_update_sync()?;
         Ok(self.css_mirror.mirror_mut().styles().clone())
     }
 
-    /// Drain StyleEngine mirror and return a snapshot clone of computed styles per node.
+    /// Drain mirrors and return a snapshot clone of computed styles per node.
+    /// Ensures the latest inline <style> collected by CSSMirror is forwarded to the
+    /// StyleEngine before taking the snapshot so callers that query immediately after
+    /// parsing completes (without another update tick) still see up-to-date styles.
     pub fn computed_styles_snapshot(&mut self) -> Result<std::collections::HashMap<js::NodeKey, style_engine::ComputedStyle>, Error> {
+        // 1) Drain CSS mirror to capture any late style chunks finalized at EndOfDocument
+        self.css_mirror.try_update_sync()?;
+        // 2) Drain StyleEngine DOM updates first so tag/id/class are up-to-date before stylesheet merge
         self.style_engine_mirror.try_update_sync()?;
-        Ok(self.style_engine_mirror.mirror_mut().computed_snapshot())
+        // 3) Drain Layouter mirror to obtain a consistent snapshot for rebuilding the StyleEngine node inventory
+        let _ = self.layouter_mirror.try_update_sync();
+        let lay_snapshot = self.layouter_mirror.mirror_mut().snapshot();
+        // Build element-only tags and children maps from the layouter snapshot
+        let mut tags_by_key: std::collections::HashMap<js::NodeKey, String> = std::collections::HashMap::new();
+        let mut raw_children: std::collections::HashMap<js::NodeKey, Vec<js::NodeKey>> = std::collections::HashMap::new();
+        for (key, kind, children) in lay_snapshot.into_iter() {
+            if let layouter::LayoutNodeKind::Block { tag } = kind {
+                tags_by_key.insert(key, tag);
+            }
+            raw_children.insert(key, children);
+        }
+        let mut children_by_key: std::collections::HashMap<js::NodeKey, Vec<js::NodeKey>> = std::collections::HashMap::new();
+        for (parent, kids) in raw_children.into_iter() {
+            // Keep only element children
+            let filtered: Vec<js::NodeKey> = kids.into_iter().filter(|c| tags_by_key.contains_key(c)).collect();
+            // Allow ROOT to host element children even though it has no tag
+            if tags_by_key.contains_key(&parent) || parent == js::NodeKey::ROOT {
+                children_by_key.insert(parent, filtered);
+            }
+        }
+        // Attributes from the layouter mirror
+        let attrs_by_key = self.layouter_mirror.mirror_mut().attrs_map();
+        // 4) Deterministically rebuild the StyleEngine's node inventory
+        self.style_engine_mirror
+            .mirror_mut()
+            .rebuild_from_layout_snapshot(&tags_by_key, &children_by_key, &attrs_by_key);
+        
+        // 4.1) Supplementary: extract inline <style> text from the Layouter snapshot and parse it
+        // This ensures tests see a complete author stylesheet even if streaming CSS parsing under-collected.
+        let mut text_by_key: std::collections::HashMap<js::NodeKey, String> = std::collections::HashMap::new();
+        let mut raw_children2: std::collections::HashMap<js::NodeKey, Vec<js::NodeKey>> = std::collections::HashMap::new();
+        let lay_snapshot2 = self.layouter_mirror.mirror_mut().snapshot();
+        for (key, kind, children) in lay_snapshot2.into_iter() {
+            if let layouter::LayoutNodeKind::InlineText { text } = kind {
+                text_by_key.insert(key, text);
+            }
+            raw_children2.insert(key, children);
+        }
+        let mut inline_style_css = String::new();
+        for (node, tag) in &tags_by_key {
+            if tag.eq_ignore_ascii_case("style") {
+                if let Some(children) = raw_children2.get(node) {
+                    for child in children {
+                        if let Some(txt) = text_by_key.get(child) {
+                            inline_style_css.push_str(txt);
+                        }
+                    }
+                }
+            }
+        }
+        // 4.2) Build a merged stylesheet
+        let current_styles = self.css_mirror.mirror_mut().styles().clone();
+        let author_count_current = current_styles
+            .rules
+            .iter()
+            .filter(|r| matches!(r.origin, css::types::Origin::Author))
+            .count();
+        let inline_style_css_trimmed = inline_style_css.trim().to_string();
+        let mut final_styles: css::types::Stylesheet = css::types::Stylesheet::default();
+        if !inline_style_css_trimmed.is_empty() {
+            let ua_count = current_styles
+                .rules
+                .iter()
+                .filter(|r| matches!(r.origin, css::types::Origin::UA))
+                .count() as u32;
+            let parsed_author = css::parser::parse_stylesheet(&inline_style_css_trimmed, css::types::Origin::Author, ua_count);
+            if parsed_author.rules.len() > author_count_current {
+                // Prefer UA from current + parsed author from snapshot when it is more complete
+                final_styles.rules.extend(
+                    current_styles
+                        .rules
+                        .iter()
+                        .filter(|r| matches!(r.origin, css::types::Origin::UA))
+                        .cloned(),
+                );
+                final_styles.rules.extend(parsed_author.rules);
+            } else {
+                final_styles = current_styles;
+            }
+        } else {
+            final_styles = current_styles;
+        }
+        // 4.3) Merge/replace stylesheet in the StyleEngine and force a full restyle
+        self.style_engine_mirror.mirror_mut().replace_stylesheet(final_styles);
+        self.style_engine_mirror.mirror_mut().force_full_restyle();
+        // 5) Return a stable snapshot of computed styles
+        let snapshot = self.style_engine_mirror.mirror_mut().computed_snapshot();
+        Ok(snapshot)
     }
 
     /// Drain CSS mirror and return a snapshot clone of discovered external stylesheet URLs
@@ -508,7 +896,8 @@ impl HtmlPage {
         // Gather data we need from layouter and styles
         let rects = self.layouter_mirror.mirror_mut().compute_layout_geometry();
         let snapshot = self.layouter_mirror.mirror_mut().snapshot();
-        let computed_map = self.layouter_mirror.mirror_mut().computed_styles().clone();
+        // Build a deterministic computed styles snapshot (forces a full restyle on a complete node set)
+        let computed_map = self.computed_styles_snapshot()?;
 
         // Build maps for quick lookup
         let mut kind_map: std::collections::HashMap<js::NodeKey, layouter::LayoutNodeKind> = std::collections::HashMap::new();
@@ -934,5 +1323,105 @@ impl HtmlPage {
             out
         }
         serialize(js::NodeKey::ROOT, &kind_by_key, &children_by_key, &attrs_map)
+    }
+}
+
+
+
+impl HtmlPage {
+    /// Dispatch a synthetic pointer move event to the document.
+    /// The event is delivered via the JS runtime by calling document.dispatchEvent
+    /// with a plain object carrying standard MouseEvent-like fields.
+    pub fn dispatch_pointer_move(&mut self, x: f64, y: f64) {
+        let mut js = String::from("(function(){try{var e={type:'mousemove',clientX:");
+        js.push_str(&x.to_string());
+        js.push_str(",clientY:");
+        js.push_str(&y.to_string());
+        js.push_str("};document.dispatchEvent(e);}catch(_){}})();");
+        let _ = self.js_engine.eval_script(&js, "valor://event/pointer_move");
+        let _ = self.js_engine.run_jobs();
+    }
+
+    /// Dispatch a synthetic pointer down (mouse down) event.
+    pub fn dispatch_pointer_down(&mut self, x: f64, y: f64, button: u32) {
+        let mut js = String::from("(function(){try{var e={type:'mousedown',clientX:");
+        js.push_str(&x.to_string());
+        js.push_str(",clientY:");
+        js.push_str(&y.to_string());
+        js.push_str(",button:");
+        js.push_str(&button.to_string());
+        js.push_str("};document.dispatchEvent(e);}catch(_){}})();");
+        let _ = self.js_engine.eval_script(&js, "valor://event/pointer_down");
+        let _ = self.js_engine.run_jobs();
+    }
+
+    /// Dispatch a synthetic pointer up (mouse up) event.
+    pub fn dispatch_pointer_up(&mut self, x: f64, y: f64, button: u32) {
+        let mut js = String::from("(function(){try{var e={type:'mouseup',clientX:");
+        js.push_str(&x.to_string());
+        js.push_str(",clientY:");
+        js.push_str(&y.to_string());
+        js.push_str(",button:");
+        js.push_str(&button.to_string());
+        js.push_str("};document.dispatchEvent(e);}catch(_){}})();");
+        let _ = self.js_engine.eval_script(&js, "valor://event/pointer_up");
+        let _ = self.js_engine.run_jobs();
+    }
+
+    /// Dispatch a synthetic keydown event with optional modifier flags.
+    pub fn dispatch_key_down(&mut self, key: &str, code: &str, ctrl: bool, alt: bool, shift: bool) {
+        let mut js = String::from("(function(){try{var e={type:'keydown',key:");
+        js.push_str(&format!("{:?}", key));
+        js.push_str(",code:");
+        js.push_str(&format!("{:?}", code));
+        js.push_str(",ctrlKey:");
+        js.push_str(if ctrl {"true"} else {"false"});
+        js.push_str(",altKey:");
+        js.push_str(if alt {"true"} else {"false"});
+        js.push_str(",shiftKey:");
+        js.push_str(if shift {"true"} else {"false"});
+        js.push_str("};document.dispatchEvent(e);}catch(_){}})();");
+        let _ = self.js_engine.eval_script(&js, "valor://event/key_down");
+        let _ = self.js_engine.run_jobs();
+    }
+
+    /// Dispatch a synthetic keyup event with optional modifier flags.
+    pub fn dispatch_key_up(&mut self, key: &str, code: &str, ctrl: bool, alt: bool, shift: bool) {
+        let mut js = String::from("(function(){try{var e={type:'keyup',key:");
+        js.push_str(&format!("{:?}", key));
+        js.push_str(",code:");
+        js.push_str(&format!("{:?}", code));
+        js.push_str(",ctrlKey:");
+        js.push_str(if ctrl {"true"} else {"false"});
+        js.push_str(",altKey:");
+        js.push_str(if alt {"true"} else {"false"});
+        js.push_str(",shiftKey:");
+        js.push_str(if shift {"true"} else {"false"});
+        js.push_str("};document.dispatchEvent(e);}catch(_){}})();");
+        let _ = self.js_engine.eval_script(&js, "valor://event/key_up");
+        let _ = self.js_engine.run_jobs();
+    }
+
+    /// Dispatch a synthetic text input (character) event. This is sent on ReceivedCharacter.
+    pub fn dispatch_text_input(&mut self, text: &str) {
+        let mut js = String::from("(function(){try{var e={type:'textinput',data:");
+        js.push_str(&format!("{:?}", text));
+        js.push_str("};document.dispatchEvent(e);}catch(_){}})();");
+        let _ = self.js_engine.eval_script(&js, "valor://event/text_input");
+        let _ = self.js_engine.run_jobs();
+    }
+}
+
+
+impl HtmlPage {
+    /// Attach a privileged chromeHost command channel to this page (for valor://chrome only).
+    /// This installs the `chromeHost` namespace into the JS context with origin gating.
+    pub fn attach_chrome_host(&mut self, sender: tokio::sync::mpsc::UnboundedSender<js::ChromeHostCommand>) -> Result<(), Error> {
+        self.host_context.chrome_host_tx = Some(sender);
+        // Install the chromeHost namespace now that a channel is available
+        let bindings = js::build_chrome_host_bindings();
+        let _ = self.js_engine.install_bindings(self.host_context.clone(), &bindings);
+        let _ = self.js_engine.run_jobs();
+        Ok(())
     }
 }

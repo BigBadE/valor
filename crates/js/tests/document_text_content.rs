@@ -18,6 +18,8 @@ fn make_host_context(sender: mpsc::Sender<Vec<DOMUpdate>>, dom_index: Arc<Mutex<
     // Create a fresh NodeKeyManager shard for JS-created nodes
     let mut key_space = KeySpace::new();
     let js_keyman: NodeKeyManager<u64> = key_space.register_manager();
+    // Create a Tokio runtime and leak it for the duration of the tests so the handle remains valid
+    let rt = Box::leak(Box::new(tokio::runtime::Runtime::new().expect("tokio runtime")));
     HostContext {
         page_id: None,
         logger: Arc::new(ConsoleLogger),
@@ -26,6 +28,13 @@ fn make_host_context(sender: mpsc::Sender<Vec<DOMUpdate>>, dom_index: Arc<Mutex<
         js_local_id_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         js_created_nodes: Arc::new(Mutex::new(std::collections::HashMap::new())),
         dom_index,
+        tokio_handle: rt.handle().clone(),
+        page_origin: String::from("file://"),
+        fetch_registry: Arc::new(Mutex::new(js::bindings::FetchRegistry::default())),
+        performance_start: std::time::Instant::now(),
+        storage_local: Arc::new(Mutex::new(js::bindings::StorageRegistry::default())),
+        storage_session: Arc::new(Mutex::new(js::bindings::StorageRegistry::default())),
+        chrome_host_tx: None,
     }
 }
 

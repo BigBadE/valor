@@ -18,5 +18,6 @@ js.workspace = true
  anyhow.workspace = true
  serde.workspace = true
  serde_json.workspace = true
+url.workspace = true
  
  [features]

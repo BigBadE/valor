@@ -14,7 +14,7 @@ pub use console::{Console, ConsoleLogger};
 
 /// Engine-agnostic host bindings facade: values, logger, and namespace builders.
 pub mod bindings;
-pub use bindings::{JSValue, JSError, HostBindings, HostNamespace, HostFnKind, HostFnSync, HostContext, HostLogger, LogLevel, CreatedNodeKind, CreatedNodeInfo, build_console_namespace, build_document_namespace, build_default_bindings, stringify_arguments};
+pub use bindings::{JSValue, JSError, HostBindings, HostNamespace, HostFnKind, HostFnSync, HostContext, HostLogger, LogLevel, CreatedNodeKind, CreatedNodeInfo, ChromeHostCommand, build_console_namespace, build_document_namespace, build_default_bindings, build_chrome_host_namespace, build_chrome_host_bindings, stringify_arguments};
 
 /// DOM index mirror for element lookups from host-side APIs.
 pub mod dom_index;
@@ -32,6 +32,9 @@ pub mod runtime;
 pub trait JsEngine {
     /// Evaluate a classic script.
     fn eval_script(&mut self, source: &str, url: &str) -> Result<()>;
+    /// Evaluate an ES module's executable form. For now, engines may accept
+    /// pre-bundled side-effect-only module code produced by the host.
+    fn eval_module(&mut self, source: &str, url: &str) -> Result<()>;
     /// Run pending microtasks/jobs until idle.
     fn run_jobs(&mut self) -> Result<()>;
 }

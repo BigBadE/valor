@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Valor Chrome</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { margin: 0; font: 14px/1.4 -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+      .topbar { display: block; height: 56px; background: #1f2937; color: #e5e7eb; padding: 8px 12px; box-sizing: border-box; }
+      .row { display: flex; gap: 8px; align-items: center; height: 40px; }
+      .btn { display: inline-block; padding: 6px 10px; background: #374151; color: #e5e7eb; border-radius: 4px; user-select: none; }
+      .addr { flex: 1; display: inline-block; padding: 6px 10px; border-radius: 4px; border: 1px solid #4b5563; background: #111827; color: #e5e7eb; }
+      .content { padding: 16px; }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <div class="row">
+        <button class="btn" id="back">◀</button>
+        <button class="btn" id="forward">▶</button>
+        <input id="address" class="addr" placeholder="Enter URL and press Enter" value="https://example.com" />
+        <button class="btn" id="go">Go</button>
+      </div>
+    </div>
+    <div class="content">
+      <p>This is a placeholder Valor chrome page served from <code>valor://chrome/index.html</code>.</p>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>

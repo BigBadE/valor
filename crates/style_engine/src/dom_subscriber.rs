@@ -76,6 +76,9 @@ impl StyleEngine {
 
     /// Handle setting the `id` attribute: update indices and rematch selectors.
     fn handle_set_attr_id(&mut self, node: NodeKey, value: &str) {
+        if value.eq_ignore_ascii_case("inner") || value.eq_ignore_ascii_case("clip") {
+            log::info!("StyleEngine: SetAttr id='{}' on node={:?}", value, node);
+        }
         let mut info = self.get_node_info_or_placeholder(node);
         let old_id = info.id.clone();
         let new_id = if value.is_empty() { None } else { Some(value.to_string()) };
@@ -125,6 +128,9 @@ impl DOMSubscriber for StyleEngine {
                 // No computed style for text nodes at the moment.
             }
             SetAttr { node, name, value } => {
+                if name.eq_ignore_ascii_case("id") {
+                    log::info!("StyleEngine: SetAttr id='{}' node={:?}", value, node);
+                }
                 if name.eq_ignore_ascii_case("style") {
                     self.handle_set_attr_style(node, &value);
                 } else if name.eq_ignore_ascii_case("id") {

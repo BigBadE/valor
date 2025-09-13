@@ -10,6 +10,14 @@ use glyphon::{FontSystem, SwashCache, TextAtlas, TextRenderer, Buffer as Glyphon
 use tracing::info_span;
 
 
+/// Layer types for the simple compositor: order determines z-position.
+#[derive(Debug, Clone)]
+pub enum Layer {
+    Background,
+    Content(DisplayList),
+    Chrome(DisplayList),
+}
+
 /// RenderState owns the GPU device/surface and a minimal pipeline to draw rectangles from layout.
 pub struct RenderState {
     window: Arc<Window>,
@@ -43,6 +51,8 @@ pub struct RenderState {
     cache_builds: u64,
     /// Number of times we reused cached batches without rebuilding.
     cache_reuses: u64,
+    /// Optional layers for multi-DL compositing; when non-empty, render() draws these instead of the single retained list.
+    layers: Vec<Layer>,
 }
 
 impl RenderState {
@@ -113,6 +123,7 @@ impl RenderState {
             last_retained_list: None,
             cache_builds: 0,
             cache_reuses: 0,
+            layers: Vec::new(),
         }
     }
 
@@ -147,6 +158,16 @@ impl RenderState {
         self.last_retained_list = None;
     }
 
+    /// Clear any compositor layers; subsequent render() will use the single retained list if set.
+    pub fn clear_layers(&mut self) {
+        self.layers.clear();
+    }
+
+    /// Push a new compositor layer to be rendered in order.
+    pub fn push_layer(&mut self, layer: Layer) {
+        self.layers.push(layer);
+    }
+
     /// Update the current display list to be drawn each frame.
     /// Update the current display list to be drawn each frame.
     pub fn set_display_list(&mut self, list: Vec<DrawRect>) {
@@ -166,6 +187,8 @@ impl RenderState {
         if self.last_retained_list.as_ref() != Some(&list) {
             self.cached_batches = None;
         }
+        // Using a single retained display list implies no layered compositing this frame.
+        self.layers.clear();
         self.retained_display_list = Some(list);
         // Clear immediate lists; they will be ignored when retained list is present.
         self.display_list.clear();
@@ -214,10 +237,44 @@ impl RenderState {
         }
     }
 
+    /// Prepare glyphon for an arbitrary list of text items (used for per-layer text rendering).
+    fn glyphon_prepare_for(&mut self, items: &Vec<DrawText>) {
+        let framebuffer_width = self.size.width;
+        let framebuffer_height = self.size.height;
+        let mut buffers: Vec<GlyphonBuffer> = Vec::with_capacity(items.len());
+        for item in items.iter() {
+            let mut buffer = GlyphonBuffer::new(&mut self.font_system, Metrics::new(item.font_size, item.font_size));
+            let attrs = Attrs::new();
+            buffer.set_text(&mut self.font_system, &item.text, &attrs, Shaping::Advanced);
+            buffers.push(buffer);
+        }
+        let mut areas: Vec<TextArea> = Vec::with_capacity(items.len());
+        for (index, item) in items.iter().enumerate() {
+            let red = (item.color[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+            let green = (item.color[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+            let blue = (item.color[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+            let color = GlyphonColor(((255u32) << 24) | ((red as u32) << 16) | ((green as u32) << 8) | (blue as u32));
+            let bounds = TextBounds { left: 0, top: 0, right: framebuffer_width as i32, bottom: framebuffer_height as i32 };
+            let buffer_ref = &buffers[index];
+            areas.push(TextArea { buffer: buffer_ref, left: item.x, top: item.y, scale: 1.0, bounds, default_color: color, custom_glyphs: &[] });
+        }
+        self.viewport.update(&self.queue, Resolution { width: framebuffer_width, height: framebuffer_height });
+        let _ = self.text_renderer.prepare(
+            &self.device,
+            &self.queue,
+            &mut self.font_system,
+            &mut self.text_atlas,
+            &self.viewport,
+            areas,
+            &mut self.swash_cache,
+        );
+    }
+
     /// Render a frame by clearing and drawing quads from the current display list.
     pub fn render(&mut self) -> Result<(), anyhow::Error> {
         let _span = info_span!("renderer.render").entered();
-        let use_retained = self.retained_display_list.is_some();
+        let use_layers = !self.layers.is_empty();
+        let use_retained = self.retained_display_list.is_some() && !use_layers;
         let surface_texture = self.surface.get_current_texture()?;
         let texture_view = surface_texture.texture.create_view(&TextureViewDescriptor {
             format: Some(self.render_format),
@@ -244,7 +301,7 @@ impl RenderState {
             out.push(Vertex { position: [x0, y1], color: c });
         };
 
-        // Prepare text via glyphon (from retained DL if present, otherwise existing text_list)
+        // Prepare text via glyphon for single-list paths
         if use_retained {
             if let Some(dl) = &self.retained_display_list {
                 self.text_list = dl.items.iter().filter_map(|item| {
@@ -253,8 +310,11 @@ impl RenderState {
                     } else { None }
                 }).collect();
             }
+            self.glyphon_prepare();
+        } else if !use_layers {
+            // Immediate path uses whatever self.text_list was set to externally
+            self.glyphon_prepare();
         }
-        self.glyphon_prepare();
 
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
@@ -273,7 +333,41 @@ impl RenderState {
 
             pass.set_pipeline(&self.pipeline);
 
-            if use_retained {
+            if use_layers {
+                for layer in self.layers.clone().iter() {
+                    match layer {
+                        Layer::Background => { /* TODO: optional background */ }
+                        Layer::Content(dl) | Layer::Chrome(dl) => {
+                            // Draw rectangles for this layer using DL batching (no cache for simplicity)
+                            let batches = batch_display_list(dl, self.size.width, self.size.height);
+                            for b in batches.into_iter() {
+                                let mut vertices: Vec<Vertex> = Vec::with_capacity(b.quads.len() * 6);
+                                for q in b.quads.iter() {
+                                    push_rect_vertices(&mut vertices, q.x, q.y, q.width, q.height, q.color);
+                                }
+                                let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
+                                let vertex_buffer = self.device.create_buffer_init(&util::BufferInitDescriptor { label: Some("layer-rect-batch"), contents: vertex_bytes, usage: BufferUsages::VERTEX });
+                                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                                match b.scissor {
+                                    Some((x, y, w, h)) => pass.set_scissor_rect(x, y, w, h),
+                                    None => pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1)),
+                                }
+                                if !vertices.is_empty() { pass.draw(0..(vertices.len() as u32), 0..1); }
+                            }
+                            // Draw text for this layer on top of its rects
+                            let layer_text: Vec<DrawText> = dl.items.iter().filter_map(|item| {
+                                if let DisplayItem::Text { x, y, text, color, font_size } = item {
+                                    Some(DrawText { x: *x, y: *y, text: text.clone(), color: *color, font_size: *font_size })
+                                } else { None }
+                            }).collect();
+                            if !layer_text.is_empty() {
+                                self.glyphon_prepare_for(&layer_text);
+                                let _ = self.text_renderer.render(&self.text_atlas, &self.viewport, &mut pass);
+                            }
+                        }
+                    }
+                }
+            } else if use_retained {
                 // Use (or build) cached GPU buffers for retained DL batches.
                 let need_rebuild = if let (Some(prev), Some(cur)) = (&self.last_retained_list, &self.retained_display_list) {
                     prev != cur
@@ -313,6 +407,8 @@ impl RenderState {
                         if *count > 0 { pass.draw(0..*count, 0..1); }
                     }
                 }
+                // Render prepared glyphon text for retained path
+                let _ = self.text_renderer.render(&self.text_atlas, &self.viewport, &mut pass);
             } else {
                 // Immediate path: batch all rects into one draw call as before
                 let mut vertices: Vec<Vertex> = Vec::with_capacity(self.display_list.len() * 6);
@@ -326,10 +422,9 @@ impl RenderState {
                 self.vertex_count = vertices.len() as u32;
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 if self.vertex_count > 0 { pass.draw(0..self.vertex_count, 0..1); }
+                // Render prepared glyphon text on top
+                let _ = self.text_renderer.render(&self.text_atlas, &self.viewport, &mut pass);
             }
-
-            // Render prepared glyphon text on top of rectangles
-            let _ = self.text_renderer.render(&self.text_atlas, &self.viewport, &mut pass);
         }
 
         self.queue.submit([encoder.finish()]);

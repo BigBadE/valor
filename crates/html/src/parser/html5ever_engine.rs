@@ -1,5 +1,5 @@
 use js::{DOMMirror, DOMUpdate};
-use crate::parser::ParserDOMMirror;
+use crate::parser::{ParserDOMMirror, ScriptJob, ScriptKind};
 use anyhow::Error;
 use html5ever::parse_document;
 use html5ever::tendril::StrTendril;
@@ -9,6 +9,7 @@ use html5ever::{local_name, ns, Attribute, Parser, QualName, LocalName, Namespac
 use indextree::NodeId;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use url::Url;
 
 #[derive(Debug, Clone)]
 pub struct OwnedElemName {
@@ -25,14 +26,62 @@ impl html5ever::tree_builder::ElemName for OwnedElemName {
 pub struct ValorSink {
     pub(crate) dom: RefCell<DOMMirror<ParserDOMMirror>>,
     element_names: RefCell<HashMap<NodeId, QualName>>,
-    script_tx: tokio::sync::mpsc::UnboundedSender<String>,
-    // Track inline script text by node id; bool = has src (external)
-    script_nodes: RefCell<HashMap<NodeId, (bool, String)>>,
+    script_tx: tokio::sync::mpsc::UnboundedSender<ScriptJob>,
+    base_url: Url,
+    deferred_scripts: RefCell<Vec<ScriptJob>>,
+    // Track script state by node id
+    script_nodes: RefCell<HashMap<NodeId, ScriptState>>,
+}
+
+#[derive(Clone, Debug)]
+struct ScriptState {
+    has_src: bool,
+    buffer: String,
+    defer: bool,
+    async_attr: bool,
+    src_value: Option<String>,
+    is_module: bool,
 }
 
 impl ValorSink {
-    pub fn new(dom: DOMMirror<ParserDOMMirror>, script_tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
-        Self { dom: RefCell::new(dom), element_names: RefCell::new(HashMap::new()), script_tx, script_nodes: RefCell::new(HashMap::new()) }
+    pub fn new(dom: DOMMirror<ParserDOMMirror>, script_tx: tokio::sync::mpsc::UnboundedSender<ScriptJob>, base_url: Url) -> Self {
+        Self {
+            dom: RefCell::new(dom),
+            element_names: RefCell::new(HashMap::new()),
+            script_tx,
+            base_url,
+            deferred_scripts: RefCell::new(Vec::new()),
+            script_nodes: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn fetch_script_source(&self, src_value: &str) -> Option<String> {
+        // Resolve against base URL; support file:// scheme for now.
+        let resolved = self.base_url.join(src_value).ok().or_else(|| url::Url::parse(src_value).ok());
+        if let Some(url) = resolved {
+            match url.scheme() {
+                "file" => {
+                    if let Ok(path) = url.to_file_path() {
+                        if let Ok(data) = std::fs::read_to_string(path) {
+                            return Some(data);
+                        }
+                    }
+                }
+                _ => {
+                    // TODO: implement http/https in async host path; ignore for now
+                }
+            }
+        }
+        None
+    }
+
+    fn flush_deferred(&self) {
+        let mut queue = self.deferred_scripts.borrow_mut();
+        let drained: Vec<ScriptJob> = std::mem::take(&mut *queue);
+        drop(queue);
+        for job in drained {
+            let _ = self.script_tx.send(job);
+        }
     }
 }
 
@@ -67,19 +116,22 @@ impl TreeSink for ValorSink {
         // Track the element's qualified name for correct elem_name reporting
         self.element_names.borrow_mut().insert(id, name.clone());
         let is_script = name.ns == ns!(html) && name.local.eq(&local_name!("script"));
-        let mut has_src = false;
+        let mut state = if is_script {
+            Some(ScriptState { has_src: false, buffer: String::new(), defer: false, async_attr: false, src_value: None, is_module: false })
+        } else { None };
         for a in attrs {
             let local = a.name.local.to_string();
-            if is_script && a.name.local.eq(&local_name!("src")) {
-                has_src = true;
+            if let Some(ref mut st) = state {
+                if a.name.local.eq(&local_name!("src")) { st.has_src = true; st.src_value = Some(a.value.to_string()); }
+                if a.name.local.eq(&local_name!("defer")) { st.defer = true; }
+                if a.name.local.eq(&local_name!("async")) { st.async_attr = true; }
+                if a.name.local.eq(&local_name!("type")) { if a.value.to_ascii_lowercase() == "module" { st.is_module = true; } }
             }
             let mut dom = self.dom.borrow_mut();
             let domm = dom.mirror_mut();
             domm.set_attr(id, local, a.value.to_string());
         }
-        if is_script {
-            self.script_nodes.borrow_mut().insert(id, (has_src, String::new()));
-        }
+        if let Some(st) = state { self.script_nodes.borrow_mut().insert(id, st); }
         id
     }
 
@@ -101,9 +153,8 @@ impl TreeSink for ValorSink {
             NodeOrText::AppendText(text) => {
                 // If appending under a <script> without src, collect the text
                 if let Some(entry) = self.script_nodes.borrow_mut().get_mut(parent) {
-                    let (has_src, buf) = entry;
-                    if !*has_src {
-                        buf.push_str(text.as_ref());
+                    if !entry.has_src {
+                        entry.buffer.push_str(text.as_ref());
                     }
                 }
                 let node = self.dom.borrow_mut().mirror_mut().new_text(text.to_string());
@@ -133,9 +184,22 @@ impl TreeSink for ValorSink {
     fn mark_script_already_started(&self, _node: &Self::Handle) {}
 
     fn pop(&self, node: &Self::Handle) {
-        if let Some((has_src, buf)) = self.script_nodes.borrow_mut().remove(node) {
-            if !has_src {
-                let _ = self.script_tx.send(buf);
+        if let Some(state) = self.script_nodes.borrow_mut().remove(node) {
+            let (source, url_string) = if state.has_src {
+                if let Some(src) = state.src_value.as_deref() {
+                    let resolved = self.base_url.join(src).ok().or_else(|| url::Url::parse(src).ok());
+                    let url_s = resolved.as_ref().map(|u| u.to_string()).unwrap_or_else(|| src.to_string());
+                    (self.fetch_script_source(src).unwrap_or_default(), url_s)
+                } else { (String::new(), String::from("")) }
+            } else {
+                let kind_tag = if state.is_module { "inline:module" } else { "inline:script" };
+                (state.buffer, String::from(kind_tag))
+            };
+            let job = ScriptJob { kind: if state.is_module { ScriptKind::Module } else { ScriptKind::Classic }, source, url: url_string, deferred: state.defer || state.is_module };
+            if job.deferred {
+                self.deferred_scripts.borrow_mut().push(job);
+            } else {
+                let _ = self.script_tx.send(job);
             }
         }
     }
@@ -169,10 +233,11 @@ impl TreeSink for ValorSink {
             if !self.dom.borrow_mut().mirror_mut().has_attr(*target, &name) {
                 self.dom.borrow_mut().mirror_mut().set_attr(*target, name.clone(), a.value.to_string());
             }
-            if a.name.local.eq(&local_name!("src")) {
-                if let Some((has_src, _)) = self.script_nodes.borrow_mut().get_mut(target) {
-                    *has_src = true;
-                }
+            if let Some(state) = self.script_nodes.borrow_mut().get_mut(target) {
+                if a.name.local.eq(&local_name!("src")) { state.has_src = true; state.src_value = Some(a.value.to_string()); }
+                if a.name.local.eq(&local_name!("defer")) { state.defer = true; }
+                if a.name.local.eq(&local_name!("async")) { state.async_attr = true; }
+                if a.name.local.eq(&local_name!("type")) { if a.value.to_ascii_lowercase() == "module" { state.is_module = true; } }
             }
         }
     }
@@ -199,8 +264,8 @@ impl Html5everEngine {
         self.parser.tokenizer.sink.sink.dom.borrow_mut()
     }
 
-    pub fn new(dom: DOMMirror<ParserDOMMirror>, script_tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
-        let sink = ValorSink::new(dom, script_tx);
+    pub fn new(dom: DOMMirror<ParserDOMMirror>, script_tx: tokio::sync::mpsc::UnboundedSender<ScriptJob>, base_url: Url) -> Self {
+        let sink = ValorSink::new(dom, script_tx, base_url);
         let parser = parse_document(sink, Default::default());
         Self { parser }
     }
@@ -226,6 +291,8 @@ impl Html5everEngine {
             let mut dom = self.mirror_mut();
             dom.mirror_mut().prepare_for_update();
         }
+        // Flush any deferred classic scripts before signaling EndOfDocument so they run before DOMContentLoaded
+        self.parser.tokenizer.sink.sink.flush_deferred();
         self.parser.tokenizer.end();
         {
             let mut dom = self.mirror_mut();

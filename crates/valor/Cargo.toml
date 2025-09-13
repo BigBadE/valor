@@ -23,6 +23,7 @@ anyhow.workspace = true
 
 page_handler.workspace = true
 wgpu_renderer.workspace = true
+js.workspace = true
 
 [dev-dependencies]
 html.workspace = true

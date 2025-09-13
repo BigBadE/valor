@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>MutationObserver childList + subtree</title>
+<div id="out"></div>
+<script>
+const parent = document.createElement('div');
+let seenTypes = [];
+const obs = new MutationObserver((records) => {
+  for (const r of records) {
+    if (!r) continue;
+    seenTypes.push(r.type);
+  }
+});
+obs.observe(parent, { childList: true, attributes: true, subtree: true, attributeFilter: ['data-k'] });
+
+const c1 = document.createElement('span');
+parent.appendChild(c1); // childList
+const c2 = document.createElement('em');
+parent.insertBefore(c2, c1); // childList
+parent.removeChild(c1); // childList
+c2.setAttribute('data-k', 'v'); // attributes (subtree)
+
+queueMicrotask(() => {
+  obs.disconnect();
+  document.getElementById('out').textContent = seenTypes.join('+');
+});
+</script>

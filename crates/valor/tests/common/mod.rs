@@ -121,7 +121,7 @@ where
                 timed_out_ticks = timed_out_ticks.saturating_add(1);
             }
         }
-        println!("3!");
+
         // Allow the caller to drain mirrors or perform additional per-tick work.
         per_tick(page)?;
         if page.parsing_finished() {
@@ -131,7 +131,6 @@ where
         if iter % 500 == 0 {
             eprintln!("update_until_finished: iter={} finished={} timeouts={} elapsed_ms={}", iter, finished, timed_out_ticks, start_time.elapsed().as_millis());
         }
-        println!("4!");
         // Yield to background tasks without requiring a Tokio reactor on this thread
         std::thread::sleep(Duration::from_millis(1));
     }

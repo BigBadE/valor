@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use js::NodeKey;
-use style_engine::{SizeSpecified, Overflow};
+use style_engine::SizeSpecified;
 
 use crate::{LayoutNodeKind, Layouter};
 use super::args::{ComputeGeomArgs, LayoutMaps};
@@ -526,8 +526,8 @@ pub fn compute_layout_geometry(layouter: &Layouter) -> HashMap<NodeKey, LayoutRe
     // Heuristic: fixtures that include a ".spacer" element typically force a vertical scrollbar,
     // which reduces Chromium's clientWidth by ~15 CSS px on this environment. Use 784 for pages
     // without scrollbars and 769 when a spacer is present to mirror Chromium's geometry.
+    let attrs_map = layouter.attrs_map();
     let has_spacer = {
-        let attrs_map = layouter.attrs_map();
         attrs_map.values().any(|attrs| attrs.get("class").map(|v| v.contains("spacer")).unwrap_or(false))
     };
     let viewport_width = if has_spacer { 769 } else { 784 };
@@ -540,7 +540,18 @@ pub fn compute_layout_geometry(layouter: &Layouter) -> HashMap<NodeKey, LayoutRe
         v_gap: 0,
     };
 
-    let maps = LayoutMaps { kind_by_key: &kind_by_key, children_by_key: &children_by_key, computed_by_key: Some(layouter.computed_styles()) };
+    let maps = LayoutMaps { kind_by_key: &kind_by_key, children_by_key: &children_by_key, computed_by_key: Some(layouter.computed_styles()), attrs_by_key: &attrs_map };
+
+    // Debug: if node with id="inner" exists, log its computed height spec before geometry
+    for (k, attrs) in &attrs_map {
+        if attrs.get("id").map(|v| v == "inner").unwrap_or(false) {
+            if let Some(comp_map) = maps.computed_by_key {
+                if let Some(cs) = comp_map.get(k) {
+                    log::info!("Layouter debug: id=inner height_spec={:?} width_spec={:?}", cs.height, cs.width);
+                }
+            }
+        }
+    }
 
     let mut y_cursor = 0;
     // Start from root's children if present; otherwise, start from box tree top-level DOM nodes
@@ -557,45 +568,9 @@ pub fn compute_layout_geometry(layouter: &Layouter) -> HashMap<NodeKey, LayoutRe
         layout_node(*child, 0, &maps, &mut rects, args, &mut y_cursor);
     }
 
-    // Post-process: apply overflow:hidden clipping from ancestors to children
-    // We intentionally clip only the visible height of descendants without changing their y position.
-    // This approximates visual clipping for geometry queries used in tests, while layout flow remains unchanged.
-    if let Some(computed_map) = maps.computed_by_key {
-        // Build a parent map to walk ancestors quickly
-        let mut parent_by_key: HashMap<NodeKey, NodeKey> = HashMap::new();
-        for (parent, children) in children_by_key.iter() {
-            for child in children {
-                parent_by_key.insert(*child, *parent);
-            }
-        }
-        
-        let all_nodes: Vec<NodeKey> = rects.keys().cloned().collect();
-        for node in all_nodes {
-            // Skip if no rect
-            let Some(mut rect) = rects.get(&node).cloned() else { continue; };
-            // Walk up and compute the nearest clipping bottom among overflow:hidden ancestors
-            let mut clip_bottom: Option<i32> = None;
-            let mut current = parent_by_key.get(&node).cloned();
-            while let Some(ancestor) = current {
-                if let Some(cs) = computed_map.get(&ancestor) {
-                    if matches!(cs.overflow, Overflow::Hidden) {
-                        if let Some(ancestor_rect) = rects.get(&ancestor) {
-                            let ancestor_bottom = ancestor_rect.y + ancestor_rect.height;
-                            clip_bottom = Some(match clip_bottom { Some(existing) => existing.min(ancestor_bottom), None => ancestor_bottom });
-                        }
-                    }
-                }
-                current = parent_by_key.get(&ancestor).cloned();
-            }
-            if let Some(bottom_limit) = clip_bottom {
-                let max_height = (bottom_limit - rect.y).max(0);
-                if rect.height > max_height {
-                    rect.height = max_height;
-                    rects.insert(node, rect);
-                }
-            }
-        }
-    }
+    // Note: We intentionally do not apply overflow:hidden clipping during geometry export.
+    // Chromium's getBoundingClientRect for layout comparison retains the child's used size;
+    // clipping is a painting concern and should be handled by the renderer, not geometry.
 
     rects
 }

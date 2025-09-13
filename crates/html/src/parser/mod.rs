@@ -14,11 +14,26 @@ use tokio::task;
 use tokio::task::JoinHandle;
 use tokio_stream::{Stream, StreamExt};
 use js::{DOMMirror, DOMSubscriber, DOMUpdate};
+use url::Url;
 
 /// This is the parser itself, the DOM has refs here, and is
 /// responsible for sending DOM updates to the tree
 pub struct HTMLParser {
     process_handle: JoinHandle<Result<(), Error>>,
+}
+
+#[derive(Clone, Debug)]
+pub enum ScriptKind {
+    Classic,
+    Module,
+}
+
+#[derive(Clone, Debug)]
+pub struct ScriptJob {
+    pub kind: ScriptKind,
+    pub source: String,
+    pub url: String,
+    pub deferred: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -196,7 +211,7 @@ impl DOMSubscriber for ParserDOMMirror {
 
 impl HTMLParser {
     pub fn parse<S>(handle: &Handle, in_updater: mpsc::Sender<Vec<DOMUpdate>>, mut keyman: NodeKeyManager<NodeId>, byte_stream: S,
-                    dom_updates: broadcast::Receiver<Vec<DOMUpdate>>, script_tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self
+                    dom_updates: broadcast::Receiver<Vec<DOMUpdate>>, script_tx: tokio::sync::mpsc::UnboundedSender<ScriptJob>, base_url: Url) -> Self
     where
         S: Stream<Item = Result<Bytes, Error>> + Send + Unpin + 'static,
     {
@@ -219,14 +234,15 @@ impl HTMLParser {
 
         // Wrap the parser mirror with DOMMirror so it can receive runtime DOM updates
         let dom_mirror = DOMMirror::new(mirror_out, dom_updates, mirror);
-        let process_handle = handle.spawn(HTMLParser::process(dom_mirror, byte_stream, script_tx));
+        let process_handle = handle.spawn(HTMLParser::process(dom_mirror, byte_stream, script_tx, base_url));
         HTMLParser { process_handle }
     }
 
     pub async fn process<S: Stream<Item = Result<Bytes, Error>> + Send + Unpin + 'static>(
         dom: DOMMirror<ParserDOMMirror>,
         mut byte_stream: S,
-        script_tx: tokio::sync::mpsc::UnboundedSender<String>,
+        script_tx: tokio::sync::mpsc::UnboundedSender<ScriptJob>,
+        base_url: Url,
     ) -> Result<(), Error> {
         trace!("Started processing!");
         // This function is a bit complicated due to html5ever not being Send
@@ -234,8 +250,9 @@ impl HTMLParser {
             let (tx, mut rx) = mpsc::channel::<Result<Bytes, Error>>(128);
 
             // Blocking parser worker: owns the non-Send html5ever engine
+            let base_for_worker = base_url.clone();
             let parser_worker = task::spawn_blocking(move || {
-                let mut engine = Html5everEngine::new(dom, script_tx);
+                let mut engine = Html5everEngine::new(dom, script_tx, base_for_worker);
                 loop {
                     engine.try_update_sync()?;
                     match rx.blocking_recv() {

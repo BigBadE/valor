@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Error Propagation</title>
+<div id="out"></div>
+<script>
+  // Install a window.onerror handler that writes the message into #out
+  window.onerror = function(message, url, line, column, error){
+    var out = document.getElementById('out');
+    out.textContent = String(message);
+    return true; // mark handled
+  };
+</script>
+<script>
+  // Trigger an exception in a subsequent script tag
+  throw new Error('boom');
+</script>

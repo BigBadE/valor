@@ -28,4 +28,6 @@ pub(crate) struct LayoutMaps<'a> {
     pub children_by_key: &'a HashMap<NodeKey, Vec<NodeKey>>,
     /// Optional computed style map (absent when style engine is disabled in tests).
     pub computed_by_key: Option<&'a HashMap<NodeKey, ComputedStyle>>,
+    /// Attributes by node key (lowercased names), used for things like <img alt> heuristics.
+    pub attrs_by_key: &'a HashMap<NodeKey, HashMap<String, String>>,
 }

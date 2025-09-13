@@ -54,23 +54,29 @@ impl StylesheetStreamParser {
         {
             let mut input = ParserInput::new(tail);
             let mut parser = Parser::new(&mut input);
-            let mut tl = TopLevelParser { origin: self.origin, next_source_order };
-            let mut sheet = StyleSheetParser::new(&mut parser, &mut tl);
+            let mut top_level = TopLevelParser { origin: self.origin, next_source_order };
+            let mut style_sheet = StyleSheetParser::new(&mut parser, &mut top_level);
 
-            while let Some(item) = sheet.next() {
+            while let Some(item) = style_sheet.next() {
                 match item {
                     Ok(rule) => {
-                        last_consumed = sheet.input.position().byte_index();
+                        last_consumed = style_sheet.input.position().byte_index();
                         out.rules.push(rule);
                         // next_source_order is advanced inside TopLevelParser when building a rule
                     }
-                    Err((_e, _slice)) => {
+                    Err((_error, _slice)) => {
                         // Likely invalid or incomplete rule; stop here and wait for more data.
                         break;
                     }
                 }
             }
-            next_source_order = tl.next_source_order;
+
+            // If no complete rule was parsed, still advance by any leading trivia the parser consumed
+            if last_consumed == 0 {
+                last_consumed = style_sheet.input.position().byte_index();
+            }
+
+            next_source_order = top_level.next_source_order;
         }
 
         // Update our next_source_order from the top-level parser state
@@ -699,7 +705,7 @@ fn normalize_shorthands(mut decls: Vec<Declaration>) -> Vec<Declaration> {
             }
             "font" => {
                 // Very small subset parser: [style]? [weight]? size [/ line-height]? family...
-                let mut rest = d.value.trim().to_string();
+                let rest = d.value.trim().to_string();
                 let mut style_opt: Option<String> = None;
                 let mut weight_opt: Option<String> = None;
                 // Detect size and optional line-height

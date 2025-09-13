@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Timers Basic</title>
+<div id="out"></div>
+<script>
+// Schedule a microtask and a macrotask to update #out in order.
+document.addEventListener('DOMContentLoaded', function(){
+  var el = document.getElementById('out');
+  // Microtask first
+  Promise.resolve().then(function(){ el.textContent = 'microtask'; });
+  // Timer after microtask
+  setTimeout(function(){ el.textContent = el.textContent + ',timer'; }, 0);
+});
+</script>

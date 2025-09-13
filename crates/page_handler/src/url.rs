@@ -4,7 +4,14 @@ use tokio::fs;
 use tokio_stream::{once, Stream, StreamExt};
 use url::Url;
 
-/// Create a byte stream from a URL. Supports http(s) and file schemes.
+use crate::embedded_chrome::get_embedded_chrome_asset;
+
+/// Create a byte stream from a URL.
+///
+/// Supported schemes:
+/// - http, https: fetched via reqwest as a streaming response
+/// - file: read from local filesystem (emitted as a single chunk)
+/// - valor: embedded chrome resources served from the binary
 pub async fn stream_url(
     url: &Url,
 ) -> Result<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + Unpin>, Error> {
@@ -35,6 +42,19 @@ pub async fn stream_url(
                 .map_err(|_| anyhow!("Invalid file path for file url: {url}"))?;
             let data = fs::read(path).await.map(Bytes::from)?;
             // Emit the entire file as a single chunk for now.
+            let s = once(Ok::<Bytes, Error>(data));
+            Box::new(s)
+        }
+        "valor" => {
+            // We only support valor://chrome/* for now
+            if url.host_str() != Some("chrome") {
+                return Err(anyhow!("Unsupported valor host: {}", url));
+            }
+            let path = url.path();
+            let Some(bytes) = get_embedded_chrome_asset(path).or_else(|| get_embedded_chrome_asset(&format!("valor://chrome{}", path))) else {
+                return Err(anyhow!("Embedded asset not found for {}", url));
+            };
+            let data = Bytes::from_static(bytes);
             let s = once(Ok::<Bytes, Error>(data));
             Box::new(s)
         }

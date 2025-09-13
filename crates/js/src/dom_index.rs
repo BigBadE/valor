@@ -113,15 +113,24 @@ impl DOMSubscriber for DomIndex {
             InsertElement { parent, node, tag, pos: _ } => {
                 // Register parent/child linkage
                 guard.parent_by_child.insert(node, parent);
-                guard.children_by_parent.entry(parent).or_default().push(node);
+                let entry = guard.children_by_parent.entry(parent).or_default();
+                if !entry.iter().any(|k| *k == node) {
+                    entry.push(node);
+                }
                 // Tag indices (lowercase)
                 let lc = tag.to_ascii_lowercase();
                 guard.tag_by_key.insert(node, lc.clone());
-                guard.tag_index.entry(lc).or_default().push(node);
+                let tag_list = guard.tag_index.entry(lc).or_default();
+                if !tag_list.iter().any(|k| *k == node) {
+                    tag_list.push(node);
+                }
             }
             InsertText { parent, node, text, pos: _ } => {
                 guard.parent_by_child.insert(node, parent);
-                guard.children_by_parent.entry(parent).or_default().push(node);
+                let entry = guard.children_by_parent.entry(parent).or_default();
+                if !entry.iter().any(|k| *k == node) {
+                    entry.push(node);
+                }
                 // Track/refresh text node content
                 guard.text_by_key.insert(node, text);
             }
@@ -134,7 +143,9 @@ impl DOMSubscriber for DomIndex {
                             if *existing == node { guard.id_index.remove(&old); }
                         }
                     }
-                    if !value.is_empty() {
+                    if value.is_empty() {
+                        guard.id_by_key.remove(&node);
+                    } else {
                         guard.id_index.insert(value, node);
                     }
                 } else if name_lc == "class" {
@@ -156,13 +167,39 @@ impl DomIndexState {
     pub fn get_element_by_id(&self, id: &str) -> Option<NodeKey> {
         self.id_index.get(id).copied()
     }
-    /// Return NodeKeys for elements with a given tag name (case-insensitive).
+    /// Return NodeKeys for elements with a given tag name (case-insensitive), in DOM order.
     pub fn get_elements_by_tag_name(&self, tag: &str) -> Vec<NodeKey> {
-        self.tag_index.get(&tag.to_ascii_lowercase()).cloned().unwrap_or_default()
+        let needle = tag.to_ascii_lowercase();
+        let mut out: Vec<NodeKey> = Vec::new();
+        fn walk(state: &DomIndexState, node: NodeKey, needle: &str, out: &mut Vec<NodeKey>) {
+            if let Some(tag) = state.tag_by_key.get(&node) {
+                if tag == needle { out.push(node); }
+            }
+            if let Some(children) = state.children_by_parent.get(&node) {
+                for child in children {
+                    walk(state, *child, needle, out);
+                }
+            }
+        }
+        walk(self, NodeKey::ROOT, &needle, &mut out);
+        out
     }
-    /// Return NodeKeys for elements that have the given class token (case-sensitive per HTML spec, commonly lowercased in HTML).
+    /// Return NodeKeys for elements that have the given class token (case-insensitive for HTML), in DOM order.
     pub fn get_elements_by_class_name(&self, class: &str) -> Vec<NodeKey> {
-        self.class_index.get(class).cloned().unwrap_or_default()
+        let needle = class.to_ascii_lowercase();
+        let mut out: Vec<NodeKey> = Vec::new();
+        fn walk(state: &DomIndexState, node: NodeKey, needle: &str, out: &mut Vec<NodeKey>) {
+            if let Some(classes) = state.classes_by_key.get(&node) {
+                if classes.contains(needle) { out.push(node); }
+            }
+            if let Some(children) = state.children_by_parent.get(&node) {
+                for child in children {
+                    walk(state, *child, needle, out);
+                }
+            }
+        }
+        walk(self, NodeKey::ROOT, &needle, &mut out);
+        out
     }
     /// Compute the textContent for the given node by concatenating all descendant text node contents.
     pub fn get_text_content(&self, node: NodeKey) -> String {

@@ -89,14 +89,15 @@ pub(crate) fn layout_inline_children(
                     inline_x = line_start_x + last_line_width;
                 }
             }
-            Some(LayoutNodeKind::Block { .. }) => {
+            Some(LayoutNodeKind::Block { tag }) => {
                 // Inline element: estimate width from specified width or sum of descendant inline text
                 let mut width = 0;
+                let mut width_is_auto = true;
                 if let Some(computed_map) = maps.computed_by_key {
                     if let Some(computed_style) = computed_map.get(&child) {
                         match computed_style.width {
-                            SizeSpecified::Px(px) => { width = px.round() as i32; }
-                            SizeSpecified::Percent(percentage) => { width = (percentage * content_width as f32).round() as i32; }
+                            SizeSpecified::Px(px) => { width = px.round() as i32; width_is_auto = false; }
+                            SizeSpecified::Percent(percentage) => { width = (percentage * content_width as f32).round() as i32; width_is_auto = false; }
                             SizeSpecified::Auto => {}
                         }
                     }
@@ -105,7 +106,24 @@ pub(crate) fn layout_inline_children(
                     let child_font_size: f32 = if let Some(computed_map) = maps.computed_by_key { 
                         computed_map.get(&child).map(|computed_style| computed_style.font_size).unwrap_or(parent_font_size) 
                     } else { parent_font_size };
-                    width = measure_descendant_inline_text_width(*child, maps, args.char_width, child_font_size);
+                    // Special-case <img> with no intrinsic size: fallback to alt-text heuristic
+                    if tag.eq_ignore_ascii_case("img") {
+                        let alt_text_len = maps
+                            .attrs_by_key
+                            .get(child)
+                            .and_then(|attrs| attrs.get("alt"))
+                            .map(|s| s.chars().count() as i32)
+                            .unwrap_or(0);
+                        if alt_text_len > 0 && width_is_auto {
+                            // Heuristic: 0.6em per character
+                            width = (0.8_f32 * child_font_size * alt_text_len as f32).round() as i32;
+                            if width <= 0 { width = (0.8_f32 * parent_font_size).round() as i32; }
+                        }
+                    }
+                    // If still zero, approximate using descendant inline text if any
+                    if width == 0 {
+                        width = measure_descendant_inline_text_width(*child, maps, args.char_width, child_font_size);
+                    }
                 }
                 
                 // Wrap to next line if exceeds content width
@@ -118,14 +136,16 @@ pub(crate) fn layout_inline_children(
                 let child_font_size: f32 = if let Some(computed_map) = maps.computed_by_key { 
                     computed_map.get(&child).map(|computed_style| computed_style.font_size).unwrap_or(parent_font_size) 
                 } else { parent_font_size };
-                let child_height = (child_font_size * 1.1).round() as i32;
+                // Height: use parent line-height for replaced elements like <img>
+                let is_img = tag.eq_ignore_ascii_case("img");
+                let child_height = if is_img { parent_line_height } else { (child_font_size * 1.1).round() as i32 };
                 let y_offset = ((parent_line_height - child_height) / 2).max(0);
                 let y_position = child_y_inline + y_offset;
                 
-                rects.insert(*child, LayoutRect { x: inline_x, y: y_position, width, height: child_height });
+                rects.insert(*child, LayoutRect { x: inline_x, y: y_position, width: width.max(0), height: child_height.max(0) });
                 
                 if min_inline_y.map(|min_y| y_position < min_y).unwrap_or(true) { min_inline_y = Some(y_position); }
-                inline_x += width;
+                inline_x += width.max(0);
             }
             _ => {}
         }

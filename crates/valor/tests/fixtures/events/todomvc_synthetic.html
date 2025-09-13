@@ -1,0 +1,79 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>TodoMVC Synthetic Events</title>
+<div id="app">
+  <ul id="todos"></ul>
+  <div id="out"></div>
+</div>
+<script>
+// Minimal Todo-like app driven purely by synthetic events
+// We avoid relying on input.value and default browser behaviors so the test
+// exercises our JS event model and DOM APIs only.
+document.addEventListener('DOMContentLoaded', function(){
+  var todos = document.getElementById('todos');
+  function addItem(text){
+    var li = document.createElement('li');
+    var label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = String(text);
+    var toggle = document.createElement('button');
+    toggle.className = 'toggle';
+    toggle.textContent = '✓';
+    var remove = document.createElement('button');
+    remove.className = 'remove';
+    remove.textContent = '✕';
+    // Attach handlers directly so we do not depend on event delegation or parentNode
+    toggle.addEventListener('click', function(){
+      // Toggle completed flag via classList
+      li.classList.toggle('completed');
+    });
+    remove.addEventListener('click', function(){
+      // Remove the entire item using host remove node (no parentNode API required)
+      try { document.__valorHost_removeNode(li.__nodeKey); } catch (_e) {}
+    });
+    li.appendChild(toggle);
+    li.appendChild(label);
+    li.appendChild(remove);
+    todos.appendChild(li);
+    return li;
+  }
+
+  // App event: programmatic add via CustomEvent('add', { detail: text })
+  document.addEventListener('add', function(ev){
+    addItem(ev.detail);
+  });
+
+  // Drive a short synthetic interaction sequence:
+  // 1) Add two items: "A" then "B"
+  document.dispatchEvent(new CustomEvent('add', { detail: 'A' }));
+  document.dispatchEvent(new CustomEvent('add', { detail: 'B' }));
+  
+  // 2) Toggle the first item to completed by clicking its toggle button
+  var items = document.getElementsByTagName('li');
+  if (items.length > 0) {
+    // children: [toggle, label, remove]
+    var firstToggle = document.__valorMakeHandle(
+      String(document.__valorHost_getChildrenKeys(items[0].__nodeKey)).split(/\s+/)[0]
+    );
+    if (firstToggle && typeof firstToggle.click === 'function') { firstToggle.click(); }
+  }
+
+  // 3) Remove the second item by clicking its remove button
+  items = document.getElementsByTagName('li');
+  if (items.length > 1) {
+    var childKeysStr = String(document.__valorHost_getChildrenKeys(items[1].__nodeKey));
+    var parts = childKeysStr.trim().split(/\s+/);
+    var secondRemove = (parts.length >= 3) ? document.__valorMakeHandle(parts[2]) : null;
+    if (secondRemove && typeof secondRemove.click === 'function') { secondRemove.click(); }
+  }
+
+  // Summarize final state: remaining labels joined with '|', and completed count
+  var labels = document.getElementsByClassName('label');
+  var texts = [];
+  for (var i=0; i<labels.length; i++) { texts.push(labels[i].textContent); }
+  var remaining = document.getElementsByTagName('li');
+  var completed = 0;
+  for (var j=0; j<remaining.length; j++) { if (remaining[j].classList.contains('completed')) completed++; }
+  document.getElementById('out').textContent = texts.join('|') + ';completed=' + String(completed);
+});
+</script>

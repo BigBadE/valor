@@ -44,7 +44,7 @@ fn overflow_hidden_clips_children_to_fixed_height() {
     let rc = rects.get(&container).expect("container rect");
     let rchild = rects.get(&child).expect("child rect");
 
-    // Child is clipped to container height and aligned at container's top
+    // Child keeps its used height; clipping is a painting concern handled later.
     assert_eq!(rchild.y, rc.y);
-    assert_eq!(rchild.height, 30);
+    assert_eq!(rchild.height, 50);
 }

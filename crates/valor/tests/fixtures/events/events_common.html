@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Events Common</title>
+<div id="p"><button id="c"></button></div>
+<div id="out"></div>
+<script>
+ document.addEventListener('DOMContentLoaded', function(){
+   var p = document.getElementById('p');
+   var c = document.getElementById('c');
+   var out = document.getElementById('out');
+   var order = [];
+
+   // Click bubbling on parent, with a microtask scheduled in target listener
+   p.addEventListener('click', function(){ order.push('p-bubble-click'); });
+   c.addEventListener('click', function(){ order.push('c-target-click'); Promise.resolve().then(function(){ order.push('micro'); }); });
+
+   // Keyboard events with capture on parent
+   p.addEventListener('keydown', function(){ order.push('p-capture-keydown'); }, { capture: true });
+   c.addEventListener('keydown', function(e){ if (e.key === 'Enter') order.push('c-target-keydown'); });
+
+   // Input/change dispatch on a generic node
+   var n = document.createElement('div');
+   p.appendChild(n);
+   n.addEventListener('input', function(){ order.push('input'); });
+   n.addEventListener('change', function(){ order.push('change'); });
+
+   // Submit dispatch on a generic node
+   var form = document.createElement('div');
+   p.appendChild(form);
+   form.addEventListener('submit', function(e){ order.push('submit'); e.preventDefault(); });
+
+   // Fire events synchronously
+   c.click();
+   c.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+   n.dispatchEvent(new Event('input', { bubbles: true }));
+   n.dispatchEvent(new Event('change', { bubbles: true }));
+   form.submit();
+
+   // Defer output to allow microtask to run, but still before timers beyond this tick
+   setTimeout(function(){ out.textContent = order.join(','); }, 0);
+ });
+</script>
