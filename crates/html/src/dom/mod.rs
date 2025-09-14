@@ -101,15 +101,15 @@ impl DOM {
     fn ensure_node(&mut self, parser_id: NodeKey, kind: Option<NodeKind>) -> NodeId {
         if let Some(&mapped) = self.id_map.get(&parser_id) {
             // Optionally update kind if provided and current is default
-            if let Some(k) = kind {
-                if let Some(n) = self.dom.get_mut(mapped) {
-                    let node = n.get_mut();
-                    match (&node.kind, &k) {
-                        (NodeKind::Document, _) => {
-                            node.kind = k;
-                        }
-                        _ => { /* keep existing kind (e.g., text or element) */ }
+            if let Some(k) = kind
+                && let Some(n) = self.dom.get_mut(mapped)
+            {
+                let node = n.get_mut();
+                match (&node.kind, &k) {
+                    (NodeKind::Document, _) => {
+                        node.kind = k;
                     }
+                    _ => { /* keep existing kind (e.g., text or element) */ }
                 }
             }
             return mapped;
@@ -123,7 +123,7 @@ impl DOM {
     }
 
     /// Helper to map a parent id, defaulting to root if unknown
-    fn map_parent<'a>(&mut self, parser_parent: NodeKey) -> NodeId {
+    fn map_parent(&mut self, parser_parent: NodeKey) -> NodeId {
         if let Some(&mapped) = self.id_map.get(&parser_parent) {
             mapped
         } else {
@@ -153,12 +153,10 @@ impl DOM {
                 let count = parent_rt.children(&self.dom).count();
                 if *pos >= count {
                     parent_rt.append(child_rt, &mut self.dom);
+                } else if let Some(target_sibling) = parent_rt.children(&self.dom).nth(*pos) {
+                    target_sibling.insert_before(child_rt, &mut self.dom);
                 } else {
-                    if let Some(target_sibling) = parent_rt.children(&self.dom).nth(*pos) {
-                        target_sibling.insert_before(child_rt, &mut self.dom);
-                    } else {
-                        parent_rt.append(child_rt, &mut self.dom);
-                    }
+                    parent_rt.append(child_rt, &mut self.dom);
                 }
             }
             InsertText {
@@ -170,10 +168,10 @@ impl DOM {
                 let parent_rt = self.map_parent(*parent);
                 let child_rt = self.ensure_node(*node, Some(NodeKind::Text { text: text.clone() }));
                 // Update text content if node existed already
-                if let Some(n) = self.dom.get_mut(child_rt) {
-                    if let NodeKind::Text { text: t } = &mut n.get_mut().kind {
-                        *t = text.clone();
-                    }
+                if let Some(n) = self.dom.get_mut(child_rt)
+                    && let NodeKind::Text { text: t } = &mut n.get_mut().kind
+                {
+                    *t = text.clone();
                 }
                 if self.dom.get(child_rt).and_then(|n| n.parent()).is_some() {
                     child_rt.detach(&mut self.dom);

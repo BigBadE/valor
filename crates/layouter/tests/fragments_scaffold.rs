@@ -26,14 +26,12 @@ fn fragment_tree_builds_for_inline_run() {
 
     // Computed styles: html/body/div block, span inline
     let mut comp: HashMap<NodeKey, ComputedStyle> = HashMap::new();
-    let mut cs_block = ComputedStyle::default();
-    cs_block.display = Display::Block;
+    let cs_block = ComputedStyle { display: Display::Block, ..Default::default() };
     comp.insert(html, cs_block.clone());
     comp.insert(body, cs_block.clone());
     comp.insert(container, cs_block.clone());
 
-    let mut cs_span = ComputedStyle::default();
-    cs_span.display = Display::Inline;
+    let cs_span = ComputedStyle { display: Display::Inline, ..Default::default() };
     comp.insert(span, cs_span);
     // Text nodes inherit defaults implicitly
     comp.insert(text_hi, ComputedStyle::default());

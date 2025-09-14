@@ -8,13 +8,14 @@ use std::default::Default;
 use std::collections::HashMap;
 
 /// The CSS `display` property for computed style.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Display {
     /// Element is not rendered and does not generate a box.
     None,
     /// Element generates a block-level box.
     Block,
     /// Element generates one or more inline-level boxes.
+    #[default]
     Inline,
     /// Element establishes a flex formatting context (block-level).
     Flex,
@@ -22,22 +23,15 @@ pub enum Display {
     InlineFlex,
 }
 
-impl Default for Display {
-    fn default() -> Self { Display::Inline }
-}
-
 /// Positioning scheme for layout (computed layer only; layout effects later).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Position {
+    #[default]
     Static,
     Relative,
     Absolute,
     Fixed,
     Sticky,
-}
-
-impl Default for Position {
-    fn default() -> Self { Position::Static }
 }
 
 /// An RGBA color value.
@@ -58,7 +52,7 @@ impl Default for ColorRGBA {
 }
 
 /// A set of four edge values (top, right, bottom, left) used for margin and padding.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Edges {
     pub top: f32,
     pub right: f32,
@@ -66,14 +60,13 @@ pub struct Edges {
     pub left: f32,
 }
 
-impl Default for Edges {
-    fn default() -> Self { Self { top: 0.0, right: 0.0, bottom: 0.0, left: 0.0 } }
-}
+// Default is derived above for Edges
 
 /// A specified size value for width/height before resolution.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum SizeSpecified {
     /// `auto` value.
+    #[default]
     Auto,
     /// Pixel value.
     Px(f32),
@@ -81,24 +74,20 @@ pub enum SizeSpecified {
     Percent(f32), // 0.0..=1.0
 }
 
-impl Default for SizeSpecified {
-    fn default() -> Self { SizeSpecified::Auto }
-}
-
 /// Border line style.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BorderStyle {
+    #[default]
     None,
     Solid,
     Dashed,
     Dotted,
 }
 
-impl Default for BorderStyle { fn default() -> Self { BorderStyle::None } }
-
 /// Cross-axis alignment for flex containers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AlignItems {
+    #[default]
     Stretch,
     FlexStart,
     FlexEnd,
@@ -106,28 +95,40 @@ pub enum AlignItems {
     Baseline,
 }
 
-impl Default for AlignItems { fn default() -> Self { AlignItems::Stretch } }
+/// Main-axis distribution for flex containers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JustifyContent {
+    #[default]
+    FlexStart,
+    Center,
+    FlexEnd,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+/// Flex-wrap setting for flex containers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FlexWrap { #[default] NoWrap, Wrap }
 
 /// Overflow/clipping behavior for boxes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Overflow {
+    #[default]
     Visible,
     Hidden,
     Scroll,
     Auto,
 }
 
-impl Default for Overflow { fn default() -> Self { Overflow::Visible } }
-
 /// Font style keyword.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FontStyle {
+    #[default]
     Normal,
     Italic,
     Oblique,
 }
-
-impl Default for FontStyle { fn default() -> Self { FontStyle::Normal } }
 
 /// The minimal set of computed style properties used by early layout code.
 #[derive(Debug, Clone, PartialEq)]
@@ -185,6 +186,10 @@ pub struct ComputedStyle {
     pub flex_basis: SizeSpecified,
     /// Cross-axis alignment for container.
     pub align_items: AlignItems,
+    /// Main-axis distribution for container.
+    pub justify_content: JustifyContent,
+    /// Wrapping behavior for container.
+    pub flex_wrap: FlexWrap,
     /// Resolved CSS custom properties (computed), inherited by default.
     pub custom_properties: HashMap<String, String>,
 }
@@ -221,6 +226,8 @@ impl Default for ComputedStyle {
             flex_shrink: 1.0,
             flex_basis: SizeSpecified::Auto,
             align_items: AlignItems::Stretch,
+            justify_content: JustifyContent::FlexStart,
+            flex_wrap: FlexWrap::NoWrap,
             custom_properties: HashMap::new(),
         }
     }

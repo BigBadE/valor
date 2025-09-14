@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use js::NodeKey;
-use style_engine::{SizeSpecified, AlignItems};
+use style_engine::{SizeSpecified, AlignItems, JustifyContent, FlexWrap};
 
 use crate::LayoutNodeKind;
 use super::args::{ComputeGeomArgs, LayoutMaps};
@@ -33,22 +33,28 @@ pub(crate) fn layout_flex_children(
     let align_items = if let Some(cm) = maps.computed_by_key {
         cm.get(&container).map(|cs| cs.align_items).unwrap_or(AlignItems::Stretch)
     } else { AlignItems::Stretch };
+    let justify_content = if let Some(cm) = maps.computed_by_key {
+        cm.get(&container).map(|cs| cs.justify_content).unwrap_or(JustifyContent::FlexStart)
+    } else { JustifyContent::FlexStart };
+    let flex_wrap = if let Some(cm) = maps.computed_by_key {
+        cm.get(&container).map(|cs| cs.flex_wrap).unwrap_or(FlexWrap::NoWrap)
+    } else { FlexWrap::NoWrap };
 
     let children = match maps.children_by_key.get(&container) { Some(v) => v.clone(), None => Vec::new() };
     if children.is_empty() { return (0, 0); }
 
     // Step 1: Establish flex base sizes and flex factors, including min/max width constraints.
     #[derive(Clone, Debug)]
-    struct Item { key: NodeKey, base: i32, min: i32, max: i32, grow: f32, shrink: f32, height: i32 }
+    struct Item { key: NodeKey, base: i32, min: i32, max: i32, grow: f32, shrink: f32, height: i32, margin_l: i32, margin_r: i32 }
     let mut items: Vec<Item> = Vec::with_capacity(children.len());
 
     for child in &children {
         // Skip whitespace-only text nodes; they should not create flex items
-        if let Some(LayoutNodeKind::InlineText { text }) = maps.kind_by_key.get(child) {
-            if text.trim().is_empty() { continue; }
-        }
+        if let Some(LayoutNodeKind::InlineText { text }) = maps.kind_by_key.get(child)
+            && text.trim().is_empty()
+        { continue; }
         // Fetch computed style if available
-        let (width_spec, height_spec, flex_basis, flex_grow, flex_shrink, min_w, max_w, child_font_size) = if let Some(cm) = maps.computed_by_key {
+        let (width_spec, height_spec, flex_basis, flex_grow, flex_shrink, min_w, max_w, child_font_size, margin_l, margin_r) = if let Some(cm) = maps.computed_by_key {
             if let Some(cs) = cm.get(child) {
                 (
                     cs.width,
@@ -59,9 +65,11 @@ pub(crate) fn layout_flex_children(
                     cs.min_width,
                     cs.max_width,
                     cs.font_size,
+                    cs.margin.left.round() as i32,
+                    cs.margin.right.round() as i32,
                 )
-            } else { (SizeSpecified::Auto, SizeSpecified::Auto, SizeSpecified::Auto, 0.0, 1.0, None, None, parent_font_size) }
-        } else { (SizeSpecified::Auto, SizeSpecified::Auto, SizeSpecified::Auto, 0.0, 1.0, None, None, parent_font_size) };
+            } else { (SizeSpecified::Auto, SizeSpecified::Auto, SizeSpecified::Auto, 0.0, 1.0, None, None, parent_font_size, 0, 0) }
+        } else { (SizeSpecified::Auto, SizeSpecified::Auto, SizeSpecified::Auto, 0.0, 1.0, None, None, parent_font_size, 0, 0) };
 
         // Base size: flex-basis, else width, else content-based estimate
         let mut base: i32 = match flex_basis {
@@ -104,16 +112,16 @@ pub(crate) fn layout_flex_children(
         let max_px = clamp_size(&max_w).unwrap_or(i32::MAX);
         base = base.clamp(min_px, max_px);
 
-        items.push(Item { key: *child, base, min: min_px, max: max_px, grow: flex_grow.max(0.0), shrink: flex_shrink.max(0.0), height });
+        items.push(Item { key: *child, base, min: min_px, max: max_px, grow: flex_grow.max(0.0), shrink: flex_shrink.max(0.0), height, margin_l, margin_r });
     }
 
     // Step 2: Distribute free space using grow/shrink with iterative freezing.
     let total_base: i32 = items.iter().map(|it| it.base).sum();
     let mut integer_sizes: Vec<i32> = items.iter().map(|it| it.base).collect();
-    let mut free_space: i32 = content_width - total_base;
+    let free_space: i32 = content_width - total_base;
 
     // Helper: finalize float sizes to integers, distributing rounding remainder to the first items.
-    let mut finalize_sizes = |float_sizes: &Vec<f32>, constraints: &Vec<(i32, i32)>, must_fit: bool| -> Vec<i32> {
+    let finalize_sizes = |float_sizes: &Vec<f32>, constraints: &Vec<(i32, i32)>, must_fit: bool| -> Vec<i32> {
         let mut rounded: Vec<i32> = float_sizes.iter().map(|v| v.round() as i32).collect();
         // If we don't need to fit to container (e.g., grow=0 and positive free space), just clamp and return.
         if !must_fit {
@@ -123,7 +131,7 @@ pub(crate) fn layout_flex_children(
             return rounded;
         }
         // Adjust rounding to exactly match container width if needed.
-        let mut sum_after_round: i32 = rounded.iter().sum();
+        let sum_after_round: i32 = rounded.iter().sum();
         let mut diff: i32 = content_width - sum_after_round;
         if diff == 0 {
             for (idx, (min_px, max_px)) in constraints.iter().enumerate() {
@@ -137,7 +145,7 @@ pub(crate) fn layout_flex_children(
         if diff > 0 {
             let mut i = 0;
             while diff > 0 && i < n {
-                let (min_px, max_px) = constraints[i];
+                let (_min_px, max_px) = constraints[i];
                 if rounded[i] < max_px {
                     rounded[i] += 1;
                     diff -= 1;
@@ -147,7 +155,7 @@ pub(crate) fn layout_flex_children(
         } else {
             let mut i = 0;
             while diff < 0 && i < n {
-                let (min_px, max_px) = constraints[i];
+                let (min_px, _max_px) = constraints[i];
                 if rounded[i] > min_px {
                     rounded[i] -= 1;
                     diff += 1;
@@ -219,21 +227,58 @@ pub(crate) fn layout_flex_children(
 
     let sizes = integer_sizes;
 
-    // Step 3: Position items along x and align along y.
-    let mut x = x_start;
+    // Step 3: Build lines (wrap or single-line) with positions.
+    #[derive(Default)]
+    struct Line { indices: Vec<usize>, total_main: i32, max_cross: i32 }
+    let mut lines: Vec<Line> = Vec::new();
+    let mut cur = Line::default();
     for (idx, it) in items.iter().enumerate() {
-        let width = sizes[idx].max(0);
-        let height = it.height.max(0);
-        let y = match align_items {
-            AlignItems::Center => y_start + ((max_cross_size - height) / 2).max(0),
-            AlignItems::FlexStart | AlignItems::Baseline | AlignItems::Stretch | AlignItems::FlexEnd => {
-                if matches!(align_items, AlignItems::FlexEnd) { y_start + (max_cross_size - height).max(0) } else { y_start }
+        let main_with_margins = sizes[idx] + it.margin_l + it.margin_r;
+        if flex_wrap == FlexWrap::Wrap && !cur.indices.is_empty() && cur.total_main + main_with_margins > content_width {
+            lines.push(cur);
+            cur = Line::default();
+        }
+        cur.total_main += main_with_margins;
+        cur.max_cross = cur.max_cross.max(it.height);
+        cur.indices.push(idx);
+    }
+    if !cur.indices.is_empty() { lines.push(cur); }
+
+    // Step 4: Position lines and items with justify-content and align-items.
+    let mut y_line = y_start;
+    for line in &lines {
+        let free_space = (content_width - line.total_main).max(0);
+        let gap_between = if line.indices.len() >= 2 {
+            match justify_content {
+                JustifyContent::SpaceBetween => free_space / ((line.indices.len() - 1) as i32),
+                _ => 0,
             }
+        } else { 0 };
+        let initial_offset = match justify_content {
+            JustifyContent::Center => free_space / 2,
+            JustifyContent::FlexEnd => free_space,
+            _ => 0,
         };
-        rects.insert(it.key, LayoutRect { x, y, width, height });
-        x += width;
+        let mut x = x_start + initial_offset;
+        for (pos, &idx) in line.indices.iter().enumerate() {
+            let it = &items[idx];
+            let width = sizes[idx].max(0);
+            let height = it.height.max(0);
+            let y = match align_items {
+                AlignItems::Center => y_line + ((line.max_cross - height) / 2).max(0),
+                AlignItems::FlexStart | AlignItems::Baseline | AlignItems::Stretch | AlignItems::FlexEnd => {
+                    if matches!(align_items, AlignItems::FlexEnd) { y_line + (line.max_cross - height).max(0) } else { y_line }
+                }
+            };
+            x += it.margin_l;
+            rects.insert(it.key, LayoutRect { x, y, width, height });
+            x += width + it.margin_r;
+            if gap_between > 0 && pos + 1 < line.indices.len() { x += gap_between; }
+        }
+        y_line += line.max_cross;
+        max_cross_size = max_cross_size.max(line.max_cross);
     }
 
-    let content_height = max_cross_size;
+    let content_height = y_line - y_start;
     (content_height, content_height)
 }

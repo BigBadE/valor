@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>DOM Core Basic</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+  </style>
+</head>
+<body>
+  <div id="container"></div>
+  <script>
+    window._valorRun = function() {
+      try {
+        const c = document.getElementById('container');
+        const span = document.createElement('span');
+        span.id = 's1';
+        span.textContent = 'hello';
+        c.appendChild(span);
+        _valorAssert('appendChild sets child in container', c.firstElementChild === span, 'child mismatch');
+        _valorAssert('textContent set correctly', span.textContent === 'hello', 'text mismatch');
+        _valorAssert('query by id works', document.getElementById('s1') === span, 'id lookup failed');
+        // insertBefore
+        const b = document.createElement('b');
+        c.insertBefore(b, span);
+        _valorAssert('insertBefore at head', c.firstElementChild === b, 'not inserted at head');
+        // removeChild
+        c.removeChild(span);
+        _valorAssert('removeChild removed node', !c.contains(span), 'span still present');
+      } catch (e) {
+        _valorAssert('dom-core-exception', false, String(e && e.stack || e));
+      }
+    };
+  </script>
+</body>
+</html>

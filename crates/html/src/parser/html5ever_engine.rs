@@ -61,10 +61,10 @@ impl ValorSink {
         if let Some(url) = resolved {
             match url.scheme() {
                 "file" => {
-                    if let Ok(path) = url.to_file_path() {
-                        if let Ok(data) = std::fs::read_to_string(path) {
-                            return Some(data);
-                        }
+                    if let Ok(path) = url.to_file_path()
+                        && let Ok(data) = std::fs::read_to_string(path)
+                    {
+                        return Some(data);
                     }
                 }
                 _ => {
@@ -90,7 +90,7 @@ impl TreeSink for ValorSink {
     type Output = ();
     type ElemName<'a> = OwnedElemName where Self: 'a;
 
-    fn finish(self) -> Self::Output { () }
+    fn finish(self) -> Self::Output { }
 
     fn parse_error(&self, _msg: std::borrow::Cow<'static, str>) {}
 
@@ -125,7 +125,7 @@ impl TreeSink for ValorSink {
                 if a.name.local.eq(&local_name!("src")) { st.has_src = true; st.src_value = Some(a.value.to_string()); }
                 if a.name.local.eq(&local_name!("defer")) { st.defer = true; }
                 if a.name.local.eq(&local_name!("async")) { st.async_attr = true; }
-                if a.name.local.eq(&local_name!("type")) { if a.value.to_ascii_lowercase() == "module" { st.is_module = true; } }
+                if a.name.local.eq(&local_name!("type")) && a.value.to_ascii_lowercase() == "module" { st.is_module = true; }
             }
             let mut dom = self.dom.borrow_mut();
             let domm = dom.mirror_mut();
@@ -152,10 +152,10 @@ impl TreeSink for ValorSink {
             }
             NodeOrText::AppendText(text) => {
                 // If appending under a <script> without src, collect the text
-                if let Some(entry) = self.script_nodes.borrow_mut().get_mut(parent) {
-                    if !entry.has_src {
-                        entry.buffer.push_str(text.as_ref());
-                    }
+                if let Some(entry) = self.script_nodes.borrow_mut().get_mut(parent)
+                    && !entry.has_src
+                {
+                    entry.buffer.push_str(text.as_ref());
                 }
                 let node = self.dom.borrow_mut().mirror_mut().new_text(text.to_string());
                 self.dom.borrow_mut().mirror_mut().append_child(*parent, node);
@@ -237,7 +237,7 @@ impl TreeSink for ValorSink {
                 if a.name.local.eq(&local_name!("src")) { state.has_src = true; state.src_value = Some(a.value.to_string()); }
                 if a.name.local.eq(&local_name!("defer")) { state.defer = true; }
                 if a.name.local.eq(&local_name!("async")) { state.async_attr = true; }
-                if a.name.local.eq(&local_name!("type")) { if a.value.to_ascii_lowercase() == "module" { state.is_module = true; } }
+                if a.name.local.eq(&local_name!("type")) && a.value.to_ascii_lowercase() == "module" { state.is_module = true; }
             }
         }
     }

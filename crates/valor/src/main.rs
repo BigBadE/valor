@@ -2,10 +2,9 @@ use crate::state::AppState;
 use anyhow::{anyhow, Error};
 use log::{error, info};
 use page_handler::state::HtmlPage;
-use std::env;
+use page_handler::config::ValorConfig;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use tokio::sync::mpsc::unbounded_channel;
 use url::Url;
 use wgpu_renderer::state::{RenderState, Layer};
 use winit::application::ApplicationHandler;
@@ -13,6 +12,7 @@ use winit::event::{WindowEvent, ElementState, MouseButton};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 use js::ChromeHostCommand;
+use valor::factory::create_chrome_and_content;
 
 mod state;
 mod window;
@@ -22,7 +22,8 @@ pub fn main() {
 
     let event_loop = EventLoop::new().unwrap();
 
-    event_loop.set_control_flow(ControlFlow::Poll);
+    // Use Wait so we sleep between events; we explicitly request redraws when needed.
+    event_loop.set_control_flow(ControlFlow::Wait);
 
     let mut app = App::default();
     event_loop.run_app(&mut app).unwrap();
@@ -43,19 +44,11 @@ impl App {
         // Create renderer
         let render_state = runtime.block_on(RenderState::new(window.clone()));
 
-        // Create chrome and initial content pages
-        let mut chrome_page = runtime.block_on(HtmlPage::new(
-            runtime.handle(),
-            Url::parse("valor://chrome/index.html")?,
-        ))?;
-        let content_page = runtime.block_on(HtmlPage::new(
-            runtime.handle(),
-            Url::parse("https://example.com/")?,
-        ))?;
-
-        // Wire privileged chromeHost channel for the chrome page
-        let (chrome_tx, chrome_rx) = unbounded_channel::<ChromeHostCommand>();
-        let _ = chrome_page.attach_chrome_host(chrome_tx);
+        // Create chrome and initial content pages via shared factory
+        let init = create_chrome_and_content(&runtime, Url::parse("https://example.com/")?)?;
+        let chrome_page = init.chrome_page;
+        let content_page = init.content_page;
+        let chrome_rx = init.chrome_host_rx;
 
         self.state = Some(AppState {
             render_state,
@@ -93,12 +86,24 @@ impl App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let state = self.state.as_mut().unwrap();
-                let x = position.x as f64; let y = position.y as f64;
+                let x = position.x; let y = position.y;
                 state.last_cursor_pos = Some((x, y));
                 let target = if y < state.chrome_bar_height_px { 0usize } else { 1usize };
                 state.pointer_target_index = Some(target);
                 if let Some(page) = state.pages.get_mut(target) {
                     page.dispatch_pointer_move(x, y);
+                    // Apply a single update for responsive interactions
+                    if let Err(err) = state.runtime.block_on(page.update()) { error!("Failed to apply page updates: {err:?}"); }
+                    if page.take_needs_redraw() {
+                        // Rebuild layers and request redraw
+                        state.render_state.clear_layers();
+                        let content_dl = state.pages.get_mut(1).and_then(|p| p.display_list_retained_snapshot().ok());
+                        let chrome_dl = state.pages.get_mut(0).and_then(|p| p.display_list_retained_snapshot().ok());
+                        if let Some(dl) = content_dl { state.render_state.push_layer(Layer::Content(dl)); }
+                        if let Some(dl) = chrome_dl { state.render_state.push_layer(Layer::Chrome(dl)); }
+                        info!("App: requesting redraw");
+                        state.render_state.get_window().request_redraw();
+                    }
                 }
             }
             WindowEvent::MouseInput { state: btn_state, button, .. } => {
@@ -117,6 +122,17 @@ impl App {
                             page.dispatch_pointer_up(x, y, button_code);
                         }
                     }
+                    // Apply a single update for responsive interactions
+                    if let Err(err) = state_ref.runtime.block_on(page.update()) { error!("Failed to apply page updates: {err:?}"); }
+                    if page.take_needs_redraw() {
+                        state_ref.render_state.clear_layers();
+                        let content_dl = state_ref.pages.get_mut(1).and_then(|p| p.display_list_retained_snapshot().ok());
+                        let chrome_dl = state_ref.pages.get_mut(0).and_then(|p| p.display_list_retained_snapshot().ok());
+                        if let Some(dl) = content_dl { state_ref.render_state.push_layer(Layer::Content(dl)); }
+                        if let Some(dl) = chrome_dl { state_ref.render_state.push_layer(Layer::Chrome(dl)); }
+                        info!("App: requesting redraw");
+                        state_ref.render_state.get_window().request_redraw();
+                    }
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -128,6 +144,17 @@ impl App {
                 if let Some(page) = state_ref.pages.get_mut(idx) {
                     if is_down { page.dispatch_key_down(&key_str, &code_str, false, false, false); }
                     else { page.dispatch_key_up(&key_str, &code_str, false, false, false); }
+                    // Apply a single update for responsive interactions
+                    if let Err(err) = state_ref.runtime.block_on(page.update()) { error!("Failed to apply page updates: {err:?}"); }
+                    if page.take_needs_redraw() {
+                        state_ref.render_state.clear_layers();
+                        let content_dl = state_ref.pages.get_mut(1).and_then(|p| p.display_list_retained_snapshot().ok());
+                        let chrome_dl = state_ref.pages.get_mut(0).and_then(|p| p.display_list_retained_snapshot().ok());
+                        if let Some(dl) = content_dl { state_ref.render_state.push_layer(Layer::Content(dl)); }
+                        if let Some(dl) = chrome_dl { state_ref.render_state.push_layer(Layer::Chrome(dl)); }
+                        info!("App: requesting redraw");
+                        state_ref.render_state.get_window().request_redraw();
+                    }
                 }
             }
             _ => (),
@@ -151,7 +178,7 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(state) = self.state.as_mut() {
-            // Drain any pending chromeHost commands (Phase 4)
+            // Drain any pending chromeHost commands
             loop {
                 match state.chrome_host_rx.try_recv() {
                     Ok(cmd) => {
@@ -161,7 +188,8 @@ impl ApplicationHandler for App {
                                     .or_else(|_| Url::parse(&format!("https://{}", url_str)));
                                 match parsed {
                                     Ok(target_url) => {
-                                        match state.runtime.block_on(HtmlPage::new(state.runtime.handle(), target_url)) {
+                                        let config = ValorConfig::from_env();
+                                        match state.runtime.block_on(HtmlPage::new(state.runtime.handle(), target_url, config)) {
                                             Ok(new_page) => {
                                                 if state.pages.len() >= 2 {
                                                     state.pages[1] = new_page;
@@ -186,22 +214,30 @@ impl ApplicationHandler for App {
                 }
             }
 
-            for page in &mut state.pages {
-                if let Err(err) = state.runtime.block_on(page.update()) {
-                    error!("Failed to apply page updates: {err:?}");
+            // During initial loading or navigation, tick pages; otherwise idle.
+            let loading_active = state.pages.iter().any(|p| !p.parsing_finished());
+            if loading_active {
+                let mut any_needs_redraw = false;
+                for page in &mut state.pages {
+                    if let Err(err) = state.runtime.block_on(page.update()) {
+                        error!("Failed to apply page updates: {err:?}");
+                    }
+                }
+
+                for page in &mut state.pages {
+                    if page.take_needs_redraw() { any_needs_redraw = true; }
+                }
+
+                if any_needs_redraw {
+                    state.render_state.clear_layers();
+                    let content_dl = state.pages.get_mut(1).and_then(|p| p.display_list_retained_snapshot().ok());
+                    let chrome_dl = state.pages.get_mut(0).and_then(|p| p.display_list_retained_snapshot().ok());
+                    if let Some(dl) = content_dl { state.render_state.push_layer(Layer::Content(dl)); }
+                    if let Some(dl) = chrome_dl { state.render_state.push_layer(Layer::Chrome(dl)); }
+                    info!("App: requesting redraw");
+                    state.render_state.get_window().request_redraw();
                 }
             }
-            // Build and install compositor layers: content below, chrome above
-            state.render_state.clear_layers();
-            // Expect pages[0] = chrome, pages[1] = content
-            let content_dl = state.pages.get_mut(1).and_then(|p| p.display_list_retained_snapshot().ok());
-            let chrome_dl = state.pages.get_mut(0).and_then(|p| p.display_list_retained_snapshot().ok());
-            if let Some(dl) = content_dl { state.render_state.push_layer(Layer::Content(dl)); }
-            if let Some(dl) = chrome_dl { state.render_state.push_layer(Layer::Chrome(dl)); }
-
-            // Schedule a redraw so the latest layers are rendered
-            info!("App: requesting redraw");
-            state.render_state.get_window().request_redraw();
         }
     }
 }

@@ -27,11 +27,9 @@ pub(crate) fn measure_descendant_inline_text_width(
     let mut sum = 0;
     // Use the node's own computed font size if available; otherwise inherit base_font_size
     let mut current_font_size = base_font_size;
-    if let Some(comp_map) = maps.computed_by_key {
-        if let Some(cs) = comp_map.get(&node) {
-            current_font_size = cs.font_size;
-        }
-    }
+    if let Some(comp_map) = maps.computed_by_key
+        && let Some(cs) = comp_map.get(&node)
+    { current_font_size = cs.font_size; }
     if let Some(kind) = maps.kind_by_key.get(&node) {
         match kind {
             LayoutNodeKind::InlineText { text } => {
@@ -54,6 +52,7 @@ pub(crate) fn measure_descendant_inline_text_width(
 
 /// Layout block children with margin collapsing.
 /// Returns (additional_content_height, updated_child_y).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn layout_block_children(
     block_children: &[NodeKey],
     _parent_node: NodeKey,

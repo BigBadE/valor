@@ -67,25 +67,16 @@ struct OwnedIsolateWithHandleScope {
 
 
 /// V8-backed engine, always compiled.
+#[derive(Default)]
 pub struct V8Engine {
     inner: Option<v8::Global<v8::Context>>,
     isolate: Option<OwnedIsolateWithHandleScope>,
     stubs_installed: bool,
+    #[allow(dead_code)]
     base_url: Option<String>,
     /// Registry of compiled ES modules keyed by absolute URL/specifier.
+    #[allow(dead_code)]
     module_map: std::collections::HashMap<String, v8::Global<v8::Module>>,
-}
-
-impl Default for V8Engine {
-    fn default() -> Self {
-        Self {
-            inner: None,
-            isolate: None,
-            stubs_installed: false,
-            base_url: None,
-            module_map: std::collections::HashMap::new(),
-        }
-    }
 }
 
 impl V8Engine {

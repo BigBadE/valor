@@ -13,7 +13,7 @@ fn style_removal_retracts_rules() {
     mirror.apply_update(DOMUpdate::EndOfDocument).unwrap();
 
     let before = mirror.styles().clone();
-    assert!(before.rules.len() >= 1, "expected at least one rule before removal");
+    assert!(!before.rules.is_empty(), "expected at least one rule before removal");
 
     // Remove the style node
     mirror.apply_update(DOMUpdate::RemoveNode { node: style1 }).unwrap();

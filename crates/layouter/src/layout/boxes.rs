@@ -94,7 +94,7 @@ pub fn build_layout_box_tree(layouter: &Layouter) -> LayoutBoxTree {
     let mut kind_by_key: HashMap<NodeKey, LayoutNodeKind> = HashMap::new();
     let mut children_by_key: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
     for (key, kind, children) in snapshot.into_iter() {
-        kind_by_key.insert(key.clone(), kind);
+        kind_by_key.insert(key, kind);
         children_by_key.insert(key, children);
     }
     let computed = layouter.computed_styles();

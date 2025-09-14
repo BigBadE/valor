@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>JS Timers</title>
+  <style> html, body { margin:0; padding:0; } </style>
+</head>
+<body>
+  <script>
+    window._valorRun = async function() {
+      try {
+        const order = [];
+        const t1 = setTimeout(() => order.push('t1'), 0);
+        const t2 = setTimeout(() => order.push('t2'), 0);
+        let ticks = 0;
+        const iv = setInterval(() => { ticks++; if (ticks >= 2) clearInterval(iv); }, 0);
+        // Allow macrotasks to run
+        await new Promise(r => setTimeout(r, 10));
+        _valorAssert('timeouts scheduled', order.length >= 2, 'order='+order.join(','));
+        _valorAssert('interval ran >=2 times', ticks >= 2, 'ticks='+ticks);
+        // clearTimeout works
+        const t3 = setTimeout(() => order.push('t3-ran'), 5);
+        clearTimeout(t3);
+        await new Promise(r => setTimeout(r, 20));
+        _valorAssert('cleared timeout did not run', order.indexOf('t3-ran') === -1, 'order='+order.join(','));
+      } catch (e) {
+        _valorAssert('js-timers-exception', false, String(e && e.stack || e));
+      }
+    };
+  </script>
+</body>
+</html>

@@ -13,6 +13,10 @@ pub struct DrawRect {
     pub color: [f32; 3],
 }
 
+impl Default for Renderer {
+    fn default() -> Self { Self::new() }
+}
+
 /// A simple text draw command in device-independent pixel space.
 /// Text is rendered using a built-in 5x7 bitmap font expanded into colored quads.
 #[derive(Debug, Clone, PartialEq)]
@@ -140,10 +144,10 @@ impl Renderer {
     /// and detach it from its parent if present.
     fn remove_node_recursive(&mut self, node: NodeKey) {
         if let Some(node_entry) = self.nodes.remove(&node) {
-            if let Some(parent_key) = node_entry.parent {
-                if let Some(parent_node) = self.nodes.get_mut(&parent_key) {
-                    parent_node.children.retain(|c| *c != node);
-                }
+            if let Some(parent_key) = node_entry.parent
+                && let Some(parent_node) = self.nodes.get_mut(&parent_key)
+            {
+                parent_node.children.retain(|c| *c != node);
             }
             node_entry.children.into_iter().for_each(|child| self.remove_node_recursive(child));
         }

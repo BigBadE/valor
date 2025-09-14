@@ -183,11 +183,9 @@ impl<'i> CssRuleBodyItemParser<'i, Declaration, ()> for BodyDeclParser {
 fn parse_declarations_from_block(block: &mut Parser) -> Vec<Declaration> {
     let mut decls = Vec::new();
     let mut parser = BodyDeclParser;
-    for item in CssRuleBodyParser::new(block, &mut parser) {
-        if let Ok(mut d) = item {
-            d.var_refs = capture_var_refs(&d.value);
-            decls.push(d);
-        }
+    for mut d in CssRuleBodyParser::new(block, &mut parser).flatten() {
+        d.var_refs = capture_var_refs(&d.value);
+        decls.push(d);
     }
     normalize_shorthands(decls)
 }
@@ -248,26 +246,19 @@ fn strip_comments(input: &str) -> Cow<'_, str> {
 }
 
 fn find_next(bytes: &[u8], start: usize, needle: u8) -> Option<usize> {
-    for i in start..bytes.len() {
-        if bytes[i] == needle { return Some(i); }
-    }
-    None
+    (start..bytes.len()).find(|&i| bytes[i] == needle)
 }
 
 fn find_matching_brace(bytes: &[u8], open_pos: usize) -> Option<usize> {
     // open_pos is at '{'
     let mut depth = 0i32;
-    for i in open_pos..bytes.len() {
+    (open_pos..bytes.len()).find(|&i| {
         match bytes[i] {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 { return Some(i); }
-            }
-            _ => {}
+            b'{' => { depth += 1; false }
+            b'}' => { depth -= 1; depth == 0 }
+            _ => false,
         }
-    }
-    None
+    })
 }
 
 fn parse_selector_list(list: &str) -> Vec<ComplexSelector> {
@@ -837,7 +828,7 @@ mod tests {
         let sel = &list[0];
         // sequence should have multiple compounds; last should have class b
         let right = sel.rightmost_compound().unwrap();
-        assert!(has_class(right, ".b".trim_start_matches('.')) == true || has_class(right, "b"));
+        assert!(has_class(right, ".b".trim_start_matches('.')) || has_class(right, "b"));
         // Ensure there is at least one explicit Child combinator captured
         let has_child = sel.sequence.iter().any(|(_, comb)| comb == &Some(Combinator::Child));
         assert!(has_child, "Expected to capture a Child combinator in sequence: {:?}", sel.sequence);

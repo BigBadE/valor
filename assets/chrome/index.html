@@ -5,11 +5,17 @@
     <title>Valor Chrome</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
-      body { margin: 0; font: 14px/1.4 -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-      .topbar { display: block; height: 56px; background: #1f2937; color: #e5e7eb; padding: 8px 12px; box-sizing: border-box; }
+      html, body { height: 100%; }
+      body { margin: 0; font: 14px/1.4 -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background: #0b0f16; color: #e5e7eb; padding-top: 56px; }
+      /* Keep the chrome always on top of the content */
+      .topbar { position: fixed; top: 0; left: 0; right: 0; z-index: 9999; display: block; height: 56px; background: #1f2937; color: #e5e7eb; padding: 8px 12px; box-sizing: border-box; }
       .row { display: flex; gap: 8px; align-items: center; height: 40px; }
-      .btn { display: inline-block; padding: 6px 10px; background: #374151; color: #e5e7eb; border-radius: 4px; user-select: none; }
-      .addr { flex: 1; display: inline-block; padding: 6px 10px; border-radius: 4px; border: 1px solid #4b5563; background: #111827; color: #e5e7eb; }
+      /* Normalize interactive controls to avoid host styles overriding them */
+      .btn { display: inline-block; padding: 6px 10px; background: #374151; color: #e5e7eb; border: 1px solid #4b5563; border-radius: 4px; user-select: none; cursor: pointer; box-sizing: border-box; }
+      .btn:active { transform: translateY(1px); }
+      .addr { flex: 1; display: inline-block; padding: 6px 10px; border-radius: 4px; border: 1px solid #4b5563; background: #111827; color: #e5e7eb; box-sizing: border-box; min-width: 120px; }
+      .addr::placeholder { color: #9ca3af; }
+      input, button { font: inherit; }
       .content { padding: 16px; }
     </style>
   </head>

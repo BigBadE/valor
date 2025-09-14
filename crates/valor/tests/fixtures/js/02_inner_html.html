@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>innerHTML Basic</title>
+  <style> html, body { margin:0; padding:0; } </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    window._valorRun = function() {
+      try {
+        const root = document.getElementById('root');
+        root.innerHTML = '<p id="p1"><b>Bold</b> and <i>Italic</i></p>';
+        const p = document.getElementById('p1');
+        _valorAssert('innerHTML created p', !!p, 'p not found');
+        _valorAssert('p has two element children', p.children.length === 2, 'unexpected child count');
+        _valorAssert('first child is <b>', p.children[0].tagName.toLowerCase() === 'b', 'first child not <b>');
+        _valorAssert('text content includes words', p.textContent.includes('Bold') && p.textContent.includes('Italic'), 'text missing');
+      } catch (e) {
+        _valorAssert('innerHTML exception', false, String(e && e.stack || e));
+      }
+    };
+  </script>
+</body>
+</html>

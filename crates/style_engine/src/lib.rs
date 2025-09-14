@@ -22,7 +22,7 @@ mod used_values;
 
 pub use used_values::{UsedValues, UsedValuesContext, resolve_used_values};
 
-pub use computed_style::{ColorRGBA, ComputedStyle, Display, Edges, SizeSpecified, BorderStyle, FontStyle, Position, AlignItems, Overflow};
+pub use computed_style::{ColorRGBA, ComputedStyle, Display, Edges, SizeSpecified, BorderStyle, FontStyle, Position, AlignItems, JustifyContent, FlexWrap, Overflow};
 
 /// Internal node info tracked by the StyleEngine mirror for minimal style computation.
 #[derive(Debug, Clone)]
@@ -36,6 +36,10 @@ struct NodeInfo {
     children: Vec<NodeKey>,
 }
 
+impl Default for StyleEngine {
+    fn default() -> Self { Self::new() }
+}
+
 pub type ComputedMap = HashMap<NodeKey, ComputedStyle>;
 
 /// StyleEngine is a DOM subscriber that will own selector matching,
@@ -44,8 +48,8 @@ pub type ComputedMap = HashMap<NodeKey, ComputedStyle>;
 /// merges them, and mirrors DOM updates while computing a very small subset:
 /// - display defaults by tag (UA)
 /// - inline style attribute display override (Author)
-/// Internal cache for sharing identical ComputedStyle instances across nodes.
-/// Uses a structural hash to bucket candidates and stores canonical Arc<ComputedStyle> values.
+///   Internal cache for sharing identical ComputedStyle instances across nodes.
+///   Uses a structural hash to bucket candidates and stores canonical Arc<ComputedStyle> values.
 struct StyleCache {
     arena: Vec<Arc<ComputedStyle>>,
     index: HashMap<u64, Vec<usize>>, // hash -> indices into arena
@@ -82,6 +86,7 @@ impl StyleCache {
         fn hash_size(h: &mut DefaultHasher, s: &SizeSpecified) {
             match s { SizeSpecified::Auto => h.write_u8(0), SizeSpecified::Px(px) => { h.write_u8(1); h.write(&px.to_bits().to_le_bytes()); }, SizeSpecified::Percent(p) => { h.write_u8(2); h.write(&p.to_bits().to_le_bytes()); } }
         }
+
         hash_size(&mut hasher, &style.width);
         hash_size(&mut hasher, &style.height);
         // positioned offsets
@@ -112,10 +117,10 @@ impl StyleCache {
         let hash = Self::hash_style(&style);
         if let Some(indices) = self.index.get(&hash) {
             for &idx in indices {
-                if let Some(existing) = self.arena.get(idx) {
-                    if **existing == style {
-                        return existing.clone();
-                    }
+                if let Some(existing) = self.arena.get(idx)
+                    && **existing == style
+                {
+                    return existing.clone();
                 }
             }
         }
@@ -435,6 +440,8 @@ impl StyleEngine {
         let mut flex_shrink_spec: Option<f32> = None;
         let mut flex_basis_spec: Option<SizeSpecified> = None;
         let mut align_items_spec: Option<AlignItems> = None;
+        let mut justify_content_spec: Option<JustifyContent> = None;
+        let mut flex_wrap_spec: Option<FlexWrap> = None;
         // Text
         let mut font_weight_spec: Option<u16> = None;
         let mut font_style_spec: Option<FontStyle> = None;
@@ -497,7 +504,7 @@ impl StyleEngine {
             }
         }
         // Sort ascending so later items override
-        items.sort_by(|a, b| a.cmp(b));
+        items.sort();
         for (_imp_rank, _origin_rank, _spec, _ord, prop, val_raw) in items {
             let prop_lc = prop.to_ascii_lowercase();
             // Custom property declaration: store specified tokens; resolution at use-sites
@@ -526,6 +533,10 @@ impl StyleEngine {
                         "inline-flex" => Some(Display::InlineFlex),
                         _ => display_spec,
                     };
+                }
+                // Minimal background shorthand support: color extraction
+                "background" => {
+                    if let Some(c) = Self::parse_background_color(val) { background_color_spec = Some(c); }
                 }
                 "position" => {
                     let v = val.to_ascii_lowercase();
@@ -591,7 +602,7 @@ impl StyleEngine {
                 "border-color" | "border-top-color" | "border-right-color" | "border-bottom-color" | "border-left-color" => {
                     if let Some(c) = Self::parse_color(val) { border_color_spec = Some(c); }
                 }
-                // Background
+                // Background longhand
                 "background-color" => { if let Some(c) = Self::parse_color(val) { background_color_spec = Some(c); } }
                 "color" => { if let Some(c) = Self::parse_color(val) { color_spec = Some(c); } }
                 // Font
@@ -624,8 +635,8 @@ impl StyleEngine {
                     else if let Some(px) = parse_px(&v) { line_height_spec = Some(LHSrc::Px(px)); }
                 }
                 // Flexbox
-                "flex-grow" => { if let Ok(n) = val.to_ascii_lowercase().parse::<f32>() { if n >= 0.0 { flex_grow_spec = Some(n); } } }
-                "flex-shrink" => { if let Ok(n) = val.to_ascii_lowercase().parse::<f32>() { if n >= 0.0 { flex_shrink_spec = Some(n); } } }
+                "flex-grow" => { if let Ok(n) = val.to_ascii_lowercase().parse::<f32>() && n >= 0.0 { flex_grow_spec = Some(n); } }
+                "flex-shrink" => { if let Ok(n) = val.to_ascii_lowercase().parse::<f32>() && n >= 0.0 { flex_shrink_spec = Some(n); } }
                 "flex-basis" => { flex_basis_spec = parse_size_spec(val).or(flex_basis_spec); }
                 "align-items" => {
                     let v = val.to_ascii_lowercase();
@@ -637,6 +648,21 @@ impl StyleEngine {
                         "baseline" => AlignItems::Baseline,
                         _ => AlignItems::Stretch,
                     });
+                }
+                "justify-content" => {
+                    let v = val.to_ascii_lowercase();
+                    justify_content_spec = Some(match v.as_str() {
+                        "center" => JustifyContent::Center,
+                        "flex-end" | "end" => JustifyContent::FlexEnd,
+                        "space-between" => JustifyContent::SpaceBetween,
+                        "space-around" => JustifyContent::SpaceAround,
+                        "space-evenly" => JustifyContent::SpaceEvenly,
+                        _ => JustifyContent::FlexStart,
+                    });
+                }
+                "flex-wrap" => {
+                    let v = val.to_ascii_lowercase();
+                    flex_wrap_spec = Some(match v.as_str() { "wrap" => FlexWrap::Wrap, _ => FlexWrap::NoWrap });
                 }
                 // Flex shorthand: flex: <grow> <shrink> <basis> | none | auto | initial
                 "flex" => {
@@ -657,15 +683,11 @@ impl StyleEngine {
                         let parts: Vec<&str> = v.split_whitespace().filter(|p| !p.is_empty()).collect();
                         if !parts.is_empty() {
                             // First part: grow (number)
-                            if let Ok(n) = parts[0].parse::<f32>() { if n >= 0.0 { flex_grow_spec = Some(n); } }
+                            if let Ok(n) = parts[0].parse::<f32>() && n >= 0.0 { flex_grow_spec = Some(n); }
                             // Second part: shrink (number)
-                            if parts.len() >= 2 {
-                                if let Ok(n) = parts[1].parse::<f32>() { if n >= 0.0 { flex_shrink_spec = Some(n); } }
-                            }
+                            if parts.len() >= 2 && let Ok(n) = parts[1].parse::<f32>() && n >= 0.0 { flex_shrink_spec = Some(n); }
                             // Third part: basis (size)
-                            if parts.len() >= 3 {
-                                if let Some(spec) = parse_size_spec(parts[2]) { flex_basis_spec = Some(spec); }
-                            }
+                            if parts.len() >= 3 && let Some(spec) = parse_size_spec(parts[2]) { flex_basis_spec = Some(spec); }
                         }
                     }
                 }
@@ -674,10 +696,11 @@ impl StyleEngine {
         }
 
         // Build computed style with inheritance
-        let mut cs = ComputedStyle::default();
-        // display: default fallback by tag if still unspecified
-        cs.display = display_spec.unwrap_or_else(|| default_display_for_tag(&info.tag));
-        cs.position = position_spec.unwrap_or(Position::Static);
+        let mut cs = ComputedStyle {
+            display: display_spec.unwrap_or_else(|| default_display_for_tag(&info.tag)),
+            position: position_spec.unwrap_or(Position::Static),
+            ..Default::default()
+        };
         // box model
         if have_margin { cs.margin = margin_spec; }
         if have_padding { cs.padding = padding_spec; }
@@ -727,6 +750,8 @@ impl StyleEngine {
         cs.flex_shrink = flex_shrink_spec.unwrap_or(1.0);
         cs.flex_basis = flex_basis_spec.unwrap_or(SizeSpecified::Auto);
         cs.align_items = align_items_spec.unwrap_or(AlignItems::Stretch);
+        cs.justify_content = justify_content_spec.unwrap_or(JustifyContent::FlexStart);
+        cs.flex_wrap = flex_wrap_spec.unwrap_or(FlexWrap::NoWrap);
         // Inherit + override custom properties environment
         cs.custom_properties = var_env;
         cs
@@ -734,14 +759,12 @@ impl StyleEngine {
 }
 
 impl StyleEngine {
+    // ...
     /// Return true if selector uses unsupported features (sibling combinators for now).
     fn selector_has_unsupported(_sel: &ComplexSelector) -> bool {
-        // All features used in Phase 8 subset are supported.
+        // All features used in our subset are supported for now.
         false
     }
-
-    /// After a stylesheet change, rematch only nodes that could be affected based on
-    /// the rightmost simple selector indexes. If any universal selectors exist, we
     /// conservatively rematch all nodes. Marks matched nodes (and descendants) dirty.
     fn targeted_rematch_after_stylesheet_update(&mut self) {
         // If there are universal-indexed selectors, everything could match.
@@ -808,11 +831,50 @@ impl StyleEngine {
         let parsed: CssColor = input.parse().ok()?;
         let rgba = parsed.to_rgba8();
         Some(ColorRGBA {
-            red: rgba[0].clone(),
-            green: rgba[1].clone(),
-            blue: rgba[2].clone(),
-            alpha: rgba[3].clone(),
+            red: rgba[0],
+            green: rgba[1],
+            blue: rgba[2],
+            alpha: rgba[3],
         })
+    }
+
+    /// Extract a color from the CSS `background` shorthand when present.
+    /// This scans top-level tokens and tries to parse any token (or the whole value)
+    /// as a color. It ignores images/positions/size/repeat/layers.
+    fn parse_background_color(input: &str) -> Option<ColorRGBA> {
+        // Quick path: the whole string is a color (e.g., "#123", "rgb(...)", "red").
+        if let Some(c) = Self::parse_color(input.trim()) { return Some(c); }
+        // Tokenize by whitespace at top level (outside parentheses). Preserve function chunks.
+        let mut tokens: Vec<String> = Vec::new();
+        let mut cur = String::new();
+        let mut depth: i32 = 0;
+        for ch in input.chars() {
+            match ch {
+                '(' => { depth += 1; cur.push(ch); }
+                ')' => { depth = (depth - 1).max(0); cur.push(ch); }
+                c if c.is_whitespace() && depth == 0 => {
+                    let t = cur.trim();
+                    if !t.is_empty() { tokens.push(t.to_string()); }
+                    cur.clear();
+                }
+                _ => cur.push(ch),
+            }
+        }
+        let t = cur.trim();
+        if !t.is_empty() { tokens.push(t.to_string()); }
+
+        // Split tokens further by commas and '/' and test each candidate.
+        fn candidates<'a>(s: &'a str) -> impl Iterator<Item = &'a str> {
+            // split on commas first, then on '/'
+            s.split(',').flat_map(|p| p.split('/')).map(|p| p.trim()).filter(|p| !p.is_empty())
+        }
+
+        for tok in &tokens {
+            for cand in candidates(tok) {
+                if let Some(c) = Self::parse_color(cand) { return Some(c); }
+            }
+        }
+        None
     }
 
     fn rebuild_rule_index(&mut self) {
@@ -830,7 +892,7 @@ impl StyleEngine {
     }
 
     fn add_matching_rules(
-        rules: &Vec<RuleRef>,
+        rules: &[RuleRef],
         seen: &mut HashSet<(usize, usize)>,
     ) -> Vec<RuleRef> {
         rules
@@ -842,12 +904,11 @@ impl StyleEngine {
 
     fn rematch_node(&mut self, node: NodeKey, force: bool) {
         // If not forced and matches for this node are up-to-date for the current rules epoch, skip.
-        if !force {
-            if let Some(ep) = self.node_match_epoch.get(&node) {
-                if *ep == self.rules_epoch {
-                    return;
-                }
-            }
+        if !force
+            && let Some(ep) = self.node_match_epoch.get(&node)
+            && *ep == self.rules_epoch
+        {
+            return;
         }
         // Build candidates from rule_index using id, classes, tag and universal
         let mut seen: HashSet<(usize, usize)> = HashSet::new();
@@ -953,13 +1014,13 @@ impl StyleEngine {
                     };
                     // find index of current in parent's children
                     let mut found_match = false;
-                    if let Some(pos) = pi.children.iter().position(|k| *k == current) {
-                        if pos > 0 {
-                            let prev = pi.children[pos - 1];
-                            if self.match_compound(prev, comp) {
-                                current = prev;
-                                found_match = true;
-                            }
+                    if let Some(pos) = pi.children.iter().position(|k| *k == current)
+                        && pos > 0
+                    {
+                        let prev = pi.children[pos - 1];
+                        if self.match_compound(prev, comp) {
+                            current = prev;
+                            found_match = true;
                         }
                     }
                     if !found_match {
@@ -1004,7 +1065,7 @@ impl StyleEngine {
             match s {
                 SimpleSelector::Universal => {}
                 SimpleSelector::Type(t) => {
-                    if info.tag.eq_ignore_ascii_case(t) == false {
+                    if !info.tag.eq_ignore_ascii_case(t) {
                         return false;
                     }
                 }
@@ -1100,10 +1161,10 @@ impl StyleEngine {
 
     fn update_class_index(&mut self, node: NodeKey, old: &HashSet<String>, new: &HashSet<String>) {
         for c in old {
-            if !new.contains(c) {
-                if let Some(v) = self.nodes_by_class.get_mut(c) {
-                    v.retain(|k| *k != node);
-                }
+            if !new.contains(c)
+                && let Some(v) = self.nodes_by_class.get_mut(c)
+            {
+                v.retain(|k| *k != node);
             }
         }
         for c in new {
@@ -1123,16 +1184,16 @@ impl StyleEngine {
     fn remove_node_recursive(&mut self, node: NodeKey) {
         if let Some(info) = self.nodes.remove(&node) {
             // remove from parent children
-            if let Some(p) = info.parent {
-                if let Some(pi) = self.nodes.get_mut(&p) {
-                    pi.children.retain(|k| *k != node);
-                }
+            if let Some(p) = info.parent
+                && let Some(pi) = self.nodes.get_mut(&p)
+            {
+                pi.children.retain(|k| *k != node);
             }
             // drop indexes
-            if let Some(idv) = info.id {
-                if let Some(v) = self.nodes_by_id.get_mut(&idv) {
-                    v.retain(|k| *k != node);
-                }
+            if let Some(idv) = info.id
+                && let Some(v) = self.nodes_by_id.get_mut(&idv)
+            {
+                v.retain(|k| *k != node);
             }
             for c in info.classes {
                 if let Some(v) = self.nodes_by_class.get_mut(&c) {
@@ -1158,14 +1219,15 @@ impl StyleEngine {
     }
 }
 
-/// Build a minimal UA stylesheet with standard display defaults and basic body margin.
+/// Build a minimal UA stylesheet with standard display defaults and basic resets.
 fn build_ua_stylesheet() -> Stylesheet {
     // Keep this small; more tags can be added as layout grows.
     const UA_CSS: &str = r#"
-html { display: block }
-body { display: block; margin: 8px }
+html { display: block; margin: 0 }
+body { display: block; margin: 0 }
 div, p, header, main, footer, section, article, nav, ul, ol, li, h1, h2, h3, h4, h5, h6 { display: block }
 span, a, b, i, strong, em { display: inline }
+button { border-width: 2px; border-style: solid }
 style, script { display: none }
 "#;
     let mut ua = Stylesheet::default();
@@ -1373,10 +1435,10 @@ impl StyleEngine {
     /// computed styles map, regardless of prior incremental epochs.
     pub fn force_full_restyle(&mut self) {
         self.rematch_all_nodes();
-        self.recompute_dirty();
+        // Perform a full recompute to avoid relying on the dirty set
+        self.recompute_all();
     }
 }
-
 
 impl StyleEngine {
     /// Synchronize attributes from an external map (e.g., Layouter mirror) into the StyleEngine node store.
@@ -1466,11 +1528,9 @@ impl StyleEngine {
             };
             if let Some(attrs) = attrs_by_key.get(node_key) {
                 // id
-                if let Some(id_val) = attrs.get("id") {
-                    if !id_val.is_empty() {
-                        info.id = Some(id_val.clone());
-                    }
-                }
+                if let Some(id_val) = attrs.get("id")
+                    && !id_val.is_empty()
+                { info.id = Some(id_val.clone()); }
                 // class list
                 if let Some(class_val) = attrs.get("class") {
                     info.classes = class_val
@@ -1525,11 +1585,9 @@ impl StyleEngine {
             }
 
             // Record children on element parent only
-            if tags_by_key.contains_key(parent_key) {
-                if let Some(parent_info) = self.nodes.get_mut(parent_key) {
-                    parent_info.children = filtered_children;
-                }
-            }
+            if tags_by_key.contains_key(parent_key)
+                && let Some(parent_info) = self.nodes.get_mut(parent_key)
+            { parent_info.children = filtered_children; }
         }
 
         // 3) Rebuild id/class/tag indexes and mark all nodes dirty for recompute

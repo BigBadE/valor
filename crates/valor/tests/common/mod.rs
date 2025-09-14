@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 use url::Url;
 use page_handler::state::HtmlPage;
+use page_handler::config::ValorConfig;
 use tokio::runtime::Runtime;
 use std::time::Duration;
 use serde_json::Value;
+use valor::factory::{create_chrome_and_content, ChromeInit};
 
 /// Returns the directory containing HTML fixtures for integration tests.
 pub fn fixtures_dir() -> PathBuf {
@@ -56,22 +58,18 @@ pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
             );
         }
     }
-    // Filter: only keep numbered fixtures (e.g., 01_name.html) that are sorted into a subfolder under layout/.
+    // Keep only files that are under a subdirectory of the layout folder (not directly under .../layout).
+    // We no longer require a numbered filename prefix; any descriptive name is allowed.
     files.retain(|p| {
-        // Must be under a subdirectory of the layout folder (not directly under .../layout)
-        let parent_ok = p.parent()
-            .and_then(|d| d.file_name())
-            .map(|name| name.to_string_lossy().to_lowercase() != "layout")
-            .unwrap_or(false);
-        // Must have a file name starting with two digits and an underscore
-        let name_ok = p.file_name()
-            .and_then(|os| os.to_str())
-            .map(|s| {
-                let bytes = s.as_bytes();
-                bytes.len() >= 4 && bytes[0].is_ascii_digit() && bytes[1].is_ascii_digit() && bytes[2] == b'_'
+        p.parent()
+            .and_then(|d| d.parent().map(|pp| (pp.file_name(), d.file_name())))
+            .map(|(pp_name, d_name)| {
+                // Ensure parent-of-parent is "layout" and that this file resides in a subfolder (d_name != Some("layout"))
+                let is_under_layout = pp_name.map(|n| n == "layout").unwrap_or(false);
+                let not_directly_under_layout = d_name.map(|n| n != "layout").unwrap_or(false);
+                is_under_layout && not_directly_under_layout
             })
-            .unwrap_or(false);
-        parent_ok && name_ok
+            .unwrap_or(false)
     });
     files.sort();
     Ok(files)
@@ -86,8 +84,15 @@ pub fn to_file_url(p: &Path) -> Result<Url> {
 
 /// Construct an HtmlPage using the provided Runtime and Url.
 pub fn create_page(rt: &Runtime, url: Url) -> Result<HtmlPage> {
-    let page = rt.block_on(HtmlPage::new(rt.handle(), url))?;
+    let config = ValorConfig::from_env();
+    let page = rt.block_on(HtmlPage::new(rt.handle(), url, config))?;
     Ok(page)
+}
+
+/// Construct chrome and content pages using the same wiring as the Valor binary.
+/// Returns the `ChromeInit` bundle from `valor::factory` for further use.
+pub fn create_chrome_and_content_for_tests(rt: &Runtime, initial_content_url: Url) -> Result<ChromeInit> {
+    create_chrome_and_content(rt, initial_content_url)
 }
 
 /// Drive page.update() until parsing finishes, running an optional per-tick callback (e.g., drain mirrors).
@@ -146,19 +151,16 @@ pub fn update_until_finished_simple(rt: &Runtime, page: &mut HtmlPage) -> Result
 /// - Floats/integers are compared as f64 within `eps`.
 /// - Strings, bools, null are compared for exact equality.
 /// - Arrays/Objects must have identical structure and are compared recursively.
-/// Returns Ok(()) if equal under epsilon; Err with a path-detailed message otherwise.
+///   Returns Ok(()) if equal under epsilon; Err with a path-detailed message otherwise.
 pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> Result<(), String> {
     fn extract_id_label(v: &Value) -> Option<String> {
-        if let Value::Object(map) = v {
-            if let Some(Value::Object(attrs)) = map.get("attrs") {
-                if let Some(Value::String(id)) = attrs.get("id") {
-                    return Some(format!("#{}", id));
-                }
-            }
-            if let Some(Value::String(id)) = map.get("id") {
-                return Some(format!("#{}", id));
-            }
-        }
+        if let Value::Object(map) = v
+            && let Some(Value::Object(attrs)) = map.get("attrs")
+            && let Some(Value::String(id)) = attrs.get("id")
+        { return Some(format!("#{}", id)); }
+        if let Value::Object(map) = v
+            && let Some(Value::String(id)) = map.get("id")
+        { return Some(format!("#{}", id)); }
         None
     }
 
@@ -209,7 +211,7 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
                     let r = helper(xe, ye, eps, path, elem_stack);
                     if pushed { elem_stack.pop(); }
                     path.pop();
-                    if r.is_err() { return r; }
+                    r?;
                 }
                 Ok(())
             }
@@ -229,7 +231,7 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
                             let r = helper(xv, yv, eps, path, elem_stack);
                             if pushed { elem_stack.pop(); }
                             path.pop();
-                            if r.is_err() { return r; }
+                            r?;
                         }
                         None => return Err(build_err("missing key in expected", &format!("'{}'", k), path, elem_stack)),
                     }
@@ -240,7 +242,7 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
         }
     }
 
-    fn build_err(kind: &str, detail: &str, path: &Vec<String>, elem_stack: &Vec<(Value, Value)>) -> String {
+    fn build_err(kind: &str, detail: &str, path: &[String], elem_stack: &[(Value, Value)]) -> String {
         let path_str = format_path(path);
         let (our_elem, ch_elem) = if let Some((a, b)) = elem_stack.last() {
             (a, b)
@@ -257,10 +259,10 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
         }
     }
 
-    fn format_path(path: &Vec<String>) -> String {
+    fn format_path(path: &[String]) -> String {
         if path.is_empty() { String::new() } else {
             let joined = path.join("");
-            if joined.starts_with('.') { joined[1..].to_string() } else { joined }
+            if let Some(stripped) = joined.strip_prefix('.') { stripped.to_string() } else { joined }
         }
     }
     fn type_name(v: &Value) -> &'static str {

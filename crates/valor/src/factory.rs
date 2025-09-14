@@ -1,0 +1,39 @@
+use anyhow::Result;
+use tokio::runtime::Runtime;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use url::Url;
+use page_handler::state::HtmlPage;
+use page_handler::config::ValorConfig;
+use js::ChromeHostCommand;
+
+/// Bundle returned by `create_chrome_and_content` matching the Valor main wiring.
+pub struct ChromeInit {
+    pub chrome_page: HtmlPage,
+    pub content_page: HtmlPage,
+    pub chrome_host_rx: UnboundedReceiver<ChromeHostCommand>,
+}
+
+/// Create the chrome page (valor://chrome/index.html) and an initial content page,
+/// and wire the privileged chromeHost channel to the chrome page.
+pub fn create_chrome_and_content(rt: &Runtime, initial_content_url: Url) -> Result<ChromeInit> {
+    // Create chrome page
+    let config = ValorConfig::from_env();
+    let mut chrome_page = rt.block_on(HtmlPage::new(
+        rt.handle(),
+        Url::parse("valor://chrome/index.html")?,
+        config.clone(),
+    ))?;
+
+    // Create content page
+    let content_page = rt.block_on(HtmlPage::new(rt.handle(), initial_content_url, config.clone()))?;
+
+    // Wire privileged chromeHost channel for the chrome page
+    let (chrome_tx, chrome_rx) = unbounded_channel::<ChromeHostCommand>();
+    let _ = chrome_page.attach_chrome_host(chrome_tx);
+
+    Ok(ChromeInit {
+        chrome_page,
+        content_page,
+        chrome_host_rx: chrome_rx,
+    })
+}

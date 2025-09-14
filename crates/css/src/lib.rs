@@ -29,6 +29,10 @@ pub struct CSSMirror {
     base_url: Url,
 }
 
+impl Default for CSSMirror {
+    fn default() -> Self { Self::new() }
+}
+
 impl CSSMirror {
     pub fn new() -> Self {
         Self {
@@ -104,7 +108,7 @@ impl DOMSubscriber for CSSMirror {
                     // Start a new stream parser for this <style> element and initialize its per-node sheet.
                     let parser = StylesheetStreamParser::new(Origin::Author, self.next_order_base);
                     self.style_parsers.insert(node, parser);
-                    self.style_sheets.entry(node).or_insert_with(Stylesheet::default);
+                    self.style_sheets.entry(node).or_default();
                 } else if tag.eq_ignore_ascii_case("link") {
                     // Track attributes to detect rel=stylesheet + href later.
                     // Initialize tracked entry
@@ -124,7 +128,7 @@ impl DOMSubscriber for CSSMirror {
             InsertText { parent, node: _, text, pos: _ } => {
                 // If text is a child of a <style> element, feed it into that node's sheet.
                 if let Some(parser) = self.style_parsers.get_mut(&parent) {
-                    let sheet = self.style_sheets.entry(parent).or_insert_with(Stylesheet::default);
+                    let sheet = self.style_sheets.entry(parent).or_default();
                     parser.push_chunk(&text, sheet);
                     // Advance the global source-order counter based on the parser's position
                     self.next_order_base = self.next_order_base.max(parser.next_source_order());
@@ -168,7 +172,7 @@ impl DOMSubscriber for CSSMirror {
                 for (k, parser) in remaining.drain() {
                     let (extra, next) = parser.finish_with_next();
                     // Merge rules into the node's sheet preserving their source_order
-                    let sheet = self.style_sheets.entry(k).or_insert_with(Stylesheet::default);
+                    let sheet = self.style_sheets.entry(k).or_default();
                     let mut extra_rules = extra.rules;
                     sheet.rules.append(&mut extra_rules);
                     // Advance the global counter to the parser's final position

@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Events Basic</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #btn { width: 100px; height: 40px; background: #cfe; }
+  </style>
+</head>
+<body>
+  <button id="btn">Click</button>
+  <script>
+    window._valorRun = function() {
+      try {
+        const btn = document.getElementById('btn');
+        const order = [];
+        function rec(name) { order.push(name); }
+        btn.addEventListener('click', () => rec('target'), false);
+        document.body.addEventListener('click', () => rec('bubble:body'), false);
+        document.addEventListener('click', () => rec('bubble:document'), false);
+        document.documentElement.addEventListener('click', () => rec('bubble:html'), false);
+        document.documentElement.addEventListener('click', () => rec('capture:html'), true);
+        document.addEventListener('click', () => rec('capture:document'), true);
+        document.body.addEventListener('click', () => rec('capture:body'), true);
+        // Dispatch
+        const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
+        btn.dispatchEvent(ev);
+        // Validate order: capture:html -> capture:document -> capture:body -> target -> bubble:body -> bubble:document
+        _valorAssert('events order length', order.length >= 6, 'order='+order.join(','));
+        const idx = (name) => order.indexOf(name);
+        _valorAssert('capture before target', idx('capture:body') > -1 && idx('capture:body') < idx('target'), order.join(','));
+        _valorAssert('bubble after target', idx('bubble:body') > idx('target'), order.join(','));
+      } catch (e) {
+        _valorAssert('events-basic-exception', false, String(e && e.stack || e));
+      }
+    };
+  </script>
+</body>
+</html>

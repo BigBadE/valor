@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Layout Noop Skip</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #box { width: 200px; height: 100px; background: #ddd; }
+    .noop { /* intentionally empty class */ }
+  </style>
+</head>
+<body>
+  <div id="box"></div>
+  <script>
+    window._valorRun = function() {
+      try {
+        const box = document.getElementById('box');
+        const r0 = box.getBoundingClientRect();
+        // Apply a class that has no effect
+        box.classList.add('noop');
+        const r1 = box.getBoundingClientRect();
+        _valorAssert('no geometry change after noop', r0.width === r1.width && r0.height === r1.height && r0.x === r1.x && r0.y === r1.y,
+          `r0=(${r0.x},${r0.y},${r0.width},${r0.height}) r1=(${r1.x},${r1.y},${r1.width},${r1.height})`);
+      } catch (e) {
+        _valorAssert('layout-noop-exception', false, String(e && e.stack || e));
+      }
+    };
+  </script>
+</body>
+</html>

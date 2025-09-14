@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use js::NodeKey;
-use style_engine::SizeSpecified;
+use style_engine::{SizeSpecified, Display};
 
 use crate::LayoutNodeKind;
 use super::args::{ComputeGeomArgs, LayoutMaps};
@@ -12,6 +12,7 @@ use super::text::{measure_text_width, collapse_whitespace, greedy_line_break_wid
 
 /// Layout inline children with line wrapping and positioning.
 /// Returns (additional_content_height, updated_child_y).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn layout_inline_children(
     inline_children: &[NodeKey],
     node: NodeKey,
@@ -35,10 +36,10 @@ pub(crate) fn layout_inline_children(
     let mut inline_x = x_position + if is_html || is_body { 0 } else { padding_left };
     let mut child_y_inline = child_y;
     
-    let parent_line_height = if let Some(computed_map) = maps.computed_by_key {
-        if let Some(parent_computed_style) = computed_map.get(&node) {
-            (parent_computed_style.line_height * parent_computed_style.font_size).round() as i32
-        } else { args.line_height }
+    let parent_line_height = if let Some(computed_map) = maps.computed_by_key
+        && let Some(parent_computed_style) = computed_map.get(&node)
+    {
+        (parent_computed_style.line_height * parent_computed_style.font_size).round() as i32
     } else { args.line_height };
     
     let line_height = parent_line_height;
@@ -90,21 +91,36 @@ pub(crate) fn layout_inline_children(
                 }
             }
             Some(LayoutNodeKind::Block { tag }) => {
-                // Inline element: estimate width from specified width or sum of descendant inline text
+                // Decide whether this element participates as inline or forces a block boundary
+                let mut treat_as_block = false;
+                if let Some(computed_map) = maps.computed_by_key
+                    && let Some(cs) = computed_map.get(child)
+                { treat_as_block = cs.display != Display::Inline; }
+                if treat_as_block {
+                    // Treat block-in-inline as an anonymous block boundary:
+                    // finalize current inline line if it has content, place the block, then start a new line.
+                    if inline_x > line_start_x {
+                        // close current line
+                        additional_content_height += line_height;
+                        child_y_inline += line_height;
+                        inline_x = line_start_x;
+                    }
+                }
+                // Inline element (or block treated as replaced): estimate width from specified width or sum of descendant inline text
                 let mut width = 0;
                 let mut width_is_auto = true;
-                if let Some(computed_map) = maps.computed_by_key {
-                    if let Some(computed_style) = computed_map.get(&child) {
-                        match computed_style.width {
-                            SizeSpecified::Px(px) => { width = px.round() as i32; width_is_auto = false; }
-                            SizeSpecified::Percent(percentage) => { width = (percentage * content_width as f32).round() as i32; width_is_auto = false; }
-                            SizeSpecified::Auto => {}
-                        }
+                if let Some(computed_map) = maps.computed_by_key
+                    && let Some(computed_style) = computed_map.get(child)
+                {
+                    match computed_style.width {
+                        SizeSpecified::Px(px) => { width = px.round() as i32; width_is_auto = false; }
+                        SizeSpecified::Percent(percentage) => { width = (percentage * content_width as f32).round() as i32; width_is_auto = false; }
+                        SizeSpecified::Auto => {}
                     }
                 }
                 if width == 0 {
                     let child_font_size: f32 = if let Some(computed_map) = maps.computed_by_key { 
-                        computed_map.get(&child).map(|computed_style| computed_style.font_size).unwrap_or(parent_font_size) 
+                        computed_map.get(child).map(|computed_style| computed_style.font_size).unwrap_or(parent_font_size) 
                     } else { parent_font_size };
                     // Special-case <img> with no intrinsic size: fallback to alt-text heuristic
                     if tag.eq_ignore_ascii_case("img") {
@@ -126,15 +142,9 @@ pub(crate) fn layout_inline_children(
                     }
                 }
                 
-                // Wrap to next line if exceeds content width
-                if inline_x + width > line_start_x + content_width {
-                    child_y_inline += line_height;
-                    additional_content_height += line_height;
-                    inline_x = line_start_x;
-                }
-                
+                // Height
                 let child_font_size: f32 = if let Some(computed_map) = maps.computed_by_key { 
-                    computed_map.get(&child).map(|computed_style| computed_style.font_size).unwrap_or(parent_font_size) 
+                    computed_map.get(child).map(|computed_style| computed_style.font_size).unwrap_or(parent_font_size) 
                 } else { parent_font_size };
                 // Height: use parent line-height for replaced elements like <img>
                 let is_img = tag.eq_ignore_ascii_case("img");
@@ -145,15 +155,25 @@ pub(crate) fn layout_inline_children(
                 rects.insert(*child, LayoutRect { x: inline_x, y: y_position, width: width.max(0), height: child_height.max(0) });
                 
                 if min_inline_y.map(|min_y| y_position < min_y).unwrap_or(true) { min_inline_y = Some(y_position); }
-                inline_x += width.max(0);
+                if treat_as_block {
+                    // Advance to next line after block
+                    additional_content_height += child_height.max(line_height);
+                    child_y_inline += child_height.max(line_height);
+                    inline_x = line_start_x;
+                } else {
+                    // Inline element continues on the same line
+                    inline_x += width.max(0);
+                }
             }
             _ => {}
         }
     }
-    
-    // Account for the first line height
-    additional_content_height += line_height;
-    updated_child_y += line_height;
+    // Add the last line only if it has content remaining on the line
+    if inline_x > line_start_x {
+        additional_content_height += line_height;
+        child_y_inline += line_height;
+    }
+    updated_child_y = child_y_inline;
     
     // Ensure rects exist for all inline element children (safety if skipped elsewhere)
     let inline_y_base = child_y_inline;
@@ -161,22 +181,22 @@ pub(crate) fn layout_inline_children(
         if rects.get(child_key).is_none() {
             // Compute width from specified width or descendant inline text
             let mut width = 0;
-            if let Some(computed_map) = maps.computed_by_key {
-                if let Some(computed_style) = computed_map.get(child_key) {
-                    match computed_style.width {
-                        SizeSpecified::Px(px) => { width = px.round() as i32; }
-                        SizeSpecified::Percent(percentage) => { width = (percentage * content_width as f32).round() as i32; }
-                        SizeSpecified::Auto => {}
-                    }
+            if let Some(computed_map) = maps.computed_by_key
+                && let Some(computed_style) = computed_map.get(child_key)
+            {
+                match computed_style.width {
+                    SizeSpecified::Px(px) => { width = px.round() as i32; }
+                    SizeSpecified::Percent(percentage) => { width = (percentage * content_width as f32).round() as i32; }
+                    SizeSpecified::Auto => {}
                 }
             }
             if width == 0 { width = measure_descendant_inline_text_width(*child_key, maps, args.char_width, parent_font_size); }
             
             // Height from parent line-height
-            let height = if let Some(computed_map) = maps.computed_by_key {
-                if let Some(parent_computed_style) = computed_map.get(&node) {
-                    (parent_computed_style.line_height * parent_computed_style.font_size).round() as i32
-                } else { args.line_height }
+            let height = if let Some(computed_map) = maps.computed_by_key
+                && let Some(parent_computed_style) = computed_map.get(&node)
+            {
+                (parent_computed_style.line_height * parent_computed_style.font_size).round() as i32
             } else { args.line_height };
             
             rects.insert(*child_key, LayoutRect { x: inline_x, y: inline_y_base, width, height });

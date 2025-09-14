@@ -28,7 +28,8 @@ static FONT_SYSTEM: Lazy<Mutex<FontSystem>> = Lazy::new(|| Mutex::new(FontSystem
 
 /// A tiny global cache for measured text runs to avoid repeated shaping.
 /// Keyed by (text, rounded_font_size_px, fallback_char_width).
-static MEASURE_CACHE: Lazy<Mutex<HashMap<(String, u32, i32), TextMetrics>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+type MeasureKey = (String, u32, i32);
+static MEASURE_CACHE: Lazy<Mutex<HashMap<MeasureKey, TextMetrics>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Collapse ASCII whitespace sequences into a single space and trim leading/trailing
 /// whitespace similar to CSS Text 3's white-space: normal behavior. This is a
@@ -66,23 +67,26 @@ pub fn reorder_bidi_for_display(input: &str) -> String {
     #[cfg(feature = "shaping")]
     {
         // Shaping path handles bidi internally; return as-is
-        return input.to_string();
+        input.to_string()
     }
     #[cfg(not(feature = "shaping"))]
     {
-        if input.is_empty() { return String::new(); }
-        let bidi_info = BidiInfo::new(input, None);
-        let mut out = String::with_capacity(input.len());
-        for para in &bidi_info.paragraphs {
-            let line_range = para.range.clone();
-            let reordered = bidi_info.reorder_line(para, line_range);
-            out.push_str(&reordered);
-            // Preserve paragraph boundaries
-            if out.is_empty() || out.ends_with('\n') { /* ok */ } else { out.push('\n'); }
+        if input.is_empty() {
+            String::new()
+        } else {
+            let bidi_info = BidiInfo::new(input, None);
+            let mut out = String::with_capacity(input.len());
+            for para in &bidi_info.paragraphs {
+                let line_range = para.range.clone();
+                let reordered = bidi_info.reorder_line(para, line_range);
+                out.push_str(&reordered);
+                // Preserve paragraph boundaries
+                if out.is_empty() || out.ends_with('\n') { /* ok */ } else { out.push('\n'); }
+            }
+            // Trim trailing newline added by loop if not present in input
+            if !input.ends_with('\n') && out.ends_with('\n') { out.pop(); }
+            out
         }
-        // Trim trailing newline added by loop if not present in input
-        if !input.ends_with('\n') && out.ends_with('\n') { out.pop(); }
-        out
     }
 }
 
@@ -98,35 +102,34 @@ pub fn measure_text_width(text: &str, font_size: f32, fallback_char_width: i32) 
     }
 
     // Cache lookup first
-    let key = (text.to_string(), font_size.round() as u32, fallback_char_width);
-    if let Ok(cache) = MEASURE_CACHE.lock() {
-        if let Some(m) = cache.get(&key) { return *m; }
-    }
+    let key: MeasureKey = (text.to_string(), font_size.round() as u32, fallback_char_width);
+    if let Ok(cache) = MEASURE_CACHE.lock()
+        && let Some(m) = cache.get(&key)
+    { return *m; }
 
-    #[cfg(feature = "shaping")]
-    {
-        let mut fs = FONT_SYSTEM.lock().expect("FontSystem lock poisoned");
-        let metrics = Metrics::new(font_size, font_size);
-        let mut buffer = GlyphonBuffer::new(&mut fs, metrics);
-        let attrs = Attrs::new();
-        buffer.set_text(&mut fs, text, &attrs, Shaping::Advanced);
-        let width = buffer.layout_runs().map(|run| run.line_w).sum::<f32>().round() as i32;
-        let line_height = font_size.round() as i32; // renderer uses font_size as vertical scale; refine later
-        let metrics = TextMetrics { width, line_height };
-        if let Ok(mut cache) = MEASURE_CACHE.lock() { cache.insert(key, metrics); }
-        return metrics;
-    }
-
-    #[cfg(not(feature = "shaping"))]
-    {
-        // Fallback: scale approximate average glyph width from a 16px baseline
-        let scale = (font_size / 16.0).max(0.01);
-        let width = ((text.chars().count() as f32 * fallback_char_width as f32) * scale).round() as i32;
-        let line_height = (font_size * 1.1).round() as i32;
-        let metrics = TextMetrics { width, line_height };
-        if let Ok(mut cache) = MEASURE_CACHE.lock() { cache.insert(key, metrics); }
-        metrics
-    }
+    let metrics = {
+        #[cfg(feature = "shaping")]
+        {
+            let mut fs = FONT_SYSTEM.lock().expect("FontSystem lock poisoned");
+            let metrics = Metrics::new(font_size, font_size);
+            let mut buffer = GlyphonBuffer::new(&mut fs, metrics);
+            let attrs = Attrs::new();
+            buffer.set_text(&mut fs, text, &attrs, Shaping::Advanced);
+            let width = buffer.layout_runs().map(|run| run.line_w).sum::<f32>().round() as i32;
+            let line_height = font_size.round() as i32; // renderer uses font_size as vertical scale; refine later
+            TextMetrics { width, line_height }
+        }
+        #[cfg(not(feature = "shaping"))]
+        {
+            // Fallback: scale approximate average glyph width from a 16px baseline
+            let scale = (font_size / 16.0).max(0.01);
+            let width = ((text.chars().count() as f32 * fallback_char_width as f32) * scale).round() as i32;
+            let line_height = (font_size * 1.1).round() as i32;
+            TextMetrics { width, line_height }
+        }
+    };
+    if let Ok(mut cache) = MEASURE_CACHE.lock() { cache.insert(key, metrics); }
+    metrics
 }
 
 /// Greedy UAX #14 line breaking: compute the widths of each laid-out line for a given
@@ -150,9 +153,8 @@ pub fn greedy_line_break_widths(
     // Collect candidate break points (byte indices). Always include end of text.
     let mut break_points: Vec<usize> = Vec::new();
     for (idx, op) in linebreaks(text) {
-        match op {
-            BreakOpportunity::Mandatory | BreakOpportunity::Allowed => break_points.push(idx),
-            _ => {}
+        if matches!(op, BreakOpportunity::Mandatory | BreakOpportunity::Allowed) {
+            break_points.push(idx);
         }
     }
     if *break_points.last().unwrap_or(&0) != text.len() { break_points.push(text.len()); }

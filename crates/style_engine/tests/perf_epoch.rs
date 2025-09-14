@@ -36,7 +36,7 @@ fn epoch_and_dirty_perf_counters() {
     engine.apply_update(DOMUpdate::SetAttr { node: a, name: "class".into(), value: "y".into() }).unwrap();
     engine.apply_update(DOMUpdate::EndOfDocument).unwrap();
     let second_count = engine.perf_last_dirty_recompute_count();
-    assert!(second_count >= 1 && second_count <= 2, "expected small dirty recompute set, got {}", second_count);
+    assert!((1..=2).contains(&second_count), "expected small dirty recompute set, got {}", second_count);
 
     // Replacing stylesheet bumps epoch
     let before_epoch = engine.current_rules_epoch();

@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Events Stop Propagation</title>
+<div id="a"><div id="b"><div id="c">target</div></div></div>
+<div id="out"></div>
+<script>
+ document.addEventListener('DOMContentLoaded', function(){
+   var d = document;
+   var a = d.getElementById('a');
+   var b = d.getElementById('b');
+   var c = d.getElementById('c');
+   var out = d.getElementById('out');
+   function push(s){ var cur = out.textContent || ''; out.textContent = cur ? (cur + '|' + s) : s; }
+   // Document capture and bubble
+   d.addEventListener('pong', function(evt){ push('Dcap'); }, {capture:true});
+   d.addEventListener('pong', function(evt){ push('Dbub'); });
+   // Ancestor capture; stop at A to prevent reaching target
+   a.addEventListener('pong', function(evt){ push('Acap'); evt.stopPropagation(); }, {capture:true});
+   b.addEventListener('pong', function(evt){ push('Bcap'); }, {capture:true});
+   // Target listeners (should not run due to stopPropagation in capture)
+   c.addEventListener('pong', function(evt){ push('Tcap'); }, {capture:true});
+   c.addEventListener('pong', function(evt){ push('Tbub'); });
+   // Ancestor bubble (should not run)
+   b.addEventListener('pong', function(evt){ push('Bbub'); });
+   a.addEventListener('pong', function(evt){ push('Abub'); });
+   // Dispatch with bubbles true to show that stopPropagation actually halts flow
+   c.dispatchEvent({type:'pong', bubbles:true});
+ });
+</script>

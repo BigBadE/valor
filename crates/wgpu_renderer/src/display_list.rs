@@ -24,6 +24,10 @@ pub enum DisplayItem {
     Opacity { alpha: f32 },
 }
 
+impl Default for DisplayList {
+    fn default() -> Self { Self::new() }
+}
+
 /// A retained display list with a monotonically increasing generation counter.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DisplayList {
@@ -162,7 +166,7 @@ pub fn batch_display_list(list: &DisplayList, framebuffer_width: u32, framebuffe
                     batches.push(Batch { scissor: current_scissor, quads: std::mem::take(&mut current_quads) });
                 }
                 let _ = scissor_stack.pop();
-                current_scissor = scissor_stack.iter().cloned().reduce(|acc, sc| intersect(acc, sc));
+                current_scissor = scissor_stack.iter().cloned().reduce(intersect);
             }
             DisplayItem::Opacity { alpha } => {
                 current_opacity = *alpha;
@@ -220,7 +224,7 @@ mod tests {
         let batches = batch_display_list(&list, 100, 100);
         assert_eq!(batches.len(), 2, "expected two batches: pre-clip and clipped");
         assert!(batches[0].scissor.is_none(), "first batch has no scissor");
-        assert!(batches[0].quads.len() >= 1);
+        assert!(!batches[0].quads.is_empty());
         assert_eq!(batches[1].scissor, Some((5, 5, 10, 10)));
         assert_eq!(batches[1].quads.len(), 1);
     }

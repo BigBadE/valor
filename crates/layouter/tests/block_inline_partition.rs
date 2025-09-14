@@ -34,21 +34,17 @@ fn block_inline_partitioning_places_inline_in_line_and_blocks_stack() {
 
     // Computed styles: spans are inline, others default (block)
     let mut comp: HashMap<NodeKey, ComputedStyle> = HashMap::new();
-    let mut cs_block = ComputedStyle::default();
-    cs_block.display = Display::Block;
+    let cs_block = ComputedStyle { display: Display::Block, ..Default::default() };
     comp.insert(html, cs_block.clone());
     comp.insert(body, cs_block.clone());
     comp.insert(container, cs_block.clone());
 
-    let mut cs_inline = ComputedStyle::default();
-    cs_inline.display = Display::Inline;
+    let cs_inline = ComputedStyle { display: Display::Inline, ..Default::default() };
     comp.insert(span1, cs_inline.clone());
     comp.insert(span2, cs_inline);
 
     // Block after inline run should be block-level with a fixed height to avoid depending on text measurement
-    let mut cs_block1 = ComputedStyle::default();
-    cs_block1.display = Display::Block;
-    cs_block1.height = SizeSpecified::Px(40.0);
+    let cs_block1 = ComputedStyle { display: Display::Block, height: SizeSpecified::Px(40.0), ..Default::default() };
     comp.insert(block1, cs_block1);
 
     l.set_computed_styles(comp);

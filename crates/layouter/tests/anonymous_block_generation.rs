@@ -27,8 +27,7 @@ fn anonymous_blocks_wrap_inline_runs_in_block_container() {
 
     // Computed styles: html/body/container/mid are block; text inherits defaults
     let mut comp: HashMap<NodeKey, ComputedStyle> = HashMap::new();
-    let mut cs_block = ComputedStyle::default();
-    cs_block.display = Display::Block;
+    let cs_block = ComputedStyle { display: Display::Block, ..Default::default() };
     comp.insert(html, cs_block.clone());
     comp.insert(body, cs_block.clone());
     comp.insert(container, cs_block.clone());

@@ -84,7 +84,7 @@ impl fmt::Debug for Layouter {
                         return Ok(());
                     }
                     write_indent(f, depth)?;
-                    writeln!(f, "\"{}\"", escape_text(&text))?;
+                    writeln!(f, "\"{}\"", escape_text(text))?;
                 }
             }
             Ok(())

@@ -138,6 +138,10 @@ impl HostNamespace {
     }
 }
 
+impl Default for HostNamespace {
+    fn default() -> Self { Self::new() }
+}
+
 // ==============================
 // Networking support (host side)
 // ==============================
@@ -226,6 +230,10 @@ impl HostBindings {
     }
 }
 
+impl Default for HostBindings {
+    fn default() -> Self { Self::new() }
+}
+
 /// A record for JS-created nodes so we can re-insert them later appropriately.
 #[derive(Clone, Debug)]
 pub enum CreatedNodeKind {
@@ -299,7 +307,7 @@ pub fn build_document_namespace() -> HostNamespace {
 
     // createElement(tag)
     let create_element = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("createElement(tag) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("createElement(tag) requires 1 argument"))); }
         let tag = parse_string(&args[0], "tag")?;
         let local_id = context.js_local_id_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let node_key = {
@@ -316,19 +324,19 @@ pub fn build_document_namespace() -> HostNamespace {
         // Synchronously update DomIndex for immediate queries
         if let Ok(mut idx) = context.dom_index.lock() {
             let entry = idx.children_by_parent.entry(NodeKey::ROOT).or_default();
-            if !entry.iter().any(|k| *k == node_key) { entry.push(node_key); }
+            if !entry.contains(&node_key) { entry.push(node_key); }
             idx.parent_by_child.insert(node_key, NodeKey::ROOT);
             let lc = tag.to_ascii_lowercase();
             idx.tag_by_key.insert(node_key, lc.clone());
             let list = idx.tag_index.entry(lc).or_default();
-            if !list.iter().any(|k| *k == node_key) { list.push(node_key); }
+            if !list.contains(&node_key) { list.push(node_key); }
         }
         Ok(JSValue::String(node_key.0.to_string()))
     });
 
     // createTextNode(text)
     let create_text = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("createTextNode(text) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("createTextNode(text) requires 1 argument"))); }
         let text = parse_string(&args[0], "text")?;
         let local_id = context.js_local_id_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let node_key = {
@@ -343,7 +351,7 @@ pub fn build_document_namespace() -> HostNamespace {
         // Synchronously update DomIndex for immediate queries
         if let Ok(mut idx) = context.dom_index.lock() {
             let entry = idx.children_by_parent.entry(NodeKey::ROOT).or_default();
-            if !entry.iter().any(|k| *k == node_key) { entry.push(node_key); }
+            if !entry.contains(&node_key) { entry.push(node_key); }
             idx.parent_by_child.insert(node_key, NodeKey::ROOT);
             idx.text_by_key.insert(node_key, text.clone());
         }
@@ -383,10 +391,10 @@ pub fn build_document_namespace() -> HostNamespace {
                 // Attach to new parent at the requested position (or append)
                 let entry = idx.children_by_parent.entry(parent_key).or_default();
                 if position == usize::MAX || position >= entry.len() {
-                    if !entry.iter().any(|k| *k == child_key) { entry.push(child_key); }
+                    if !entry.contains(&child_key) { entry.push(child_key); }
                 } else {
                     // Insert at specific index if not already at that position
-                    if !entry.iter().any(|k| *k == child_key) {
+                    if !entry.contains(&child_key) {
                         entry.insert(position, child_key);
                     }
                 }
@@ -437,7 +445,7 @@ pub fn build_document_namespace() -> HostNamespace {
 
     // removeNode(nodeKey)
     let remove_node = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("removeNode(nodeKey) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("removeNode(nodeKey) requires 1 argument"))); }
         let node_key = parse_key(&args[0], "nodeKey")?;
         let update = DOMUpdate::RemoveNode { node: node_key };
         context.dom_sender.try_send(vec![update]).map_err(|e| JSError::InternalError(format!("failed to send DOM update: {}", e)))?;
@@ -448,7 +456,7 @@ pub fn build_document_namespace() -> HostNamespace {
 
     // getElementById(id)
     let get_element_by_id = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("getElementById(id) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("getElementById(id) requires 1 argument"))); }
         let id = parse_string(&args[0], "id")?;
         let guard = context.dom_index.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
         if let Some(key) = guard.get_element_by_id(&id) {
@@ -512,7 +520,7 @@ pub fn build_document_namespace() -> HostNamespace {
 
     // getTextContent(nodeKey)
     let get_text_content = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("getTextContent(nodeKey) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("getTextContent(nodeKey) requires 1 argument"))); }
         let node_key = parse_key(&args[0], "nodeKey")?;
         let guard = context.dom_index.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
         let text = guard.get_text_content(node_key);
@@ -574,7 +582,7 @@ pub fn build_document_namespace() -> HostNamespace {
 
     // getElementsByClassName(name) -> space-separated NodeKey list
     let get_elements_by_class_name = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("getElementsByClassName(name) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("getElementsByClassName(name) requires 1 argument"))); }
         let name = parse_string(&args[0], "name")?;
         let guard = context.dom_index.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
         let nodes = guard.get_elements_by_class_name(&name);
@@ -584,7 +592,7 @@ pub fn build_document_namespace() -> HostNamespace {
 
     // getElementsByTagName(name) -> space-separated NodeKey list
     let get_elements_by_tag_name = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("getElementsByTagName(name) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("getElementsByTagName(name) requires 1 argument"))); }
         let name = parse_string(&args[0], "name")?;
         let guard = context.dom_index.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
         let nodes = guard.get_elements_by_tag_name(&name);
@@ -594,14 +602,12 @@ pub fn build_document_namespace() -> HostNamespace {
 
     // querySelector(selector) basic: #id, .class, tag
     let query_selector = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("querySelector(selector) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("querySelector(selector) requires 1 argument"))); }
         let selector = parse_string(&args[0], "selector")?;
         let guard = context.dom_index.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
-        let out: Option<String> = if selector.starts_with('#') {
-            let id = &selector[1..];
+        let out: Option<String> = if let Some(id) = selector.strip_prefix('#') {
             guard.get_element_by_id(id).map(|k| k.0.to_string())
-        } else if selector.starts_with('.') {
-            let class = &selector[1..];
+        } else if let Some(class) = selector.strip_prefix('.') {
             guard.get_elements_by_class_name(class).into_iter().next().map(|k| k.0.to_string())
         } else {
             guard.get_elements_by_tag_name(&selector).into_iter().next().map(|k| k.0.to_string())
@@ -614,14 +620,12 @@ pub fn build_document_namespace() -> HostNamespace {
 
     // querySelectorAll(selector) -> space-separated NodeKey list (basic)
     let query_selector_all = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("querySelectorAll(selector) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("querySelectorAll(selector) requires 1 argument"))); }
         let selector = parse_string(&args[0], "selector")?;
         let guard = context.dom_index.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
-        let nodes = if selector.starts_with('#') {
-            let id = &selector[1..];
+        let nodes = if let Some(id) = selector.strip_prefix('#') {
             guard.get_element_by_id(id).into_iter().collect::<Vec<_>>()
-        } else if selector.starts_with('.') {
-            let class = &selector[1..];
+        } else if let Some(class) = selector.strip_prefix('.') {
             guard.get_elements_by_class_name(class)
         } else {
             guard.get_elements_by_tag_name(&selector)
@@ -643,7 +647,7 @@ pub fn build_document_namespace() -> HostNamespace {
 
     // getChildrenKeys(parentKey) -> space-separated NodeKey list
     let get_children_keys = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("getChildrenKeys(parentKey) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("getChildrenKeys(parentKey) requires 1 argument"))); }
         let parent_key = parse_key(&args[0], "parentKey")?;
         let guard = context.dom_index.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
         let s = guard
@@ -660,7 +664,7 @@ pub fn build_document_namespace() -> HostNamespace {
 
     // getTagName(nodeKey) -> lowercase tag name or empty string
     let get_tag_name = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("getTagName(nodeKey) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("getTagName(nodeKey) requires 1 argument"))); }
         let node_key = parse_key(&args[0], "nodeKey")?;
         let guard = context.dom_index.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
         let name = guard.tag_by_key.get(&node_key).cloned().unwrap_or_default();
@@ -669,7 +673,7 @@ pub fn build_document_namespace() -> HostNamespace {
 
     // getParentKey(nodeKey) -> parent key as string or empty string
     let get_parent_key = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("getParentKey(nodeKey) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("getParentKey(nodeKey) requires 1 argument"))); }
         let node_key = parse_key(&args[0], "nodeKey")?;
         let guard = context.dom_index.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
         if let Some(parent) = guard.parent_by_child.get(&node_key).copied() {
@@ -681,7 +685,7 @@ pub fn build_document_namespace() -> HostNamespace {
 
     // getInnerHTML(nodeKey) -> serialize subtree of children (basic attrs: id/class)
     let get_inner_html = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("getInnerHTML(nodeKey) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("getInnerHTML(nodeKey) requires 1 argument"))); }
         let node_key = parse_key(&args[0], "nodeKey")?;
         fn escape_text(s: &str) -> String {
             let mut out = String::with_capacity(s.len());
@@ -702,15 +706,15 @@ pub fn build_document_namespace() -> HostNamespace {
                 for child in children {
                     if let Some(tag) = idx.tag_by_key.get(child) {
                         out.push('<'); out.push_str(tag);
-                        if let Some(idv) = idx.id_by_key.get(child) { if !idv.is_empty() { out.push_str(" id=\""); out.push_str(idv); out.push_str("\""); } }
+                        if let Some(idv) = idx.id_by_key.get(child) { if !idv.is_empty() { out.push_str(" id=\""); out.push_str(idv); out.push('"'); } }
                         if let Some(classes) = idx.classes_by_key.get(child) {
                             if !classes.is_empty() {
                                 let mut list: Vec<&String> = classes.iter().collect();
                                 list.sort();
                                 out.push_str(" class=\"");
-                                let cls_vec: Vec<String> = list.into_iter().map(|s| s.clone()).collect();
-                                                                out.push_str(&cls_vec.join(" "));
-                                out.push_str("\"");
+                                let cls_vec: Vec<String> = list.into_iter().cloned().collect();
+                                out.push_str(&cls_vec.join(" "));
+                                out.push('"');
                             }
                         }
                         out.push('>');
@@ -724,7 +728,7 @@ pub fn build_document_namespace() -> HostNamespace {
         }
         let guard = context.dom_index.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
         let mut html = String::new();
-        serialize_subtree(&*guard, node_key, &mut html);
+        serialize_subtree(&guard, node_key, &mut html);
         Ok(JSValue::String(html))
     });
 
@@ -733,107 +737,113 @@ pub fn build_document_namespace() -> HostNamespace {
         if args.len() < 2 { return Err(JSError::TypeError(String::from("setInnerHTML(nodeKey, html) requires 2 arguments"))); }
         let parent_key = parse_key(&args[0], "nodeKey")?;
         let html = parse_string(&args[1], "html")?;
-        // Gather current children to remove
+        // Collect existing children for removals
         let existing_children: Vec<crate::NodeKey> = {
             let guard = context.dom_index.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
             guard.children_by_parent.get(&parent_key).cloned().unwrap_or_default()
         };
-        // Build updates and synchronously mirror into DomIndex so same-tick queries see the new subtree
         let mut updates: Vec<crate::DOMUpdate> = Vec::new();
-        // Remove existing children in index
+        // Mirror removals into DomIndex eagerly
         if let Ok(mut idx) = context.dom_index.lock() {
             for child in &existing_children { idx.remove_node_and_descendants(*child); }
-            // Parse and emit a very small HTML subset: tags with id/class attrs and text nodes
             let mut parent_stack: Vec<crate::NodeKey> = vec![parent_key];
-            let mut i = 0usize; let bytes = html.as_bytes();
-            while i < bytes.len() {
-                if bytes[i] == b'<' {
-                    if i + 1 < bytes.len() && bytes[i+1] == b'/' {
-                        if let Some(end) = html[i..].find('>') { parent_stack.pop(); i += end + 1; } else { break; }
-                    } else {
-                        if let Some(end) = html[i..].find('>') {
-                            let inside = &html[i+1 .. i+end];
-                            let tag_end = inside.find(|c: char| c.is_whitespace()).unwrap_or(inside.len());
-                            let tag = inside[..tag_end].to_ascii_lowercase();
-                            let attrs_str = inside[tag_end..].trim();
-                            let mut id_attr: Option<String> = None;
-                            let mut class_attr: Option<String> = None;
-                            // parse attributes allowing quoted values with spaces
-                            let mut ai = 0usize; let ab = attrs_str.as_bytes();
-                            while ai < ab.len() {
-                                // skip whitespace
-                                while ai < ab.len() && ab[ai].is_ascii_whitespace() { ai += 1; }
-                                if ai >= ab.len() { break; }
-                                // read name
-                                let start = ai; while ai < ab.len() && !ab[ai].is_ascii_whitespace() && ab[ai] != b'=' { ai += 1; }
-                                let name = &attrs_str[start..ai];
-                                // skip spaces
-                                while ai < ab.len() && ab[ai].is_ascii_whitespace() { ai += 1; }
-                                // require '='
-                                if ai >= ab.len() || ab[ai] != b'=' { continue; }
-                                ai += 1; // skip '='
-                                while ai < ab.len() && ab[ai].is_ascii_whitespace() { ai += 1; }
-                                if ai >= ab.len() { break; }
-                                let quote = ab[ai];
-                                let value: String;
-                                if quote == b'"' || quote == b'\'' {
-                                    ai += 1; let val_start = ai;
-                                    while ai < ab.len() && ab[ai] != quote { ai += 1; }
-                                    value = attrs_str[val_start..ai].to_string();
-                                    if ai < ab.len() { ai += 1; }
-                                } else {
-                                    let val_start = ai;
-                                    while ai < ab.len() && !ab[ai].is_ascii_whitespace() { ai += 1; }
-                                    value = attrs_str[val_start..ai].to_string();
-                                }
-                                let name_lc = name.to_ascii_lowercase();
-                                if name_lc == "id" { id_attr = Some(value); }
-                                else if name_lc == "class" { class_attr = Some(value); }
-                            }
-                            // Mint new element key and record created meta
+            let mut i = 0usize;
+            while i < html.len() {
+                // Emit preceding text if any
+                if let Some(lt_rel) = html[i..].find('<') {
+                    if lt_rel > 0 {
+                        let text = &html[i .. i+lt_rel];
+                        if !text.is_empty() {
                             let local_id = context.js_local_id_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                            let node_key = {
+                            let text_key = {
                                 let mut mgr = context.js_node_keys.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
                                 mgr.key_of(local_id)
                             };
-                            if let Ok(mut map) = context.js_created_nodes.lock() {
-                                map.insert(node_key, CreatedNodeInfo { kind: CreatedNodeKind::Element { tag: tag.clone() } });
-                            }
-                            // Update DomIndex synchronously
+                            if let Ok(mut map) = context.js_created_nodes.lock() { map.insert(text_key, CreatedNodeInfo { kind: CreatedNodeKind::Text { text: text.to_string() } }); }
                             let parent_now = *parent_stack.last().unwrap();
-                            let entry = idx.children_by_parent.entry(parent_now).or_default(); entry.push(node_key);
-                            idx.parent_by_child.insert(node_key, parent_now);
-                            idx.tag_by_key.insert(node_key, tag.clone());
-                            idx.tag_index.entry(tag.clone()).or_default().push(node_key);
-                            if let Some(idv) = id_attr.clone() {
-                                if !idv.is_empty() {
-                                    if let Some(old) = idx.id_by_key.insert(node_key, idv.clone()) {
-                                        if let Some(existing) = idx.id_index.get(&old) { if *existing == node_key { idx.id_index.remove(&old); } }
-                                    }
-                                    idx.id_index.insert(idv, node_key);
-                                }
-                            }
-                            if let Some(cls) = class_attr.clone() {
-                                let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
-                                let normalized = cls.split_whitespace().collect::<Vec<_>>().join(" ");
-                                for token in normalized.split(' ') {
-                                    let t = token.trim(); if t.is_empty() { continue; }
-                                    let lc = t.to_ascii_lowercase();
-                                    set.insert(lc.clone()); idx.class_index.entry(lc).or_default().push(node_key);
-                                }
-                                if set.is_empty() { idx.classes_by_key.remove(&node_key); } else { idx.classes_by_key.insert(node_key, set); }
-                            }
-                            // Queue DOM updates for runtime DOM/mirrors
-                            updates.push(crate::DOMUpdate::InsertElement { parent: parent_now, node: node_key, tag: tag.clone(), pos: usize::MAX });
-                            if let Some(idv) = id_attr { if !idv.is_empty() { updates.push(crate::DOMUpdate::SetAttr { node: node_key, name: String::from("id"), value: idv }); } }
-                            if let Some(cls) = class_attr { updates.push(crate::DOMUpdate::SetAttr { node: node_key, name: String::from("class"), value: cls }); }
-                            parent_stack.push(node_key);
-                            i += end + 1;
-                        } else { break; }
+                            idx.children_by_parent.entry(parent_now).or_default().push(text_key);
+                            idx.parent_by_child.insert(text_key, parent_now);
+                            idx.text_by_key.insert(text_key, text.to_string());
+                            updates.push(crate::DOMUpdate::InsertText { parent: parent_now, node: text_key, text: text.to_string(), pos: usize::MAX });
+                        }
+                        i += lt_rel;
+                        continue;
                     }
+                    // Handle tag
+                    if let Some(gt_rel) = html[i..].find('>') {
+                        let inside = &html[i+1 .. i+gt_rel];
+                        if inside.starts_with('/') {
+                            parent_stack.pop();
+                            i += gt_rel + 1;
+                            continue;
+                        }
+                        let tag_end = inside.find(|c: char| c.is_whitespace()).unwrap_or(inside.len());
+                        let tag = inside[..tag_end].to_ascii_lowercase();
+                        let attrs_str = inside[tag_end..].trim();
+                        let mut id_attr: Option<String> = None;
+                        let mut class_attr: Option<String> = None;
+                        // Parse simple key="value" pairs for id/class
+                        let mut ai = 0usize; let ab = attrs_str.as_bytes();
+                        while ai < ab.len() {
+                            while ai < ab.len() && ab[ai].is_ascii_whitespace() { ai += 1; }
+                            if ai >= ab.len() { break; }
+                            let start = ai; while ai < ab.len() && !ab[ai].is_ascii_whitespace() && ab[ai] != b'=' { ai += 1; }
+                            let name = &attrs_str[start..ai];
+                            while ai < ab.len() && ab[ai].is_ascii_whitespace() { ai += 1; }
+                            if ai >= ab.len() || ab[ai] != b'=' { continue; }
+                            ai += 1; while ai < ab.len() && ab[ai].is_ascii_whitespace() { ai += 1; }
+                            if ai >= ab.len() { break; }
+                            let quote = ab[ai];
+                            let value: String;
+                            if quote == b'"' || quote == b'\'' {
+                                ai += 1; let val_start = ai; while ai < ab.len() && ab[ai] != quote { ai += 1; }
+                                value = attrs_str[val_start..ai].to_string(); if ai < ab.len() { ai += 1; }
+                            } else {
+                                let val_start = ai; while ai < ab.len() && !ab[ai].is_ascii_whitespace() { ai += 1; }
+                                value = attrs_str[val_start..ai].to_string();
+                            }
+                            let name_lc = name.to_ascii_lowercase();
+                            if name_lc == "id" { id_attr = Some(value); }
+                            else if name_lc == "class" { class_attr = Some(value); }
+                        }
+                        // Create element
+                        let local_id = context.js_local_id_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        let node_key = {
+                            let mut mgr = context.js_node_keys.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
+                            mgr.key_of(local_id)
+                        };
+                        if let Ok(mut map) = context.js_created_nodes.lock() { map.insert(node_key, CreatedNodeInfo { kind: CreatedNodeKind::Element { tag: tag.clone() } }); }
+                        let parent_now = *parent_stack.last().unwrap();
+                        idx.children_by_parent.entry(parent_now).or_default().push(node_key);
+                        idx.parent_by_child.insert(node_key, parent_now);
+                        idx.tag_by_key.insert(node_key, tag.clone());
+                        idx.tag_index.entry(tag.clone()).or_default().push(node_key);
+                        if let Some(idv) = id_attr.clone() {
+                            if !idv.is_empty() {
+                                if let Some(old) = idx.id_by_key.insert(node_key, idv.clone()) {
+                                    if let Some(existing) = idx.id_index.get(&old) { if *existing == node_key { idx.id_index.remove(&old); } }
+                                }
+                                idx.id_index.insert(idv, node_key);
+                            }
+                        }
+                        if let Some(cls) = class_attr.clone() {
+                            let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
+                            for token in cls.split_whitespace() {
+                                let t = token.trim(); if t.is_empty() { continue; }
+                                let lc = t.to_ascii_lowercase();
+                                set.insert(lc.clone()); idx.class_index.entry(lc).or_default().push(node_key);
+                            }
+                            if set.is_empty() { idx.classes_by_key.remove(&node_key); } else { idx.classes_by_key.insert(node_key, set); }
+                        }
+                        updates.push(crate::DOMUpdate::InsertElement { parent: parent_now, node: node_key, tag: tag.clone(), pos: usize::MAX });
+                        if let Some(idv) = id_attr { if !idv.is_empty() { updates.push(crate::DOMUpdate::SetAttr { node: node_key, name: String::from("id"), value: idv }); } }
+                        if let Some(cls) = class_attr { updates.push(crate::DOMUpdate::SetAttr { node: node_key, name: String::from("class"), value: cls }); }
+                        parent_stack.push(node_key);
+                        i += gt_rel + 1;
+                    } else { break; }
                 } else {
-                    let next = html[i..].find('<').unwrap_or(html.len() - i);
-                    let text = &html[i .. i+next];
+                    // No more tags, emit trailing text
+                    let text = &html[i..];
                     if !text.is_empty() {
                         let local_id = context.js_local_id_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         let text_key = {
@@ -847,11 +857,10 @@ pub fn build_document_namespace() -> HostNamespace {
                         idx.text_by_key.insert(text_key, text.to_string());
                         updates.push(crate::DOMUpdate::InsertText { parent: parent_now, node: text_key, text: text.to_string(), pos: usize::MAX });
                     }
-                    i += next;
+                    break;
                 }
             }
         }
-        // Prepend removals
         let mut final_updates: Vec<crate::DOMUpdate> = Vec::with_capacity(existing_children.len() + updates.len());
         for child in existing_children { final_updates.push(crate::DOMUpdate::RemoveNode { node: child }); }
         final_updates.extend(updates);
@@ -864,7 +873,7 @@ pub fn build_document_namespace() -> HostNamespace {
     // =====================
     let net_request_start = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
         // Args: method, url, headersJson (optional), bodyBase64 (optional)
-        let method = if args.len() >= 1 { match &args[0] { JSValue::String(s) => s.clone(), _ => String::from("GET") } } else { String::from("GET") };
+        let method = if !args.is_empty() { match &args[0] { JSValue::String(s) => s.clone(), _ => String::from("GET") } } else { String::from("GET") };
         if args.len() < 2 { return Err(JSError::TypeError(String::from("net_requestStart(method, url, [headersJson], [bodyBase64]) requires at least 2 arguments"))); }
         let url_str = match &args[1] { JSValue::String(s) => s.clone(), _ => return Err(JSError::TypeError(String::from("url must be a string"))) };
         let headers_json = match args.get(2) { Some(JSValue::String(s)) => Some(s.clone()), _ => None };
@@ -883,10 +892,10 @@ pub fn build_document_namespace() -> HostNamespace {
             }
         };
         // Privileged chrome origin restriction: disallow network (http/https) from valor://chrome
-        if context.page_origin.starts_with("valor://chrome") {
-            if parsed.scheme() == "http" || parsed.scheme() == "https" {
-                allowed = false;
-            }
+        if context.page_origin.starts_with("valor://chrome")
+            && (parsed.scheme() == "http" || parsed.scheme() == "https")
+        {
+            allowed = false;
         }
 
         // Allocate id and insert Pending
@@ -913,10 +922,10 @@ pub fn build_document_namespace() -> HostNamespace {
                 return;
             }
             // Build result helper
-            let mut build_done = |status: u16, status_text: String, headers: Vec<(String,String)>, bytes: bytes::Bytes, url_final: String| {
+            let build_done = |status: u16, status_text: String, headers: Vec<(String,String)>, bytes: bytes::Bytes, url_final: String| {
                 let body_text = String::from_utf8_lossy(&bytes).to_string();
                 let body_b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-                FetchDone{ status, status_text, ok: status >= 200 && status < 300, headers, body_text, body_b64, url: url_final, error: None }
+                FetchDone{ status, status_text, ok: (200..300).contains(&status), headers, body_text, body_b64, url: url_final, error: None }
             };
             match parsed.scheme() {
                 "file" => {
@@ -986,7 +995,7 @@ pub fn build_document_namespace() -> HostNamespace {
     });
 
     let net_request_poll = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("net_requestPoll(id) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("net_requestPoll(id) requires 1 argument"))); }
         let id: u64 = match &args[0] { JSValue::String(s) => s.parse::<u64>().map_err(|_| JSError::TypeError(String::from("invalid id")))?, _ => return Err(JSError::TypeError(String::from("id must be string"))) };
         let reg = context.fetch_registry.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
         let json = match reg.entries.get(&id) {
@@ -1062,7 +1071,7 @@ pub fn build_document_namespace() -> HostNamespace {
         Ok(JSValue::Undefined)
     });
     let storage_clear = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("storage_clear(kind) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("storage_clear(kind) requires 1 argument"))); }
         let kind = match &args[0] { JSValue::String(s) => s.as_str(), _ => return Err(JSError::TypeError(String::from("kind must be string"))) };
         let origin = context.page_origin.clone();
         match kind {
@@ -1073,7 +1082,7 @@ pub fn build_document_namespace() -> HostNamespace {
         Ok(JSValue::Undefined)
     });
     let storage_keys = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("storage_keys(kind) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("storage_keys(kind) requires 1 argument"))); }
         let kind = match &args[0] { JSValue::String(s) => s.as_str(), _ => return Err(JSError::TypeError(String::from("kind must be string"))) };
         let origin = context.page_origin.clone();
         let keys: Vec<String> = match kind {
@@ -1138,7 +1147,7 @@ pub fn build_chrome_host_namespace() -> HostNamespace {
 
     let navigate_fn = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
         let tx = get_tx(context)?;
-        if args.len() < 1 { return Err(JSError::TypeError(String::from("navigate(url) requires 1 argument"))); }
+        if args.is_empty() { return Err(JSError::TypeError(String::from("navigate(url) requires 1 argument"))); }
         let url = match &args[0] { JSValue::String(s) => s.clone(), _ => return Err(JSError::TypeError(String::from("url must be a string"))) };
         tx.send(ChromeHostCommand::Navigate(url)).map_err(|e| JSError::InternalError(format!("failed to send navigate: {}", e)))?;
         Ok(JSValue::Undefined)
@@ -1164,14 +1173,14 @@ pub fn build_chrome_host_namespace() -> HostNamespace {
 
     let open_tab_fn = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
         let tx = get_tx(context)?;
-        let url_opt = match args.get(0) { Some(JSValue::String(s)) => Some(s.clone()), _ => None };
+        let url_opt = match args.first() { Some(JSValue::String(s)) => Some(s.clone()), _ => None };
         tx.send(ChromeHostCommand::OpenTab(url_opt)).map_err(|e| JSError::InternalError(format!("failed to send openTab: {}", e)))?;
         Ok(JSValue::Undefined)
     });
 
     let close_tab_fn = Arc::new(move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
         let tx = get_tx(context)?;
-        let id_opt = match args.get(0) { Some(JSValue::Number(n)) => Some(*n as u64), _ => None };
+        let id_opt = match args.first() { Some(JSValue::Number(n)) => Some(*n as u64), _ => None };
         tx.send(ChromeHostCommand::CloseTab(id_opt)).map_err(|e| JSError::InternalError(format!("failed to send closeTab: {}", e)))?;
         Ok(JSValue::Undefined)
     });

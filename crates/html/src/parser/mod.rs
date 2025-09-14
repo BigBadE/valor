@@ -82,14 +82,12 @@ impl ParserDOMMirror {
     pub fn finish_update(&mut self) -> Result<(), Error> { self.in_updater.try_send(std::mem::take(&mut self.current_batch)).map_err(|e| anyhow::anyhow!(e)) }
 
     pub fn new_element(&mut self, tag: String) -> NodeId {
-        let id = self.dom.new_node(ParserDOMNode { kind: ParserNodeKind::Element { tag: tag.clone() }, attrs: SmallVec::new() });
         // We'll emit insertion when appended; creation itself has no update
-        id
+        self.dom.new_node(ParserDOMNode { kind: ParserNodeKind::Element { tag: tag.clone() }, attrs: SmallVec::new() })
     }
 
     pub fn new_text(&mut self, text: String) -> NodeId {
-        let id = self.dom.new_node(ParserDOMNode { kind: ParserNodeKind::Text { text: text.clone() }, attrs: SmallVec::new() });
-        id
+        self.dom.new_node(ParserDOMNode { kind: ParserNodeKind::Text { text: text.clone() }, attrs: SmallVec::new() })
     }
 
     pub fn set_attr(&mut self, node: NodeId, name: String, value: String) {
@@ -183,9 +181,8 @@ impl DOMSubscriber for ParserDOMMirror {
             InsertText { parent, node, text, pos } => {
                 let parent_id = self.map_parent(parent);
                 let child_id = self.ensure_node(node, Some(ParserNodeKind::Text { text: text.clone() }));
-                if let Some(n) = self.dom.get_mut(child_id) {
-                    if let ParserNodeKind::Text { text: t } = &mut n.get_mut().kind { *t = text.clone(); }
-                }
+                if let Some(n) = self.dom.get_mut(child_id)
+                    && let ParserNodeKind::Text { text: t } = &mut n.get_mut().kind { *t = text.clone(); }
                 if self.dom.get(child_id).and_then(|n| n.parent()).is_some() { child_id.detach(&mut self.dom); }
                 let count = parent_id.children(&self.dom).count();
                 if pos >= count { parent_id.append(child_id, &mut self.dom); }

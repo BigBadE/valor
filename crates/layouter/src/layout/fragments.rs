@@ -70,10 +70,10 @@ pub fn group_inline_runs(tree: &LayoutBoxTree, container: LayoutBoxId) -> Vec<Ve
                 let mut anon_run: Vec<LayoutBoxId> = Vec::new();
                 if let Some(anon) = tree.get(child_id) {
                     for &grand_id in &anon.children {
-                        if let Some(grand) = tree.get(grand_id) {
-                            if matches!(grand.kind, LayoutBoxKind::InlineText { .. } | LayoutBoxKind::InlineElement { .. }) {
-                                anon_run.push(grand_id);
-                            }
+                        if let Some(grand) = tree.get(grand_id)
+                            && matches!(grand.kind, LayoutBoxKind::InlineText { .. } | LayoutBoxKind::InlineElement { .. })
+                        {
+                            anon_run.push(grand_id);
                         }
                     }
                 }
@@ -100,7 +100,7 @@ pub fn build_inline_fragments_for_node(tree: &LayoutBoxTree, container_node: Nod
 /// Build a naive FragmentTree for the inline content of a block LayoutBox.
 pub fn build_inline_fragments_for_box(tree: &LayoutBoxTree, container: LayoutBoxId) -> FragmentTree {
     let mut fragments: Vec<Fragment> = Vec::new();
-    let Some(container_box) = tree.get(container) else { return FragmentTree { lines: Vec::new() }; };
+    let Some(_container_box) = tree.get(container) else { return FragmentTree { lines: Vec::new() }; };
     // Recursively collect inline text fragments from the subtree (MVP behavior)
     fn collect_text_fragments(tree: &LayoutBoxTree, id: LayoutBoxId, out: &mut Vec<Fragment>) {
         if let Some(bx) = tree.get(id) {

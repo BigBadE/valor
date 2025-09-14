@@ -69,30 +69,35 @@ pub(crate) fn layout_node(
             let padding_right = if is_html || is_body { 0 } else { styles.padding.right.round() as i32 };
             let padding_bottom = if is_html || is_body { 0 } else { styles.padding.bottom.round() as i32 };
             let padding_left = if is_html || is_body { 0 } else { styles.padding.left.round() as i32 };
+            let border_top = if is_html || is_body { 0 } else { styles.border.top.round() as i32 };
+            let border_right = if is_html || is_body { 0 } else { styles.border.right.round() as i32 };
+            let border_bottom = if is_html || is_body { 0 } else { styles.border.bottom.round() as i32 };
+            let border_left = if is_html || is_body { 0 } else { styles.border.left.round() as i32 };
 
             let base_width_for_percent = if is_html || is_body { container_content_width } else { (container_content_width - margin_left - margin_right).max(0) };
 
-            // Resolve width with border-box semantics (CSS reset sets box-sizing: border-box)
+            // Resolve width with border-box semantics (assume border-box)
+            // border_box_width = content + padding + border
             let content_width: i32;
-            let border_width: i32;
+            let border_box_width: i32;
             if is_html || is_body {
                 content_width = container_content_width;
-                border_width = container_content_width;
+                border_box_width = container_content_width;
             } else {
                 match styles.width_spec {
                     Some(SizeSpecified::Px(px)) => {
-                        border_width = px.round() as i32;
-                        content_width = (border_width - padding_left - padding_right).max(0);
+                        border_box_width = px.round() as i32;
+                        content_width = (border_box_width - padding_left - padding_right - border_left - border_right).max(0);
                     }
                     Some(SizeSpecified::Percent(p)) => {
-                        let border_width_from_percent = (p * base_width_for_percent as f32).round() as i32;
-                        border_width = border_width_from_percent;
-                        content_width = (border_width - padding_left - padding_right).max(0);
+                        let bw = (p * base_width_for_percent as f32).round() as i32;
+                        border_box_width = bw;
+                        content_width = (border_box_width - padding_left - padding_right - border_left - border_right).max(0);
                     }
                     Some(SizeSpecified::Auto) | None => {
-                        // Auto → fill available content box (available width minus padding)
-                        content_width = (base_width_for_percent - padding_left - padding_right).max(0);
-                        border_width = (content_width + padding_left + padding_right).max(0);
+                        // Auto → fill available content box (available width minus padding+border)
+                        content_width = (base_width_for_percent - padding_left - padding_right - border_left - border_right).max(0);
+                        border_box_width = (content_width + padding_left + padding_right + border_left + border_right).max(0);
                     }
                 }
             }
@@ -104,7 +109,7 @@ pub(crate) fn layout_node(
 
             // Compute children layout. Children start at content box top
             let mut content_height = 0;
-            let mut child_y = top + if is_html || is_body { 0 } else { padding_top };
+            let mut child_y = top + if is_html || is_body { 0 } else { border_top + padding_top };
             // Flex container path (row, nowrap)
             if styles.display_flex || styles.display_inline_flex {
                 let (child_content_h, _consumed_h) = layout_flex_children(
@@ -112,7 +117,7 @@ pub(crate) fn layout_node(
                     maps,
                     rects,
                     args,
-                    x_position + if is_html || is_body { 0 } else { padding_left },
+                    x_position + if is_html || is_body { 0 } else { border_left + padding_left },
                     child_y,
                     content_width,
                 );
@@ -143,12 +148,12 @@ pub(crate) fn layout_node(
                             let mut display_none = false;
                             let mut child_inline_hint: Option<bool> = None;
                             let mut child_position: Option<style_engine::Position> = None;
-                            if let Some(comp_map) = maps.computed_by_key {
-                                if let Some(cs) = comp_map.get(child) {
-                                    if cs.display == style_engine::Display::None { display_none = true; }
-                                    child_inline_hint = Some(cs.display == style_engine::Display::Inline);
-                                    child_position = Some(cs.position);
-                                }
+                            if let Some(comp_map) = maps.computed_by_key
+                                && let Some(cs) = comp_map.get(child)
+                            {
+                                if cs.display == style_engine::Display::None { display_none = true; }
+                                child_inline_hint = Some(cs.display == style_engine::Display::Inline);
+                                child_position = Some(cs.position);
                             }
                             if display_none { continue; }
 
@@ -229,10 +234,12 @@ pub(crate) fn layout_node(
                 rects,
                 &styles,
                 content_height,
-                border_width,
+                border_box_width,
                 top,
                 padding_top,
                 padding_bottom,
+                border_top,
+                border_bottom,
                 is_html,
                 is_body,
             );
@@ -242,7 +249,7 @@ pub(crate) fn layout_node(
             // After establishing this node's rect, lay out out-of-flow positioned children (absolute/fixed)
             if let Some(children) = maps.children_by_key.get(&node) {
                 // Helper: resolve SizeSpecified to pixels given a reference size
-                let mut resolve_len = |spec_opt: &Option<SizeSpecified>, reference: i32| -> i32 {
+                let resolve_len = |spec_opt: &Option<SizeSpecified>, reference: i32| -> i32 {
                     match spec_opt {
                         Some(SizeSpecified::Px(px)) => px.round() as i32,
                         Some(SizeSpecified::Percent(p)) => ((*p) * reference as f32).round() as i32,
@@ -262,12 +269,11 @@ pub(crate) fn layout_node(
                 // Note: We recompute here to avoid storing extra lists across scopes if needed
                 let mut positioned_children: Vec<NodeKey> = Vec::new();
                 for child in children {
-                    if let Some(comp_map) = maps.computed_by_key {
-                        if let Some(cs) = comp_map.get(child) {
-                            if matches!(cs.position, style_engine::Position::Absolute | style_engine::Position::Fixed) {
-                                positioned_children.push(*child);
-                            }
-                        }
+                    if let Some(comp_map) = maps.computed_by_key
+                        && let Some(cs) = comp_map.get(child)
+                        && matches!(cs.position, style_engine::Position::Absolute | style_engine::Position::Fixed)
+                    {
+                        positioned_children.push(*child);
                     }
                 }
 
@@ -337,25 +343,28 @@ pub(crate) fn layout_node(
 
 /// Calculate final dimensions and positioning for a layout node.
 /// Returns (final_top, final_width, final_height).
+#[allow(clippy::too_many_arguments)]
 fn calculate_final_dimensions_and_position(
     node: NodeKey,
     maps: &LayoutMaps,
     rects: &HashMap<NodeKey, LayoutRect>,
     styles: &LayoutStyles,
     content_height: i32,
-    border_width: i32,
+    border_box_width: i32,
     top: i32,
     padding_top: i32,
     padding_bottom: i32,
+    border_top: i32,
+    border_bottom: i32,
     is_html: bool,
     is_body: bool,
 ) -> (i32, i32, i32) {
     // Height resolution
     let mut used_height = content_height;
-    if let Some(height_size) = styles.height_spec { if let SizeSpecified::Px(px) = height_size { used_height = px.round() as i32; } }
+    if let Some(SizeSpecified::Px(px)) = styles.height_spec { used_height = px.round() as i32; }
     
     // Border-box dimensions
-    let mut border_height = if is_html || is_body { used_height } else { (used_height + padding_top + padding_bottom).max(0) };
+    let mut border_height = if is_html || is_body { used_height } else { (used_height + padding_top + padding_bottom + border_top + border_bottom).max(0) };
 
     let mut out_top = top;
     
@@ -365,47 +374,56 @@ fn calculate_final_dimensions_and_position(
         let mut max_yh = 0;
         if let Some(children) = maps.children_by_key.get(&node) {
             for child in children {
-                if matches!(maps.kind_by_key.get(child), Some(LayoutNodeKind::Block { .. })) {
-                    if let Some(rect) = rects.get(child) {
-                        if rect.y < min_y { min_y = rect.y; }
-                        if rect.y + rect.height > max_yh { max_yh = rect.y + rect.height; }
-                    }
+                if matches!(maps.kind_by_key.get(child), Some(LayoutNodeKind::Block { .. }))
+                    && let Some(rect) = rects.get(child)
+                {
+                    if rect.y < min_y { min_y = rect.y; }
+                    if rect.y + rect.height > max_yh { max_yh = rect.y + rect.height; }
                 }
             }
         }
-        if min_y != i32::MAX && max_yh >= min_y {
-            out_top = min_y;
-            border_height = max_yh - out_top;
-        } else {
-            // Fallback: derive from first block child's top margin if available
-            if let Some(children) = maps.children_by_key.get(&node) {
-                if let Some(first_block) = children.iter().find(|c| matches!(maps.kind_by_key.get(c), Some(LayoutNodeKind::Block { .. }))) {
-                    if let Some(computed_map) = maps.computed_by_key {
-                        if let Some(computed_style) = computed_map.get(first_block) {
-                            let margin_top = computed_style.margin.top.round() as i32;
-                            if margin_top > 0 { out_top = margin_top; border_height = (max_yh - out_top).max(0); }
-                        }
-                    }
+        // If parent has top border/padding, do not shift top; margin collapsing does not escape border-box.
+        if (padding_top + border_top) == 0 {
+            if min_y != i32::MAX && max_yh >= min_y {
+                out_top = min_y;
+                border_height = max_yh - out_top;
+            } else {
+                // Fallback: derive from first block child's top margin if available
+                if let Some(children) = maps.children_by_key.get(&node)
+                    && let Some(first_block) = children.iter().find(|c| matches!(maps.kind_by_key.get(c), Some(LayoutNodeKind::Block { .. })))
+                    && let Some(computed_map) = maps.computed_by_key
+                    && let Some(computed_style) = computed_map.get(first_block)
+                {
+                    let margin_top = computed_style.margin.top.round() as i32;
+                    if margin_top > 0 { out_top = margin_top; border_height = (max_yh - out_top).max(0); }
                 }
             }
+        } else {
+            // Fallback: derive from first block child's top margin if available
+            out_top = top;
         }
     } else {
         // For regular blocks, align the parent's top to the minimum y of its block children (if any),
         // so collapsed top margins are reflected in getBoundingClientRect.
-        if let Some(children) = maps.children_by_key.get(&node) {
-            let mut min_y = i32::MAX;
-            for child in children {
-                if matches!(maps.kind_by_key.get(child), Some(LayoutNodeKind::Block { .. })) {
-                    if let Some(rect) = rects.get(child) { if rect.y < min_y { min_y = rect.y; } }
+        if (padding_top + border_top) == 0 {
+            if let Some(children) = maps.children_by_key.get(&node) {
+                let mut min_y = i32::MAX;
+                for child in children {
+                    if matches!(maps.kind_by_key.get(child), Some(LayoutNodeKind::Block { .. }))
+                        && let Some(rect) = rects.get(child)
+                        && rect.y < min_y
+                    { min_y = rect.y; }
                 }
+                if min_y != i32::MAX { out_top = min_y; } else { out_top = top; }
+            } else {
+                out_top = top;
             }
-            if min_y != i32::MAX { out_top = min_y; } else { out_top = top; }
         } else {
             out_top = top;
         }
     }
 
-    (out_top, border_width, border_height)
+    (out_top, border_box_width, border_height)
 }
 
 /// Perform a simple block layout pass over the mirrored DOM using only the public API.
@@ -415,7 +433,7 @@ fn calculate_final_dimensions_and_position(
 /// - The root establishes a viewport of fixed width.
 /// - Block elements are stacked vertically in document order.
 /// - InlineText becomes an anonymous block with a single line of fixed line-height.
-/// The function returns the number of laid-out boxes (excluding the root document node).
+///   The function returns the number of laid-out boxes (excluding the root document node).
 pub fn compute_simple_layout(layouter: &Layouter) -> usize {
     let snapshot = layouter.snapshot();
     if snapshot.is_empty() { return 0; }
@@ -424,7 +442,7 @@ pub fn compute_simple_layout(layouter: &Layouter) -> usize {
     let mut kind_by_key = HashMap::new();
     let mut children_by_key = HashMap::new();
     for (key, kind, children) in snapshot.into_iter() {
-        kind_by_key.insert(key.clone(), kind);
+        kind_by_key.insert(key, kind);
         children_by_key.insert(key, children);
     }
 
@@ -445,6 +463,7 @@ pub fn compute_simple_layout(layouter: &Layouter) -> usize {
     let mut laid_out_boxes: usize = 0;
 
     // DFS using a stack to process blocks recursively in-order
+    #[allow(clippy::too_many_arguments)]
     fn layout_node_simple(
         node: NodeKey,
         kind_by_key: &HashMap<NodeKey, LayoutNodeKind>,
@@ -464,7 +483,7 @@ pub fn compute_simple_layout(layouter: &Layouter) -> usize {
                 if let Some(children) = children_by_key.get(&node) {
                     for child in children {
                         layout_node_simple(
-                            child.clone(),
+                            *child,
                             kind_by_key,
                             children_by_key,
                             content_width,
@@ -493,7 +512,7 @@ pub fn compute_simple_layout(layouter: &Layouter) -> usize {
 
     for child in root_children.iter() {
         layout_node_simple(
-            child.clone(),
+            *child,
             &kind_by_key,
             &children_by_key,
             content_width,
@@ -544,12 +563,11 @@ pub fn compute_layout_geometry(layouter: &Layouter) -> HashMap<NodeKey, LayoutRe
 
     // Debug: if node with id="inner" exists, log its computed height spec before geometry
     for (k, attrs) in &attrs_map {
-        if attrs.get("id").map(|v| v == "inner").unwrap_or(false) {
-            if let Some(comp_map) = maps.computed_by_key {
-                if let Some(cs) = comp_map.get(k) {
-                    log::info!("Layouter debug: id=inner height_spec={:?} width_spec={:?}", cs.height, cs.width);
-                }
-            }
+        if attrs.get("id").map(|v| v == "inner").unwrap_or(false)
+            && let Some(comp_map) = maps.computed_by_key
+            && let Some(cs) = comp_map.get(k)
+        {
+            log::info!("Layouter debug: id=inner height_spec={:?} width_spec={:?}", cs.height, cs.width);
         }
     }
 

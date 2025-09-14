@@ -22,6 +22,8 @@ pub use dom_index::{DomIndex, DomIndexState, SharedDomIndex};
 
 /// JavaScript prelude script for bootstrapping runtime behavior in the engine.
 pub mod runtime;
+pub mod modules;
+pub use modules::{ModuleResolver, SimpleFileModuleResolver};
 
 // ============================
 // Engine-agnostic JS context trait
@@ -89,6 +91,12 @@ impl KeySpace {
     }
     /// Return the current epoch.
     pub fn epoch(&self) -> u16 { self.epoch }
+}
+
+impl Default for KeySpace {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Per-shard manager mapping local IDs to NodeKeys and minting new keys.
@@ -173,6 +181,8 @@ impl<T: DOMSubscriber> DOMMirror<T> {
     }
     /// Access the inner mirror mutably (engine-level integration)
     pub fn mirror_mut(&mut self) -> &mut T { &mut self.mirror }
+    /// Access the inner mirror immutably (read-only access)
+    pub fn mirror(&self) -> &T { &self.mirror }
     /// Send a batch of DOM changes back to the DOM runtime.
     pub async fn send_dom_change(&mut self, changes: Vec<DOMUpdate>) -> anyhow::Result<()> { self.out_updater.send(changes).await?; Ok(()) }
 }

@@ -11,7 +11,7 @@ pub enum Unit {
 }
 
 impl Unit {
-    pub fn from_str(unit: &str) -> Self {
+    pub fn from_unit_str(unit: &str) -> Self {
         match unit.to_ascii_lowercase().as_str() {
             "px" => Unit::Px,
             "em" => Unit::Em,
@@ -78,19 +78,21 @@ pub fn parse_value(input: &str) -> Option<Value> {
     if s.is_empty() { return None; }
 
     // Special-case percentage as a unit suffix
-    if let Some(num) = s.strip_suffix('%') {
-        if let Ok(n) = parse_number(num.trim()) { return Some(Value::Length(Length { value: n, unit: Unit::Percent })); }
+    if let Some(num) = s.strip_suffix('%')
+        && let Ok(n) = parse_number(num.trim())
+    {
+        return Some(Value::Length(Length { value: n, unit: Unit::Percent }));
     }
 
     // Extract leading sign+digits+dot from the start
     let (num_part, unit_part) = split_number_and_unit(s);
-    if !num_part.is_empty() {
-        if let Ok(n) = parse_number(num_part) {
-            if unit_part.is_empty() {
-                return Some(Value::Number(n));
-            } else {
-                return Some(Value::Length(Length { value: n, unit: Unit::from_str(unit_part) }));
-            }
+    if !num_part.is_empty()
+        && let Ok(n) = parse_number(num_part)
+    {
+        if unit_part.is_empty() {
+            return Some(Value::Number(n));
+        } else {
+            return Some(Value::Length(Length { value: n, unit: Unit::from_unit_str(unit_part) }));
         }
     }
 

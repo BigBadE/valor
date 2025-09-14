@@ -29,20 +29,48 @@ pub fn runtime_prelude() -> &'static str {
       var d = globalThis.document;
       if (!d || typeof d !== 'object') { return; }
 
-      // Event listener storage
+      // Event listener storage (bubble and capture)
       if (typeof d.__valorListeners === 'undefined') {
         Object.defineProperty(d, '__valorListeners', { value: Object.create(null), enumerable: false, writable: true });
+      }
+      if (typeof d.__valorListenersCapture === 'undefined') {
+        Object.defineProperty(d, '__valorListenersCapture', { value: Object.create(null), enumerable: false, writable: true });
+      }
+      // Per-node listener storage keyed by NodeKey (bubble and capture)
+      if (typeof d.__valorNodeListeners === 'undefined') {
+        Object.defineProperty(d, '__valorNodeListeners', { value: Object.create(null), enumerable: false, writable: true });
+      }
+      if (typeof d.__valorNodeListenersCapture === 'undefined') {
+        Object.defineProperty(d, '__valorNodeListenersCapture', { value: Object.create(null), enumerable: false, writable: true });
       }
       if (typeof d.__domContentLoadedFired === 'undefined') {
         Object.defineProperty(d, '__domContentLoadedFired', { value: false, enumerable: false, writable: true });
       }
 
-      // document.addEventListener(type, listener)
+      // Host -> JS event dispatch bridge. The host calls this to inject an event.
+      if (typeof d.__valorHostDispatch !== 'function') {
+        d.__valorHostDispatch = function(type, targetKey, props) {
+          try {
+            var evt = { type: String(type), bubbles: !!(props && props.bubbles), cancelable: !!(props && props.cancelable) };
+            // Pointer/Mouse coordinates/buttons/modifiers
+            var fields = ['clientX','clientY','button','buttons','detail','ctrlKey','shiftKey','altKey','metaKey','key','code','repeat'];
+            for (var i = 0; i < fields.length; i++) { var f = fields[i]; if (props && Object.prototype.hasOwnProperty.call(props, f)) evt[f] = props[f]; }
+            var tgt = (targetKey != null && d.__valorMakeHandle) ? d.__valorMakeHandle(String(targetKey)) : d;
+            evt.target = tgt;
+            return d.dispatchEvent(evt);
+          } catch (_) { return false; }
+        };
+      }
+
+      // document.addEventListener(type, listener, options)
       if (typeof d.addEventListener !== 'function') {
-        d.addEventListener = function(type, listener) {
+        d.addEventListener = function(type, listener, options) {
           if (!type || typeof listener !== 'function') { return; }
-          var list = d.__valorListeners[type];
-          if (!Array.isArray(list)) { list = d.__valorListeners[type] = []; }
+          var useCapture = false;
+          if (options === true) useCapture = true; else if (options && typeof options === 'object' && !!options.capture) useCapture = true;
+          var bag = useCapture ? d.__valorListenersCapture : d.__valorListeners;
+          var list = bag[type];
+          if (!Array.isArray(list)) { list = bag[type] = []; }
           list.push(listener);
           if (type === 'DOMContentLoaded' && d.__domContentLoadedFired) {
             try { listener(); } catch (_) {}
@@ -50,19 +78,91 @@ pub fn runtime_prelude() -> &'static str {
         };
       }
 
-      // document.dispatchEvent(event) for synthetic document-level events
+      // document.dispatchEvent(event) for synthetic events
       if (typeof d.dispatchEvent !== 'function') {
         d.dispatchEvent = function(event) {
           if (!event || !event.type) { return false; }
           var type = String(event.type);
+          var listCap = d.__valorListenersCapture && d.__valorListenersCapture[type];
           var list = d.__valorListeners && d.__valorListeners[type];
-          event.target = d;
+          // Determine target: document by default, or a handle if provided
+          var target = (event && event.target && event.target.__nodeKey) ? event.target : d;
+          var targetKey = (target && target.__nodeKey) ? String(target.__nodeKey) : null;
+          // Install Event-like helpers if not present
+          if (typeof event.defaultPrevented !== 'boolean') { event.defaultPrevented = false; }
+          if (typeof event.cancelBubble !== 'boolean') { event.cancelBubble = false; }
+          event.__stop = false; event.__stopImmediate = false;
+          if (typeof event.preventDefault !== 'function') { event.preventDefault = function(){ this.defaultPrevented = true; }; }
+          if (typeof event.stopPropagation !== 'function') { event.stopPropagation = function(){ this.__stop = true; this.cancelBubble = true; }; }
+          if (typeof event.stopImmediatePropagation !== 'function') { event.stopImmediatePropagation = function(){ this.__stop = true; this.__stopImmediate = true; this.cancelBubble = true; }; }
+          event.target = target;
+
+          // Build ancestor chain from document to target parent using host hook if available
+          var ancestors = [];
+          if (targetKey && typeof d.__valorHost_getParentKey === 'function') {
+            var p = String(d.__valorHost_getParentKey(targetKey) || '');
+            var guard = 0;
+            while (p && guard++ < 10000) { ancestors.push(p); p = String(d.__valorHost_getParentKey(p) || ''); }
+            ancestors.reverse(); // from outermost to innermost
+          }
+
+          function callList(ctx, lst) {
+            if (!Array.isArray(lst)) return;
+            for (var i = 0; i < lst.length; i++) {
+              var fn = lst[i];
+              try { if (typeof fn === 'function') fn.call(ctx, event); } catch(_) {}
+              if (event.__stopImmediate) break;
+            }
+          }
+
+          // CAPTURING_PHASE = 1, AT_TARGET = 2, BUBBLING_PHASE = 3 if Event exists
+          var CAP = (globalThis.Event && globalThis.Event.CAPTURING_PHASE) ? globalThis.Event.CAPTURING_PHASE : 1;
+          var AT = (globalThis.Event && globalThis.Event.AT_TARGET) ? globalThis.Event.AT_TARGET : 2;
+          var BUB = (globalThis.Event && globalThis.Event.BUBBLING_PHASE) ? globalThis.Event.BUBBLING_PHASE : 3;
+          var bubbles = !!event.bubbles;
+          // 1) Capture: document capture, then ancestor capture
+          event.eventPhase = CAP;
           event.currentTarget = d;
-          event.eventPhase = (globalThis.Event && globalThis.Event.AT_TARGET) ? globalThis.Event.AT_TARGET : 2;
-          if (Array.isArray(list)) {
-            for (var i = 0; i < list.length; i++) {
-              var fn = list[i];
-              try { if (typeof fn === 'function') fn.call(d, event); } catch(_) {}
+          callList(d, listCap);
+          if (!event.__stop && ancestors.length) {
+            for (var ai = 0; ai < ancestors.length; ai++) {
+              var ak = ancestors[ai];
+              var ncap = d.__valorNodeListenersCapture[ak] && d.__valorNodeListenersCapture[ak][type];
+              event.currentTarget = d.__valorMakeHandle ? d.__valorMakeHandle(ak) : { __nodeKey: ak };
+              callList(event.currentTarget, ncap);
+              if (event.__stop) break;
+            }
+          }
+          if (event.__stop) return !event.defaultPrevented;
+          // At target: if node handle, invoke node listeners; otherwise document listeners at target.
+          event.eventPhase = AT;
+          event.currentTarget = target;
+          if (targetKey) {
+            var ncap = d.__valorNodeListenersCapture[targetKey] && d.__valorNodeListenersCapture[targetKey][type];
+            callList(target, ncap);
+            if (event.__stop) return !event.defaultPrevented;
+            var nbub = d.__valorNodeListeners[targetKey] && d.__valorNodeListeners[targetKey][type];
+            callList(target, nbub);
+          } else {
+            event.currentTarget = d;
+            callList(d, list);
+          }
+          if (event.__stop) return !event.defaultPrevented;
+          // 3) Bubble: ancestors from innermost to outermost, then document bubble
+          if (bubbles) {
+            event.eventPhase = BUB;
+            if (ancestors.length && !event.__stop) {
+              for (var bi = ancestors.length - 1; bi >= 0; bi--) {
+                var bk = ancestors[bi];
+                var bb = d.__valorNodeListeners[bk] && d.__valorNodeListeners[bk][type];
+                event.currentTarget = d.__valorMakeHandle ? d.__valorMakeHandle(bk) : { __nodeKey: bk };
+                callList(event.currentTarget, bb);
+                if (event.__stop) break;
+              }
+            }
+            if (!event.__stop && Array.isArray(list)) {
+              event.currentTarget = d;
+              callList(d, list);
             }
           }
           return !event.defaultPrevented;
@@ -131,6 +231,27 @@ pub fn runtime_prelude() -> &'static str {
         var make = d.__valorMakeHandle;
         d.__valorMakeHandle = function(key) {
           var o = make(key);
+          // Per-node addEventListener/removeEventListener
+          o.addEventListener = function(type, listener, options) {
+            var useCapture = false;
+            if (options === true) useCapture = true; else if (options && typeof options === 'object' && !!options.capture) useCapture = true;
+            var bag = useCapture ? d.__valorNodeListenersCapture : d.__valorNodeListeners;
+            var byTypeBag = bag[o.__nodeKey] || (bag[o.__nodeKey] = Object.create(null));
+            var list = byTypeBag[type] || (byTypeBag[type] = []);
+            list.push(listener);
+          };
+          // Node-targeted dispatch; normalize target and forward to document
+          o.dispatchEvent = function(evt) {
+            evt = evt || {}; evt.target = o; return d.dispatchEvent(evt);
+          };
+          o.removeEventListener = function(type, listener, options) {
+            var useCapture = false;
+            if (options === true) useCapture = true; else if (options && typeof options === 'object' && !!options.capture) useCapture = true;
+            var bag = useCapture ? d.__valorNodeListenersCapture : d.__valorNodeListeners;
+            var byTypeBag = bag[o.__nodeKey]; if (!byTypeBag) return;
+            var list = byTypeBag[type]; if (!Array.isArray(list)) return;
+            for (var i = 0; i < list.length; i++) { if (list[i] === listener) { list.splice(i,1); break; } }
+          };
           // Element methods (assume element; text-only handles created via createTextNode set a marker)
           o.appendChild = function(child) {
             if (!child) return null;
@@ -765,8 +886,14 @@ pub fn runtime_prelude() -> &'static str {
             try {
               var json = String(doc.__valorHost_net_requestPoll(id));
               var s = JSON.parse(json);
-              if (s.state === 'pending') { setTimeout(step, 0); }
-              else { cb(s); }
+              if (s.state === 'pending') {
+                // Use a macrotask to yield back to the host between polls.
+                // Using microtasks here can lead to an infinite drain within a single host tick
+                // because the engine flushes microtasks until empty.
+                setTimeout(step, 0);
+              } else {
+                cb(s);
+              }
             } catch (_) {
               cb({ state: 'error', error: 'poll-failed' });
             }

@@ -114,21 +114,21 @@ impl DOMSubscriber for DomIndex {
                 // Register parent/child linkage
                 guard.parent_by_child.insert(node, parent);
                 let entry = guard.children_by_parent.entry(parent).or_default();
-                if !entry.iter().any(|k| *k == node) {
+                if !entry.contains(&node) {
                     entry.push(node);
                 }
                 // Tag indices (lowercase)
                 let lc = tag.to_ascii_lowercase();
                 guard.tag_by_key.insert(node, lc.clone());
                 let tag_list = guard.tag_index.entry(lc).or_default();
-                if !tag_list.iter().any(|k| *k == node) {
+                if !tag_list.contains(&node) {
                     tag_list.push(node);
                 }
             }
             InsertText { parent, node, text, pos: _ } => {
                 guard.parent_by_child.insert(node, parent);
                 let entry = guard.children_by_parent.entry(parent).or_default();
-                if !entry.iter().any(|k| *k == node) {
+                if !entry.contains(&node) {
                     entry.push(node);
                 }
                 // Track/refresh text node content

@@ -18,6 +18,9 @@ pub enum Layer {
     Chrome(DisplayList),
 }
 
+// Reduce type complexity for cached batch entries
+type BatchCacheEntry = (Option<(u32, u32, u32, u32)>, Buffer, u32);
+
 /// RenderState owns the GPU device/surface and a minimal pipeline to draw rectangles from layout.
 pub struct RenderState {
     window: Arc<Window>,
@@ -44,7 +47,7 @@ pub struct RenderState {
     glyphon_cache: Cache,
     viewport: Viewport,
     /// Cached GPU buffers per retained-DL batch; reused when the DL is unchanged between frames.
-    cached_batches: Option<Vec<(Option<(u32, u32, u32, u32)>, Buffer, u32)>>,
+    cached_batches: Option<Vec<BatchCacheEntry>>,
     /// Last retained display list used to populate the cache, for equality-based no-op detection.
     last_retained_list: Option<DisplayList>,
     /// Number of times retained-DL batches were rebuilt this session.
@@ -238,7 +241,7 @@ impl RenderState {
     }
 
     /// Prepare glyphon for an arbitrary list of text items (used for per-layer text rendering).
-    fn glyphon_prepare_for(&mut self, items: &Vec<DrawText>) {
+    fn glyphon_prepare_for(&mut self, items: &[DrawText]) {
         let framebuffer_width = self.size.width;
         let framebuffer_height = self.size.height;
         let mut buffers: Vec<GlyphonBuffer> = Vec::with_capacity(items.len());
@@ -369,32 +372,28 @@ impl RenderState {
                 }
             } else if use_retained {
                 // Use (or build) cached GPU buffers for retained DL batches.
-                let need_rebuild = if let (Some(prev), Some(cur)) = (&self.last_retained_list, &self.retained_display_list) {
-                    prev != cur
-                } else { true };
-                if need_rebuild {
-                    if let Some(dl) = &self.retained_display_list {
-                        let batches = batch_display_list(dl, self.size.width, self.size.height);
-                        let mut cache: Vec<(Option<(u32,u32,u32,u32)>, Buffer, u32)> = Vec::with_capacity(batches.len());
-                        for b in batches.into_iter() {
-                            let mut vertices: Vec<Vertex> = Vec::with_capacity(b.quads.len() * 6);
-                            for q in b.quads.iter() {
-                                push_rect_vertices(&mut vertices, q.x, q.y, q.width, q.height, q.color);
-                            }
-                            if vertices.is_empty() {
-                                // Store an empty draw to preserve batch/scissor alignment
-                                cache.push((b.scissor, self.device.create_buffer(&BufferDescriptor { label: Some("empty-batch"), size: 4, usage: BufferUsages::VERTEX, mapped_at_creation: false }), 0));
-                                continue;
-                            }
-                            let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
-                            let vertex_buffer = self.device.create_buffer_init(&util::BufferInitDescriptor { label: Some("rect-batch"), contents: vertex_bytes, usage: BufferUsages::VERTEX });
-                            cache.push((b.scissor, vertex_buffer, vertices.len() as u32));
+                let need_rebuild = if let (Some(prev), Some(cur)) = (&self.last_retained_list, &self.retained_display_list) { prev != cur } else { true };
+                if need_rebuild && let Some(dl) = &self.retained_display_list {
+                    let batches = batch_display_list(dl, self.size.width, self.size.height);
+                    let mut cache: Vec<BatchCacheEntry> = Vec::with_capacity(batches.len());
+                    for b in batches.into_iter() {
+                        let mut vertices: Vec<Vertex> = Vec::with_capacity(b.quads.len() * 6);
+                        for q in b.quads.iter() {
+                            push_rect_vertices(&mut vertices, q.x, q.y, q.width, q.height, q.color);
                         }
-                        self.cached_batches = Some(cache);
-                        self.last_retained_list = self.retained_display_list.clone();
-                        // Stats: count cache builds
-                        self.cache_builds = self.cache_builds.wrapping_add(1);
+                        if vertices.is_empty() {
+                            // Store an empty draw to preserve batch/scissor alignment
+                            cache.push((b.scissor, self.device.create_buffer(&BufferDescriptor { label: Some("empty-batch"), size: 4, usage: BufferUsages::VERTEX, mapped_at_creation: false }), 0));
+                            continue;
+                        }
+                        let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
+                        let vertex_buffer = self.device.create_buffer_init(&util::BufferInitDescriptor { label: Some("rect-batch"), contents: vertex_bytes, usage: BufferUsages::VERTEX });
+                        cache.push((b.scissor, vertex_buffer, vertices.len() as u32));
                     }
+                    self.cached_batches = Some(cache);
+                    self.last_retained_list = self.retained_display_list.clone();
+                    // Stats: count cache builds
+                    self.cache_builds = self.cache_builds.wrapping_add(1);
                 }
                 if let Some(ref cache) = self.cached_batches {
                     if !need_rebuild { self.cache_reuses = self.cache_reuses.wrapping_add(1); }

@@ -19,6 +19,8 @@ pub enum LayoutNodeKind {
     InlineText { text: String },
 }
 
+impl Default for Layouter { fn default() -> Self { Self::new() } }
+
 #[derive(Debug, Clone)]
 pub struct LayoutNode {
     pub kind: LayoutNodeKind,
@@ -286,6 +288,8 @@ impl Layouter {
     pub fn perf_line_boxes_total(&self) -> u64 { self.perf_line_boxes_total }
     /// Performance counter: shaped text runs in the last compute (approximate).
     pub fn perf_shaped_runs_last(&self) -> u64 { self.perf_shaped_runs_last }
+
+//
     /// Performance counter: cumulative shaped text runs across computes (approximate).
     pub fn perf_shaped_runs_total(&self) -> u64 { self.perf_shaped_runs_total }
     /// Performance counter: early-outs in the last tick (1 if layout was skipped, else 0).
@@ -484,30 +488,75 @@ impl Layouter {
 
     /// Get a snapshot of the current layout tree for debugging/inspection.
     pub fn snapshot(&self) -> Vec<(NodeKey, LayoutNodeKind, Vec<NodeKey>)> {
-        let mut v: Vec<_> = self
-            .nodes
-            .iter()
-            .map(|(k, n)| (k.clone(), n.kind.clone(), n.children.clone()))
-            .collect();
-        v.sort_by_key(|(k, _, _)| k.0);
-        v
+        let mut out: Vec<(NodeKey, LayoutNodeKind, Vec<NodeKey>)> = Vec::new();
+        let mut stack: Vec<NodeKey> = vec![self.root];
+        while let Some(node) = stack.pop() {
+            if let Some(n) = self.nodes.get(&node) {
+                out.push((node, n.kind.clone(), n.children.clone()));
+                for &child in n.children.iter().rev() { stack.push(child); }
+            }
+        }
+        out
+    }
+
+    /// Hit-test screen coordinates against current layout boxes and return the topmost NodeKey.
+    /// Respects overflow:hidden by requiring the point to lie within any ancestor clip.
+    pub fn hit_test(&self, x: i32, y: i32) -> Option<NodeKey> {
+        let rects = self.compute_layout_geometry();
+        let snapshot = self.snapshot();
+        // Build parent map
+        let mut parent_by_key: HashMap<NodeKey, NodeKey> = HashMap::new();
+        for (parent, _kind, children) in snapshot.iter() {
+            for child in children { parent_by_key.insert(*child, *parent); }
+        }
+        // Helper: check if a point lies within node's rect
+        let contains_point = |r: &LayoutRect, px: i32, py: i32| -> bool {
+            px >= r.x && py >= r.y && px < r.x + r.width && py < r.y + r.height
+        };
+        // Helper: ensure the point is visible through overflow:hidden ancestors
+        let point_visible_through_clips = |node: NodeKey| -> bool {
+            let mut current = parent_by_key.get(&node).cloned();
+            while let Some(ancestor) = current {
+                if let Some(cs) = self.computed.get(&ancestor)
+                    && matches!(cs.overflow, style_engine::Overflow::Hidden)
+                    && let Some(ar) = rects.get(&ancestor)
+                    && !contains_point(ar, x, y)
+                { return false; }
+                current = parent_by_key.get(&ancestor).cloned();
+            }
+            true
+        };
+        // Prefer deeper nodes (topmost in document order approximation)
+        let mut best: Option<(usize, NodeKey)> = None;
+        for (node, rect) in rects.iter() {
+            if !contains_point(rect, x, y) { continue; }
+            if !point_visible_through_clips(*node) { continue; }
+            // Compute depth by walking parents
+            let mut depth: usize = 0;
+            let mut cur = parent_by_key.get(node).cloned();
+            while let Some(p) = cur { depth += 1; cur = parent_by_key.get(&p).cloned(); }
+            match best {
+                None => best = Some((depth, *node)),
+                Some((bd, _)) if depth >= bd => best = Some((depth, *node)),
+                _ => {}
+            }
+        }
+        best.map(|(_, k)| k)
     }
 
     fn ensure_parent_exists(&mut self, parent: NodeKey) {
-        if !self.nodes.contains_key(&parent) {
+        self.nodes.entry(parent).or_insert_with(|| {
             warn!("Parent {:?} missing in layouter; creating placeholder Document child", parent);
-            self.nodes.insert(parent, LayoutNode::new_document());
-        }
+            LayoutNode::new_document()
+        });
     }
 
     fn remove_node_recursive(&mut self, node: NodeKey) {
         if let Some(n) = self.nodes.remove(&node) {
             // detach from parent
-            if let Some(p) = n.parent {
-                if let Some(parent_node) = self.nodes.get_mut(&p) {
-                    parent_node.children.retain(|c| *c != node);
-                }
-            }
+            if let Some(p) = n.parent
+                && let Some(parent_node) = self.nodes.get_mut(&p)
+            { parent_node.children.retain(|c| *c != node); }
             // remove children
             for c in n.children {
                 self.remove_node_recursive(c);
