@@ -29,8 +29,8 @@ pub enum JSError {
 impl Display for JSError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
-            JSError::TypeError(message) => write!(f, "TypeError: {}", message),
-            JSError::InternalError(message) => write!(f, "InternalError: {}", message),
+            JSError::TypeError(message) => write!(f, "TypeError: {message}"),
+            JSError::InternalError(message) => write!(f, "InternalError: {message}"),
         }
     }
 }

@@ -125,26 +125,36 @@ impl fmt::Debug for DOM {
                 .expect("NodeId in DOM printing should be valid");
             let DOMNode { kind, attrs } = node_ref.get();
 
+            // Small helper to write sorted attributes
+            fn write_attrs(
+                f: &mut fmt::Formatter<'_>,
+                attrs: &smallvec::SmallVec<(String, String), 4>,
+            ) -> fmt::Result {
+                if attrs.is_empty() {
+                    return Ok(());
+                }
+                let mut pairs: Vec<(String, String)> = attrs.iter().cloned().collect();
+                pairs.sort_by(|a, b| a.0.cmp(&b.0));
+                for (k, v) in pairs.into_iter() {
+                    write!(f, " {}=\"{}\"", k, escape_text(&v))?;
+                }
+                Ok(())
+            }
+
             match kind {
                 NodeKind::Document => {
                     write_indent(f, depth)?;
                     writeln!(f, "#document")?;
-                    fmt_children(dom, id, f, depth)
+                    fmt_children(dom, id, f, depth)?;
                 }
                 NodeKind::Element { tag } => {
                     write_indent(f, depth)?;
                     write!(f, "<{}", tag.to_lowercase())?;
-                    if !attrs.is_empty() {
-                        let mut pairs: Vec<(String, String)> = attrs.iter().cloned().collect();
-                        pairs.sort_by(|a, b| a.0.cmp(&b.0));
-                        for (k, v) in pairs.into_iter() {
-                            write!(f, " {}=\"{}\"", k, escape_text(&v))?;
-                        }
-                    }
+                    write_attrs(f, attrs)?;
                     writeln!(f, ">")?;
                     fmt_children(dom, id, f, depth)?;
                     write_indent(f, depth)?;
-                    writeln!(f, "</{}>", tag.to_lowercase())
+                    writeln!(f, "</{}>", tag.to_lowercase())?;
                 }
                 NodeKind::Text { text } => {
                     // Skip pure-whitespace text nodes in the printer for cleaner output

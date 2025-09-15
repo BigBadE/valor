@@ -1,7 +1,6 @@
 //! Minimal style system stub used by the core engine.
 //! Maintains a `Stylesheet` and a small computed styles map for the root node.
 
-use anyhow::Result;
 use std::collections::HashMap;
 
 use crate::{style_model, types};

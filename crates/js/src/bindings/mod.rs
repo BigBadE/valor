@@ -217,20 +217,19 @@ pub fn build_document_namespace() -> HostNamespace {
     let parse_string = |value: &JSValue, name: &str| -> Result<String, JSError> {
         match value {
             JSValue::String(s) => Ok(s.clone()),
-            _ => Err(JSError::TypeError(format!("{} must be a string", name))),
+            _ => Err(JSError::TypeError(format!("{name} must be a string"))),
         }
     };
     let parse_key = |value: &JSValue, name: &str| -> Result<NodeKey, JSError> {
         match value {
             JSValue::String(s) => {
                 let parsed = s.parse::<u64>().map_err(|_| {
-                    JSError::TypeError(format!("{} must be a decimal string (NodeKey)", name))
+                    JSError::TypeError(format!("{name} must be a decimal string (NodeKey)"))
                 })?;
                 Ok(NodeKey(parsed))
             }
             _ => Err(JSError::TypeError(format!(
-                "{} must be a decimal string (NodeKey)",
-                name
+                "{name} must be a decimal string (NodeKey)"
             ))),
         }
     };
@@ -277,7 +276,7 @@ pub fn build_document_namespace() -> HostNamespace {
             context
                 .dom_sender
                 .try_send(vec![update])
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {}", e)))?;
+                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
             // Synchronously update DomIndex for immediate queries
             if let Ok(mut idx) = context.dom_index.lock() {
                 let entry = idx.children_by_parent.entry(NodeKey::ROOT).or_default();
@@ -333,7 +332,7 @@ pub fn build_document_namespace() -> HostNamespace {
             context
                 .dom_sender
                 .try_send(vec![update])
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {}", e)))?;
+                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
             // Synchronously update DomIndex for immediate queries
             if let Ok(mut idx) = context.dom_index.lock() {
                 let entry = idx.children_by_parent.entry(NodeKey::ROOT).or_default();
@@ -375,7 +374,7 @@ pub fn build_document_namespace() -> HostNamespace {
                         };
                         drop(meta);
                         context.dom_sender.try_send(vec![update]).map_err(|e| {
-                            JSError::InternalError(format!("failed to send DOM update: {}", e))
+                            JSError::InternalError(format!("failed to send DOM update: {e}"))
                         })?;
                     }
                     CreatedNodeKind::Text { text } => {
@@ -387,7 +386,7 @@ pub fn build_document_namespace() -> HostNamespace {
                         };
                         drop(meta);
                         context.dom_sender.try_send(vec![update]).map_err(|e| {
-                            JSError::InternalError(format!("failed to send DOM update: {}", e))
+                            JSError::InternalError(format!("failed to send DOM update: {e}"))
                         })?;
                     }
                 }
@@ -423,7 +422,7 @@ pub fn build_document_namespace() -> HostNamespace {
             context
                 .dom_sender
                 .try_send(vec![update])
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {}", e)))?;
+                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
             // Synchronously update DomIndex for immediate queries (id/class)
             if let Ok(mut idx) = context.dom_index.lock() {
                 let name_lc = name.to_ascii_lowercase();
@@ -446,7 +445,7 @@ pub fn build_document_namespace() -> HostNamespace {
             context
                 .dom_sender
                 .try_send(vec![update])
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {}", e)))?;
+                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
             // Synchronously update DomIndex for immediate queries
             if let Ok(mut idx) = context.dom_index.lock() {
                 idx.remove_node_and_descendants(node_key);
@@ -472,13 +471,13 @@ pub fn build_document_namespace() -> HostNamespace {
                 // Test printing: log the resolved NodeKey for this id
                 context.logger.log(
                     LogLevel::Info,
-                    &format!("JS: getElementById('{}') -> NodeKey={}", id, key.0),
+                    &format!("JS: getElementById('{id}') -> NodeKey={}", key.0),
                 );
                 Ok(JSValue::String(key.0.to_string()))
             } else {
                 context.logger.log(
                     LogLevel::Info,
-                    &format!("JS: getElementById('{}') -> null", id),
+                    &format!("JS: getElementById('{id}') -> null"),
                 );
                 Ok(JSValue::Null)
             }
@@ -562,14 +561,14 @@ pub fn build_document_namespace() -> HostNamespace {
             context.logger.log(
             LogLevel::Info,
             &format!(
-                "JS->DOM: setTextContent will send RemoveNode x{} then InsertText(nodeKey={}, parent={}, pos=0)",
-                removed_count, text_key.0, element_key.0
+                "JS->DOM: setTextContent will send RemoveNode x{removed_count} then InsertText(nodeKey={}, parent={}, pos=0)",
+                text_key.0, element_key.0
             ),
         );
             context
                 .dom_sender
                 .try_send(updates)
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {}", e)))?;
+                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
             Ok(JSValue::Undefined)
         },
     );
@@ -647,7 +646,7 @@ pub fn build_document_namespace() -> HostNamespace {
             context
                 .dom_sender
                 .try_send(vec![update])
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {}", e)))?;
+                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
             // Synchronously update DomIndex for immediate queries
             if let Ok(mut idx) = context.dom_index.lock() {
                 let name_lc = name.to_ascii_lowercase();
@@ -912,7 +911,7 @@ pub fn build_document_namespace() -> HostNamespace {
             context
                 .dom_sender
                 .try_send(final_updates)
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {}", e)))?;
+                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
             Ok(JSValue::Undefined)
         },
     );
@@ -953,7 +952,7 @@ pub fn build_document_namespace() -> HostNamespace {
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
             let parsed = url::Url::parse(&url_str)
-                .map_err(|_| JSError::TypeError(format!("invalid URL: {}", url_str)))?;
+                .map_err(|_| JSError::TypeError(format!("invalid URL: {url_str}")))?;
             let allowed = if relaxed {
                 true
             } else {
@@ -1043,9 +1042,7 @@ pub fn build_document_namespace() -> HostNamespace {
                             Ok(done) => finalize_with(done),
                             Err(err) => finalize_with(error_response(err)),
                         },
-                        _ => {
-                            finalize_with(error_response(format!("Unsupported scheme: {}", scheme)))
-                        }
+                        _ => finalize_with(error_response(format!("Unsupported scheme: {scheme}"))),
                     }
                 }
             });
@@ -1372,7 +1369,7 @@ pub fn build_chrome_host_namespace() -> HostNamespace {
                 _ => return Err(JSError::TypeError(String::from("url must be a string"))),
             };
             tx.send(ChromeHostCommand::Navigate(url))
-                .map_err(|e| JSError::InternalError(format!("failed to send navigate: {}", e)))?;
+                .map_err(|e| JSError::InternalError(format!("failed to send navigate: {e}")))?;
             Ok(JSValue::Undefined)
         },
     );
@@ -1381,7 +1378,7 @@ pub fn build_chrome_host_namespace() -> HostNamespace {
         move |context: &HostContext, _args: Vec<JSValue>| -> Result<JSValue, JSError> {
             let tx = get_tx(context)?;
             tx.send(ChromeHostCommand::Back)
-                .map_err(|e| JSError::InternalError(format!("failed to send back: {}", e)))?;
+                .map_err(|e| JSError::InternalError(format!("failed to send back: {e}")))?;
             Ok(JSValue::Undefined)
         },
     );
@@ -1390,7 +1387,7 @@ pub fn build_chrome_host_namespace() -> HostNamespace {
         move |context: &HostContext, _args: Vec<JSValue>| -> Result<JSValue, JSError> {
             let tx = get_tx(context)?;
             tx.send(ChromeHostCommand::Forward)
-                .map_err(|e| JSError::InternalError(format!("failed to send forward: {}", e)))?;
+                .map_err(|e| JSError::InternalError(format!("failed to send forward: {e}")))?;
             Ok(JSValue::Undefined)
         },
     );
@@ -1399,7 +1396,7 @@ pub fn build_chrome_host_namespace() -> HostNamespace {
         move |context: &HostContext, _args: Vec<JSValue>| -> Result<JSValue, JSError> {
             let tx = get_tx(context)?;
             tx.send(ChromeHostCommand::Reload)
-                .map_err(|e| JSError::InternalError(format!("failed to send reload: {}", e)))?;
+                .map_err(|e| JSError::InternalError(format!("failed to send reload: {e}")))?;
             Ok(JSValue::Undefined)
         },
     );
@@ -1412,7 +1409,7 @@ pub fn build_chrome_host_namespace() -> HostNamespace {
                 _ => None,
             };
             tx.send(ChromeHostCommand::OpenTab(url_opt))
-                .map_err(|e| JSError::InternalError(format!("failed to send openTab: {}", e)))?;
+                .map_err(|e| JSError::InternalError(format!("failed to send openTab: {e}")))?;
             Ok(JSValue::Undefined)
         },
     );
@@ -1425,7 +1422,7 @@ pub fn build_chrome_host_namespace() -> HostNamespace {
                 _ => None,
             };
             tx.send(ChromeHostCommand::CloseTab(id_opt))
-                .map_err(|e| JSError::InternalError(format!("failed to send closeTab: {}", e)))?;
+                .map_err(|e| JSError::InternalError(format!("failed to send closeTab: {e}")))?;
             Ok(JSValue::Undefined)
         },
     );

@@ -1,3 +1,6 @@
+//! Core module of the CSS engine, containing the style and layout subsystems.
+//! This crate exposes a minimal orchestrator that coordinates style and layout engines.
+
 use anyhow::Result;
 pub use js::{DOMSubscriber, DOMUpdate, NodeKey};
 use std::collections::HashMap;

@@ -10,7 +10,7 @@ use log::{trace, warn};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use tokio::runtime::Handle;
-use tokio::sync::{broadcast::Receiver as BroadcastReceiver, mpsc};
+use tokio::sync::mpsc;
 use tokio::task;
 use tokio::task::JoinHandle;
 use tokio_stream::{Stream, StreamExt};
@@ -20,6 +20,22 @@ use url::Url;
 /// responsible for sending DOM updates to the tree
 pub struct HTMLParser {
     process_handle: JoinHandle<Result<(), Error>>,
+}
+
+/// Inputs required to start the HTML parser.
+pub struct ParseInputs<S> {
+    /// Manager for mapping parser-local NodeId values to global NodeKey values.
+    pub keyman: NodeKeyManager<NodeId>,
+    /// Sender for emitting DOM updates to the runtime DOM (outbound from parser).
+    pub in_updater: mpsc::Sender<Vec<DOMUpdate>>,
+    /// Receiver for inbound DOM updates from the runtime (to mirror into the parser view).
+    pub dom_updates: tokio::sync::broadcast::Receiver<Vec<DOMUpdate>>,
+    /// Byte stream of HTML chunks to parse.
+    pub byte_stream: S,
+    /// Channel for sending discovered scripts to the JS runtime.
+    pub script_tx: mpsc::UnboundedSender<ScriptJob>,
+    /// Base URL for resolving relative URLs encountered during parsing.
+    pub base_url: Url,
 }
 
 #[derive(Clone, Debug)]
@@ -363,26 +379,20 @@ impl HTMLParser {
             let base_for_worker = base_url.clone();
             let parser_worker = task::spawn_blocking(move || {
                 let mut engine = Html5everEngine::new(dom, script_tx, base_for_worker);
-                loop {
+                while let Some(item) = rx.blocking_recv() {
                     engine.try_update_sync()?;
-                    if let Some(item) = rx.blocking_recv() {
-                        let chunk = match item {
-                            Ok(b) => b,
-                            Err(e) => return Err(e),
-                        };
-                        let text = String::from_utf8_lossy(&chunk);
-                        engine.push(text.as_ref());
-                        continue;
-                    }
-                    break;
+                    let chunk = item?;
+                    let text = String::from_utf8_lossy(&chunk);
+                    engine.push(text.as_ref());
                 }
                 trace!("Finalizing parser");
                 engine.finalize();
                 Ok::<(), Error>(())
             });
 
+            let tx_stream = tx.clone();
             while let Some(item) = byte_stream.next().await {
-                if tx.send(item).await.is_err() {
+                if tx_stream.send(item).await.is_err() {
                     break;
                 }
             }

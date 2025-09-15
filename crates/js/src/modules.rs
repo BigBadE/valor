@@ -52,10 +52,7 @@ impl SimpleFileModuleResolver {
                     .unwrap_or(false);
                 if !ext_ok {
                     // Keep it non-fatal: return empty source to avoid panics while signaling unsupported types.
-                    log::warn!(
-                        "ModuleResolver: skipping unsupported file extension for {:?}",
-                        path
-                    );
+                    log::warn!("ModuleResolver: skipping unsupported file extension for {path:?}");
                     String::new()
                 } else {
                     std::fs::read_to_string(path)?
@@ -85,7 +82,7 @@ impl SimpleFileModuleResolver {
     fn dfs_bundle(&mut self, url: &url::Url) -> anyhow::Result<String> {
         let key = url.as_str().to_string();
         if self.visiting.get(&key).copied().unwrap_or(false) {
-            return Err(anyhow::anyhow!("circular import detected: {}", key));
+            return Err(anyhow::anyhow!("circular import detected: {key}"));
         }
         self.visiting.insert(key.clone(), true);
         let src = self.load_text(url)?;
@@ -111,7 +108,7 @@ impl SimpleFileModuleResolver {
         }
         let self_code = Self::strip_import_export(&src);
         self.visiting.insert(key, false);
-        Ok(format!("{}\n{}", bundled_deps, self_code))
+        Ok(format!("{bundled_deps}\n{self_code}"))
     }
 }
 
@@ -127,7 +124,7 @@ impl ModuleResolver for SimpleFileModuleResolver {
         }
         let root = self
             .resolve_spec(root_spec, base_url)
-            .ok_or_else(|| anyhow::anyhow!("bad specifier: {}", root_spec))?;
+            .ok_or_else(|| anyhow::anyhow!("bad specifier: {root_spec}"))?;
         self.dfs_bundle(&root)
     }
 }

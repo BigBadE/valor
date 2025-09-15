@@ -1,6 +1,6 @@
 //! Minimal layout engine stub that produces a fixed root rect and snapshots.
+use core::mem::take;
 use std::collections::{HashMap, hash_map::Entry};
-use std::mem::take;
 
 use crate::layout_model;
 use js::{DOMUpdate, NodeKey};
@@ -9,9 +9,13 @@ use js::{DOMUpdate, NodeKey};
 pub type LayoutSnapshot = Vec<(NodeKey, layout_model::LayoutNodeKind, Vec<NodeKey>)>;
 
 #[derive(Default)]
+/// Minimal layout engine state holder.
 pub struct LayoutEngine {
+    /// Map of node keys to their computed layout rectangles.
     rects: HashMap<NodeKey, layout_model::LayoutRect>,
+    /// Rectangles that became dirty since last layout pass.
     dirty_rects: Vec<layout_model::LayoutRect>,
+    /// Cached snapshot of the layout tree structure.
     snapshot_nodes: LayoutSnapshot,
 }
 
@@ -53,9 +57,11 @@ impl LayoutEngine {
         self.snapshot_nodes.clone()
     }
 
-    /// Apply a `DOMUpdate` to the layout engine. Currently a no-op stub.
+    /// Apply a `DOMUpdate` to the layout engine.
+    /// Currently marks layout as needing recomputation by clearing cached snapshot.
     #[inline]
     pub fn apply_update(&mut self, _update: DOMUpdate) {
-        // In a real engine, mark nodes dirty based on update.
+        // Touch state so future compute_layout() recomputes as needed.
+        self.snapshot_nodes.clear();
     }
 }
