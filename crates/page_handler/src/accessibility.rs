@@ -1,6 +1,7 @@
 use js::NodeKey;
 use layouter::LayoutNodeKind;
 use std::collections::HashMap;
+use css::layout_helpers::collapse_whitespace;
 
 pub fn ax_tree_snapshot_from(
     snapshot: Vec<(NodeKey, LayoutNodeKind, Vec<NodeKey>)>,
@@ -52,7 +53,7 @@ pub fn ax_tree_snapshot_from(
             }
         }
         match kind {
-            LayoutNodeKind::InlineText { text } => layouter::layout::collapse_whitespace(text),
+            LayoutNodeKind::InlineText { text } => collapse_whitespace(text),
             _ => String::new(),
         }
     }

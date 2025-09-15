@@ -8,6 +8,9 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
+use style_engine::{
+    AlignItems, ComputedStyle, Display, Edges, LengthOrAuto, Overflow, SizeSpecified,
+};
 use tokio::runtime::Runtime;
 
 mod common;
@@ -152,7 +155,7 @@ fn run_chromium_layouts() -> Result<(), Error> {
 fn our_layout_json(
     layouter: &Layouter,
     rects: &HashMap<NodeKey, LayoutRect>,
-    computed: &HashMap<NodeKey, style_engine::ComputedStyle>,
+    computed: &HashMap<NodeKey, ComputedStyle>,
 ) -> Value {
     // Build lookup maps once
     let snapshot = layouter.snapshot();
@@ -197,7 +200,7 @@ fn serialize_element_subtree_with_maps(
     children_by_key: &HashMap<NodeKey, Vec<NodeKey>>,
     attrs_by_key: &HashMap<NodeKey, HashMap<String, String>>,
     rects: &HashMap<NodeKey, LayoutRect>,
-    computed: &HashMap<NodeKey, style_engine::ComputedStyle>,
+    computed: &HashMap<NodeKey, ComputedStyle>,
     key: NodeKey,
 ) -> Value {
     fn is_non_rendering_tag(tag: &str) -> bool {
@@ -206,23 +209,26 @@ fn serialize_element_subtree_with_maps(
             "head" | "meta" | "title" | "link" | "style" | "script" | "base"
         )
     }
-    fn to_px_or_auto(sz: &style_engine::SizeSpecified) -> String {
-        use style_engine::SizeSpecified;
+
+    fn to_px_or_auto(sz: &SizeSpecified) -> String {
+        use LengthOrAuto::*;
         match sz {
-            SizeSpecified::Px(v) => format!("{}px", v),
-            SizeSpecified::Auto => "auto".to_string(),
-            SizeSpecified::Percent(p) => format!("{}%", p),
+            Pixels(v) => format!("{}px", v),
+            Auto => "auto".to_string(),
+            Percent(p) => format!("{}%", p),
         }
     }
-    fn effective_display(d: &style_engine::Display) -> &'static str {
-        use style_engine::Display::*;
+
+    fn effective_display(d: &Display) -> &'static str {
+        use Display::*;
         // Our layouter snapshot only contains block-level boxes; default to 'block' unless explicitly Flex.
         match d {
             Flex | InlineFlex => "flex",
             _ => "block",
         }
     }
-    fn edges_to_map_px(e: &style_engine::Edges) -> Value {
+
+    fn edges_to_map_px(e: &Edges) -> Value {
         json!({
             "top": format!("{}px", e.top as f64),
             "right": format!("{}px", e.right as f64),
@@ -230,8 +236,8 @@ fn serialize_element_subtree_with_maps(
             "left": format!("{}px", e.left as f64),
         })
     }
-    fn align_items_to_str(a: &style_engine::AlignItems) -> &'static str {
-        use style_engine::AlignItems::*;
+    fn align_items_to_str(a: &AlignItems) -> &'static str {
+        use AlignItems::*;
         match a {
             Stretch => "stretch",
             FlexStart => "flex-start",
@@ -240,8 +246,8 @@ fn serialize_element_subtree_with_maps(
             Baseline => "baseline",
         }
     }
-    fn overflow_to_str(o: &style_engine::Overflow) -> &'static str {
-        use style_engine::Overflow::*;
+    fn overflow_to_str(o: &Overflow) -> &'static str {
+        use Overflow::*;
         match o {
             Visible => "visible",
             Hidden => "hidden",
@@ -255,7 +261,7 @@ fn serialize_element_subtree_with_maps(
         children_by_key: &HashMap<NodeKey, Vec<NodeKey>>,
         attrs_by_key: &HashMap<NodeKey, HashMap<String, String>>,
         rects: &HashMap<NodeKey, LayoutRect>,
-        computed: &HashMap<NodeKey, style_engine::ComputedStyle>,
+        computed: &HashMap<NodeKey, ComputedStyle>,
     ) -> Value {
         match kind_by_key.get(&key) {
             Some(LayoutNodeKind::Block { tag }) => {
@@ -315,7 +321,7 @@ fn serialize_element_subtree_with_maps(
                         "borderWidth": edges_to_map_px(&cs.border_width),
                         "alignItems": if eff_disp == "flex" {
                             // Chromium serializes default align-items as 'normal' rather than 'stretch'
-                            match cs.align_items { style_engine::AlignItems::Stretch => "normal", _ => align_items_to_str(&cs.align_items) }
+                            match cs.align_items { AlignItems::Stretch => "normal", _ => align_items_to_str(&cs.align_items) }
                         } else { "normal" },
                         "overflow": overflow_to_str(&cs.overflow),
                     });

@@ -6,28 +6,6 @@ use js::{DOMSubscriber, DOMUpdate, NodeKey};
 use std::collections::HashMap;
 use style_engine::ComputedStyle;
 
-pub mod layout {
-    pub fn collapse_whitespace(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut in_ws = false;
-        for ch in s.chars() {
-            if ch.is_whitespace() {
-                if !in_ws {
-                    out.push(' ');
-                    in_ws = true;
-                }
-            } else {
-                in_ws = false;
-                out.push(ch);
-            }
-        }
-        out.trim().to_string()
-    }
-    pub fn reorder_bidi_for_display(s: &str) -> String {
-        s.to_string()
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LayoutRect {
     pub x: i32,
@@ -73,7 +51,7 @@ impl Layouter {
             // Return a shallow snapshot of known nodes without computing children here.
             self.nodes
                 .iter()
-                .map(|(k, kind)| (*k, kind.clone(), Vec::new()))
+                .map(|(key, kind)| (*key, kind.clone(), Vec::new()))
                 .collect()
         }
     }
@@ -82,8 +60,8 @@ impl Layouter {
         HashMap::new()
     }
     #[inline]
-    pub fn set_stylesheet(&mut self, s: css_types::Stylesheet) {
-        self.stylesheet = s;
+    pub fn set_stylesheet(&mut self, stylesheet: css_types::Stylesheet) {
+        self.stylesheet = stylesheet;
     }
     #[inline]
     pub fn set_computed_styles(&mut self, map: HashMap<NodeKey, ComputedStyle>) {

@@ -1,5 +1,6 @@
 use js::NodeKey;
 use std::collections::HashMap;
+use css::layout_helpers::{collapse_whitespace, reorder_bidi_for_display};
 use wgpu_renderer::{DisplayItem, DisplayList};
 
 pub struct RetainedInputs {
@@ -118,8 +119,8 @@ pub fn build_text_list(
                 } else {
                     (16.0, [0.0, 0.0, 0.0])
                 };
-                let collapsed = layouter::layout::collapse_whitespace(text);
-                let display_text = layouter::layout::reorder_bidi_for_display(&collapsed);
+                let collapsed = collapse_whitespace(text);
+                let display_text = reorder_bidi_for_display(&collapsed);
                 list.push(wgpu_renderer::DrawText {
                     x: rect.x as f32,
                     y: rect.y as f32,
@@ -140,8 +141,8 @@ fn push_text_item(
     font_size: f32,
     color_rgb: [f32; 3],
 ) {
-    let collapsed = layouter::layout::collapse_whitespace(text);
-    let display_text = layouter::layout::reorder_bidi_for_display(&collapsed);
+    let collapsed = collapse_whitespace(text);
+    let display_text = reorder_bidi_for_display(&collapsed);
     list.push(DisplayItem::Text {
         x: rect.x as f32,
         y: rect.y as f32,

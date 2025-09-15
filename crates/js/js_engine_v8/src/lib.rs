@@ -132,8 +132,10 @@ pub struct V8Engine {
     inner: Option<Global<Context>>,
     isolate: Option<OwnedIsolateWithHandleScope>,
     stubs_installed: bool,
+    #[allow(dead_code)]
     base_url: Option<String>,
     /// Registry of compiled ES modules keyed by absolute URL/specifier.
+    #[allow(dead_code)]
     module_map: HashMap<String, Global<Module>>,
 }
 
@@ -263,9 +265,10 @@ impl V8Engine {
         self.stubs_installed = true;
         Ok(())
     }
+
     /// Convert a generic `JSValue` to a V8 `Local<Value>`.
     fn from_js_value<'scope>(
-        scope: &'scope mut HandleScope,
+        scope: &mut HandleScope<'scope>,
         value: &JSValue,
     ) -> Local<'scope, Value> {
         match value {
@@ -279,7 +282,7 @@ impl V8Engine {
 
     /// Wrap a `HostFnKind` as a V8 `Function`.
     fn make_v8_callback<'scope>(
-        scope: &'scope mut HandleScope,
+        scope: &mut HandleScope<'scope>,
         host_context: HostContext,
         host_fn: HostFnKind,
     ) -> Local<'scope, Function> {
@@ -344,7 +347,8 @@ impl V8Engine {
                 if *namespace_name == "document" {
                     let host_alias = format!("__valorHost_{function_name}");
                     if let Some(alias_key) = V8String::new(scope, &host_alias) {
-                        let _ignored_result = target_obj.set(scope, alias_key.into(), function.into());
+                        let _ignored_result =
+                            target_obj.set(scope, alias_key.into(), function.into());
                         let _ = _ignored_result;
                     }
                 }
