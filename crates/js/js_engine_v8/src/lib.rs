@@ -7,18 +7,34 @@ use anyhow::{Result, anyhow};
 use js::Console;
 use js::JsEngine; // Use the engine-agnostic trait from js crate
 use js::{HostBindings, HostContext, HostFnKind, JSValue};
+use rusty_v8::{
+    Boolean, Context, ContextScope, CreateParams, External, Function, FunctionCallbackArguments,
+    Global, HandleScope, Isolate, Local, Module, Number, Object, OwnedIsolate, Platform,
+    ReturnValue, Script, ScriptOrigin, SharedRef, String as V8String, TryCatch, V8, Value,
+    new_default_platform, null, undefined,
+};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::ffi::c_void;
 use std::sync::Once;
-use rusty_v8::{new_default_platform, null, undefined, Boolean, Context, ContextScope, CreateParams, External, Function, FunctionCallbackArguments, Global, HandleScope, Isolate, Local, Module, Number, Object, OwnedIsolate, Platform, ReturnValue, Script, ScriptOrigin, SharedRef, String as V8String, TryCatch, Value, V8};
+
+#[inline]
+fn escape_js_for_literal(input: &str) -> String {
+    let mut out = String::with_capacity(input.len().saturating_add(8));
+    for ch in input.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
 
 /// Dispatcher for host-bound functions installed through HostBindings.
-fn host_fn_dispatch(
-    scope: &mut HandleScope<()>,
-    args: FunctionCallbackArguments,
-    mut rv: ReturnValue,
-) {
+fn host_fn_dispatch(scope: &mut HandleScope, args: FunctionCallbackArguments, mut rv: ReturnValue) {
     let data = match args.data() {
         Some(d) => d,
         None => {
@@ -186,71 +202,54 @@ impl V8Engine {
             false,
             false,
         );
-        if Script::compile(tc, code, Some(&origin))
-            .and_then(|script| script.run(tc))
-            .is_none()
-        {
-            if tc.has_caught() {
-                let exc = tc.exception();
-                let exc_str = exc
-                    .and_then(|e| e.to_string(tc))
-                    .map(|s| s.to_rust_string_lossy(tc))
-                    .unwrap_or_else(|| String::from("Uncaught exception"));
-                let stack = tc
-                    .stack_trace()
-                    .and_then(|v| v.to_string(tc))
-                    .map(|s| s.to_rust_string_lossy(tc));
-                let message = if let Some(m) = tc.message() {
-                    m.get(tc).to_rust_string_lossy(tc)
-                } else {
-                    exc_str.clone()
-                };
-                Console::exception(message.clone(), stack.as_deref());
-                // Also propagate to window.onerror if present (Phase 6: error propagation)
-                // Build a small JS snippet that calls window.onerror(message, url, 0, 0)
-                fn escape_js(s: &str) -> String {
-                    let mut out = String::with_capacity(s.len() + 8);
-                    for ch in s.chars() {
-                        match ch {
-                            '\\' => out.push_str("\\\\"),
-                            '"' => out.push_str("\\\""),
-                            '\n' => out.push_str("\\n"),
-                            '\r' => out.push_str("\\r"),
-                            _ => out.push(ch),
+        if let Some(compiled) = Script::compile(tc, code, Some(&origin)) {
+            if compiled.run(tc).is_none() {
+                if tc.has_caught() {
+                    let exc = tc.exception();
+                    let exc_str = exc
+                        .and_then(|exc_val| exc_val.to_string(tc))
+                        .map(|str_val| str_val.to_rust_string_lossy(tc))
+                        .unwrap_or_else(|| String::from("Uncaught exception"));
+                    let stack = tc
+                        .stack_trace()
+                        .and_then(|stack_val| stack_val.to_string(tc))
+                        .map(|str_val| str_val.to_rust_string_lossy(tc));
+                    let message = tc.message().map_or_else(
+                        || exc_str.clone(),
+                        |msg_obj| msg_obj.get(tc).to_rust_string_lossy(tc),
+                    );
+                    Console::exception(message.clone(), stack.as_deref());
+                    // Also propagate to window.onerror if present (Phase 6: error propagation)
+                    // Build a small JS snippet that calls window.onerror(message, url, 0, 0)
+                    let msg_lit = format!("\"{}\"", escape_js_for_literal(&message));
+                    let url_lit = format!("\"{}\"", escape_js_for_literal(url));
+                    let call_onerror = format!(
+                        "(function(m,u){{try{{if(typeof window!=='undefined'&&typeof window.onerror==='function'){{window.onerror(m,u,0,0);}}}}catch(_o){{}}}})({},{});",
+                        msg_lit, url_lit
+                    );
+                    if let Some(code2) = V8String::new(tc, &call_onerror) {
+                        let undefined2: Local<Value> = undefined(tc).into();
+                        let origin2 = ScriptOrigin::new(
+                            tc,
+                            name.into(),
+                            0,
+                            0,
+                            false,
+                            0,
+                            undefined2,
+                            false,
+                            false,
+                            false,
+                        );
+                        if let Some(compiled2) = Script::compile(tc, code2, Some(&origin2)) {
+                            if compiled2.run(tc).is_none() {
+                                Console::info("window.onerror dispatch failed");
+                            }
                         }
                     }
-                    out
                 }
-                let msg_lit = format!("\"{}\"", escape_js(&message));
-                let url_lit = format!("\"{}\"", escape_js(url));
-                let call_onerror = format!(
-                    "(function(m,u){{try{{if(typeof window!=='undefined'&&typeof window.onerror==='function'){{window.onerror(m,u,0,0);}}}}catch(_o){{}}}})({},{});",
-                    msg_lit, url_lit
-                );
-                // Best-effort: attempt to invoke handler; log if it fails
-                if let Some(code2) = V8String::new(tc, &call_onerror) {
-                    let undefined2: Local<Value> = undefined(tc).into();
-                    let origin2 = ScriptOrigin::new(
-                        tc,
-                        name.into(),
-                        0,
-                        0,
-                        false,
-                        0,
-                        undefined2,
-                        false,
-                        false,
-                        false,
-                    );
-                    if Script::compile(tc, code2, Some(&origin2))
-                        .and_then(|s| s.run(tc))
-                        .is_none()
-                    {
-                        Console::info("window.onerror dispatch failed");
-                    }
-                }
+                return Err(anyhow!("v8 failed"));
             }
-            return Err(anyhow!("v8 failed"));
         }
         Ok(())
     }
@@ -266,14 +265,8 @@ impl V8Engine {
         self.stubs_installed = true;
         Ok(())
     }
-}
-
-impl V8Engine {
     /// Convert a generic `JSValue` to a V8 `Local<Value>`.
-    fn from_js_value<'s>(
-        scope: &mut HandleScope<'s, ()>,
-        value: &JSValue,
-    ) -> Local<'s, Value> {
+    fn from_js_value<'s>(scope: &mut HandleScope<'s>, value: &JSValue) -> Local<'s, Value> {
         match value {
             JSValue::Undefined => undefined(scope).into(),
             JSValue::Null => null(scope).into(),
@@ -300,6 +293,7 @@ impl V8Engine {
     }
 
     /// Install host bindings (namespaces and functions) onto the global object.
+    #[inline]
     pub fn install_bindings(
         &mut self,
         host_context: HostContext,
@@ -323,15 +317,14 @@ impl V8Engine {
             // Merge into existing global object if present (e.g., document), otherwise create a new one.
             let ns_key = V8String::new(scope, namespace_name).unwrap();
             let existing = global.get(scope, ns_key.into());
-            let target_obj: Local<Object> = if let Some(val) =
-                existing.and_then(|v| Local::<Object>::try_from(v).ok())
-            {
-                val
-            } else {
-                let obj = Object::new(scope);
-                let _ = global.set(scope, ns_key.into(), obj.into());
-                obj
-            };
+            let target_obj: Local<Object> =
+                if let Some(val) = existing.and_then(|v| Local::<Object>::try_from(v).ok()) {
+                    val
+                } else {
+                    let obj = Object::new(scope);
+                    let _ = global.set(scope, ns_key.into(), obj.into());
+                    obj
+                };
 
             // Install properties
             for (property_name, property_value) in &namespace.properties {
@@ -348,9 +341,10 @@ impl V8Engine {
                 let _ = target_obj.set(scope, key.into(), function.into());
                 // Expose host functions under __valorHost_* for the runtime wrapper to call directly.
                 if *namespace_name == "document" {
-                    let host_alias = format!("__valorHost_{}", function_name);
+                    let host_alias = format!("__valorHost_{function_name}");
                     if let Some(alias_key) = V8String::new(scope, &host_alias) {
-                        let _ = target_obj.set(scope, alias_key.into(), function.into());
+                        let _ignored_result = target_obj.set(scope, alias_key.into(), function.into());
+                        let _ = _ignored_result;
                     }
                 }
             }
@@ -360,12 +354,14 @@ impl V8Engine {
 }
 
 impl JsEngine for V8Engine {
+    #[inline]
     fn eval_script(&mut self, source: &str, url: &str) -> Result<()> {
         // Ensure stubs exist so basic console/document calls don't throw
         self.ensure_stubs()?;
         self.run_script_internal(source, url)
     }
 
+    #[inline]
     fn eval_module(&mut self, source: &str, url: &str) -> Result<()> {
         // Minimal module support for Phase 6: evaluate pre-bundled side-effect code
         // using the classic script path. A future iteration can switch to true V8
@@ -374,59 +370,45 @@ impl JsEngine for V8Engine {
         self.run_script_internal(source, url)
     }
 
+    #[inline]
     fn run_jobs(&mut self) -> Result<()> {
         // V8 runs microtasks at checkpoints; perform within a context and catch exceptions.
         if let Some(isolate_container) = &mut self.isolate {
             let isolate = &mut isolate_container.isolate;
-            let hs = &mut HandleScope::new(isolate);
+            let handle_scope = &mut HandleScope::new(isolate);
             let global_context = self
                 .inner
                 .as_ref()
                 .ok_or_else(|| anyhow!("context not initialized"))?;
-            let local_context: Local<Context> = Local::new(hs, global_context);
-            let cs = &mut ContextScope::new(hs, local_context);
-            let tc = &mut TryCatch::new(cs);
-            tc.perform_microtask_checkpoint();
-            if tc.has_caught() {
-                let exc = tc.exception();
+            let local_context: Local<Context> = Local::new(handle_scope, global_context);
+            let context_scope = &mut ContextScope::new(handle_scope, local_context);
+            let try_catch = &mut TryCatch::new(context_scope);
+            try_catch.perform_microtask_checkpoint();
+            if try_catch.has_caught() {
+                let exc = try_catch.exception();
                 let exc_str = exc
-                    .and_then(|e| e.to_string(tc))
-                    .map(|s| s.to_rust_string_lossy(tc))
+                    .and_then(|exc_val| exc_val.to_string(try_catch))
+                    .map(|str_val| str_val.to_rust_string_lossy(try_catch))
                     .unwrap_or_else(|| String::from("Uncaught exception in microtask"));
-                let stack = tc
+                let stack = try_catch
                     .stack_trace()
-                    .and_then(|v| v.to_string(tc))
-                    .map(|s| s.to_rust_string_lossy(tc));
-                let message = if let Some(m) = tc.message() {
-                    m.get(tc).to_rust_string_lossy(tc)
-                } else {
-                    exc_str.clone()
-                };
+                    .and_then(|stack_val| stack_val.to_string(try_catch))
+                    .map(|str_val| str_val.to_rust_string_lossy(try_catch));
+                let message = try_catch
+                    .message()
+                    .map_or_else(|| exc_str.clone(), |msg_obj| msg_obj.get(try_catch).to_rust_string_lossy(try_catch));
                 Console::exception(message.clone(), stack.as_deref());
                 // Dispatch to window.onunhandledrejection if present
-                fn escape_js(s: &str) -> String {
-                    let mut out = String::with_capacity(s.len() + 8);
-                    for ch in s.chars() {
-                        match ch {
-                            '\\' => out.push_str("\\\\"),
-                            '"' => out.push_str("\\\""),
-                            '\n' => out.push_str("\\n"),
-                            '\r' => out.push_str("\\r"),
-                            _ => out.push(ch),
-                        }
-                    }
-                    out
-                }
-                let msg_lit = format!("\"{}\"", escape_js(&message));
+                let msg_lit = format!("\"{}\"", escape_js_for_literal(&message));
                 let call_unhandled = format!(
-                    "(function(m){{try{{if(typeof window!=='undefined'&&typeof window.onunhandledrejection==='function'){{window.onunhandledrejection({{type:'unhandledrejection', reason:m}});}}}}catch(_ ){{}}}})({});",
-                    msg_lit
+                    "(function(m){{try{{if(typeof window!=='undefined'&&typeof window.onunhandledrejection==='function'){{window.onunhandledrejection({{type:'unhandledrejection', reason:m}});}}}}catch(_ ){{}}}})({msg_lit})"
                 );
-                if let Some(code2) = V8String::new(tc, &call_unhandled) {
-                    let origin2_name = V8String::new(tc, "valor://unhandledrejection").unwrap();
-                    let undefined2: Local<Value> = undefined(tc).into();
+                if let Some(code2) = V8String::new(try_catch, &call_unhandled)
+                    && let Some(origin2_name) = V8String::new(try_catch, "valor://unhandledrejection")
+                {
+                    let undefined2: Local<Value> = undefined(try_catch).into();
                     let origin2 = ScriptOrigin::new(
-                        tc,
+                        try_catch,
                         origin2_name.into(),
                         0,
                         0,
@@ -437,31 +419,39 @@ impl JsEngine for V8Engine {
                         false,
                         false,
                     );
-                    let _ = Script::compile(tc, code2, Some(&origin2)).and_then(|s| s.run(tc));
+                    if let Some(compiled2) = Script::compile(try_catch, code2, Some(&origin2))
+                        && compiled2.run(try_catch).is_none()
+                    {
+                        // ignore
+                    }
                 }
                 // Also notify window.onerror for visibility, mirroring classic script errors
-                let msg_lit = format!("\"{}\"", escape_js(&message));
-                let url_lit = "\"valor://microtask\"".to_string();
+                let msg_lit2 = format!("\"{}\"", escape_js_for_literal(&message));
+                let url_lit2 = "\"valor://microtask\"".to_owned();
                 let call_onerror = format!(
-                    "(function(m,u){{try{{if(typeof window!=='undefined'&&typeof window.onerror==='function'){{window.onerror(m,u,0,0);}}}}catch(_o){{}}}})({},{});",
-                    msg_lit, url_lit
+                    "(function(m,u){{try{{if(typeof window!=='undefined'&&typeof window.onerror==='function'){{window.onerror(m,u,0,0);}}}}catch(_o){{}}}})({msg_lit2},{url_lit2})"
                 );
-                if let Some(code3) = V8String::new(tc, &call_onerror) {
-                    let undefined3: Local<Value> = undefined(tc).into();
-                    let origin3_name = V8String::new(tc, "valor://microtask").unwrap();
-                    let origin3 = ScriptOrigin::new(
-                        tc,
-                        origin3_name.into(),
-                        0,
-                        0,
-                        false,
-                        0,
-                        undefined3,
-                        false,
-                        false,
-                        false,
-                    );
-                    let _ = Script::compile(tc, code3, Some(&origin3)).and_then(|s| s.run(tc));
+                if let Some(code3) = V8String::new(try_catch, &call_onerror) {
+                    let undefined3: Local<Value> = undefined(try_catch).into();
+                    if let Some(origin3_name) = V8String::new(try_catch, "valor://microtask") {
+                        let origin3 = ScriptOrigin::new(
+                            try_catch,
+                            origin3_name.into(),
+                            0,
+                            0,
+                            false,
+                            0,
+                            undefined3,
+                            false,
+                            false,
+                            false,
+                        );
+                        if let Some(compiled3) = Script::compile(try_catch, code3, Some(&origin3)) {
+                            if compiled3.run(try_catch).is_none() {
+                                // ignore
+                            }
+                        }
+                    }
                 }
                 // Do not propagate as a hard error; browsers don't crash on unhandled rejections.
                 // We already logged to console and invoked the handler if any.

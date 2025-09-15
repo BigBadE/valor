@@ -105,7 +105,7 @@ impl HtmlPage {
 
         // Channel for inline script execution requests from the parser
         let (script_tx, script_rx) = unbounded_channel::<html::parser::ScriptJob>();
-        let inputs = html::parser::HTMLParser::ParseInputs {
+        let inputs = html::parser::ParseInputs {
             in_updater: in_updater.clone(),
             keyman,
             byte_stream: stream_url(&url).await?,
@@ -168,14 +168,14 @@ impl HtmlPage {
             dom_index: dom_index_shared.clone(),
             tokio_handle: handle.clone(),
             page_origin,
-            fetch_registry: Arc::new(Mutex::new(js::bindings::FetchRegistry::default())),
+            fetch_registry: Arc::new(Mutex::new(Default::default())),
             performance_start: start_instant,
             storage_local: storage_local.clone(),
             storage_session: storage_session.clone(),
             chrome_host_tx: None,
         };
         let bindings = js::build_default_bindings();
-        let _ = js_engine.install_bindings(&host_context, &bindings);
+        let _ = js_engine.install_bindings(host_context.clone(), &bindings);
 
         // Frame scheduler budget (ms) from ValorConfig
         let frame_scheduler = FrameScheduler::new(config.frame_budget());
@@ -745,7 +745,7 @@ impl HtmlPage {
             let ua_count = current_styles
                 .rules
                 .iter()
-                .filter(|r| matches!(r.origin, css::types::Origin::UA))
+                .filter(|r| matches!(r.origin, css::types::Origin::UserAgent))
                 .count() as u32;
             let parsed_author = css::parser::parse_stylesheet(
                 &inline_style_css_trimmed,
@@ -757,7 +757,7 @@ impl HtmlPage {
                     current_styles
                         .rules
                         .iter()
-                        .filter(|r| matches!(r.origin, css::types::Origin::UA))
+                        .filter(|r| matches!(r.origin, css::types::Origin::UserAgent))
                         .cloned(),
                 );
                 final_styles.rules.extend(parsed_author.rules);
