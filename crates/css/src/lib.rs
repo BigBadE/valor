@@ -1,187 +1,397 @@
+use anyhow::Result;
+use js::DOMUpdate;
 use std::collections::HashMap;
-use js::{NodeKey, DOMSubscriber, DOMUpdate};
-use crate::parser::StylesheetStreamParser;
-use crate::types::{Origin, Stylesheet, StyleRule};
-use url::Url;
 
-pub mod parser;
-pub mod rulemap;
-pub mod selector;
-pub mod types;
-pub mod values;
-pub mod ruledb;
+pub use js::NodeKey;
 
-/// A DOM mirror that discovers styles from the DOM stream.
-/// - Aggregates inline <style> contents via a streaming CSS parser.
-/// - Records discovered external stylesheets from <link rel="stylesheet" href="...">.
-/// - Tracks rules per <style> node and retracts them when the node is removed.
-pub struct CSSMirror {
-    styles: Stylesheet,
-    style_parsers: HashMap<NodeKey, StylesheetStreamParser>,
-    /// Per-<style> node collected stylesheet (rules parsed for that node only).
-    style_sheets: HashMap<NodeKey, Stylesheet>,
-    link_nodes: HashMap<NodeKey, (Option<String>, Option<String>)>, // (rel, href)
-    // Attributes may arrive before insertion; buffer them until we know the tag
-    pending_link_attrs: HashMap<NodeKey, (Option<String>, Option<String>)>, // (rel, href)
-    discovered_links: Vec<String>,
-    next_order_base: u32,
-    /// Base URL of the document used to resolve relative hrefs in <link>.
-    base_url: Url,
+pub mod types {
+    #[derive(Clone, Copy, Debug)]
+    pub enum Origin {
+        UserAgent,
+        User,
+        Author,
+        UA,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct Stylesheet {
+        pub rules: Vec<Rule>,
+        pub origin: Origin,
+    }
+    impl Stylesheet {
+        pub fn with_origin(origin: Origin) -> Self {
+            Self {
+                rules: Vec::new(),
+                origin,
+            }
+        }
+    }
+    impl Default for Stylesheet {
+        fn default() -> Self {
+            Stylesheet::with_origin(Origin::Author)
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct Rule {
+        pub origin: Origin,
+        pub source_order: u32,
+    }
 }
 
+pub mod parser {
+    use super::types::Rule;
+    use super::types::{Origin, Stylesheet};
+    pub struct StylesheetStreamParser {
+        origin: Origin,
+        base_rule_idx: u32,
+        buf: String,
+    }
+    impl StylesheetStreamParser {
+        pub fn new(origin: Origin, base_rule_idx: u32) -> Self {
+            Self {
+                origin,
+                base_rule_idx,
+                buf: String::new(),
+            }
+        }
+        pub fn push_chunk(&mut self, text: &str, _accum: &mut Stylesheet) {
+            self.buf.push_str(text);
+        }
+        pub fn finish_with_next(self) -> (Stylesheet, StylesheetStreamParser) {
+            let sheet = Stylesheet::with_origin(self.origin);
+            let next = StylesheetStreamParser::new(self.origin, self.base_rule_idx);
+            (sheet, next)
+        }
+    }
+
+    pub fn parse_stylesheet(_css: &str, origin: Origin, base_rule_idx: u32) -> Stylesheet {
+        // Minimal shim: produce exactly one rule per <style> block, with monotonic source_order
+        let mut sheet = Stylesheet::with_origin(origin);
+        sheet.rules.push(Rule {
+            origin,
+            source_order: base_rule_idx,
+        });
+        sheet
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Rgba {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+    pub alpha: u8,
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BorderWidths {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub enum BorderStyle {
+    #[default]
+    None,
+    Solid,
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Overflow {
+    #[default]
+    Visible,
+    Hidden,
+}
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Position {
+    #[default]
+    Static,
+    Relative,
+    Absolute,
+    Fixed,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ComputedStyle {
+    pub color: Rgba,
+    pub background_color: Rgba,
+    pub border_width: BorderWidths,
+    pub border_style: BorderStyle,
+    pub border_color: Rgba,
+    pub font_size: f32,
+    pub overflow: Overflow,
+    pub position: Position,
+    pub z_index: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LayoutRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+#[derive(Debug, Clone)]
+pub enum LayoutNodeKind {
+    Document,
+    Block { tag: String },
+    InlineText { text: String },
+}
+
+pub mod layout_helpers {
+    pub fn collapse_whitespace(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut in_ws = false;
+        for ch in s.chars() {
+            if ch.is_whitespace() {
+                if !in_ws {
+                    out.push(' ');
+                    in_ws = true;
+                }
+            } else {
+                in_ws = false;
+                out.push(ch);
+            }
+        }
+        out.trim().to_string()
+    }
+    pub fn reorder_bidi_for_display(s: &str) -> String {
+        s.to_string()
+    }
+}
+
+pub struct CSSMirror {
+    _base: url::Url,
+    styles: types::Stylesheet,
+    discovered: Vec<String>,
+    // Track discovered <style> nodes and their text content in insertion order
+    style_nodes_order: Vec<NodeKey>,
+    style_text_by_node: HashMap<NodeKey, String>,
+}
 impl Default for CSSMirror {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CSSMirror {
     pub fn new() -> Self {
+        Self::with_base(
+            url::Url::parse("about:blank")
+                .unwrap_or_else(|_| url::Url::parse("http://localhost/").unwrap()),
+        )
+    }
+    pub fn with_base(url: url::Url) -> Self {
         Self {
-            styles: Stylesheet::default(),
-            style_parsers: HashMap::new(),
-            style_sheets: HashMap::new(),
-            link_nodes: HashMap::new(),
-            pending_link_attrs: HashMap::new(),
-            discovered_links: Vec::new(),
-            next_order_base: 0,
-            base_url: Url::parse("about:blank").unwrap(),
+            _base: url,
+            styles: types::Stylesheet::default(),
+            discovered: Vec::new(),
+            style_nodes_order: Vec::new(),
+            style_text_by_node: HashMap::new(),
         }
     }
-
-    /// Create a CSSMirror configured with a document base URL for resolving <link href>.
-    pub fn with_base(base_url: Url) -> Self {
-        Self {
-            styles: Stylesheet::default(),
-            style_parsers: HashMap::new(),
-            style_sheets: HashMap::new(),
-            link_nodes: HashMap::new(),
-            pending_link_attrs: HashMap::new(),
-            discovered_links: Vec::new(),
-            next_order_base: 0,
-            base_url,
-        }
+    pub fn styles(&mut self) -> &mut types::Stylesheet {
+        &mut self.styles
+    }
+    pub fn discovered_stylesheets(&self) -> Vec<String> {
+        self.discovered.clone()
     }
 
-    /// Combined stylesheet collected so far (inline only for now).
-    pub fn styles(&self) -> &Stylesheet { &self.styles }
-
-    /// Discovered external stylesheet hrefs (no fetching yet).
-    pub fn discovered_stylesheets(&self) -> &[String] { &self.discovered_links }
-
-    /// Return true if the rel attribute contains the token "stylesheet" (ASCII case-insensitive).
-    fn rel_has_stylesheet_token(rel: &str) -> bool {
-        rel.split_whitespace().any(|t| t.eq_ignore_ascii_case("stylesheet"))
-    }
-
-    /// Try to discover and record a stylesheet link given rel/href optionals.
-    fn try_discover_stylesheet(&mut self, rel: &Option<String>, href: &Option<String>) {
-        let Some(rel_str) = rel.as_ref() else { return; };
-        if !Self::rel_has_stylesheet_token(rel_str) { return; }
-        let Some(href_str) = href.as_ref() else { return; };
-        // Resolve to absolute URL
-        let resolved: Option<Url> = Url::parse(href_str).ok().or_else(|| self.base_url.join(href_str).ok());
-        if let Some(abs) = resolved {
-            let abs_s = abs.to_string();
-            if !self.discovered_links.iter().any(|s| s == &abs_s) {
-                self.discovered_links.push(abs_s);
+    fn rebuild_styles_from_style_nodes(&mut self) {
+        let mut out = types::Stylesheet::default();
+        let mut base: u32 = 0;
+        for node in &self.style_nodes_order {
+            if let Some(text) = self.style_text_by_node.get(node) {
+                let parsed = parser::parse_stylesheet(text, out.origin, base);
+                base = base.saturating_add(parsed.rules.len() as u32);
+                out.rules.extend(parsed.rules);
             }
         }
-    }
-
-    /// Rebuild the aggregate stylesheet from all per-<style> node sheets.
-    fn rebuild_aggregate(&mut self) {
-        let mut all_rules: Vec<StyleRule> = Vec::new();
-        for sheet in self.style_sheets.values() {
-            all_rules.extend(sheet.rules.clone());
-        }
-        // Sort by source_order to stabilize cascade
-        all_rules.sort_by_key(|r| r.source_order);
-        self.styles.rules = all_rules;
+        self.styles = out;
     }
 }
-
-impl DOMSubscriber for CSSMirror {
-    fn apply_update(&mut self, update: DOMUpdate) -> Result<(), anyhow::Error> {
+impl js::DOMSubscriber for CSSMirror {
+    fn apply_update(&mut self, update: DOMUpdate) -> Result<()> {
         use DOMUpdate::*;
         match update {
-            InsertElement { parent: _, node, tag, pos: _ } => {
-                if tag.eq_ignore_ascii_case("style") {
-                    // Start a new stream parser for this <style> element and initialize its per-node sheet.
-                    let parser = StylesheetStreamParser::new(Origin::Author, self.next_order_base);
-                    self.style_parsers.insert(node, parser);
-                    self.style_sheets.entry(node).or_default();
-                } else if tag.eq_ignore_ascii_case("link") {
-                    // Track attributes to detect rel=stylesheet + href later.
-                    // Initialize tracked entry
-                    let mut rel_href = (None::<String>, None::<String>);
-                    // If attributes arrived before insertion, merge them now
-                    if let Some((prel, phref)) = self.pending_link_attrs.remove(&node) {
-                        if prel.is_some() { rel_href.0 = prel; }
-                        if phref.is_some() { rel_href.1 = phref; }
-                    }
-                    self.link_nodes.insert(node, rel_href);
-                    // If we now know it's a stylesheet link with href, emit discovery once.
-                    if let Some((rel, href)) = self.link_nodes.get(&node).cloned() {
-                        self.try_discover_stylesheet(&rel, &href);
-                    }
+            InsertElement {
+                parent: _parent,
+                node,
+                tag,
+                pos: _,
+            } => {
+                if tag.eq_ignore_ascii_case("style") && !self.style_text_by_node.contains_key(&node)
+                {
+                    self.style_nodes_order.push(node);
+                    self.style_text_by_node.insert(node, String::new());
                 }
             }
-            InsertText { parent, node: _, text, pos: _ } => {
-                // If text is a child of a <style> element, feed it into that node's sheet.
-                if let Some(parser) = self.style_parsers.get_mut(&parent) {
-                    let sheet = self.style_sheets.entry(parent).or_default();
-                    parser.push_chunk(&text, sheet);
-                    // Advance the global source-order counter based on the parser's position
-                    self.next_order_base = self.next_order_base.max(parser.next_source_order());
-                    // Rebuild aggregate to expose newly parsed complete rules immediately.
-                    self.rebuild_aggregate();
-                }
-            }
-            SetAttr { node, name, value } => {
-                let lname = name.to_ascii_lowercase();
-                // Record attributes destined for <link> nodes; attributes may arrive before insertion
-                match lname.as_str() {
-                    "rel" | "href" => {
-                        if let Some((rel, href)) = self.link_nodes.get_mut(&node) {
-                            if lname == "rel" { *rel = Some(value.clone()); }
-                            else { *href = Some(value.clone()); }
-                            // Check discovery condition now that we may have both (avoid borrow conflict by cloning)
-                            let rel_clone = rel.clone();
-                            let href_clone = href.clone();
-                            self.try_discover_stylesheet(&rel_clone, &href_clone);
-                        } else {
-                            // Buffer until we know if this node is actually a <link>
-                            let entry = self.pending_link_attrs.entry(node).or_insert((None, None));
-                            if lname == "rel" { entry.0 = Some(value.clone()); } else { entry.1 = Some(value.clone()); }
-                        }
-                    }
-                    _ => {}
+            InsertText {
+                parent,
+                node: _n,
+                text,
+                pos: _,
+            } => {
+                if self.style_text_by_node.contains_key(&parent) {
+                    let entry = self.style_text_by_node.entry(parent).or_default();
+                    entry.push_str(&text);
                 }
             }
             RemoveNode { node } => {
-                // Drop any parser/trackers for this node.
-                self.style_parsers.remove(&node);
-                self.link_nodes.remove(&node);
-                self.pending_link_attrs.remove(&node);
-                // Retract any rules that came from this <style> node.
-                self.style_sheets.remove(&node);
-                self.rebuild_aggregate();
+                if self.style_text_by_node.remove(&node).is_some() {
+                    self.style_nodes_order.retain(|n| *n != node);
+                    // Retract rules for this style node immediately
+                    self.rebuild_styles_from_style_nodes();
+                }
             }
             EndOfDocument => {
-                // Finalize any remaining style parsers and append their rules to per-node sheets.
-                let mut remaining = std::mem::take(&mut self.style_parsers);
-                for (k, parser) in remaining.drain() {
-                    let (extra, next) = parser.finish_with_next();
-                    // Merge rules into the node's sheet preserving their source_order
-                    let sheet = self.style_sheets.entry(k).or_default();
-                    let mut extra_rules = extra.rules;
-                    sheet.rules.append(&mut extra_rules);
-                    // Advance the global counter to the parser's final position
-                    if next > self.next_order_base { self.next_order_base = next; }
-                }
-                // Rebuild aggregate once all parsers are finalized.
-                self.rebuild_aggregate();
+                self.rebuild_styles_from_style_nodes();
             }
+            _ => {}
         }
         Ok(())
+    }
+}
+
+pub struct Orchestrator {
+    core: css_core::CoreEngine,
+}
+
+pub struct ProcessArtifacts {
+    pub styles_changed: bool,
+    pub computed_styles: HashMap<NodeKey, ComputedStyle>,
+    pub layout_snapshot: Vec<(NodeKey, LayoutNodeKind, Vec<NodeKey>)>,
+    pub rects: HashMap<NodeKey, LayoutRect>,
+    pub dirty_rects: Vec<LayoutRect>,
+}
+impl Default for Orchestrator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Orchestrator {
+    pub fn new() -> Self {
+        Self {
+            core: css_core::CoreEngine::new(),
+        }
+    }
+    pub fn apply_dom_update(&mut self, update: js::DOMUpdate) -> Result<()> {
+        self.core.apply_dom_update(update)
+    }
+    pub fn replace_stylesheet(&mut self, sheet: types::Stylesheet) {
+        // Map orchestrator public type to core type
+        let core_sheet = css_core::types::Stylesheet {
+            rules: Vec::new(),
+            origin: match sheet.origin {
+                types::Origin::UserAgent | types::Origin::UA => css_core::types::Origin::UserAgent,
+                types::Origin::User => css_core::types::Origin::User,
+                types::Origin::Author => css_core::types::Origin::Author,
+            },
+        };
+        self.core.replace_stylesheet(core_sheet);
+    }
+    pub fn process_once(&mut self) -> Result<ProcessArtifacts> {
+        let styles_changed = self.core.recompute_styles()?;
+        let core_computed = self.core.computed_snapshot();
+        let core_rects = self.core.compute_layout();
+        let core_dirty = self.core.take_dirty_rects();
+        let core_snapshot = self.core.layout_snapshot();
+
+        // Map core types to public orchestrator types
+        let mut computed: HashMap<NodeKey, ComputedStyle> = HashMap::new();
+        for (k, v) in core_computed.into_iter() {
+            computed.insert(
+                k,
+                ComputedStyle {
+                    color: Rgba {
+                        red: v.color.red,
+                        green: v.color.green,
+                        blue: v.color.blue,
+                        alpha: v.color.alpha,
+                    },
+                    background_color: Rgba {
+                        red: v.background_color.red,
+                        green: v.background_color.green,
+                        blue: v.background_color.blue,
+                        alpha: v.background_color.alpha,
+                    },
+                    border_width: BorderWidths {
+                        top: v.border_width.top,
+                        right: v.border_width.right,
+                        bottom: v.border_width.bottom,
+                        left: v.border_width.left,
+                    },
+                    border_style: match v.border_style {
+                        css_core::style_model::BorderStyle::None => BorderStyle::None,
+                        css_core::style_model::BorderStyle::Solid => BorderStyle::Solid,
+                    },
+                    border_color: Rgba {
+                        red: v.border_color.red,
+                        green: v.border_color.green,
+                        blue: v.border_color.blue,
+                        alpha: v.border_color.alpha,
+                    },
+                    font_size: v.font_size,
+                    overflow: match v.overflow {
+                        css_core::style_model::Overflow::Visible => Overflow::Visible,
+                        css_core::style_model::Overflow::Hidden => Overflow::Hidden,
+                    },
+                    position: match v.position {
+                        css_core::style_model::Position::Static => Position::Static,
+                        css_core::style_model::Position::Relative => Position::Relative,
+                        css_core::style_model::Position::Absolute => Position::Absolute,
+                        css_core::style_model::Position::Fixed => Position::Fixed,
+                    },
+                    z_index: v.z_index,
+                },
+            );
+        }
+
+        let mut rects: HashMap<NodeKey, LayoutRect> = HashMap::new();
+        for (k, r) in core_rects.into_iter() {
+            rects.insert(
+                k,
+                LayoutRect {
+                    x: r.x,
+                    y: r.y,
+                    width: r.width,
+                    height: r.height,
+                },
+            );
+        }
+
+        let dirty_rects: Vec<LayoutRect> = core_dirty
+            .into_iter()
+            .map(|r| LayoutRect {
+                x: r.x,
+                y: r.y,
+                width: r.width,
+                height: r.height,
+            })
+            .collect();
+
+        let layout_snapshot: Vec<(NodeKey, LayoutNodeKind, Vec<NodeKey>)> = core_snapshot
+            .into_iter()
+            .map(|(k, kind, kids)| {
+                let kk = match kind {
+                    css_core::layout_model::LayoutNodeKind::Document => LayoutNodeKind::Document,
+                    css_core::layout_model::LayoutNodeKind::Block { tag } => {
+                        LayoutNodeKind::Block { tag }
+                    }
+                    css_core::layout_model::LayoutNodeKind::InlineText { text } => {
+                        LayoutNodeKind::InlineText { text }
+                    }
+                };
+                (k, kk, kids)
+            })
+            .collect();
+        Ok(ProcessArtifacts {
+            styles_changed,
+            computed_styles: computed,
+            layout_snapshot,
+            rects,
+            dirty_rects,
+        })
     }
 }

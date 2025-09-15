@@ -4,16 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = { workspace = true }
-log = { workspace = true }
+anyhow.workspace = true
+log.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
-html5ever = "0.26"
-tendril = "0.4"
-url = { workspace = true }
-reqwest = { workspace = true }
-base64 = "0.22"
-serde_json = { workspace = true }
-bytes = { workspace = true }
+url.workspace = true
+reqwest.workspace = true
+base64.workspace = true
+serde_json.workspace = true
+bytes.workspace = true
 
 [lib]
 name = "js"

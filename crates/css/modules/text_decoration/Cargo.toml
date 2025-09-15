@@ -1,0 +1,6 @@
+[package]
+name = "css_text_decoration"
+edition.workspace = true
+
+[lints]
+workspace = true

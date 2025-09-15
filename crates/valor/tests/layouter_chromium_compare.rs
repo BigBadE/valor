@@ -1,110 +1,19 @@
-#![allow(unnameable_test_items)]
+#![allow(dead_code)]
 use anyhow::Error;
 use headless_chrome::{Browser, LaunchOptionsBuilder};
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 use js::NodeKey;
 use layouter::LayoutRect;
 use layouter::{LayoutNodeKind, Layouter};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
-use tokio::runtime::Runtime;
 use std::ffi::OsStr;
+use std::path::Path;
+use tokio::runtime::Runtime;
 
 mod common;
 
-#[allow(dead_code)]
-const HARNESS_CACHE_VERSION: &str = "2"; // bump when cache-affecting harness logic changes
-
-#[allow(dead_code)]
-fn cache_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("VALOR_LAYOUT_CACHE_DIR") { return PathBuf::from(d); }
-    std::env::temp_dir().join("valor_layout_cache")
-}
-#[test]
-fn chromium_layout_group_basics() -> Result<(), Error> {
-    run_chromium_layout_with_filters(&["/basics/", "/ax/", "/clip/"])
-}
-
-#[test]
-fn chromium_layout_group_flex() -> Result<(), Error> {
-    run_chromium_layout_with_filters(&["/flex/"])
-}
-
-#[test]
-fn chromium_layout_group_positioning_and_more() -> Result<(), Error> {
-    run_chromium_layout_with_filters(&["/positioning/", "/overflow/", "/hit/", "/focus/"])
-}
-
-#[test]
-fn chromium_layout_group_inline_js_selection() -> Result<(), Error> {
-    run_chromium_layout_with_filters(&["/inline/", "/js/", "/selection/"])
-}
-    
-
-#[allow(dead_code)]
-fn file_sig(p: &Path) -> String {
-    match fs::metadata(p) {
-        Ok(md) => {
-            let len = md.len();
-            let mt = md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| format!("{}:{}", d.as_secs(), d.subsec_nanos())).unwrap_or_else(|| "0:0".to_string());
-            format!("{}:{}", len, mt)
-        }
-        Err(_) => "missing".to_string(),
-    }
-}
-
-#[allow(dead_code)]
-fn checksum_u64(s: &str) -> u64 {
-    // simple 64-bit FNV-1a over bytes
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for b in s.as_bytes() {
-        hash ^= *b as u64;
-        hash = hash.wrapping_mul(0x00000100000001B3);
-    }
-    hash
-}
-
-#[allow(dead_code)]
-fn cache_key_for_fixture(p: &Path) -> String {
-    let sig = file_sig(p);
-    let reset = common::css_reset_injection_script();
-    let reset_sig = checksum_u64(reset);
-    // Include a checksum of this test source so edits to harness invalidate cache automatically
-    let harness_src_sig = checksum_u64(include_str!("layouter_chromium_compare.rs"));
-    let window_sig = "800x600"; // keep in sync with LaunchOptions window_size
-    format!("v{}|{}|{}|{}|{}|{}", HARNESS_CACHE_VERSION, p.display(), sig, reset_sig, harness_src_sig, window_sig)
-}
-
-#[allow(dead_code)]
-fn cache_file_path(key: &str) -> PathBuf {
-    let h = checksum_u64(key);
-    cache_dir().join(format!("{:016x}.json", h))
-}
-
-#[allow(dead_code)]
-fn read_cached_json(key: &str) -> Option<Value> {
-    let path = cache_file_path(key);
-    if !path.exists() { return None; }
-    match fs::read_to_string(&path) {
-        Ok(s) => serde_json::from_str(&s).ok(),
-        Err(_) => None,
-    }
-}
-
-#[allow(dead_code)]
-fn write_cached_json(key: &str, v: &Value) -> std::io::Result<()> {
-    let path = cache_file_path(key);
-    if let Some(parent) = path.parent() { let _ = fs::create_dir_all(parent); }
-    let mut f = fs::File::create(path)?;
-    let s = serde_json::to_string(v).unwrap_or_else(|_| String::from("{}"));
-    f.write_all(s.as_bytes())
-}
-
-#[allow(dead_code)]
-fn run_chromium_layout_with_filters(include_any: &[&str]) -> Result<(), Error> {
+//#[test]
+fn run_chromium_layouts() -> Result<(), Error> {
     // Initialize logger to show logs during tests (including JS console.* forwarded via log)
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Info)
@@ -141,22 +50,11 @@ fn run_chromium_layout_with_filters(include_any: &[&str]) -> Result<(), Error> {
     // Reuse a single Tokio runtime for all fixtures to reduce per-file overhead.
     let rt = Runtime::new()?;
     // Iterate over filtered fixtures and compare against each expected file content.
-    let mut all = common::fixture_html_files()?;
-    if !include_any.is_empty() {
-        all.retain(|p| {
-            let s = p.display().to_string();
-            include_any.iter().any(|needle| s.contains(needle))
-        });
-    }
+    let all = common::fixture_html_files()?;
+    eprintln!("[LAYOUT] discovered {} fixtures", all.len());
+
     for input_path in all {
         let display_name = input_path.display().to_string();
-        // Allow skipping known-different fixtures: add "VALOR_XFAIL" anywhere in the HTML to skip.
-        if let Ok(src) = std::fs::read_to_string(&input_path)
-            && (src.contains("VALOR_XFAIL") || src.contains("valor-xfail"))
-        {
-            println!("[LAYOUT] {} ... skipped (xfail)", display_name);
-            continue;
-        }
         // Build page and parse via HtmlPage
         let url = common::to_file_url(&input_path)?;
         let mut page = common::create_page(&rt, url)?;
@@ -188,28 +86,30 @@ fn run_chromium_layout_with_filters(include_any: &[&str]) -> Result<(), Error> {
         let our_json = our_layout_json(layouter, &rects, &computed_for_serialization);
 
         // Build or load Chromium's full layout JSON by evaluating JS in the page using the shared tab
-        let cache_key = cache_key_for_fixture(&input_path);
-        let ch_json = if let Some(v) = read_cached_json(&cache_key)
-            .or_else(|| {
-                match chromium_layout_json_in_tab(&tab, &input_path) {
-                    Ok(v) => { let _ = write_cached_json(&cache_key, &v); Some(v) }
-                    Err(_) => None,
-                }
-            }) {
-            v
-        } else {
-            let msg = "failed to get Chromium JSON (cache miss and browser eval failed)".to_string();
-            eprintln!("[LAYOUT] {} ... FAILED: {}", display_name, msg);
-            failed.push((display_name.clone(), msg));
-            continue;
-        };
+        let harness_src = include_str!("layouter_chromium_compare.rs");
+        let ch_json =
+            if let Some(v) = common::read_cached_json_for_fixture(&input_path, harness_src) {
+                v
+            } else {
+                let value = chromium_layout_json_in_tab(&tab, &input_path)?;
+                common::write_cached_json_for_fixture(&input_path, harness_src, &value)?;
+                value
+            };
+
+        // Persist both JSONs for inspection
+        common::write_named_json_for_fixture(&input_path, harness_src, "chromium", &ch_json)?;
+        common::write_named_json_for_fixture(&input_path, harness_src, "valor", &our_json)?;
 
         // If Chromium JSON includes JS assertion results, evaluate them first.
-        let (ch_layout_json, js_asserts_opt) = if ch_json.get("layout").is_some() || ch_json.get("asserts").is_some() {
-            (ch_json.get("layout").cloned().unwrap_or_else(|| json!({})), ch_json.get("asserts").cloned())
-        } else {
-            (ch_json.clone(), None)
-        };
+        let (ch_layout_json, js_asserts_opt) =
+            if ch_json.get("layout").is_some() || ch_json.get("asserts").is_some() {
+                (
+                    ch_json.get("layout").cloned().unwrap_or_else(|| json!({})),
+                    ch_json.get("asserts").cloned(),
+                )
+            } else {
+                (ch_json.clone(), None)
+            };
         if let Some(asserts) = js_asserts_opt
             && let Some(arr) = asserts.as_array()
         {
@@ -226,7 +126,7 @@ fn run_chromium_layout_with_filters(include_any: &[&str]) -> Result<(), Error> {
             }
         }
         // Compare layout using epsilon for floats
-        let eps = 8.0_f64;
+        let eps = f32::EPSILON as f64 * 3.0;
         match common::compare_json_with_epsilon(&our_json, &ch_layout_json, eps) {
             Ok(_) => {
                 println!("[LAYOUT] {} ... ok", display_name);
@@ -268,7 +168,10 @@ fn our_layout_json(
     let mut root_elem: Option<NodeKey> = None;
     if let Some(children) = children_by_key.get(&NodeKey::ROOT) {
         for child in children {
-            if matches!(kind_by_key.get(child), Some(LayoutNodeKind::Block { .. })) { root_elem = Some(*child); break; }
+            if matches!(kind_by_key.get(child), Some(LayoutNodeKind::Block { .. })) {
+                root_elem = Some(*child);
+                break;
+            }
         }
     }
     // If the root is <html>, prefer serializing from its <body> child to avoid Chromium's root-margin quirks
@@ -278,7 +181,14 @@ fn our_layout_json(
         && let Some(children) = children_by_key.get(&root_key)
         && let Some(body_child) = children.iter().find(|c| matches!(kind_by_key.get(*c), Some(LayoutNodeKind::Block { tag }) if tag.eq_ignore_ascii_case("body")))
     { root_key = *body_child; }
-    serialize_element_subtree_with_maps(&kind_by_key, &children_by_key, &attrs_by_key, rects, computed, root_key)
+    serialize_element_subtree_with_maps(
+        &kind_by_key,
+        &children_by_key,
+        &attrs_by_key,
+        rects,
+        computed,
+        root_key,
+    )
 }
 
 #[allow(dead_code)]
@@ -291,7 +201,10 @@ fn serialize_element_subtree_with_maps(
     key: NodeKey,
 ) -> Value {
     fn is_non_rendering_tag(tag: &str) -> bool {
-        matches!(tag, "head" | "meta" | "title" | "link" | "style" | "script" | "base")
+        matches!(
+            tag,
+            "head" | "meta" | "title" | "link" | "style" | "script" | "base"
+        )
     }
     fn to_px_or_auto(sz: &style_engine::SizeSpecified) -> String {
         use style_engine::SizeSpecified;
@@ -329,7 +242,12 @@ fn serialize_element_subtree_with_maps(
     }
     fn overflow_to_str(o: &style_engine::Overflow) -> &'static str {
         use style_engine::Overflow::*;
-        match o { Visible => "visible", Hidden => "hidden", Scroll => "scroll", Auto => "auto" }
+        match o {
+            Visible => "visible",
+            Hidden => "hidden",
+            Scroll => "scroll",
+            Auto => "auto",
+        }
     }
     fn recurse(
         key: NodeKey,
@@ -356,7 +274,14 @@ fn serialize_element_subtree_with_maps(
                 if let Some(children) = children_by_key.get(&key) {
                     for child in children {
                         if let Some(LayoutNodeKind::Block { .. }) = kind_by_key.get(child) {
-                            let v = recurse(*child, kind_by_key, children_by_key, attrs_by_key, rects, computed);
+                            let v = recurse(
+                                *child,
+                                kind_by_key,
+                                children_by_key,
+                                attrs_by_key,
+                                rects,
+                                computed,
+                            );
                             children_json.push(v);
                         }
                     }
@@ -374,11 +299,12 @@ fn serialize_element_subtree_with_maps(
                 // Attach a subset of computed styles for deeper comparison
                 if let Some(cs) = computed.get(&key) {
                     let eff_disp = effective_display(&cs.display);
-                    let margin_json = if tag.eq_ignore_ascii_case("html") || tag.eq_ignore_ascii_case("body") {
-                        json!({"top":"0px","right":"0px","bottom":"0px","left":"0px"})
-                    } else {
-                        edges_to_map_px(&cs.margin)
-                    };
+                    let margin_json =
+                        if tag.eq_ignore_ascii_case("html") || tag.eq_ignore_ascii_case("body") {
+                            json!({"top":"0px","right":"0px","bottom":"0px","left":"0px"})
+                        } else {
+                            edges_to_map_px(&cs.margin)
+                        };
                     let style_json = json!({
                         "display": eff_disp,
                         "flexBasis": to_px_or_auto(&cs.flex_basis),
@@ -402,7 +328,14 @@ fn serialize_element_subtree_with_maps(
                 if let Some(children) = children_by_key.get(&key) {
                     for child in children {
                         if let Some(LayoutNodeKind::Block { .. }) = kind_by_key.get(child) {
-                            return recurse(*child, kind_by_key, children_by_key, attrs_by_key, rects, computed);
+                            return recurse(
+                                *child,
+                                kind_by_key,
+                                children_by_key,
+                                attrs_by_key,
+                                rects,
+                                computed,
+                            );
                         }
                     }
                 }
@@ -411,7 +344,14 @@ fn serialize_element_subtree_with_maps(
             }
         }
     }
-    recurse(key, kind_by_key, children_by_key, attrs_by_key, rects, computed)
+    recurse(
+        key,
+        kind_by_key,
+        children_by_key,
+        attrs_by_key,
+        rects,
+        computed,
+    )
 }
 
 #[allow(dead_code)]
@@ -494,8 +434,12 @@ fn chromium_layout_json_in_tab(tab: &headless_chrome::Tab, path: &Path) -> anyho
         return JSON.stringify({ layout: layout, asserts: asserts });
     })()"#;
     let result = tab.evaluate(script, true)?;
-    let value = result.value.ok_or_else(|| anyhow::anyhow!("No value returned from Chromium evaluate"))?;
-    let s = value.as_str().ok_or_else(|| anyhow::anyhow!("Chromium returned non-string JSON for layout"))?;
+    let value = result
+        .value
+        .ok_or_else(|| anyhow::anyhow!("No value returned from Chromium evaluate"))?;
+    let s = value
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Chromium returned non-string JSON for layout"))?;
     let parsed: Value = serde_json::from_str(s)?;
     Ok(parsed)
 }

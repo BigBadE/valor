@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>simple_block</title>
+    <style>
+      /* Keep styles minimal; harness injects a CSS reset for Chrome side */
+      #container {
+        width: 300px;
+        padding: 10px;
+        border: 2px solid black;
+      }
+      .item {
+        height: 40px;
+        margin: 5px;
+        padding: 4px;
+        border: 1px solid #333;
+      }
+    </style>
+    <script>
+      // Optional assertion channel: results collected by harness from window._valorResults
+      window._valorResults = [];
+      window._valorAssert = function(name, cond, details){
+        window._valorResults.push({ name: String(name||''), ok: !!cond, details: String(details||'') });
+      };
+      window._valorRun = function(){
+        // Smoke JS assertion that DOM exists
+        var c = document.getElementById('container');
+        window._valorAssert('container exists', !!c, 'missing #container');
+      };
+    </script>
+  </head>
+  <body>
+    <div id="container">
+      <div class="item" id="a">A</div>
+      <div class="item" id="b">B</div>
+      <div class="item" id="c">C</div>
+    </div>
+  </body>
+</html>

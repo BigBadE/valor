@@ -1,10 +1,10 @@
 use anyhow::Result;
-use tokio::runtime::Runtime;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
-use url::Url;
-use page_handler::state::HtmlPage;
-use page_handler::config::ValorConfig;
 use js::ChromeHostCommand;
+use page_handler::config::ValorConfig;
+use page_handler::state::HtmlPage;
+use tokio::runtime::Runtime;
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use url::Url;
 
 /// Bundle returned by `create_chrome_and_content` matching the Valor main wiring.
 pub struct ChromeInit {
@@ -25,7 +25,11 @@ pub fn create_chrome_and_content(rt: &Runtime, initial_content_url: Url) -> Resu
     ))?;
 
     // Create content page
-    let content_page = rt.block_on(HtmlPage::new(rt.handle(), initial_content_url, config.clone()))?;
+    let content_page = rt.block_on(HtmlPage::new(
+        rt.handle(),
+        initial_content_url,
+        config.clone(),
+    ))?;
 
     // Wire privileged chromeHost channel for the chrome page
     let (chrome_tx, chrome_rx) = unbounded_channel::<ChromeHostCommand>();

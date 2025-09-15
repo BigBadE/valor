@@ -3,26 +3,30 @@
 //! and Valor subsystems (HTML parser, layouter, renderer, etc.).
 
 use anyhow::Result;
-use tokio::sync::{broadcast, mpsc};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::{broadcast, mpsc};
 
 pub mod console;
 pub use console::{Console, ConsoleLogger};
 
-
 /// Engine-agnostic host bindings facade: values, logger, and namespace builders.
 pub mod bindings;
-pub use bindings::{JSValue, JSError, HostBindings, HostNamespace, HostFnKind, HostFnSync, HostContext, HostLogger, LogLevel, CreatedNodeKind, CreatedNodeInfo, ChromeHostCommand, build_console_namespace, build_document_namespace, build_default_bindings, build_chrome_host_namespace, build_chrome_host_bindings, stringify_arguments};
+pub use bindings::{
+    build_chrome_host_bindings, build_chrome_host_namespace, build_console_namespace,
+    build_default_bindings, build_document_namespace, stringify_arguments, ChromeHostCommand,
+    CreatedNodeInfo, CreatedNodeKind, HostBindings, HostContext, HostFnKind, HostFnSync,
+    HostLogger, HostNamespace, JSError, JSValue, LogLevel,
+};
 
 /// DOM index mirror for element lookups from host-side APIs.
 pub mod dom_index;
 pub use dom_index::{DomIndex, DomIndexState, SharedDomIndex};
 
+pub mod modules;
 /// JavaScript prelude script for bootstrapping runtime behavior in the engine.
 pub mod runtime;
-pub mod modules;
 pub use modules::{ModuleResolver, SimpleFileModuleResolver};
 
 // ============================
@@ -60,13 +64,19 @@ impl NodeKey {
     }
     /// Extract epoch from the key.
     #[inline]
-    pub fn epoch(self) -> u16 { (self.0 >> 48) as u16 }
+    pub fn epoch(self) -> u16 {
+        (self.0 >> 48) as u16
+    }
     /// Extract shard from the key.
     #[inline]
-    pub fn shard(self) -> u8 { ((self.0 >> 40) & 0xFF) as u8 }
+    pub fn shard(self) -> u8 {
+        ((self.0 >> 40) & 0xFF) as u8
+    }
     /// Extract counter from the key.
     #[inline]
-    pub fn counter(self) -> u64 { self.0 & ((1u64 << 40) - 1) }
+    pub fn counter(self) -> u64 {
+        self.0 & ((1u64 << 40) - 1)
+    }
 }
 
 /// Global key space for minting NodeKeys with unique epochs and shard IDs.
@@ -79,9 +89,14 @@ pub struct KeySpace {
 impl KeySpace {
     /// Create a new key space with a time-derived epoch.
     pub fn new() -> Self {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
         let epoch = (((now.as_secs() as u32) ^ now.subsec_nanos()) & 0xFFFF) as u16;
-        Self { epoch, next_shard_id: 1 }
+        Self {
+            epoch,
+            next_shard_id: 1,
+        }
     }
     /// Register a new manager for a given producer shard.
     pub fn register_manager<L: Eq + Hash + Copy>(&mut self) -> NodeKeyManager<L> {
@@ -90,7 +105,9 @@ impl KeySpace {
         NodeKeyManager::new(self.epoch, shard)
     }
     /// Return the current epoch.
-    pub fn epoch(&self) -> u16 { self.epoch }
+    pub fn epoch(&self) -> u16 {
+        self.epoch
+    }
 }
 
 impl Default for KeySpace {
@@ -109,11 +126,20 @@ pub struct NodeKeyManager<L: Eq + Hash + Copy> {
 }
 
 impl<L: Eq + Hash + Copy> NodeKeyManager<L> {
-    fn new(epoch: u16, shard: u8) -> Self { Self { epoch, shard, counter: 1, map: HashMap::new() } }
+    fn new(epoch: u16, shard: u8) -> Self {
+        Self {
+            epoch,
+            shard,
+            counter: 1,
+            map: HashMap::new(),
+        }
+    }
     /// Get the NodeKey for a local ID, minting if not present.
     #[inline]
     pub fn key_of(&mut self, id: L) -> NodeKey {
-        if let Some(&k) = self.map.get(&id) { return k; }
+        if let Some(&k) = self.map.get(&id) {
+            return k;
+        }
         let key = NodeKey::pack(self.epoch, self.shard, self.counter);
         self.counter = self.counter.wrapping_add(1);
         self.map.insert(id, key);
@@ -121,7 +147,9 @@ impl<L: Eq + Hash + Copy> NodeKeyManager<L> {
     }
     /// Seed a mapping from a local ID to an existing NodeKey.
     #[inline]
-    pub fn seed(&mut self, id: L, key: NodeKey) { self.map.insert(id, key); }
+    pub fn seed(&mut self, id: L, key: NodeKey) {
+        self.map.insert(id, key);
+    }
 }
 
 // ============================
@@ -131,10 +159,26 @@ impl<L: Eq + Hash + Copy> NodeKeyManager<L> {
 /// A batchable update applied to the runtime DOM and mirrored to subscribers.
 #[derive(Debug, Clone)]
 pub enum DOMUpdate {
-    InsertElement { parent: NodeKey, node: NodeKey, tag: String, pos: usize },
-    InsertText { parent: NodeKey, node: NodeKey, text: String, pos: usize },
-    SetAttr { node: NodeKey, name: String, value: String },
-    RemoveNode { node: NodeKey },
+    InsertElement {
+        parent: NodeKey,
+        node: NodeKey,
+        tag: String,
+        pos: usize,
+    },
+    InsertText {
+        parent: NodeKey,
+        node: NodeKey,
+        text: String,
+        pos: usize,
+    },
+    SetAttr {
+        node: NodeKey,
+        name: String,
+        value: String,
+    },
+    RemoveNode {
+        node: NodeKey,
+    },
     EndOfDocument,
 }
 
@@ -153,16 +197,32 @@ pub struct DOMMirror<T: DOMSubscriber> {
 
 impl<T: DOMSubscriber> DOMMirror<T> {
     /// Create a new DOMMirror wrapping a subscriber implementation.
-    pub fn new(out_updater: mpsc::Sender<Vec<DOMUpdate>>, in_updater: broadcast::Receiver<Vec<DOMUpdate>>, mirror: T) -> Self { Self { in_updater, out_updater, mirror } }
+    pub fn new(
+        out_updater: mpsc::Sender<Vec<DOMUpdate>>,
+        in_updater: broadcast::Receiver<Vec<DOMUpdate>>,
+        mirror: T,
+    ) -> Self {
+        Self {
+            in_updater,
+            out_updater,
+            mirror,
+        }
+    }
     /// Drain and apply all pending DOMUpdate batches asynchronously.
     pub async fn update(&mut self) -> anyhow::Result<()> {
         use tokio::sync::broadcast::error::TryRecvError;
         while let Some(updates) = match self.in_updater.try_recv() {
             Ok(updates) => Ok::<_, anyhow::Error>(Some(updates)),
-            Err(TryRecvError::Closed) => { return Err(anyhow::anyhow!("Recv channel was closed before document ended!")); }
+            Err(TryRecvError::Closed) => {
+                return Err(anyhow::anyhow!(
+                    "Recv channel was closed before document ended!"
+                ));
+            }
             _ => Ok(None),
         }? {
-            for update in updates { self.mirror.apply_update(update)?; }
+            for update in updates {
+                self.mirror.apply_update(update)?;
+            }
         }
         Ok(())
     }
@@ -171,18 +231,33 @@ impl<T: DOMSubscriber> DOMMirror<T> {
         use tokio::sync::broadcast::error::TryRecvError;
         loop {
             match self.in_updater.try_recv() {
-                Ok(batch) => { for update in batch { self.mirror.apply_update(update)?; } }
+                Ok(batch) => {
+                    for update in batch {
+                        self.mirror.apply_update(update)?;
+                    }
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Lagged(_)) => continue,
-                Err(TryRecvError::Closed) => { return Err(anyhow::anyhow!("Recv channel was closed before document ended!")); }
+                Err(TryRecvError::Closed) => {
+                    return Err(anyhow::anyhow!(
+                        "Recv channel was closed before document ended!"
+                    ));
+                }
             }
         }
         Ok(())
     }
     /// Access the inner mirror mutably (engine-level integration)
-    pub fn mirror_mut(&mut self) -> &mut T { &mut self.mirror }
+    pub fn mirror_mut(&mut self) -> &mut T {
+        &mut self.mirror
+    }
     /// Access the inner mirror immutably (read-only access)
-    pub fn mirror(&self) -> &T { &self.mirror }
+    pub fn mirror(&self) -> &T {
+        &self.mirror
+    }
     /// Send a batch of DOM changes back to the DOM runtime.
-    pub async fn send_dom_change(&mut self, changes: Vec<DOMUpdate>) -> anyhow::Result<()> { self.out_updater.send(changes).await?; Ok(()) }
+    pub async fn send_dom_change(&mut self, changes: Vec<DOMUpdate>) -> anyhow::Result<()> {
+        self.out_updater.send(changes).await?;
+        Ok(())
+    }
 }

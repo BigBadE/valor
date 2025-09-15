@@ -1,0 +1,6 @@
+[package]
+name = "css_flexbox"
+edition.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,6 @@
+[package]
+name = "css_backgrounds_borders"
+edition.workspace = true
+
+[lints]
+workspace = true

@@ -3,8 +3,8 @@
 //! This module centralizes output from JavaScript console methods and engine
 //! error reporting. For now, it prints using the `log` crate.
 
-use log::{error, info, warn};
 use crate::bindings::{HostLogger, LogLevel};
+use log::{error, info, warn};
 
 /// Console provides helper functions to print messages emitted by the JS
 /// runtime and the engine itself. This keeps output routing in one place so it

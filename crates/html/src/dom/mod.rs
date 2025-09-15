@@ -2,12 +2,11 @@ mod printing;
 
 use anyhow::Error;
 use indextree::{Arena, NodeId};
+use js::{DOMUpdate, KeySpace, NodeKey, NodeKeyManager};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::hash::Hash;
 use tokio::sync::{broadcast, mpsc};
-use js::{DOMUpdate, NodeKey, KeySpace, NodeKeyManager};
-
 
 #[derive(Debug, Clone, Default)]
 pub enum NodeKind {

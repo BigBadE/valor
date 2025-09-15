@@ -1,0 +1,35 @@
+[package]
+name = "layouter"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+tracing.workspace = true
+smallvec.workspace = true
+html.workspace = true
+js.workspace = true
+css.workspace = true
+style_engine.workspace = true
+once_cell.workspace = true
+unicode-linebreak.workspace = true
+unicode-bidi.workspace = true
+glyphon.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+env_logger.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "layout_baseline"
+harness = false
+
+
+[[bench]]
+name = "partial_vs_full"
+harness = false

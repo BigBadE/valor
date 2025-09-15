@@ -1,0 +1,6 @@
+[package]
+name = "css_ui"
+edition.workspace = true
+
+[lints]
+workspace = true

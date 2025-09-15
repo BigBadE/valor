@@ -6,7 +6,11 @@ mod common;
 
 fn fixture_path(name: &str) -> PathBuf {
     let p = common::fixtures_css_dir().join(name);
-    if p.exists() { p } else { common::fixtures_dir().join(name) }
+    if p.exists() {
+        p
+    } else {
+        common::fixtures_dir().join(name)
+    }
 }
 
 #[test]

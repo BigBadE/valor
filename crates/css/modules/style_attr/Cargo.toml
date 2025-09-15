@@ -1,0 +1,6 @@
+[package]
+name = "css_style_attr"
+edition.workspace = true
+
+[lints]
+workspace = true

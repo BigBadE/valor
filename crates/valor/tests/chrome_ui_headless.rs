@@ -24,8 +24,13 @@ fn chrome_ui_headless_initializes_and_parses() -> Result<()> {
     assert!(finished, "Chrome page parsing did not finish in time");
 
     // Sanity-check that expected chrome UI elements are present
-    let go_text = chrome_page.text_content_by_id_sync("go").unwrap_or_default();
-    assert_eq!(go_text, "Go", "Expected chrome UI to include a Go button with text 'Go'");
+    let go_text = chrome_page
+        .text_content_by_id_sync("go")
+        .unwrap_or_default();
+    assert_eq!(
+        go_text, "Go",
+        "Expected chrome UI to include a Go button with text 'Go'"
+    );
 
     // Replace the default content page with a deterministic local fixture for stable assertions
     let fixture = common::fixtures_dir().join("dom").join("core_basic.html");
@@ -34,11 +39,19 @@ fn chrome_ui_headless_initializes_and_parses() -> Result<()> {
 
     // Drive parsing to completion
     let content_finished = common::update_until_finished(&rt, &mut content_page, |_| Ok(()))?;
-    assert!(content_finished, "Content page parsing did not finish in time");
+    assert!(
+        content_finished,
+        "Content page parsing did not finish in time"
+    );
 
     // Assert we can read expected text from the fixture to confirm the DOM executed
-    let out = content_page.text_content_by_id_sync("out").unwrap_or_default();
-    assert!(!out.is_empty(), "Expected non-empty textContent from #out in content page");
+    let out = content_page
+        .text_content_by_id_sync("out")
+        .unwrap_or_default();
+    assert!(
+        !out.is_empty(),
+        "Expected non-empty textContent from #out in content page"
+    );
 
     Ok(())
 }

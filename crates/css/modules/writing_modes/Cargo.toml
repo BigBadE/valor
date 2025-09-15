@@ -1,0 +1,6 @@
+[package]
+name = "css_writing_modes"
+edition.workspace = true
+
+[lints]
+workspace = true

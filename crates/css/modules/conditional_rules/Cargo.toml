@@ -1,0 +1,6 @@
+[package]
+name = "css_conditional_rules"
+edition.workspace = true
+
+[lints]
+workspace = true

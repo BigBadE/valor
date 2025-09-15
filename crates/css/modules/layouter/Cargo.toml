@@ -1,0 +1,16 @@
+[package]
+name = "layouter"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+tracing.workspace = true
+html.workspace = true
+js.workspace = true
+once_cell.workspace = true
+css.workspace = true
+style_engine.workspace = true

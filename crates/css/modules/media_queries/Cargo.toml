@@ -1,0 +1,6 @@
+[package]
+name = "css_media_queries"
+edition.workspace = true
+
+[lints]
+workspace = true

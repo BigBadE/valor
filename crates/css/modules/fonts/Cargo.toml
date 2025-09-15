@@ -1,0 +1,6 @@
+[package]
+name = "css_fonts"
+edition.workspace = true
+
+[lints]
+workspace = true

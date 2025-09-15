@@ -1,7 +1,9 @@
 [package]
 name = "css"
-version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 html.workspace = true
@@ -12,3 +14,29 @@ cssparser.workspace = true
 log.workspace = true
 anyhow.workspace = true
 url.workspace = true
+
+# Internal CSS modules (workspace dependencies)
+css_core.workspace = true
+css_syntax.workspace = true
+css_style_attr.workspace = true
+css_media_queries.workspace = true
+css_conditional_rules.workspace = true
+css_selectors.workspace = true
+css_namespaces.workspace = true
+css_cascade.workspace = true
+css_values_units.workspace = true
+css_variables.workspace = true
+css_display.workspace = true
+css_box.workspace = true
+css_color.workspace = true
+css_backgrounds_borders.workspace = true
+css_images.workspace = true
+css_fonts.workspace = true
+css_writing_modes.workspace = true
+css_flexbox.workspace = true
+css_ui.workspace = true
+css_transforms.workspace = true
+css_position.workspace = true
+css_sizing.workspace = true
+css_text.workspace = true
+css_text_decoration.workspace = true

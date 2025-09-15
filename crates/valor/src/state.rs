@@ -1,5 +1,5 @@
-use tokio::runtime::Runtime;
 use page_handler::state::HtmlPage;
+use tokio::runtime::Runtime;
 use wgpu_renderer::state::RenderState;
 
 /// Global application state owned by the winit ApplicationHandler.

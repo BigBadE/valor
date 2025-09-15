@@ -12,7 +12,11 @@ fn retained_display_list_emits_clip_for_overflow_hidden() -> Result<(), Error> {
     let rt = Runtime::new()?;
     // Load our fixture
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests").join("fixtures").join("layout").join("clip").join("01_overflow_hidden.html");
+        .join("tests")
+        .join("fixtures")
+        .join("layout")
+        .join("clip")
+        .join("01_overflow_hidden.html");
     let url = common::to_file_url(&path)?;
     let mut page = common::create_page(&rt, url)?;
 
@@ -22,8 +26,17 @@ fn retained_display_list_emits_clip_for_overflow_hidden() -> Result<(), Error> {
 
     // Build retained display list and scan for clip items
     let list = page.display_list_retained_snapshot()?;
-    let has_clip_begin = list.items.iter().any(|it| matches!(it, DisplayItem::BeginClip { .. }));
-    let has_clip_end = list.items.iter().any(|it| matches!(it, DisplayItem::EndClip));
-    assert!(has_clip_begin && has_clip_end, "expected a clip scope (BeginClip/EndClip) in retained display list");
+    let has_clip_begin = list
+        .items
+        .iter()
+        .any(|it| matches!(it, DisplayItem::BeginClip { .. }));
+    let has_clip_end = list
+        .items
+        .iter()
+        .any(|it| matches!(it, DisplayItem::EndClip));
+    assert!(
+        has_clip_begin && has_clip_end,
+        "expected a clip scope (BeginClip/EndClip) in retained display list"
+    );
     Ok(())
 }

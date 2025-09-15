@@ -1,18 +1,19 @@
 use crate::state::AppState;
-use anyhow::{anyhow, Error};
+use anyhow::{Error, anyhow};
+use js::ChromeHostCommand;
 use log::{error, info};
-use page_handler::state::HtmlPage;
 use page_handler::config::ValorConfig;
+use page_handler::state::HtmlPage;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use url::Url;
-use wgpu_renderer::state::{RenderState, Layer};
+use valor::factory::create_chrome_and_content;
+use wgpu_renderer::display_list::{DisplayItem, DisplayList};
+use wgpu_renderer::state::{Layer, RenderState};
 use winit::application::ApplicationHandler;
-use winit::event::{WindowEvent, ElementState, MouseButton};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
-use js::ChromeHostCommand;
-use valor::factory::create_chrome_and_content;
 
 mod state;
 mod window;
@@ -71,7 +72,10 @@ impl App {
         _id: WindowId,
         event: WindowEvent,
     ) -> Result<(), Error> {
-        let state = self.state.as_mut().ok_or_else(|| anyhow!("App state is not set."))?;
+        let state = self
+            .state
+            .as_mut()
+            .ok_or_else(|| anyhow!("App state is not set."))?;
         match event {
             WindowEvent::CloseRequested => {
                 info!("The close button was pressed; stopping");
@@ -86,33 +90,103 @@ impl App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let state = self.state.as_mut().unwrap();
-                let x = position.x; let y = position.y;
+                let x = position.x;
+                let y = position.y;
                 state.last_cursor_pos = Some((x, y));
-                let target = if y < state.chrome_bar_height_px { 0usize } else { 1usize };
+                let target = if y < state.chrome_bar_height_px {
+                    0usize
+                } else {
+                    1usize
+                };
                 state.pointer_target_index = Some(target);
                 if let Some(page) = state.pages.get_mut(target) {
                     page.dispatch_pointer_move(x, y);
                     // Apply a single update for responsive interactions
-                    if let Err(err) = state.runtime.block_on(page.update()) { error!("Failed to apply page updates: {err:?}"); }
+                    if let Err(err) = state.runtime.block_on(page.update()) {
+                        error!("Failed to apply page updates: {err:?}");
+                    }
                     if page.take_needs_redraw() {
                         // Rebuild layers and request redraw
                         state.render_state.clear_layers();
-                        let content_dl = state.pages.get_mut(1).and_then(|p| p.display_list_retained_snapshot().ok());
-                        let chrome_dl = state.pages.get_mut(0).and_then(|p| p.display_list_retained_snapshot().ok());
-                        if let Some(dl) = content_dl { state.render_state.push_layer(Layer::Content(dl)); }
-                        if let Some(dl) = chrome_dl { state.render_state.push_layer(Layer::Chrome(dl)); }
+                        // Set canvas background from CONTENT page (index 1)
+                        if let Some(p) = state.pages.get_mut(1) {
+                            let cc = p.background_rgba();
+                            state.render_state.set_clear_color(cc);
+                        }
+                        let win_size = state.render_state.get_window().inner_size();
+                        let fw = win_size.width as f32;
+                        let fh = win_size.height as f32;
+                        let content_dl = state
+                            .pages
+                            .get_mut(1)
+                            .and_then(|p| p.display_list_retained_snapshot().ok());
+                        let chrome_dl = state
+                            .pages
+                            .get_mut(0)
+                            .and_then(|p| p.display_list_retained_snapshot().ok());
+                        if let Some(dl) = content_dl {
+                            // Prepend a full-viewport background for the content layer
+                            let cc = state
+                                .pages
+                                .get_mut(1)
+                                .map(|p| p.background_rgba())
+                                .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                            let mut items = Vec::with_capacity(dl.items.len() + 1);
+                            items.push(DisplayItem::Rect {
+                                x: 0.0,
+                                y: 0.0,
+                                width: fw,
+                                height: fh,
+                                color: cc,
+                            });
+                            items.extend(dl.items);
+                            state
+                                .render_state
+                                .push_layer(Layer::Content(DisplayList::from_items(items)));
+                        }
+                        if let Some(dl) = chrome_dl {
+                            // Prepend a top strip background for the chrome layer
+                            let cc = state
+                                .pages
+                                .get_mut(0)
+                                .map(|p| p.background_rgba())
+                                .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                            let mut items = Vec::with_capacity(dl.items.len() + 1);
+                            items.push(DisplayItem::Rect {
+                                x: 0.0,
+                                y: 0.0,
+                                width: fw,
+                                height: state.chrome_bar_height_px as f32,
+                                color: cc,
+                            });
+                            items.extend(dl.items);
+                            state
+                                .render_state
+                                .push_layer(Layer::Chrome(DisplayList::from_items(items)));
+                        }
                         info!("App: requesting redraw");
                         state.render_state.get_window().request_redraw();
                     }
                 }
             }
-            WindowEvent::MouseInput { state: btn_state, button, .. } => {
+            WindowEvent::MouseInput {
+                state: btn_state,
+                button,
+                ..
+            } => {
                 let state_ref = self.state.as_mut().unwrap();
                 // Determine pointer target from last known cursor position
-                let target = state_ref.pointer_target_index.unwrap_or(state_ref.focused_page_index);
+                let target = state_ref
+                    .pointer_target_index
+                    .unwrap_or(state_ref.focused_page_index);
                 let (x, y) = state_ref.last_cursor_pos.unwrap_or((0.0, 0.0));
                 if let Some(page) = state_ref.pages.get_mut(target) {
-                    let button_code = match button { MouseButton::Left => 0u32, MouseButton::Right => 2u32, MouseButton::Middle => 1u32, _ => 0u32 };
+                    let button_code = match button {
+                        MouseButton::Left => 0u32,
+                        MouseButton::Right => 2u32,
+                        MouseButton::Middle => 1u32,
+                        _ => 0u32,
+                    };
                     match btn_state {
                         ElementState::Pressed => {
                             state_ref.focused_page_index = target; // focus follows click
@@ -123,13 +197,64 @@ impl App {
                         }
                     }
                     // Apply a single update for responsive interactions
-                    if let Err(err) = state_ref.runtime.block_on(page.update()) { error!("Failed to apply page updates: {err:?}"); }
+                    if let Err(err) = state_ref.runtime.block_on(page.update()) {
+                        error!("Failed to apply page updates: {err:?}");
+                    }
                     if page.take_needs_redraw() {
                         state_ref.render_state.clear_layers();
-                        let content_dl = state_ref.pages.get_mut(1).and_then(|p| p.display_list_retained_snapshot().ok());
-                        let chrome_dl = state_ref.pages.get_mut(0).and_then(|p| p.display_list_retained_snapshot().ok());
-                        if let Some(dl) = content_dl { state_ref.render_state.push_layer(Layer::Content(dl)); }
-                        if let Some(dl) = chrome_dl { state_ref.render_state.push_layer(Layer::Chrome(dl)); }
+                        if let Some(p) = state_ref.pages.get_mut(1) {
+                            let cc = p.background_rgba();
+                            state_ref.render_state.set_clear_color(cc);
+                        }
+                        let win_size = state_ref.render_state.get_window().inner_size();
+                        let fw = win_size.width as f32;
+                        let fh = win_size.height as f32;
+                        let content_dl = state_ref
+                            .pages
+                            .get_mut(1)
+                            .and_then(|p| p.display_list_retained_snapshot().ok());
+                        let chrome_dl = state_ref
+                            .pages
+                            .get_mut(0)
+                            .and_then(|p| p.display_list_retained_snapshot().ok());
+                        if let Some(dl) = content_dl {
+                            let cc = state_ref
+                                .pages
+                                .get_mut(1)
+                                .map(|p| p.background_rgba())
+                                .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                            let mut items = Vec::with_capacity(dl.items.len() + 1);
+                            items.push(DisplayItem::Rect {
+                                x: 0.0,
+                                y: 0.0,
+                                width: fw,
+                                height: fh,
+                                color: cc,
+                            });
+                            items.extend(dl.items);
+                            state_ref
+                                .render_state
+                                .push_layer(Layer::Content(DisplayList::from_items(items)));
+                        }
+                        if let Some(dl) = chrome_dl {
+                            let cc = state_ref
+                                .pages
+                                .get_mut(0)
+                                .map(|p| p.background_rgba())
+                                .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                            let mut items = Vec::with_capacity(dl.items.len() + 1);
+                            items.push(DisplayItem::Rect {
+                                x: 0.0,
+                                y: 0.0,
+                                width: fw,
+                                height: state_ref.chrome_bar_height_px as f32,
+                                color: cc,
+                            });
+                            items.extend(dl.items);
+                            state_ref
+                                .render_state
+                                .push_layer(Layer::Chrome(DisplayList::from_items(items)));
+                        }
                         info!("App: requesting redraw");
                         state_ref.render_state.get_window().request_redraw();
                     }
@@ -137,21 +262,38 @@ impl App {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let state_ref = self.state.as_mut().unwrap();
-                let idx = state_ref.focused_page_index.min(state_ref.pages.len().saturating_sub(1));
+                let idx = state_ref
+                    .focused_page_index
+                    .min(state_ref.pages.len().saturating_sub(1));
                 let key_str: String = format!("{:?}", event.logical_key);
                 let code_str: String = format!("{:?}", event.physical_key);
                 let is_down = event.state == ElementState::Pressed;
                 if let Some(page) = state_ref.pages.get_mut(idx) {
-                    if is_down { page.dispatch_key_down(&key_str, &code_str, false, false, false); }
-                    else { page.dispatch_key_up(&key_str, &code_str, false, false, false); }
+                    if is_down {
+                        page.dispatch_key_down(&key_str, &code_str, false, false, false);
+                    } else {
+                        page.dispatch_key_up(&key_str, &code_str, false, false, false);
+                    }
                     // Apply a single update for responsive interactions
-                    if let Err(err) = state_ref.runtime.block_on(page.update()) { error!("Failed to apply page updates: {err:?}"); }
+                    if let Err(err) = state_ref.runtime.block_on(page.update()) {
+                        error!("Failed to apply page updates: {err:?}");
+                    }
                     if page.take_needs_redraw() {
                         state_ref.render_state.clear_layers();
-                        let content_dl = state_ref.pages.get_mut(1).and_then(|p| p.display_list_retained_snapshot().ok());
-                        let chrome_dl = state_ref.pages.get_mut(0).and_then(|p| p.display_list_retained_snapshot().ok());
-                        if let Some(dl) = content_dl { state_ref.render_state.push_layer(Layer::Content(dl)); }
-                        if let Some(dl) = chrome_dl { state_ref.render_state.push_layer(Layer::Chrome(dl)); }
+                        let content_dl = state_ref
+                            .pages
+                            .get_mut(1)
+                            .and_then(|p| p.display_list_retained_snapshot().ok());
+                        let chrome_dl = state_ref
+                            .pages
+                            .get_mut(0)
+                            .and_then(|p| p.display_list_retained_snapshot().ok());
+                        if let Some(dl) = content_dl {
+                            state_ref.render_state.push_layer(Layer::Content(dl));
+                        }
+                        if let Some(dl) = chrome_dl {
+                            state_ref.render_state.push_layer(Layer::Chrome(dl));
+                        }
                         info!("App: requesting redraw");
                         state_ref.render_state.get_window().request_redraw();
                     }
@@ -189,7 +331,11 @@ impl ApplicationHandler for App {
                                 match parsed {
                                     Ok(target_url) => {
                                         let config = ValorConfig::from_env();
-                                        match state.runtime.block_on(HtmlPage::new(state.runtime.handle(), target_url, config)) {
+                                        match state.runtime.block_on(HtmlPage::new(
+                                            state.runtime.handle(),
+                                            target_url,
+                                            config,
+                                        )) {
                                             Ok(new_page) => {
                                                 if state.pages.len() >= 2 {
                                                     state.pages[1] = new_page;
@@ -197,13 +343,19 @@ impl ApplicationHandler for App {
                                                     state.pages.push(new_page);
                                                 }
                                             }
-                                            Err(e) => error!("Navigate failed to create page: {:?}", e),
+                                            Err(e) => {
+                                                error!("Navigate failed to create page: {:?}", e)
+                                            }
                                         }
                                     }
                                     Err(e) => error!("Invalid URL '{}': {:?}", url_str, e),
                                 }
                             }
-                            ChromeHostCommand::Back | ChromeHostCommand::Forward | ChromeHostCommand::Reload | ChromeHostCommand::OpenTab(_) | ChromeHostCommand::CloseTab(_) => {
+                            ChromeHostCommand::Back
+                            | ChromeHostCommand::Forward
+                            | ChromeHostCommand::Reload
+                            | ChromeHostCommand::OpenTab(_)
+                            | ChromeHostCommand::CloseTab(_) => {
                                 // TODO: implement history and tab model in later phases
                                 info!("chromeHost command stub: {:?}", cmd);
                             }
@@ -225,15 +377,67 @@ impl ApplicationHandler for App {
                 }
 
                 for page in &mut state.pages {
-                    if page.take_needs_redraw() { any_needs_redraw = true; }
+                    if page.take_needs_redraw() {
+                        any_needs_redraw = true;
+                    }
                 }
 
                 if any_needs_redraw {
                     state.render_state.clear_layers();
-                    let content_dl = state.pages.get_mut(1).and_then(|p| p.display_list_retained_snapshot().ok());
-                    let chrome_dl = state.pages.get_mut(0).and_then(|p| p.display_list_retained_snapshot().ok());
-                    if let Some(dl) = content_dl { state.render_state.push_layer(Layer::Content(dl)); }
-                    if let Some(dl) = chrome_dl { state.render_state.push_layer(Layer::Chrome(dl)); }
+                    // Always choose CONTENT page background for canvas clear color
+                    if let Some(page) = state.pages.get_mut(1) {
+                        let cc = page.background_rgba();
+                        state.render_state.set_clear_color(cc);
+                    }
+                    let win_size = state.render_state.get_window().inner_size();
+                    let fw = win_size.width as f32;
+                    let fh = win_size.height as f32;
+                    let content_dl = state
+                        .pages
+                        .get_mut(1)
+                        .and_then(|p| p.display_list_retained_snapshot().ok());
+                    let chrome_dl = state
+                        .pages
+                        .get_mut(0)
+                        .and_then(|p| p.display_list_retained_snapshot().ok());
+                    if let Some(dl) = content_dl {
+                        let cc = state
+                            .pages
+                            .get_mut(1)
+                            .map(|p| p.background_rgba())
+                            .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                        let mut items = Vec::with_capacity(dl.items.len() + 1);
+                        items.push(DisplayItem::Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: fw,
+                            height: fh,
+                            color: cc,
+                        });
+                        items.extend(dl.items);
+                        state
+                            .render_state
+                            .push_layer(Layer::Content(DisplayList::from_items(items)));
+                    }
+                    if let Some(dl) = chrome_dl {
+                        let cc = state
+                            .pages
+                            .get_mut(0)
+                            .map(|p| p.background_rgba())
+                            .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                        let mut items = Vec::with_capacity(dl.items.len() + 1);
+                        items.push(DisplayItem::Rect {
+                            x: 0.0,
+                            y: 0.0,
+                            width: fw,
+                            height: state.chrome_bar_height_px as f32,
+                            color: cc,
+                        });
+                        items.extend(dl.items);
+                        state
+                            .render_state
+                            .push_layer(Layer::Chrome(DisplayList::from_items(items)));
+                    }
                     info!("App: requesting redraw");
                     state.render_state.get_window().request_redraw();
                 }

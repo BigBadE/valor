@@ -1,0 +1,6 @@
+[package]
+name = "css_images"
+edition.workspace = true
+
+[lints]
+workspace = true

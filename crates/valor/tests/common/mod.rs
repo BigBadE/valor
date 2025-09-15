@@ -1,14 +1,15 @@
 #![allow(dead_code)]
+use anyhow::{Result, anyhow};
+use image::ImageEncoder;
+use page_handler::config::ValorConfig;
+use page_handler::state::HtmlPage;
+use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use anyhow::{Result, anyhow};
-use url::Url;
-use page_handler::state::HtmlPage;
-use page_handler::config::ValorConfig;
-use tokio::runtime::Runtime;
 use std::time::Duration;
-use serde_json::Value;
-use valor::factory::{create_chrome_and_content, ChromeInit};
+use tokio::runtime::Runtime;
+use url::Url;
+use valor::factory::{ChromeInit, create_chrome_and_content};
 
 /// Returns the directory containing HTML fixtures for integration tests.
 pub fn fixtures_dir() -> PathBuf {
@@ -17,8 +18,180 @@ pub fn fixtures_dir() -> PathBuf {
         .join("fixtures")
 }
 
+// ===== Shared artifacts and caching utilities =====
+
+/// Return the target directory for build/test outputs.
+pub fn target_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
+        return PathBuf::from(dir);
+    }
+    // Derive workspace root target from this crate's manifest dir: crates/valor -> ../../target
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir.join("..").join("..").join("target")
+}
+
+/// Return a subdirectory under target for test artifacts.
+pub fn artifacts_subdir(name: &str) -> PathBuf {
+    target_dir().join(name)
+}
+
+/// Remove and recreate a directory, ignoring errors on remove.
+pub fn clear_dir(dir: &Path) -> Result<()> {
+    if dir.exists() {
+        let _ = fs::remove_dir_all(dir);
+    }
+    fs::create_dir_all(dir)?;
+    Ok(())
+}
+
+/// Write bytes to a path only if they differ from any existing contents. Returns true if written.
+pub fn write_bytes_if_changed(path: &Path, bytes: &[u8]) -> Result<bool> {
+    if let Ok(existing) = fs::read(path)
+        && existing == bytes
+    {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write(path, bytes)?;
+    Ok(true)
+}
+
+/// Encode and write an RGBA8 image only if changed. Returns true if written.
+pub fn write_png_rgba_if_changed(
+    path: &Path,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<bool> {
+    let mut buf = Vec::new();
+    {
+        let encoder = image::codecs::png::PngEncoder::new(&mut buf);
+        encoder.write_image(rgba, width, height, image::ColorType::Rgba8.into())?;
+    }
+    write_bytes_if_changed(path, &buf)
+}
+
+/// Set the layouter JSON cache directory to target/valor_layout_cache and create it.
+pub fn route_layouter_cache_to_target() -> Result<PathBuf> {
+    let dir = artifacts_subdir("valor_layout_cache");
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+fn checksum_u64(s: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a 64-bit
+    for b in s.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    hash
+}
+
+fn layout_cache_file_for_key(key: &str) -> PathBuf {
+    let dir = artifacts_subdir("valor_layout_cache");
+    let _ = fs::create_dir_all(&dir);
+    let h = checksum_u64(key);
+    dir.join(format!("{:016x}.json", h))
+}
+
+/// Read cached JSON for a fixture using a key derived from the fixture path and harness source.
+pub fn read_cached_json_for_fixture(fixture_path: &Path, harness_src: &str) -> Option<Value> {
+    let canon = fixture_path
+        .canonicalize()
+        .unwrap_or_else(|_| fixture_path.to_path_buf());
+    let key = format!("{}|{:016x}", canon.display(), checksum_u64(harness_src));
+    let file = layout_cache_file_for_key(&key);
+    if !file.exists() {
+        return None;
+    }
+    fs::read_to_string(file)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+/// Write cached JSON for a fixture using a key derived from the fixture path and harness source.
+pub fn write_cached_json_for_fixture(
+    fixture_path: &Path,
+    harness_src: &str,
+    v: &Value,
+) -> Result<()> {
+    let canon = fixture_path
+        .canonicalize()
+        .unwrap_or_else(|_| fixture_path.to_path_buf());
+    let key = format!("{}|{:016x}", canon.display(), checksum_u64(harness_src));
+    let file = layout_cache_file_for_key(&key);
+    if let Some(parent) = file.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let s = serde_json::to_string(v).unwrap_or_else(|_| String::from("{}"));
+    fs::write(file, s)?;
+    eprintln!(
+        "[CACHE] wrote chromium JSON for {} to target/valor_layout_cache",
+        canon.display()
+    );
+    Ok(())
+}
+
+/// Write a named JSON variant for a fixture (e.g., "chromium", "valor").
+pub fn write_named_json_for_fixture(
+    fixture_path: &Path,
+    harness_src: &str,
+    name: &str,
+    v: &Value,
+) -> Result<()> {
+    let canon = fixture_path
+        .canonicalize()
+        .unwrap_or_else(|_| fixture_path.to_path_buf());
+    let key = format!(
+        "{}|{:016x}|{}",
+        canon.display(),
+        checksum_u64(harness_src),
+        name
+    );
+    let file = layout_cache_file_for_key(&key);
+    if let Some(parent) = file.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let s = serde_json::to_string(v).unwrap_or_else(|_| String::from("{}"));
+    fs::write(file, s)?;
+    eprintln!(
+        "[CACHE] wrote {} JSON for {} to target/valor_layout_cache",
+        name,
+        canon.display()
+    );
+    Ok(())
+}
+
 pub fn fixtures_layout_dir() -> PathBuf {
-    fixtures_dir().join("layout")
+    fixtures_dir()
+}
+
+fn workspace_root_from_valor_manifest() -> PathBuf {
+    // crates/valor -> ../../
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+}
+
+/// Discover CSS module-local fixture roots: crates/css/modules/*/tests/fixtures
+fn module_css_fixture_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let root = workspace_root_from_valor_manifest();
+    let modules_dir = root.join("crates").join("css").join("modules");
+    if let Ok(entries) = fs::read_dir(&modules_dir) {
+        for ent in entries.filter_map(|e| e.ok()) {
+            let mdir = ent.path();
+            if mdir.is_dir() {
+                let p = mdir.join("tests").join("fixtures");
+                if p.exists() {
+                    roots.push(p);
+                }
+            }
+        }
+    }
+    roots
 }
 
 pub fn fixtures_css_dir() -> PathBuf {
@@ -26,13 +199,17 @@ pub fn fixtures_css_dir() -> PathBuf {
 }
 
 fn collect_html_recursively(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let entries = fs::read_dir(dir)
-        .map_err(|e| anyhow!("Failed to read dir {}: {}", dir.display(), e))?;
+    let entries =
+        fs::read_dir(dir).map_err(|e| anyhow!("Failed to read dir {}: {}", dir.display(), e))?;
     for entry in entries.filter_map(|e| e.ok()) {
         let p = entry.path();
         if p.is_dir() {
             collect_html_recursively(&p, out)?;
-        } else if p.extension().map(|ext| ext.eq_ignore_ascii_case("html")).unwrap_or(false) {
+        } else if p
+            .extension()
+            .map(|ext| ext.eq_ignore_ascii_case("html"))
+            .unwrap_or(false)
+        {
             out.push(p);
         }
     }
@@ -51,23 +228,33 @@ pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
         if legacy.exists() {
             let entries = fs::read_dir(&legacy)
                 .map_err(|e| anyhow!("Failed to read fixtures dir {}: {}", legacy.display(), e))?;
-            files.extend(entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| p.extension().map(|ext| ext.eq_ignore_ascii_case("html")).unwrap_or(false))
+            files.extend(
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.extension()
+                            .map(|ext| ext.eq_ignore_ascii_case("html"))
+                            .unwrap_or(false)
+                    }),
             );
         }
     }
-    // Keep only files that are under a subdirectory of the layout folder (not directly under .../layout).
-    // We no longer require a numbered filename prefix; any descriptive name is allowed.
+    // Also include per-module CSS fixtures if present
+    for root in module_css_fixture_roots() {
+        collect_html_recursively(&root, &mut files)?;
+    }
+
+    // Keep only files that are under a subdirectory of a fixtures folder (not directly under .../fixtures).
+    // This applies both to valor's fixtures/* and each module's tests/fixtures/* structure.
     files.retain(|p| {
+        // Expect .../fixtures/<subdir>/file.html
         p.parent()
             .and_then(|d| d.parent().map(|pp| (pp.file_name(), d.file_name())))
             .map(|(pp_name, d_name)| {
-                // Ensure parent-of-parent is "layout" and that this file resides in a subfolder (d_name != Some("layout"))
-                let is_under_layout = pp_name.map(|n| n == "layout").unwrap_or(false);
-                let not_directly_under_layout = d_name.map(|n| n != "layout").unwrap_or(false);
-                is_under_layout && not_directly_under_layout
+                let is_under_fixtures = pp_name.map(|n| n == "fixtures").unwrap_or(false);
+                let not_directly_under_fixtures = d_name.map(|n| n != "fixtures").unwrap_or(false);
+                is_under_fixtures && not_directly_under_fixtures
             })
             .unwrap_or(false)
     });
@@ -91,7 +278,10 @@ pub fn create_page(rt: &Runtime, url: Url) -> Result<HtmlPage> {
 
 /// Construct chrome and content pages using the same wiring as the Valor binary.
 /// Returns the `ChromeInit` bundle from `valor::factory` for further use.
-pub fn create_chrome_and_content_for_tests(rt: &Runtime, initial_content_url: Url) -> Result<ChromeInit> {
+pub fn create_chrome_and_content_for_tests(
+    rt: &Runtime,
+    initial_content_url: Url,
+) -> Result<ChromeInit> {
     create_chrome_and_content(rt, initial_content_url)
 }
 
@@ -112,16 +302,20 @@ where
     for iter in 0..10_000 {
         // Abort if we exceeded the total time budget
         if start_time.elapsed() > max_total_time {
-            eprintln!("update_until_finished: exceeded total time budget after {} iters ({} timeouts)", iter, timed_out_ticks);
+            eprintln!(
+                "update_until_finished: exceeded total time budget after {} iters ({} timeouts)",
+                iter, timed_out_ticks
+            );
             break;
         }
         // Run one update tick with a timeout guard. If it times out, continue trying rather than hanging.
-        let update_result: Result<Result<(), anyhow::Error>, tokio::time::error::Elapsed> = rt.block_on(async {
-            tokio::time::timeout(per_tick_timeout, page.update()).await
-        });
+        let update_result: Result<Result<(), anyhow::Error>, tokio::time::error::Elapsed> =
+            rt.block_on(async { tokio::time::timeout(per_tick_timeout, page.update()).await });
         match update_result {
             Ok(Ok(())) => { /* progressed */ }
-            Ok(Err(err)) => { return Err(err); }
+            Ok(Err(err)) => {
+                return Err(err);
+            }
             Err(_elapsed) => {
                 timed_out_ticks = timed_out_ticks.saturating_add(1);
             }
@@ -134,7 +328,13 @@ where
             break;
         }
         if iter % 500 == 0 {
-            eprintln!("update_until_finished: iter={} finished={} timeouts={} elapsed_ms={}", iter, finished, timed_out_ticks, start_time.elapsed().as_millis());
+            eprintln!(
+                "update_until_finished: iter={} finished={} timeouts={} elapsed_ms={}",
+                iter,
+                finished,
+                timed_out_ticks,
+                start_time.elapsed().as_millis()
+            );
         }
         // Yield to background tasks without requiring a Tokio reactor on this thread
         std::thread::sleep(Duration::from_millis(1));
@@ -157,38 +357,87 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
         if let Value::Object(map) = v
             && let Some(Value::Object(attrs)) = map.get("attrs")
             && let Some(Value::String(id)) = attrs.get("id")
-        { return Some(format!("#{}", id)); }
+        {
+            return Some(format!("#{}", id));
+        }
         if let Value::Object(map) = v
             && let Some(Value::String(id)) = map.get("id")
-        { return Some(format!("#{}", id)); }
+        {
+            return Some(format!("#{}", id));
+        }
         None
     }
 
     fn is_element_object(v: &Value) -> bool {
-        if let Value::Object(map) = v { map.contains_key("tag") && map.contains_key("rect") } else { false }
+        if let Value::Object(map) = v {
+            map.contains_key("tag") && map.contains_key("rect")
+        } else {
+            false
+        }
     }
 
-    fn helper(a: &Value, b: &Value, eps: f64, path: &mut Vec<String>, elem_stack: &mut Vec<(Value, Value)>) -> Result<(), String> {
+    fn helper(
+        a: &Value,
+        b: &Value,
+        eps: f64,
+        path: &mut Vec<String>,
+        elem_stack: &mut Vec<(Value, Value)>,
+    ) -> Result<(), String> {
         use serde_json::Value::*;
         match (a, b) {
             (Null, Null) => Ok(()),
             (Bool(x), Bool(y)) => {
-                if x == y { Ok(()) } else { Err(build_err("bool mismatch", &format!("{} != {}", x, y), path, elem_stack)) }
-            }
-            (Number(x), Number(y)) => {
-                match (x.as_f64(), y.as_f64()) {
-                    (Some(xf), Some(yf)) => {
-                        if (xf - yf).abs() <= eps { Ok(()) } else { Err(build_err("number diff", &format!("{} vs {} exceeds eps {}", xf, yf, eps), path, elem_stack)) }
-                    }
-                    _ => Err(build_err("non-float number encountered", "", path, elem_stack)),
+                if x == y {
+                    Ok(())
+                } else {
+                    Err(build_err(
+                        "bool mismatch",
+                        &format!("{} != {}", x, y),
+                        path,
+                        elem_stack,
+                    ))
                 }
             }
+            (Number(x), Number(y)) => match (x.as_f64(), y.as_f64()) {
+                (Some(xf), Some(yf)) => {
+                    if (xf - yf).abs() <= eps {
+                        Ok(())
+                    } else {
+                        Err(build_err(
+                            "number diff",
+                            &format!("{} vs {} exceeds eps {}", xf, yf, eps),
+                            path,
+                            elem_stack,
+                        ))
+                    }
+                }
+                _ => Err(build_err(
+                    "non-float number encountered",
+                    "",
+                    path,
+                    elem_stack,
+                )),
+            },
             (String(xs), String(ys)) => {
-                if xs == ys { Ok(()) } else { Err(build_err("string mismatch", &format!("'{}' != '{}'", xs, ys), path, elem_stack)) }
+                if xs == ys {
+                    Ok(())
+                } else {
+                    Err(build_err(
+                        "string mismatch",
+                        &format!("'{}' != '{}'", xs, ys),
+                        path,
+                        elem_stack,
+                    ))
+                }
             }
             (Array(xa), Array(ya)) => {
                 if xa.len() != ya.len() {
-                    return Err(build_err("array length mismatch", &format!("{} != {}", xa.len(), ya.len()), path, elem_stack));
+                    return Err(build_err(
+                        "array length mismatch",
+                        &format!("{} != {}", xa.len(), ya.len()),
+                        path,
+                        elem_stack,
+                    ));
                 }
                 for (i, (xe, ye)) in xa.iter().zip(ya.iter()).enumerate() {
                     // If this array is a children array, label with element id and compress the path
@@ -207,9 +456,13 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
                     let pushed = if is_element_object(xe) && is_element_object(ye) {
                         elem_stack.push((xe.clone(), ye.clone()));
                         true
-                    } else { false };
+                    } else {
+                        false
+                    };
                     let r = helper(xe, ye, eps, path, elem_stack);
-                    if pushed { elem_stack.pop(); }
+                    if pushed {
+                        elem_stack.pop();
+                    }
                     path.pop();
                     r?;
                 }
@@ -217,7 +470,12 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
             }
             (Object(xo), Object(yo)) => {
                 if xo.len() != yo.len() {
-                    return Err(build_err("object size mismatch", &format!("{} != {}", xo.len(), yo.len()), path, elem_stack));
+                    return Err(build_err(
+                        "object size mismatch",
+                        &format!("{} != {}", xo.len(), yo.len()),
+                        path,
+                        elem_stack,
+                    ));
                 }
                 for (k, xv) in xo.iter() {
                     match yo.get(k) {
@@ -227,22 +485,43 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
                             let pushed = if is_element_object(xv) && is_element_object(yv) {
                                 elem_stack.push((xv.clone(), yv.clone()));
                                 true
-                            } else { false };
+                            } else {
+                                false
+                            };
                             let r = helper(xv, yv, eps, path, elem_stack);
-                            if pushed { elem_stack.pop(); }
+                            if pushed {
+                                elem_stack.pop();
+                            }
                             path.pop();
                             r?;
                         }
-                        None => return Err(build_err("missing key in expected", &format!("'{}'", k), path, elem_stack)),
+                        None => {
+                            return Err(build_err(
+                                "missing key in expected",
+                                &format!("'{}'", k),
+                                path,
+                                elem_stack,
+                            ));
+                        }
                     }
                 }
                 Ok(())
             }
-            (x, y) => Err(build_err("type mismatch", &format!("{:?} vs {:?}", type_name(x), type_name(y)), path, elem_stack)),
+            (x, y) => Err(build_err(
+                "type mismatch",
+                &format!("{:?} vs {:?}", type_name(x), type_name(y)),
+                path,
+                elem_stack,
+            )),
         }
     }
 
-    fn build_err(kind: &str, detail: &str, path: &[String], elem_stack: &[(Value, Value)]) -> String {
+    fn build_err(
+        kind: &str,
+        detail: &str,
+        path: &[String],
+        elem_stack: &[(Value, Value)],
+    ) -> String {
         let path_str = format_path(path);
         let (our_elem, ch_elem) = if let Some((a, b)) = elem_stack.last() {
             (a, b)
@@ -250,19 +529,39 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
             // Fallback: no element context; use empty objects
             (&Value::Null, &Value::Null)
         };
-        let our_s = if our_elem.is_null() { String::from("null") } else { serde_json::to_string_pretty(our_elem).unwrap_or_else(|_| String::from("{}")) };
-        let ch_s = if ch_elem.is_null() { String::from("null") } else { serde_json::to_string_pretty(ch_elem).unwrap_or_else(|_| String::from("{}")) };
-        if detail.is_empty() {
-            format!("{}: {}\nElement (our): {}\nElement (chromium): {}", path_str, kind, our_s, ch_s)
+        let our_s = if our_elem.is_null() {
+            String::from("null")
         } else {
-            format!("{}: {} — {}\nElement (our): {}\nElement (chromium): {}", path_str, kind, detail, our_s, ch_s)
+            serde_json::to_string_pretty(our_elem).unwrap_or_else(|_| String::from("{}"))
+        };
+        let ch_s = if ch_elem.is_null() {
+            String::from("null")
+        } else {
+            serde_json::to_string_pretty(ch_elem).unwrap_or_else(|_| String::from("{}"))
+        };
+        if detail.is_empty() {
+            format!(
+                "{}: {}\nElement (our): {}\nElement (chromium): {}",
+                path_str, kind, our_s, ch_s
+            )
+        } else {
+            format!(
+                "{}: {} — {}\nElement (our): {}\nElement (chromium): {}",
+                path_str, kind, detail, our_s, ch_s
+            )
         }
     }
 
     fn format_path(path: &[String]) -> String {
-        if path.is_empty() { String::new() } else {
+        if path.is_empty() {
+            String::new()
+        } else {
             let joined = path.join("");
-            if let Some(stripped) = joined.strip_prefix('.') { stripped.to_string() } else { joined }
+            if let Some(stripped) = joined.strip_prefix('.') {
+                stripped.to_string()
+            } else {
+                joined
+            }
         }
     }
     fn type_name(v: &Value) -> &'static str {

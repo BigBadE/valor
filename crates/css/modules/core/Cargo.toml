@@ -1,0 +1,10 @@
+[package]
+name = "css_core"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+js.workspace = true

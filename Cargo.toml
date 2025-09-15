@@ -1,7 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/*"
+    "crates/*",
+    "crates/css/modules/*"
 ]
 
 [workspace.package]
@@ -29,6 +30,7 @@ url = "2.5.7"
 reqwest = { version = "0.12.23", features = ["stream"] }
 
 # Data types
+base64 = "0.22.1"
 bytes = "1.10.1"
 lasso = "0.7.3"
 indextree = "4.7.4"
@@ -51,6 +53,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
 urlencoding = "2.1.3"
 criterion = "0.7.0"
+image = { version = "0.25.5", default-features = false, features = ["png", "jpeg", "webp"] }
 
 # JavaScript engine
 rusty_v8 = "0.32.1"
@@ -58,13 +61,38 @@ rusty_v8 = "0.32.1"
 # Our crates
 css = { path = "crates/css" }
 html = { path = "crates/html" }
-layouter = { path = "crates/layouter" }
 page_handler = { path = "crates/page_handler" }
 wgpu_renderer = { path = "crates/wgpu_renderer" }
-style_engine = { path = "crates/style_engine" }
-js_engine_v8 = { path = "crates/js_engine_v8" }
 js = { path = "crates/js" }
+js_engine_v8 = { path = "crates/js/js_engine_v8" }
 
+# CSS modules (internal crates)
+css_core = { path = "crates/css/modules/core" }
+css_syntax = { path = "crates/css/modules/syntax" }
+css_style_attr = { path = "crates/css/modules/style_attr" }
+css_media_queries = { path = "crates/css/modules/media_queries" }
+css_conditional_rules = { path = "crates/css/modules/conditional_rules" }
+css_selectors = { path = "crates/css/modules/selectors" }
+css_namespaces = { path = "crates/css/modules/namespaces" }
+css_cascade = { path = "crates/css/modules/cascade" }
+css_values_units = { path = "crates/css/modules/values_units" }
+css_variables = { path = "crates/css/modules/variables" }
+css_display = { path = "crates/css/modules/display" }
+css_box = { path = "crates/css/modules/box" }
+css_color = { path = "crates/css/modules/color" }
+css_backgrounds_borders = { path = "crates/css/modules/backgrounds_borders" }
+css_images = { path = "crates/css/modules/images" }
+css_fonts = { path = "crates/css/modules/fonts" }
+css_writing_modes = { path = "crates/css/modules/writing_modes" }
+css_flexbox = { path = "crates/css/modules/flexbox" }
+css_ui = { path = "crates/css/modules/ui" }
+css_transforms = { path = "crates/css/modules/transforms" }
+css_position = { path = "crates/css/modules/position" }
+css_sizing = { path = "crates/css/modules/sizing" }
+css_text = { path = "crates/css/modules/text" }
+css_text_decoration = { path = "crates/css/modules/text_decoration" }
+layouter = { path = "crates/css/modules/layouter" }
+style_engine = { path = "crates/css/modules/style_engine" }
 
 [profile.dev]
 opt-level = 1
@@ -72,3 +100,34 @@ lto = false
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[workspace.lints.rust]
+warnings = "deny"
+future-incompatible = "deny"
+let-underscore = "deny"
+nonstandard-style = "deny"
+refining-impl-trait = "deny"
+unused = "deny"
+
+[workspace.lints.clippy]
+all = "deny"
+cargo = "deny"
+complexity = "deny"
+correctness = "deny"
+nursery = "deny"
+pedantic = "deny"
+perf = "deny"
+restriction = "deny"
+style = "deny"
+suspicious = "deny"
+arbitrary_source_item_ordering = { level = "allow", priority = 1 }
+blanket_clippy_restriction_lints = { level = "allow", priority = 1 }
+cargo_common_metadata = { level = "allow", priority = 1 }
+exhaustive_structs = { level = "allow", priority = 1 }
+pub_use = { level = "allow", priority = 1 }
+must_use_candidate = { level = "allow", priority = 1 }
+exhaustive_enums = { level = "allow", priority = 1 }
+implicit_return = { level = "allow", priority = 1 }
+single_call_fn = { level = "allow", priority = 1 }
+question_mark_used = { level = "allow", priority = 1 }
+wildcard_imports = { level = "allow", priority = 1 }

@@ -1,3 +1,4 @@
+#![allow(clippy::excessive_nesting)]
 //! A minimal DOM index mirror for host lookups (e.g., document.getElementById).
 //!
 //! This mirror subscribes to DOMUpdate batches and maintains small indices
@@ -47,7 +48,9 @@ impl DomIndexState {
         // Remove id mapping
         if let Some(id) = self.id_by_key.remove(&node) {
             if let Some(existing) = self.id_index.get(&id) {
-                if *existing == node { self.id_index.remove(&id); }
+                if *existing == node {
+                    self.id_index.remove(&id);
+                }
             }
         }
         // Remove tag index
@@ -81,12 +84,18 @@ impl DomIndexState {
         let mut set: HashSet<String> = HashSet::new();
         for token in class_attr.split(|ch: char| ch.is_whitespace()) {
             let t = token.trim();
-            if t.is_empty() { continue; }
+            if t.is_empty() {
+                continue;
+            }
             let lc = t.to_ascii_lowercase();
             set.insert(lc.clone());
             self.class_index.entry(lc).or_default().push(node);
         }
-        if set.is_empty() { self.classes_by_key.remove(&node); } else { self.classes_by_key.insert(node, set); }
+        if set.is_empty() {
+            self.classes_by_key.remove(&node);
+        } else {
+            self.classes_by_key.insert(node, set);
+        }
     }
 }
 
@@ -100,7 +109,12 @@ impl DomIndex {
     /// Create a new DomIndex and return the subscriber and its shared state Arc.
     pub fn new() -> (Self, Arc<Mutex<DomIndexState>>) {
         let inner = Arc::new(Mutex::new(DomIndexState::default()));
-        (Self { inner: inner.clone() }, inner)
+        (
+            Self {
+                inner: inner.clone(),
+            },
+            inner,
+        )
     }
 }
 
@@ -108,9 +122,17 @@ impl DOMSubscriber for DomIndex {
     /// Apply a DOM update to keep indices current.
     fn apply_update(&mut self, update: DOMUpdate) -> Result<()> {
         use DOMUpdate::*;
-        let mut guard = self.inner.lock().map_err(|_| anyhow::anyhow!("DomIndexState poisoned"))?;
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("DomIndexState poisoned"))?;
         match update {
-            InsertElement { parent, node, tag, pos: _ } => {
+            InsertElement {
+                parent,
+                node,
+                tag,
+                pos: _,
+            } => {
                 // Register parent/child linkage
                 guard.parent_by_child.insert(node, parent);
                 let entry = guard.children_by_parent.entry(parent).or_default();
@@ -125,7 +147,12 @@ impl DOMSubscriber for DomIndex {
                     tag_list.push(node);
                 }
             }
-            InsertText { parent, node, text, pos: _ } => {
+            InsertText {
+                parent,
+                node,
+                text,
+                pos: _,
+            } => {
                 guard.parent_by_child.insert(node, parent);
                 let entry = guard.children_by_parent.entry(parent).or_default();
                 if !entry.contains(&node) {
@@ -137,10 +164,12 @@ impl DOMSubscriber for DomIndex {
             SetAttr { node, name, value } => {
                 let name_lc = name.to_ascii_lowercase();
                 if name_lc == "id" {
-                    // Remove previous id mapping
+                    // Update reverse index: remove old mapping only if it pointed to this node
                     if let Some(old) = guard.id_by_key.insert(node, value.clone()) {
-                        if let Some(existing) = guard.id_index.get(&old) {
-                            if *existing == node { guard.id_index.remove(&old); }
+                        let should_remove =
+                            matches!(guard.id_index.get(&old), Some(&n) if n == node);
+                        if should_remove {
+                            guard.id_index.remove(&old);
                         }
                     }
                     if value.is_empty() {
@@ -173,7 +202,9 @@ impl DomIndexState {
         let mut out: Vec<NodeKey> = Vec::new();
         fn walk(state: &DomIndexState, node: NodeKey, needle: &str, out: &mut Vec<NodeKey>) {
             if let Some(tag) = state.tag_by_key.get(&node) {
-                if tag == needle { out.push(node); }
+                if tag == needle {
+                    out.push(node);
+                }
             }
             if let Some(children) = state.children_by_parent.get(&node) {
                 for child in children {
@@ -190,7 +221,9 @@ impl DomIndexState {
         let mut out: Vec<NodeKey> = Vec::new();
         fn walk(state: &DomIndexState, node: NodeKey, needle: &str, out: &mut Vec<NodeKey>) {
             if let Some(classes) = state.classes_by_key.get(&node) {
-                if classes.contains(needle) { out.push(node); }
+                if classes.contains(needle) {
+                    out.push(node);
+                }
             }
             if let Some(children) = state.children_by_parent.get(&node) {
                 for child in children {

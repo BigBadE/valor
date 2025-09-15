@@ -14,7 +14,9 @@ pub struct DrawRect {
 }
 
 impl Default for Renderer {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// A simple text draw command in device-independent pixel space.
@@ -50,17 +52,32 @@ pub struct RenderNode {
 impl RenderNode {
     /// Create a new document root render node.
     fn new_document() -> Self {
-        Self { kind: RenderNodeKind::Document, attributes: HashMap::new(), parent: None, children: Vec::new() }
+        Self {
+            kind: RenderNodeKind::Document,
+            attributes: HashMap::new(),
+            parent: None,
+            children: Vec::new(),
+        }
     }
 
     /// Create a new element render node for the given tag under the optional parent.
     fn new_element(tag: String, parent: Option<NodeKey>) -> Self {
-        Self { kind: RenderNodeKind::Element { tag }, attributes: HashMap::new(), parent, children: Vec::new() }
+        Self {
+            kind: RenderNodeKind::Element { tag },
+            attributes: HashMap::new(),
+            parent,
+            children: Vec::new(),
+        }
     }
 
     /// Create a new text render node with the given text content under the optional parent.
     fn new_text(text: String, parent: Option<NodeKey>) -> Self {
-        Self { kind: RenderNodeKind::Text { text }, attributes: HashMap::new(), parent, children: Vec::new() }
+        Self {
+            kind: RenderNodeKind::Text { text },
+            attributes: HashMap::new(),
+            parent,
+            children: Vec::new(),
+        }
     }
 }
 
@@ -79,17 +96,28 @@ impl Renderer {
     pub fn new() -> Self {
         let mut nodes = HashMap::new();
         nodes.insert(NodeKey::ROOT, RenderNode::new_document());
-        Self { nodes, root: NodeKey::ROOT, dirty_rects: Vec::new() }
+        Self {
+            nodes,
+            root: NodeKey::ROOT,
+            dirty_rects: Vec::new(),
+        }
     }
 
     /// Returns the root node key of the scene graph.
-    pub fn root(&self) -> NodeKey { self.root }
+    pub fn root(&self) -> NodeKey {
+        self.root
+    }
 
     /// Apply a single DOMUpdate to the renderer's scene graph.
     fn apply_update_impl(&mut self, update: DOMUpdate) -> Result<(), Error> {
         use DOMUpdate::*;
         match update {
-            InsertElement { parent, node, tag, pos } => {
+            InsertElement {
+                parent,
+                node,
+                tag,
+                pos,
+            } => {
                 self.ensure_parent_exists(parent);
                 {
                     let entry = self
@@ -101,7 +129,12 @@ impl Renderer {
                 }
                 self.insert_child_at(parent, node, pos);
             }
-            InsertText { parent, node, text, pos } => {
+            InsertText {
+                parent,
+                node,
+                text,
+                pos,
+            } => {
                 self.ensure_parent_exists(parent);
                 {
                     let entry = self
@@ -114,7 +147,10 @@ impl Renderer {
                 self.insert_child_at(parent, node, pos);
             }
             SetAttr { node, name, value } => {
-                let entry = self.nodes.entry(node).or_insert_with(RenderNode::new_document);
+                let entry = self
+                    .nodes
+                    .entry(node)
+                    .or_insert_with(RenderNode::new_document);
                 entry.attributes.insert(name, value);
             }
             RemoveNode { node } => {
@@ -131,13 +167,19 @@ impl Renderer {
     fn insert_child_at(&mut self, parent: NodeKey, child: NodeKey, position: usize) {
         if let Some(parent_node) = self.nodes.get_mut(&parent) {
             let children = &mut parent_node.children;
-            if position >= children.len() { children.push(child); } else { children.insert(position, child); }
+            if position >= children.len() {
+                children.push(child);
+            } else {
+                children.insert(position, child);
+            }
         }
     }
 
     /// Ensure a parent node exists in the map; if absent, seed as a document node.
     fn ensure_parent_exists(&mut self, parent: NodeKey) {
-        self.nodes.entry(parent).or_insert_with(RenderNode::new_document);
+        self.nodes
+            .entry(parent)
+            .or_insert_with(RenderNode::new_document);
     }
 
     /// Recursively remove a node and all of its descendants from the scene graph,
@@ -149,7 +191,10 @@ impl Renderer {
             {
                 parent_node.children.retain(|c| *c != node);
             }
-            node_entry.children.into_iter().for_each(|child| self.remove_node_recursive(child));
+            node_entry
+                .children
+                .into_iter()
+                .for_each(|child| self.remove_node_recursive(child));
         }
     }
 
@@ -179,5 +224,7 @@ impl Renderer {
 
 impl DOMSubscriber for Renderer {
     /// Apply a DOMUpdate dispatched by the DOM runtime to keep the render scene in sync.
-    fn apply_update(&mut self, update: DOMUpdate) -> Result<(), Error> { self.apply_update_impl(update) }
+    fn apply_update(&mut self, update: DOMUpdate) -> Result<(), Error> {
+        self.apply_update_impl(update)
+    }
 }

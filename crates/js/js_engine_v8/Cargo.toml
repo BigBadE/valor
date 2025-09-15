@@ -1,0 +1,18 @@
+[package]
+name = "js_engine_v8"
+version = "0.1.0"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+tokio = { workspace = true, optional = true }
+js.workspace = true
+
+rusty_v8.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync"] }

@@ -1,0 +1,6 @@
+[package]
+name = "css_display"
+edition.workspace = true
+
+[lints]
+workspace = true

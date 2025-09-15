@@ -14,7 +14,11 @@ fn retained_snapshot_is_side_effect_free_and_cheap() -> Result<(), Error> {
 
     // Use the existing clip fixture since it includes inline <style>.
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests").join("fixtures").join("layout").join("clip").join("01_overflow_hidden.html");
+        .join("tests")
+        .join("fixtures")
+        .join("layout")
+        .join("clip")
+        .join("01_overflow_hidden.html");
     let url = common::to_file_url(&path)?;
     let mut page = common::create_page(&rt, url)?;
 
@@ -35,7 +39,10 @@ fn retained_snapshot_is_side_effect_free_and_cheap() -> Result<(), Error> {
     // Styles should remain stable in size (no side-effects during snapshot)
     let styles_after = page.computed_styles_snapshot()?;
     let count_after = styles_after.len();
-    assert_eq!(count_before, count_after, "computed styles size changed across retained snapshots");
+    assert_eq!(
+        count_before, count_after,
+        "computed styles size changed across retained snapshots"
+    );
 
     Ok(())
 }

@@ -5,3 +5,4 @@ globs:
 ---
 
 If working with a task list, check off tasks as you finish them, and keep the list in sync with any changes to your plans.
+Follow the CSS/HTML spec, and stick to choices that fit a real browser like Chromium.

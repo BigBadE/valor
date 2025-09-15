@@ -2,15 +2,6 @@
 name = "valor"
 edition.workspace = true
 
-[features]
-# Phase 0: top-level feature flags to enable/disable subsystems.
-default = ["style_engine_full"]
-style_engine_full = ["style_engine/full"]
-# Enable shaping in layouter when top-level shaping is on
-shaping = ["layouter/shaping"]
-retained_display_list = ["wgpu_renderer/retained_display_list"]
-compositor = ["wgpu_renderer/compositor"]
-
 [dependencies]
 tokio.workspace = true
 winit.workspace = true
@@ -36,3 +27,4 @@ once_cell.workspace = true
 style_engine.workspace = true
 js_engine_v8.workspace = true
 js.workspace = true
+image.workspace = true

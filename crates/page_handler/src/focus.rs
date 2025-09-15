@@ -40,7 +40,11 @@ pub fn next(
         None => order[0],
         Some(cur) => {
             let pos = order.iter().position(|k| *k == cur).unwrap_or(usize::MAX);
-            let idx = if pos == usize::MAX || pos + 1 >= order.len() { 0 } else { pos + 1 };
+            let idx = if pos == usize::MAX || pos + 1 >= order.len() {
+                0
+            } else {
+                pos + 1
+            };
             order[idx]
         }
     })
@@ -84,7 +88,11 @@ pub fn prev(
         None => order[order.len() - 1],
         Some(cur) => {
             let pos = order.iter().position(|k| *k == cur).unwrap_or(usize::MAX);
-            let idx = if pos == usize::MAX || pos == 0 { order.len() - 1 } else { pos - 1 };
+            let idx = if pos == usize::MAX || pos == 0 {
+                order.len() - 1
+            } else {
+                pos - 1
+            };
             order[idx]
         }
     })

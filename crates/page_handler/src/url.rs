@@ -1,7 +1,7 @@
-use anyhow::{anyhow, Error};
+use anyhow::{Error, anyhow};
 use bytes::Bytes;
 use tokio::fs;
-use tokio_stream::{once, Stream, StreamExt};
+use tokio_stream::{Stream, StreamExt, once};
 use url::Url;
 
 use crate::embedded_chrome::get_embedded_chrome_asset;
@@ -28,12 +28,10 @@ pub async fn stream_url(
                     response.status()
                 ));
             }
-            let s = response
-                .bytes_stream()
-                .map(|res| match res {
-                    Ok(b) => Ok::<Bytes, Error>(b),
-                    Err(e) => Err::<Bytes, Error>(anyhow!(e)),
-                });
+            let s = response.bytes_stream().map(|res| match res {
+                Ok(b) => Ok::<Bytes, Error>(b),
+                Err(e) => Err::<Bytes, Error>(anyhow!(e)),
+            });
             Box::new(s)
         }
         "file" => {
@@ -51,7 +49,9 @@ pub async fn stream_url(
                 return Err(anyhow!("Unsupported valor host: {}", url));
             }
             let path = url.path();
-            let Some(bytes) = get_embedded_chrome_asset(path).or_else(|| get_embedded_chrome_asset(&format!("valor://chrome{}", path))) else {
+            let Some(bytes) = get_embedded_chrome_asset(path)
+                .or_else(|| get_embedded_chrome_asset(&format!("valor://chrome{}", path)))
+            else {
                 return Err(anyhow!("Embedded asset not found for {}", url));
             };
             let data = Bytes::from_static(bytes);
