@@ -27,7 +27,7 @@ fn ensure_history_dir() -> Result<PathBuf> {
 fn cmd_save(name: &str) -> Result<()> {
     let dir = ensure_history_dir()?;
     let mut path = dir;
-    path.push(format!("{}.json", name));
+    path.push(format!("{name}.json"));
     let snap = Snapshot {
         timestamp_ms: std::time::Instant::now().elapsed().as_millis(),
         note: "placeholder snapshot".to_string(),
@@ -40,7 +40,7 @@ fn cmd_save(name: &str) -> Result<()> {
 
 fn cmd_compare(baseline: &str, _threshold: Option<f32>) -> Result<()> {
     let mut path = history_dir();
-    path.push(format!("{}.json", baseline));
+    path.push(format!("{baseline}.json"));
     if !path.exists() {
         return Err(anyhow!(
             "baseline '{}' not found at {}",
@@ -51,10 +51,7 @@ fn cmd_compare(baseline: &str, _threshold: Option<f32>) -> Result<()> {
     let data = fs::read(&path)?;
     let _snap: Snapshot = serde_json::from_slice(&data)?;
     // Placeholder: always pass
-    println!(
-        "Comparison against baseline '{}' passed (placeholder)",
-        baseline
-    );
+    println!("Comparison against baseline '{baseline}' passed (placeholder)");
     Ok(())
 }
 

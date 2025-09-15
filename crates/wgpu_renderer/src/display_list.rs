@@ -314,7 +314,7 @@ mod tests {
         });
         match a.diff(&b) {
             DisplayListDiff::ReplaceAll(items) => assert_eq!(items.len(), 2),
-            other => panic!("unexpected diff: {:?}", other),
+            other => panic!("unexpected diff: {other:?}"),
         }
     }
 

@@ -139,7 +139,7 @@ impl HtmlPage {
         // Install the chromeHost namespace now that a channel is available
         let bindings = js::build_chrome_host_bindings();
         let host_ctx = self.host_context_mut().clone();
-        let _ = self.js_engine_mut().install_bindings(host_ctx, &bindings);
+        let _ = self.js_engine_mut().install_bindings(&host_ctx, &bindings);
         let _ = self.js_engine_mut().run_jobs();
         Ok(())
     }

@@ -1,6 +1,6 @@
+use css::layout_helpers::{collapse_whitespace, reorder_bidi_for_display};
 use js::NodeKey;
 use std::collections::HashMap;
-use css::layout_helpers::{collapse_whitespace, reorder_bidi_for_display};
 use wgpu_renderer::{DisplayItem, DisplayList};
 
 pub struct RetainedInputs {

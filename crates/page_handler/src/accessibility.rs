@@ -1,7 +1,7 @@
+use css::layout_helpers::collapse_whitespace;
 use js::NodeKey;
 use layouter::LayoutNodeKind;
 use std::collections::HashMap;
-use css::layout_helpers::collapse_whitespace;
 
 pub fn ax_tree_snapshot_from(
     snapshot: Vec<(NodeKey, LayoutNodeKind, Vec<NodeKey>)>,

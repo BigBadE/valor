@@ -464,7 +464,7 @@ impl RenderState {
             if use_layers {
                 for layer in self.layers.clone().iter() {
                     match layer {
-                        Layer::Background => {}
+                        Layer::Background => continue,
                         Layer::Content(dl) | Layer::Chrome(dl) => {
                             // Draw rectangles for this layer using DL batching (no cache for simplicity)
                             let batches = batch_display_list(dl, self.size.width, self.size.height);
@@ -498,9 +498,10 @@ impl RenderState {
                                         self.size.height.max(1),
                                     ),
                                 }
-                                if !vertices.is_empty() {
-                                    pass.draw(0..(vertices.len() as u32), 0..1);
+                                if vertices.is_empty() {
+                                    continue;
                                 }
+                                pass.draw(0..(vertices.len() as u32), 0..1);
                             }
                             // Draw text for this layer on top of its rects
                             let layer_text: Vec<DrawText> = dl
@@ -527,14 +528,15 @@ impl RenderState {
                                     }
                                 })
                                 .collect();
-                            if !layer_text.is_empty() {
-                                self.glyphon_prepare_for(&layer_text);
-                                let _ = self.text_renderer.render(
-                                    &self.text_atlas,
-                                    &self.viewport,
-                                    &mut pass,
-                                );
+                            if layer_text.is_empty() {
+                                continue;
                             }
+                            self.glyphon_prepare_for(&layer_text);
+                            let _ = self.text_renderer.render(
+                                &self.text_atlas,
+                                &self.viewport,
+                                &mut pass,
+                            );
                         }
                     }
                 }
@@ -567,16 +569,16 @@ impl RenderState {
                                 }),
                                 0,
                             ));
-                            continue;
+                        } else {
+                            let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
+                            let vertex_buffer =
+                                self.device.create_buffer_init(&util::BufferInitDescriptor {
+                                    label: Some("rect-batch"),
+                                    contents: vertex_bytes,
+                                    usage: BufferUsages::VERTEX,
+                                });
+                            cache.push((b.scissor, vertex_buffer, vertices.len() as u32));
                         }
-                        let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
-                        let vertex_buffer =
-                            self.device.create_buffer_init(&util::BufferInitDescriptor {
-                                label: Some("rect-batch"),
-                                contents: vertex_bytes,
-                                usage: BufferUsages::VERTEX,
-                            });
-                        cache.push((b.scissor, vertex_buffer, vertices.len() as u32));
                     }
                     self.cached_batches = Some(cache);
                     self.last_retained_list = self.retained_display_list.clone();
