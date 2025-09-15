@@ -175,7 +175,7 @@ impl HtmlPage {
             chrome_host_tx: None,
         };
         let bindings = js::build_default_bindings();
-        let _ = js_engine.install_bindings(host_context.clone(), &bindings);
+        let _ = js_engine.install_bindings(&host_context, &bindings);
 
         // Frame scheduler budget (ms) from ValorConfig
         let frame_scheduler = FrameScheduler::new(config.frame_budget());

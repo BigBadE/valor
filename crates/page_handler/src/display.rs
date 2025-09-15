@@ -202,7 +202,6 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
         None
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn recurse(
         list: &mut DisplayList,
         node: NodeKey,

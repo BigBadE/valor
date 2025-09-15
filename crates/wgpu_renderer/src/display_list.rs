@@ -7,6 +7,9 @@
 
 use crate::renderer::{DrawRect, DrawText};
 
+// Compact aliases to keep tuple-heavy types readable and satisfy clippy's type_complexity.
+pub type Scissor = (u32, u32, u32, u32);
+
 /// A single display list item.
 /// This MVP focuses on rectangles and text, with lightweight placeholders for
 /// clips and opacity that can be wired up later without breaking the API.
@@ -166,7 +169,7 @@ pub struct Quad {
 /// A batch of drawing work that shares the same scissor rectangle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Batch {
-    pub scissor: Option<(u32, u32, u32, u32)>,
+    pub scissor: Option<Scissor>,
     pub quads: Vec<Quad>,
 }
 
@@ -180,11 +183,11 @@ pub fn batch_display_list(
 ) -> Vec<Batch> {
     let mut batches: Vec<Batch> = Vec::new();
     let mut current_quads: Vec<Quad> = Vec::new();
-    let mut scissor_stack: Vec<(u32, u32, u32, u32)> = Vec::new();
-    let mut current_scissor: Option<(u32, u32, u32, u32)> = None;
+    let mut scissor_stack: Vec<Scissor> = Vec::new();
+    let mut current_scissor: Option<Scissor> = None;
     let mut current_opacity: f32 = 1.0;
 
-    let rect_to_scissor = |x: f32, y: f32, w: f32, h: f32| -> (u32, u32, u32, u32) {
+    let rect_to_scissor = |x: f32, y: f32, w: f32, h: f32| -> Scissor {
         let framebuffer_w = framebuffer_width.max(1);
         let framebuffer_h = framebuffer_height.max(1);
         let mut sx = x.max(0.0).floor() as i32;
@@ -205,7 +208,7 @@ pub fn batch_display_list(
         let sh = sh.clamp(0, max_h) as u32;
         (sx as u32, sy as u32, sw, sh)
     };
-    let intersect = |a: (u32, u32, u32, u32), b: (u32, u32, u32, u32)| -> (u32, u32, u32, u32) {
+    let intersect = |a: Scissor, b: Scissor| -> Scissor {
         let (ax, ay, aw, ah) = a;
         let (bx, by, bw, bh) = b;
         let x0 = ax.max(bx);

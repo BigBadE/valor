@@ -1,4 +1,3 @@
-#![allow(unnameable_test_items)]
 #![allow(dead_code)]
 use anyhow::{Result, anyhow};
 use headless_chrome::{

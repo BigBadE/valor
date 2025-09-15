@@ -1,9 +1,10 @@
 use anyhow::Error;
+use core::mem::take;
+use core::sync::atomic::{Ordering, compiler_fence};
 use css::types as css_types;
 use js::{DOMSubscriber, DOMUpdate, NodeKey};
 use std::collections::HashMap;
-use std::mem::take;
-use style_engine as se;
+use style_engine::ComputedStyle;
 
 pub mod layout {
     pub fn collapse_whitespace(s: &str) -> String {
@@ -46,7 +47,7 @@ pub enum LayoutNodeKind {
 pub struct Layouter {
     nodes: HashMap<NodeKey, LayoutNodeKind>,
     rects: HashMap<NodeKey, LayoutRect>,
-    computed_styles: HashMap<NodeKey, se::ComputedStyle>,
+    computed_styles: HashMap<NodeKey, ComputedStyle>,
     stylesheet: css_types::Stylesheet,
     perf_nodes_reflowed_last: u64,
     perf_dirty_subtrees_last: u64,
@@ -60,9 +61,11 @@ pub struct Layouter {
 }
 
 impl Layouter {
+    #[inline]
     pub fn new() -> Self {
         Self::default()
     }
+    #[inline]
     pub fn snapshot(&self) -> Vec<(NodeKey, LayoutNodeKind, Vec<NodeKey>)> {
         if self.nodes.is_empty() {
             vec![(NodeKey::ROOT, LayoutNodeKind::Document, vec![])]
@@ -74,68 +77,100 @@ impl Layouter {
                 .collect()
         }
     }
+    #[inline]
     pub fn attrs_map(&self) -> HashMap<NodeKey, HashMap<String, String>> {
         HashMap::new()
     }
+    #[inline]
     pub fn set_stylesheet(&mut self, s: css_types::Stylesheet) {
         self.stylesheet = s;
     }
-    pub fn set_computed_styles(&mut self, map: HashMap<NodeKey, se::ComputedStyle>) {
+    #[inline]
+    pub fn set_computed_styles(&mut self, map: HashMap<NodeKey, ComputedStyle>) {
         self.computed_styles = map;
     }
-    pub fn has_material_dirty(&self) -> bool {
+    #[inline]
+    pub const fn has_material_dirty(&self) -> bool {
         false
     }
+    #[inline]
     pub fn mark_noop_layout_tick(&mut self) {
         self.perf_nodes_reflowed_last = 0;
         self.perf_dirty_subtrees_last = 0;
         self.perf_layout_time_last_ms = 0;
+        // ensure not const-eligible
+        compiler_fence(Ordering::SeqCst);
     }
+    #[inline]
     pub fn compute_layout(&mut self) -> usize {
+        // ensure not const-eligible
+        compiler_fence(Ordering::SeqCst);
         0
     }
+    #[inline]
     pub fn compute_layout_geometry(&self) -> HashMap<NodeKey, LayoutRect> {
         self.rects.clone()
     }
+    #[inline]
     pub fn take_dirty_rects(&mut self) -> Vec<LayoutRect> {
-        take(&mut self.dirty_rects)
+        let out = take(&mut self.dirty_rects);
+        // ensure not const-eligible
+        compiler_fence(Ordering::SeqCst);
+        out
     }
-    pub fn perf_nodes_reflowed_last(&self) -> u64 {
+    #[inline]
+    pub const fn perf_nodes_reflowed_last(&self) -> u64 {
         self.perf_nodes_reflowed_last
     }
-    pub fn perf_dirty_subtrees_last(&self) -> u64 {
+    #[inline]
+    pub const fn perf_dirty_subtrees_last(&self) -> u64 {
         self.perf_dirty_subtrees_last
     }
-    pub fn perf_layout_time_last_ms(&self) -> u64 {
+    #[inline]
+    pub const fn perf_layout_time_last_ms(&self) -> u64 {
         self.perf_layout_time_last_ms
     }
-    pub fn perf_layout_time_total_ms(&self) -> u64 {
+    #[inline]
+    pub const fn perf_layout_time_total_ms(&self) -> u64 {
         self.perf_layout_time_total_ms
     }
-    pub fn perf_line_boxes_last(&self) -> u64 {
+    #[inline]
+    pub const fn perf_line_boxes_last(&self) -> u64 {
         self.perf_line_boxes_last
     }
-    pub fn perf_shaped_runs_last(&self) -> u64 {
+    #[inline]
+    pub const fn perf_shaped_runs_last(&self) -> u64 {
         self.perf_shaped_runs_last
     }
-    pub fn perf_early_outs_last(&self) -> u64 {
+    #[inline]
+    pub const fn perf_early_outs_last(&self) -> u64 {
         self.perf_early_outs_last
     }
-    pub fn perf_updates_applied(&self) -> u64 {
+    #[inline]
+    pub const fn perf_updates_applied(&self) -> u64 {
         self.perf_updates_applied
     }
 
+    #[inline]
     pub fn hit_test(&mut self, _x: i32, _y: i32) -> Option<NodeKey> {
+        // ensure not const-eligible
+        compiler_fence(Ordering::SeqCst);
         None
     }
-    pub fn mark_nodes_style_dirty(&mut self, _nodes: &[NodeKey]) { /* no-op shim */
+    #[inline]
+    pub fn mark_nodes_style_dirty(&mut self, _nodes: &[NodeKey]) {
+        /* no-op shim */
+        // ensure not const-eligible
+        compiler_fence(Ordering::SeqCst);
     }
-    pub fn computed_styles(&self) -> &HashMap<NodeKey, se::ComputedStyle> {
+    #[inline]
+    pub const fn computed_styles(&self) -> &HashMap<NodeKey, ComputedStyle> {
         &self.computed_styles
     }
 }
 
 impl DOMSubscriber for Layouter {
+    #[inline]
     fn apply_update(&mut self, _update: DOMUpdate) -> Result<(), Error> {
         self.perf_updates_applied = self.perf_updates_applied.saturating_add(1);
         Ok(())

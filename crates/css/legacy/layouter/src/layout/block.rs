@@ -52,7 +52,6 @@ pub(crate) fn measure_descendant_inline_text_width(
 
 /// Layout block children with margin collapsing.
 /// Returns (additional_content_height, updated_child_y).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn layout_block_children(
     block_children: &[NodeKey],
     _parent_node: NodeKey,

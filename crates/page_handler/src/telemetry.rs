@@ -1,6 +1,5 @@
 /// Telemetry utilities for formatting and emitting perf counters.
 /// Kept independent of HtmlPage internals; callers pass in counters explicitly.
-#[allow(clippy::too_many_arguments)]
 pub fn perf_counters_json(
     nodes_reflowed_last: u64,
     nodes_reflowed_total: u64,

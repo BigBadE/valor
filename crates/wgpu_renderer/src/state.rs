@@ -12,6 +12,27 @@ use wgpu::*;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
+#[inline]
+fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
+    if let DisplayItem::Text {
+        x,
+        y,
+        text,
+        color,
+        font_size,
+    } = item
+    {
+        return Some(DrawText {
+            x: *x,
+            y: *y,
+            text: text.clone(),
+            color: *color,
+            font_size: *font_size,
+        });
+    }
+    None
+}
+
 /// Layer types for the simple compositor: order determines z-position.
 #[derive(Debug, Clone)]
 pub enum Layer {
@@ -407,30 +428,7 @@ impl RenderState {
         // Prepare text via glyphon for single-list paths
         if use_retained {
             if let Some(dl) = &self.retained_display_list {
-                self.text_list = dl
-                    .items
-                    .iter()
-                    .filter_map(|item| {
-                        if let DisplayItem::Text {
-                            x,
-                            y,
-                            text,
-                            color,
-                            font_size,
-                        } = item
-                        {
-                            Some(DrawText {
-                                x: *x,
-                                y: *y,
-                                text: text.clone(),
-                                color: *color,
-                                font_size: *font_size,
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+                self.text_list = dl.items.iter().filter_map(map_text_item).collect();
             }
             self.glyphon_prepare();
         } else if !use_layers {

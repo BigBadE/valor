@@ -2,6 +2,9 @@ use anyhow::Error;
 use js::{DOMSubscriber, DOMUpdate, NodeKey};
 use std::collections::HashMap;
 
+// Keep tuple-heavy types readable and satisfy clippy's type_complexity.
+pub type SnapshotEntry = (NodeKey, RenderNodeKind, Vec<NodeKey>);
+
 /// A simple rectangle draw command in device-independent pixel space.
 /// Colors are linear RGB [0..1]. This is a temporary bridge until a full display list exists.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -199,8 +202,8 @@ impl Renderer {
     }
 
     /// Returns a stable snapshot of the scene graph as tuples of (key, kind, children).
-    pub fn snapshot(&self) -> Vec<(NodeKey, RenderNodeKind, Vec<NodeKey>)> {
-        let mut out: Vec<(NodeKey, RenderNodeKind, Vec<NodeKey>)> = self
+    pub fn snapshot(&self) -> Vec<SnapshotEntry> {
+        let mut out: Vec<SnapshotEntry> = self
             .nodes
             .iter()
             .map(|(key, node)| (*key, node.kind.clone(), node.children.clone()))

@@ -58,12 +58,6 @@ image = { version = "0.25.5", default-features = false, features = ["png", "jpeg
 # JavaScript engine
 rusty_v8 = "0.32.1"
 
-# Unify transitive versions to avoid multiple-crate-versions lint
-getrandom = "0.2.16"
-socket2 = "0.6.0"
-wasi = "0.14.2+wasi-0.2.4"
-windows_i686_gnullvm = "0.53.0"
-
 # Our crates
 css = { path = "crates/css" }
 html = { path = "crates/html" }
@@ -126,7 +120,10 @@ perf = "deny"
 restriction = "deny"
 style = "deny"
 suspicious = "deny"
+allow_attributes = { level = "allow", priority = 1 }
 arbitrary_source_item_ordering = { level = "allow", priority = 1 }
+multiple_crate_versions = { level = "allow", priority = 1 }
+module_name_repetitions = { level = "allow", priority = 1 }
 blanket_clippy_restriction_lints = { level = "allow", priority = 1 }
 cargo_common_metadata = { level = "allow", priority = 1 }
 exhaustive_structs = { level = "allow", priority = 1 }

@@ -1,4 +1,3 @@
-#![allow(clippy::excessive_nesting)]
 //! A minimal DOM index mirror for host lookups (e.g., document.getElementById).
 //!
 //! This mirror subscribes to DOMUpdate batches and maintains small indices
@@ -97,6 +96,20 @@ impl DomIndexState {
             self.classes_by_key.insert(node, set);
         }
     }
+
+    /// Update the id attribute mapping and reverse index for a node.
+    fn update_id_for(&mut self, node: NodeKey, value: &str) {
+        if let Some(old) = self.id_by_key.insert(node, value.to_owned()) {
+            if self.id_index.get(&old).is_some_and(|&n| n == node) {
+                self.id_index.remove(&old);
+            }
+        }
+        if value.is_empty() {
+            self.id_by_key.remove(&node);
+        } else {
+            self.id_index.insert(value.to_owned(), node);
+        }
+    }
 }
 
 /// A DOMSubscriber implementation that updates a shared DomIndexState.
@@ -164,19 +177,7 @@ impl DOMSubscriber for DomIndex {
             SetAttr { node, name, value } => {
                 let name_lc = name.to_ascii_lowercase();
                 if name_lc == "id" {
-                    // Update reverse index: remove old mapping only if it pointed to this node
-                    if let Some(old) = guard.id_by_key.insert(node, value.clone()) {
-                        let should_remove =
-                            matches!(guard.id_index.get(&old), Some(&n) if n == node);
-                        if should_remove {
-                            guard.id_index.remove(&old);
-                        }
-                    }
-                    if value.is_empty() {
-                        guard.id_by_key.remove(&node);
-                    } else {
-                        guard.id_index.insert(value, node);
-                    }
+                    guard.update_id_for(node, &value);
                 } else if name_lc == "class" {
                     guard.set_classes_for(node, &value);
                 }

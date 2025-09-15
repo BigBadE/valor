@@ -12,7 +12,6 @@ use super::text::{measure_text_width, collapse_whitespace, greedy_line_break_wid
 
 /// Layout inline children with line wrapping and positioning.
 /// Returns (additional_content_height, updated_child_y).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn layout_inline_children(
     inline_children: &[NodeKey],
     node: NodeKey,

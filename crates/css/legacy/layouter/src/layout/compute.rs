@@ -403,7 +403,6 @@ pub(crate) fn layout_node(
 
 /// Calculate final dimensions and positioning for a layout node.
 /// Returns (final_top, final_width, final_height).
-#[allow(clippy::too_many_arguments)]
 fn calculate_final_dimensions_and_position(
     node: NodeKey,
     maps: &LayoutMaps,
@@ -508,7 +507,6 @@ pub fn compute_simple_layout(layouter: &Layouter) -> usize {
     let mut laid_out_boxes: usize = 0;
 
     // DFS using a stack to process blocks recursively in-order
-    #[allow(clippy::too_many_arguments)]
     fn layout_node_simple(
         node: NodeKey,
         kind_by_key: &HashMap<NodeKey, LayoutNodeKind>,
