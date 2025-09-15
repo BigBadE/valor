@@ -30,29 +30,36 @@ fn escape_js_for_literal(input: &str) -> String {
             '\r' => out.push_str("\\r"),
             _ => out.push(ch),
         }
+
+        #[inline]
+        fn build_onerror_script(message: &str, url: &str) -> String {
+            let msg_lit = format!("\"{}\"", escape_js_for_literal(message));
+            let url_lit = format!("\"{}\"", escape_js_for_literal(url));
+            format!(
+                "(function(m,u){{try{{if(typeof window!=='undefined'&&typeof window.onerror==='function'){{window.onerror(m,u,0,0);}}}}catch(_o){{}}}})({msg_lit},{url_lit});"
+            )
+        }
     }
     out
 }
 
 /// Dispatcher for host-bound functions installed through HostBindings.
-fn host_fn_dispatch(scope: &mut HandleScope, args: FunctionCallbackArguments, mut rv: ReturnValue) {
-    let data = match args.data() {
-        Some(d) => d,
-        None => {
-            rv.set(undefined(scope).into());
-            return;
-        }
+fn host_fn_dispatch(
+    scope: &mut HandleScope,
+    args: FunctionCallbackArguments,
+    mut ret_val: ReturnValue,
+) {
+    let Some(data_value) = args.data() else {
+        ret_val.set(undefined(scope).into());
+        return;
     };
-    let ext = match Local::<External>::try_from(data) {
-        Ok(e) => e,
-        Err(_) => {
-            rv.set(undefined(scope).into());
-            return;
-        }
+    let Ok(external_value) = Local::<External>::try_from(data_value) else {
+        ret_val.set(undefined(scope).into());
+        return;
     };
-    let ptr = ext.value();
+    let ptr = external_value.value();
     if ptr.is_null() {
-        rv.set(undefined(scope).into());
+        ret_val.set(undefined(scope).into());
         return;
     }
     // SAFETY: pointer refers to a Box<(HostContext, HostFnKind)> leaked in make_v8_callback
@@ -61,24 +68,29 @@ fn host_fn_dispatch(scope: &mut HandleScope, args: FunctionCallbackArguments, mu
     let host_fn_kind: &HostFnKind = &payload.1;
     // Collect arguments
     let mut collected: Vec<JSValue> = Vec::new();
-    for i in 0..args.length() {
+    let mut i: i32 = 0_i32;
+    while i < args.length() {
         let value = args.get(i);
         if value.is_undefined() {
             collected.push(JSValue::Undefined);
+            i += 1;
             continue;
         }
         if value.is_null() {
             collected.push(JSValue::Null);
+            i += 1;
             continue;
         }
         if value.is_boolean() {
             collected.push(JSValue::Boolean(value.boolean_value(scope)));
+            i += 1;
             continue;
         }
         if value.is_number() {
             collected.push(JSValue::Number(
                 value.number_value(scope).unwrap_or(f64::NAN),
             ));
+            i += 1;
             continue;
         }
         if value.is_string() {
@@ -87,6 +99,7 @@ fn host_fn_dispatch(scope: &mut HandleScope, args: FunctionCallbackArguments, mu
                     .to_string(scope)
                     .map_or_else(String::new, |val| val.to_rust_string_lossy(scope)),
             ));
+            i += 1;
             continue;
         }
         // Fallback: stringify non-primitive values via JS toString for console.*
@@ -95,37 +108,40 @@ fn host_fn_dispatch(scope: &mut HandleScope, args: FunctionCallbackArguments, mu
             |val| val.to_rust_string_lossy(scope),
         );
         collected.push(JSValue::String(stringified));
+        i += 1;
     }
-    match host_fn_kind {
-        &HostFnKind::Sync(ref function) => {
-            let function_arc = Arc::clone(function);
-            match function_arc(host_context, collected) {
-                Ok(result) => {
-                    let local_value: Local<Value> = match &result {
-                        JSValue::Undefined => undefined(scope).into(),
-                        JSValue::Null => null(scope).into(),
-                        JSValue::Boolean(boolean_value) => {
-                            Boolean::new(scope, *boolean_value).into()
-                        }
-                        JSValue::Number(number_value) => Number::new(scope, *number_value).into(),
-                        JSValue::String(string_value) => {
-                            V8String::new(scope, string_value.as_str())
-                                .map_or_else(|| undefined(scope).into(), Into::into)
-                        }
-                    };
-                    rv.set(local_value);
-                }
-                Err(error) => {
-                    let message = format!("{error}");
-                    if let Some(js_message) = V8String::new(scope, &message) {
-                        scope.throw_exception(js_message.into());
-                    } else {
-                        rv.set(undefined(scope).into());
-                    }
-                }
+    let HostFnKind::Sync(function_arc) = host_fn_kind;
+    match function_arc(host_context, collected) {
+        Ok(result) => {
+            let local_value: Local<Value> = match &result {
+                JSValue::Undefined => undefined(scope).into(),
+                JSValue::Null => null(scope).into(),
+                JSValue::Boolean(boolean_value) => Boolean::new(scope, *boolean_value).into(),
+                JSValue::Number(number_value) => Number::new(scope, *number_value).into(),
+                JSValue::String(string_value) => V8String::new(scope, string_value.as_str())
+                    .map_or_else(|| undefined(scope).into(), Into::into),
+            };
+            ret_val.set(local_value);
+        }
+        Err(error) => {
+            let message = format!("{error}");
+            if let Some(js_message) = V8String::new(scope, &message) {
+                scope.throw_exception(js_message.into());
+            } else {
+                ret_val.set(undefined(scope).into());
             }
         }
     }
+    let _consume_args: FunctionCallbackArguments = args; // consume to satisfy pedantic pass-by-value
+}
+
+/// Core dispatcher used by the V8 callback wrapper.
+fn host_fn_dispatch_impl(
+    scope: &mut HandleScope,
+    args: &FunctionCallbackArguments,
+    mut return_value: ReturnValue,
+) {
+    host_fn_dispatch(scope, args.clone(), return_value)
 }
 
 /// Holds the owned V8 isolate and the shared platform reference for the engine lifecycle.
@@ -226,31 +242,25 @@ impl V8Engine {
             false,
             false,
         );
-        if let Some(compiled) = Script::compile(try_catch, code, Some(&origin))
-            && compiled.run(try_catch).is_none()
-        {
+        let failed = Script::compile(try_catch, code, Some(&origin))
+            .map_or(false, |compiled| compiled.run(try_catch).is_none());
+        if failed {
             if try_catch.has_caught() {
                 let exc = try_catch.exception();
-                let exc_str = exc
-                    .and_then(|exc_val| exc_val.to_string(try_catch))
-                    .map_or_else(
-                        || "Uncaught exception".to_owned(),
-                        |val| val.to_rust_string_lossy(try_catch),
-                    );
+                let exc_str = exc.and_then(|v| v.to_string(try_catch)).map_or_else(
+                    || "Uncaught exception".to_owned(),
+                    |v| v.to_rust_string_lossy(try_catch),
+                );
                 let stack = try_catch
                     .stack_trace()
-                    .and_then(|val| val.to_string(try_catch))
-                    .map(|val| val.to_rust_string_lossy(try_catch));
+                    .and_then(|v| v.to_string(try_catch))
+                    .map(|v| v.to_rust_string_lossy(try_catch));
                 let message = try_catch.message().map_or_else(
                     || exc_str.clone(),
-                    |msg| msg.get(try_catch).to_rust_string_lossy(try_catch),
+                    |m| m.get(try_catch).to_rust_string_lossy(try_catch),
                 );
                 Console::exception(message.clone(), stack.as_deref());
-                let msg_lit = format!("\"{}\"", escape_js_for_literal(&message));
-                let url_lit = format!("\"{}\"", escape_js_for_literal(url));
-                let call_onerror = format!(
-                    "(function(m,u){{try{{if(typeof window!=='undefined'&&typeof window.onerror==='function'){{window.onerror(m,u,0,0);}}}}catch(_o){{}}}})({msg_lit},{url_lit});"
-                );
+                let call_onerror = build_onerror_script(&message, url);
                 if let Some(code2) = V8String::new(try_catch, &call_onerror) {
                     let undef2: Local<Value> = undefined(try_catch).into();
                     let origin2 = ScriptOrigin::new(
@@ -401,15 +411,12 @@ impl V8Engine {
                     .ok_or_else(|| anyhow!("failed to allocate V8 string for function name"))?;
                 if let Some(function) = maybe_function {
                     let _set_fn: Option<bool> = target_obj.set(scope, key.into(), function.into());
-                }
-                // Expose host functions under __valorHost_* for the runtime wrapper to call directly.
-                if *namespace_name == "document" {
-                    let host_alias = format!("__valorHost_{function_name}");
-                    if let Some(alias_key) = V8String::new(scope, &host_alias)
-                        && let Some(function) = maybe_function
-                    {
-                        let _unused_alias_result: Option<bool> =
-                            target_obj.set(scope, alias_key.into(), function.into());
+                    if *namespace_name == "document" {
+                        let host_alias = format!("__valorHost_{function_name}");
+                        if let Some(alias_key) = V8String::new(scope, &host_alias) {
+                            let _unused_alias_result: Option<bool> =
+                                target_obj.set(scope, alias_key.into(), function.into());
+                        }
                     }
                 }
             }
