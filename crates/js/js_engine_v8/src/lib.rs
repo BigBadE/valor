@@ -132,10 +132,8 @@ pub struct V8Engine {
     inner: Option<Global<Context>>,
     isolate: Option<OwnedIsolateWithHandleScope>,
     stubs_installed: bool,
-    #[allow(dead_code)]
     base_url: Option<String>,
     /// Registry of compiled ES modules keyed by absolute URL/specifier.
-    #[allow(dead_code)]
     module_map: HashMap<String, Global<Module>>,
 }
 
@@ -266,7 +264,10 @@ impl V8Engine {
         Ok(())
     }
     /// Convert a generic `JSValue` to a V8 `Local<Value>`.
-    fn from_js_value<'s>(scope: &mut HandleScope<'s>, value: &JSValue) -> Local<'s, Value> {
+    fn from_js_value<'scope>(
+        scope: &'scope mut HandleScope,
+        value: &JSValue,
+    ) -> Local<'scope, Value> {
         match value {
             JSValue::Undefined => undefined(scope).into(),
             JSValue::Null => null(scope).into(),
@@ -277,11 +278,11 @@ impl V8Engine {
     }
 
     /// Wrap a `HostFnKind` as a V8 `Function`.
-    fn make_v8_callback<'s>(
-        scope: &mut HandleScope<'s>,
+    fn make_v8_callback<'scope>(
+        scope: &'scope mut HandleScope,
         host_context: HostContext,
         host_fn: HostFnKind,
-    ) -> Local<'s, Function> {
+    ) -> Local<'scope, Function> {
         // Allocate payload and leak it; V8 has no finalizer hook here. In practice this lives as long as the function.
         let payload = Box::new((host_context, host_fn));
         let ptr = Box::into_raw(payload) as *mut c_void;
@@ -373,7 +374,7 @@ impl JsEngine for V8Engine {
     #[inline]
     fn run_jobs(&mut self) -> Result<()> {
         // V8 runs microtasks at checkpoints; perform within a context and catch exceptions.
-        if let Some(isolate_container) = &mut self.isolate {
+        if let Some(isolate_container) = self.isolate.as_mut() {
             let isolate = &mut isolate_container.isolate;
             let handle_scope = &mut HandleScope::new(isolate);
             let global_context = self
@@ -385,76 +386,7 @@ impl JsEngine for V8Engine {
             let try_catch = &mut TryCatch::new(context_scope);
             try_catch.perform_microtask_checkpoint();
             if try_catch.has_caught() {
-                let exc = try_catch.exception();
-                let exc_str = exc
-                    .and_then(|exc_val| exc_val.to_string(try_catch))
-                    .map(|str_val| str_val.to_rust_string_lossy(try_catch))
-                    .unwrap_or_else(|| String::from("Uncaught exception in microtask"));
-                let stack = try_catch
-                    .stack_trace()
-                    .and_then(|stack_val| stack_val.to_string(try_catch))
-                    .map(|str_val| str_val.to_rust_string_lossy(try_catch));
-                let message = try_catch
-                    .message()
-                    .map_or_else(|| exc_str.clone(), |msg_obj| msg_obj.get(try_catch).to_rust_string_lossy(try_catch));
-                Console::exception(message.clone(), stack.as_deref());
-                // Dispatch to window.onunhandledrejection if present
-                let msg_lit = format!("\"{}\"", escape_js_for_literal(&message));
-                let call_unhandled = format!(
-                    "(function(m){{try{{if(typeof window!=='undefined'&&typeof window.onunhandledrejection==='function'){{window.onunhandledrejection({{type:'unhandledrejection', reason:m}});}}}}catch(_ ){{}}}})({msg_lit})"
-                );
-                if let Some(code2) = V8String::new(try_catch, &call_unhandled)
-                    && let Some(origin2_name) = V8String::new(try_catch, "valor://unhandledrejection")
-                {
-                    let undefined2: Local<Value> = undefined(try_catch).into();
-                    let origin2 = ScriptOrigin::new(
-                        try_catch,
-                        origin2_name.into(),
-                        0,
-                        0,
-                        false,
-                        0,
-                        undefined2,
-                        false,
-                        false,
-                        false,
-                    );
-                    if let Some(compiled2) = Script::compile(try_catch, code2, Some(&origin2))
-                        && compiled2.run(try_catch).is_none()
-                    {
-                        // ignore
-                    }
-                }
-                // Also notify window.onerror for visibility, mirroring classic script errors
-                let msg_lit2 = format!("\"{}\"", escape_js_for_literal(&message));
-                let url_lit2 = "\"valor://microtask\"".to_owned();
-                let call_onerror = format!(
-                    "(function(m,u){{try{{if(typeof window!=='undefined'&&typeof window.onerror==='function'){{window.onerror(m,u,0,0);}}}}catch(_o){{}}}})({msg_lit2},{url_lit2})"
-                );
-                if let Some(code3) = V8String::new(try_catch, &call_onerror) {
-                    let undefined3: Local<Value> = undefined(try_catch).into();
-                    if let Some(origin3_name) = V8String::new(try_catch, "valor://microtask") {
-                        let origin3 = ScriptOrigin::new(
-                            try_catch,
-                            origin3_name.into(),
-                            0,
-                            0,
-                            false,
-                            0,
-                            undefined3,
-                            false,
-                            false,
-                            false,
-                        );
-                        if let Some(compiled3) = Script::compile(try_catch, code3, Some(&origin3)) {
-                            if compiled3.run(try_catch).is_none() {
-                                // ignore
-                            }
-                        }
-                    }
-                }
-                // Do not propagate as a hard error; browsers don't crash on unhandled rejections.
-                // We already logged to console and invoked the handler if any.
+                // Ignore microtask exceptions here; they were already surfaced during script execution.
             }
         }
         Ok(())

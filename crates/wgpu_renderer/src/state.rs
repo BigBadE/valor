@@ -464,7 +464,7 @@ impl RenderState {
             if use_layers {
                 for layer in self.layers.clone().iter() {
                     match layer {
-                        Layer::Background => { /* TODO: optional background */ }
+                        Layer::Background => {}
                         Layer::Content(dl) | Layer::Chrome(dl) => {
                             // Draw rectangles for this layer using DL batching (no cache for simplicity)
                             let batches = batch_display_list(dl, self.size.width, self.size.height);
