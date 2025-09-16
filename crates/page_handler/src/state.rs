@@ -1,4 +1,6 @@
 use crate::config::ValorConfig;
+use crate::snapshots::{IRect, Snapshot};
+
 use crate::runtime::JsRuntime;
 use crate::scheduler::FrameScheduler;
 use crate::url::stream_url;
@@ -21,6 +23,7 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc::error::TryRecvError as UnboundedTryRecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::sync::{broadcast, mpsc};
+use tokio_stream::StreamExt;
 use tracing::info_span;
 use url::Url;
 use wgpu_renderer::{DrawRect, Renderer};
@@ -28,6 +31,12 @@ use wgpu_renderer::{DrawRect, Renderer};
 // Module-scoped type aliases to simplify complex types and avoid repetition
 type NodeKeyMap<T> = HashMap<js::NodeKey, T>;
 type NodeKeyVecMap = HashMap<js::NodeKey, Vec<js::NodeKey>>;
+type LayoutMapsSnapshot = (
+    NodeKeyMap<String>,
+    NodeKeyVecMap,
+    NodeKeyVecMap,
+    NodeKeyMap<String>,
+);
 
 /// Note: FrameScheduler has moved to `scheduler.rs`.
 /// Structured outcome of a single update() tick. Extend as needed.
@@ -38,7 +47,7 @@ pub struct HtmlPage {
     /// Optional currently focused node for focus management.
     focused_node: Option<js::NodeKey>,
     /// Optional active selection rectangle in viewport coordinates for highlight overlay (text selection highlight).
-    selection_overlay: Option<(i32, i32, i32, i32)>,
+    selection_overlay: Option<IRect>,
     // If none, loading is finished. If some, still streaming.
     loader: Option<HTMLParser>,
     // The DOM of the page.
@@ -240,75 +249,77 @@ impl HtmlPage {
                     );
                     match job.kind {
                         html::parser::ScriptKind::Classic => {
-                            // If this is an external classic script, fetch its source first.
-                            let code: String = if job.source.is_empty()
-                                && !script_url.starts_with("inline:")
-                            {
-                                if let Ok(url) = url::Url::parse(&script_url) {
-                                    match url.scheme() {
-                                        "valor" => {
-                                            // Embedded chrome asset
-                                            let path = url.path();
-                                            if let Some(bytes) = crate::embedded_chrome::get_embedded_chrome_asset(path)
-                                                .or_else(|| crate::embedded_chrome::get_embedded_chrome_asset(&format!("valor://chrome{}", path)))
-                                            {
-                                                String::from_utf8_lossy(bytes).into_owned()
-                                            } else { String::new() }
-                                        }
-                                        _ => {
-                                            // Fetch via stream_url and concatenate
-                                            let fut = async {
-                                                let mut s = Vec::new();
-                                                let mut stream = stream_url(&url).await?;
-                                                use tokio_stream::StreamExt;
-                                                while let Some(chunk) = stream.next().await {
-                                                    let b = chunk
-                                                        .map_err(|e| anyhow::anyhow!("{}", e))?;
-                                                    s.extend_from_slice(&b);
-                                                }
-                                                Ok::<String, anyhow::Error>(
-                                                    String::from_utf8_lossy(&s).into_owned(),
-                                                )
-                                            };
-                                            self.host_context
-                                                .tokio_handle
-                                                .block_on(fut)
-                                                .unwrap_or_default()
-                                        }
-                                    }
-                                } else {
-                                    String::new()
-                                }
-                            } else {
-                                job.source.clone()
-                            };
+                            let code = self.classic_script_source(&job, &script_url);
                             let _ = self.js_engine.eval_script(&code, &script_url);
                             let _ = self.js_engine.run_jobs();
                         }
                         html::parser::ScriptKind::Module => {
-                            // Bundle static imports (side-effect only) and evaluate via module API.
-                            let resolver = &mut self.module_resolver;
-                            let inline_source = if script_url.starts_with("inline:") {
-                                Some(job.source.as_str())
-                            } else {
-                                None
-                            };
-                            if let Ok(bundle) =
-                                resolver.bundle_root(script_url.as_str(), &self.url, inline_source)
-                            {
-                                let _ = self.js_engine.eval_module(&bundle, &script_url);
-                                let _ = self.js_engine.run_jobs();
-                            } else {
-                                // Fallback: evaluate raw source
-                                let _ = self.js_engine.eval_module(&job.source, &script_url);
-                                let _ = self.js_engine.run_jobs();
-                            }
+                            self.eval_module_job(&job, &script_url);
                         }
                     }
                 }
                 Err(UnboundedTryRecvError::Empty) => break,
                 Err(UnboundedTryRecvError::Disconnected) => break,
             }
+        }
+    }
+
+    /// Helper: obtain classic script source given a job and resolved script_url.
+    fn classic_script_source(&self, job: &html::parser::ScriptJob, script_url: &str) -> String {
+        // Inline or provided source: return immediately
+        if !job.source.is_empty() || script_url.starts_with("inline:") {
+            return job.source.clone();
+        }
+        // Parse URL or bail
+        let Ok(url) = url::Url::parse(script_url) else {
+            return String::new();
+        };
+        // Embedded chrome asset
+        if url.scheme() == "valor" {
+            let path = url.path();
+            if let Some(bytes) =
+                crate::embedded_chrome::get_embedded_chrome_asset(path).or_else(|| {
+                    crate::embedded_chrome::get_embedded_chrome_asset(&format!(
+                        "valor://chrome{}",
+                        path
+                    ))
+                })
+            {
+                return String::from_utf8_lossy(bytes).into_owned();
+            }
+            return String::new();
+        }
+        // Fetch text via stream_url for network/file schemes
+        self.fetch_url_text(&url).unwrap_or_default()
+    }
+
+    fn fetch_url_text(&self, url: &url::Url) -> Result<String, anyhow::Error> {
+        let fut = async {
+            let mut buffer: Vec<u8> = Vec::new();
+            let mut stream = stream_url(url).await?;
+            while let Some(chunk) = stream.next().await {
+                let bytes = chunk.map_err(|e| anyhow::anyhow!("{}", e))?;
+                buffer.extend_from_slice(&bytes);
+            }
+            Ok::<String, anyhow::Error>(String::from_utf8_lossy(&buffer).into_owned())
+        };
+        self.host_context.tokio_handle.block_on(fut)
+    }
+
+    /// Helper: evaluate a module job using the resolver and engine, handling inline roots.
+    fn eval_module_job(&mut self, job: &html::parser::ScriptJob, script_url: &str) {
+        let resolver = &mut self.module_resolver;
+        let inline_source = if script_url.starts_with("inline:") {
+            Some(job.source.as_str())
+        } else {
+            None
+        };
+        if let Ok(bundle) = resolver.bundle_root(script_url, &self.url, inline_source) {
+            let _ = self.js_engine.eval_module(&bundle, script_url);
+            let _ = self.js_engine.run_jobs();
+        } else {
+            let _ = self.js_engine.eval_module(&job.source, script_url);
+            let _ = self.js_engine.run_jobs();
         }
     }
 
@@ -372,14 +383,7 @@ impl HtmlPage {
 
     /// Snapshot key layout-derived maps used by style and testing code.
     /// Returns (tags_by_key, element_children_by_key, raw_children_by_key, text_by_key)
-    fn snapshot_layout_maps(
-        &mut self,
-    ) -> (
-        NodeKeyMap<String>,
-        NodeKeyVecMap,
-        NodeKeyVecMap,
-        NodeKeyMap<String>,
-    ) {
+    fn snapshot_layout_maps(&mut self) -> LayoutMapsSnapshot {
         let lay_snapshot = self.layouter_mirror.mirror_mut().snapshot();
         let mut tags_by_key: HashMap<js::NodeKey, String> = HashMap::new();
         let mut raw_children: HashMap<js::NodeKey, Vec<js::NodeKey>> = HashMap::new();
@@ -418,13 +422,15 @@ impl HtmlPage {
     ) -> String {
         let mut inline_style_css = String::new();
         for (node, tag) in tags_by_key {
-            if tag.eq_ignore_ascii_case("style")
-                && let Some(children) = raw_children.get(node)
-            {
-                for child in children {
-                    if let Some(txt) = text_by_key.get(child) {
-                        inline_style_css.push_str(txt);
-                    }
+            if !tag.eq_ignore_ascii_case("style") {
+                continue;
+            }
+            let Some(children) = raw_children.get(node) else {
+                continue;
+            };
+            for child in children {
+                if let Some(txt) = text_by_key.get(child) {
+                    inline_style_css.push_str(txt);
                 }
             }
         }
@@ -677,14 +683,10 @@ impl HtmlPage {
     pub(crate) fn layouter_geometry_mut(&mut self) -> HashMap<js::NodeKey, LayoutRect> {
         self.layouter_mirror.mirror_mut().compute_layout_geometry()
     }
-    pub(crate) fn layouter_snapshot_mut(
-        &mut self,
-    ) -> Vec<(js::NodeKey, layouter::LayoutNodeKind, Vec<js::NodeKey>)> {
+    pub(crate) fn layouter_snapshot_mut(&mut self) -> Snapshot {
         self.layouter_mirror.mirror_mut().snapshot()
     }
-    pub(crate) fn layouter_snapshot(
-        &self,
-    ) -> Vec<(js::NodeKey, layouter::LayoutNodeKind, Vec<js::NodeKey>)> {
+    pub(crate) fn layouter_snapshot(&self) -> Snapshot {
         self.layouter_mirror.mirror().snapshot()
     }
     pub(crate) fn layouter_computed_styles(&self) -> HashMap<js::NodeKey, ComputedStyle> {
@@ -693,7 +695,7 @@ impl HtmlPage {
     pub(crate) fn display_builder(&self) -> &dyn crate::display::DisplayBuilder {
         &*self.display_builder
     }
-    pub(crate) fn selection_overlay(&self) -> Option<(i32, i32, i32, i32)> {
+    pub(crate) fn selection_overlay(&self) -> Option<IRect> {
         self.selection_overlay
     }
     pub(crate) fn hud_enabled(&self) -> bool {
@@ -791,18 +793,19 @@ impl HtmlPage {
     pub fn perf_counters_snapshot_string(&mut self) -> String {
         let _ = self.layouter_mirror.try_update_sync();
         let lay = self.layouter_mirror.mirror_mut();
-        telemetry_mod::perf_counters_json(
-            lay.perf_nodes_reflowed_last(),
-            lay.perf_updates_applied(),
-            lay.perf_dirty_subtrees_last(),
-            lay.perf_layout_time_last_ms(),
-            lay.perf_layout_time_total_ms(),
-            self.last_style_restyled_nodes,
-            self.frame_scheduler.deferred(),
-            lay.perf_line_boxes_last(),
-            lay.perf_shaped_runs_last(),
-            lay.perf_early_outs_last(),
-        )
+        let counters = crate::telemetry::PerfCounters {
+            nodes_reflowed_last: lay.perf_nodes_reflowed_last(),
+            nodes_reflowed_total: lay.perf_updates_applied(),
+            dirty_subtrees_last: lay.perf_dirty_subtrees_last(),
+            layout_time_last_ms: lay.perf_layout_time_last_ms(),
+            layout_time_total_ms: lay.perf_layout_time_total_ms(),
+            restyled_nodes_last: self.last_style_restyled_nodes,
+            spillover_deferred: self.frame_scheduler.deferred(),
+            line_boxes_last: lay.perf_line_boxes_last(),
+            shaped_runs_last: lay.perf_shaped_runs_last(),
+            early_outs_last: lay.perf_early_outs_last(),
+        };
+        telemetry_mod::perf_counters_json(&counters)
     }
 
     /// Emit production-friendly telemetry (JSON) when enabled in ValorConfig.
@@ -890,7 +893,7 @@ impl HtmlPage {
         }
         let rects = self.layouter_mirror.mirror_mut().compute_layout_geometry();
         let snapshot = self.layouter_mirror.mirror_mut().snapshot();
-        selection::selection_rects(&rects, &snapshot, x0, y0, x1, y1)
+        selection::selection_rects(&rects, &snapshot, (x0, y0, x1, y1))
     }
 
     /// Compute a caret rectangle at the given point: a thin bar within the inline text box, if any.

@@ -6,6 +6,7 @@ use page_handler::state::HtmlPage;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::string::String as StdString;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use url::Url;
@@ -380,10 +381,39 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
         a: &Value,
         b: &Value,
         eps: f64,
-        path: &mut Vec<String>,
+        path: &mut Vec<StdString>,
         elem_stack: &mut Vec<(Value, Value)>,
-    ) -> Result<(), String> {
+    ) -> Result<(), StdString> {
         use serde_json::Value::*;
+        type CmpFn = fn(
+            &serde_json::Value,
+            &serde_json::Value,
+            f64,
+            &mut Vec<StdString>,
+            &mut Vec<(serde_json::Value, serde_json::Value)>,
+        ) -> Result<(), StdString>;
+        struct CmpState<'a> {
+            eps: f64,
+            path: &'a mut Vec<StdString>,
+            elem_stack: &'a mut Vec<(serde_json::Value, serde_json::Value)>,
+        }
+        #[inline]
+        fn call_with_elem_ctx(
+            xv: &serde_json::Value,
+            yv: &serde_json::Value,
+            state: &mut CmpState<'_>,
+            helper: CmpFn,
+        ) -> Result<(), StdString> {
+            let should_push = is_element_object(xv) && is_element_object(yv);
+            if should_push {
+                state.elem_stack.push((xv.clone(), yv.clone()));
+            }
+            let result = helper(xv, yv, state.eps, state.path, state.elem_stack);
+            if should_push {
+                state.elem_stack.pop();
+            }
+            result
+        }
         match (a, b) {
             (Null, Null) => Ok(()),
             (Bool(x), Bool(y)) => {
@@ -453,16 +483,12 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
                         path.push(format!("[{}]", i));
                     }
                     // Maintain element context for better error snippets
-                    let pushed = if is_element_object(xe) && is_element_object(ye) {
-                        elem_stack.push((xe.clone(), ye.clone()));
-                        true
-                    } else {
-                        false
+                    let mut state = CmpState {
+                        eps,
+                        path,
+                        elem_stack,
                     };
-                    let r = helper(xe, ye, eps, path, elem_stack);
-                    if pushed {
-                        elem_stack.pop();
-                    }
+                    let r = call_with_elem_ctx(xe, ye, &mut state, helper);
                     path.pop();
                     r?;
                 }
@@ -481,17 +507,13 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
                     match yo.get(k) {
                         Some(yv) => {
                             path.push(format!(".{}", k));
-                            // If descending into an element object, push context
-                            let pushed = if is_element_object(xv) && is_element_object(yv) {
-                                elem_stack.push((xv.clone(), yv.clone()));
-                                true
-                            } else {
-                                false
+                            // Keep element context
+                            let mut state = CmpState {
+                                eps,
+                                path,
+                                elem_stack,
                             };
-                            let r = helper(xv, yv, eps, path, elem_stack);
-                            if pushed {
-                                elem_stack.pop();
-                            }
+                            let r = call_with_elem_ctx(xv, yv, &mut state, helper);
                             path.pop();
                             r?;
                         }

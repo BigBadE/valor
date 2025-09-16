@@ -1,9 +1,10 @@
+use crate::snapshots::SnapshotSlice;
 use js::NodeKey;
 use layouter::LayoutNodeKind;
 use std::collections::HashMap;
 
 pub fn next(
-    snapshot: &[(NodeKey, LayoutNodeKind, Vec<NodeKey>)],
+    snapshot: SnapshotSlice,
     attrs: &HashMap<NodeKey, HashMap<String, String>>,
     current: Option<NodeKey>,
 ) -> Option<NodeKey> {
@@ -21,15 +22,15 @@ pub fn next(
             }
             _ => false,
         };
-        if let Some(tb) = tabindex_opt {
-            focusables.push((tb, *key));
+        if let Some(tabindex) = tabindex_opt {
+            focusables.push((tabindex, *key));
         } else if is_focusable_tag {
             natural.push(*key);
         }
     }
-    focusables.sort_by_key(|(tb, _)| *tb);
+    focusables.sort_by_key(|(tabindex, _)| *tabindex);
     let order: Vec<NodeKey> = if !focusables.is_empty() {
-        focusables.into_iter().map(|(_, k)| k).collect()
+        focusables.into_iter().map(|(_, key)| key).collect()
     } else {
         natural
     };
@@ -38,8 +39,11 @@ pub fn next(
     }
     Some(match current {
         None => order[0],
-        Some(cur) => {
-            let pos = order.iter().position(|k| *k == cur).unwrap_or(usize::MAX);
+        Some(current_key) => {
+            let pos = order
+                .iter()
+                .position(|key| *key == current_key)
+                .unwrap_or(usize::MAX);
             let idx = if pos == usize::MAX || pos + 1 >= order.len() {
                 0
             } else {
@@ -51,7 +55,7 @@ pub fn next(
 }
 
 pub fn prev(
-    snapshot: &[(NodeKey, LayoutNodeKind, Vec<NodeKey>)],
+    snapshot: SnapshotSlice,
     attrs: &HashMap<NodeKey, HashMap<String, String>>,
     current: Option<NodeKey>,
 ) -> Option<NodeKey> {
@@ -87,7 +91,10 @@ pub fn prev(
     Some(match current {
         None => order[order.len() - 1],
         Some(cur) => {
-            let pos = order.iter().position(|k| *k == cur).unwrap_or(usize::MAX);
+            let pos = order
+                .iter()
+                .position(|key| *key == cur)
+                .unwrap_or(usize::MAX);
             let idx = if pos == usize::MAX || pos == 0 {
                 order.len() - 1
             } else {

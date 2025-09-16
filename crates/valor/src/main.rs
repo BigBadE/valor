@@ -3,6 +3,7 @@ use anyhow::{Error, anyhow};
 use js::ChromeHostCommand;
 use log::{error, info};
 use page_handler::config::ValorConfig;
+use page_handler::events::KeyMods;
 use page_handler::state::HtmlPage;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -36,6 +37,162 @@ struct App {
 }
 
 impl App {
+    #[inline]
+    fn set_canvas_background_from_content(state: &mut AppState) {
+        if let Some(p) = state.pages.get_mut(1) {
+            let cc = p.background_rgba();
+            state.render_state.set_clear_color(cc);
+        }
+    }
+
+    fn tick_pages_and_maybe_redraw(state: &mut AppState) {
+        let mut any_needs_redraw = false;
+        for page in &mut state.pages {
+            if let Err(err) = state.runtime.block_on(page.update()) {
+                error!("Failed to apply page updates: {err:?}");
+            }
+        }
+        for page in &mut state.pages {
+            if page.take_needs_redraw() {
+                any_needs_redraw = true;
+            }
+        }
+        if any_needs_redraw {
+            Self::rebuild_layers_after_update(state);
+        }
+    }
+
+    #[inline]
+    fn process_chrome_cmd(state: &mut AppState, cmd: ChromeHostCommand) {
+        match cmd {
+            ChromeHostCommand::Navigate(url_str) => Self::handle_navigate(state, url_str),
+            ChromeHostCommand::Back
+            | ChromeHostCommand::Forward
+            | ChromeHostCommand::Reload
+            | ChromeHostCommand::OpenTab(_)
+            | ChromeHostCommand::CloseTab(_) => {
+                info!("chromeHost command stub: {:?}", cmd);
+            }
+        }
+    }
+
+    #[inline]
+    fn push_layer_opt(state: &mut AppState, layer: Layer, dl_opt: Option<DisplayList>) {
+        if let Some(dl) = dl_opt {
+            match layer {
+                Layer::Content(_) => state.render_state.push_layer(Layer::Content(dl)),
+                Layer::Chrome(_) => state.render_state.push_layer(Layer::Chrome(dl)),
+                Layer::Background => { /* not used with dl here */ }
+            }
+        }
+    }
+
+    #[inline]
+    fn push_layer_with_bg(
+        render_state: &mut RenderState,
+        layer: Layer,
+        bg_rect: Option<DisplayItem>,
+        dl: DisplayList,
+    ) {
+        match (bg_rect, layer) {
+            (Some(rect), Layer::Content(_)) => {
+                let mut items = Vec::with_capacity(dl.items.len() + 1);
+                items.push(rect);
+                items.extend(dl.items);
+                render_state.push_layer(Layer::Content(DisplayList::from_items(items)));
+            }
+            (Some(rect), Layer::Chrome(_)) => {
+                let mut items = Vec::with_capacity(dl.items.len() + 1);
+                items.push(rect);
+                items.extend(dl.items);
+                render_state.push_layer(Layer::Chrome(DisplayList::from_items(items)));
+            }
+            (None, Layer::Content(_)) => render_state.push_layer(Layer::Content(dl)),
+            (None, Layer::Chrome(_)) => render_state.push_layer(Layer::Chrome(dl)),
+            _ => {}
+        }
+    }
+
+    fn rebuild_layers_after_update(state: &mut AppState) {
+        state.render_state.clear_layers();
+        Self::set_canvas_background_from_content(state);
+        let win_size = state.render_state.get_window().inner_size();
+        let fw = win_size.width as f32;
+        let fh = win_size.height as f32;
+        let content_dl = state
+            .pages
+            .get_mut(1)
+            .and_then(|p| p.display_list_retained_snapshot().ok());
+        let chrome_dl = state
+            .pages
+            .get_mut(0)
+            .and_then(|p| p.display_list_retained_snapshot().ok());
+        if let Some(dl) = content_dl {
+            // Prepend full-viewport bg
+            let cc = state
+                .pages
+                .get_mut(1)
+                .map(|p| p.background_rgba())
+                .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+            let bg = DisplayItem::Rect {
+                x: 0.0,
+                y: 0.0,
+                width: fw,
+                height: fh,
+                color: cc,
+            };
+            Self::push_layer_with_bg(
+                &mut state.render_state,
+                Layer::Content(DisplayList::new()),
+                Some(bg),
+                dl,
+            );
+        }
+        if let Some(dl) = chrome_dl {
+            // Prepend chrome strip bg
+            let cc = state
+                .pages
+                .get_mut(0)
+                .map(|p| p.background_rgba())
+                .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+            let bg = DisplayItem::Rect {
+                x: 0.0,
+                y: 0.0,
+                width: fw,
+                height: state.chrome_bar_height_px as f32,
+                color: cc,
+            };
+            Self::push_layer_with_bg(
+                &mut state.render_state,
+                Layer::Chrome(DisplayList::new()),
+                Some(bg),
+                dl,
+            );
+        }
+        state.render_state.get_window().request_redraw();
+    }
+
+    fn handle_navigate(state: &mut AppState, url_str: String) {
+        let parsed = Url::parse(&url_str).or_else(|_| Url::parse(&format!("https://{}", url_str)));
+        let Ok(target_url) = parsed else {
+            error!("Invalid URL '{}': {:?}", url_str, parsed.err());
+            return;
+        };
+        let config = ValorConfig::from_env();
+        match state
+            .runtime
+            .block_on(HtmlPage::new(state.runtime.handle(), target_url, config))
+        {
+            Ok(new_page) => {
+                if state.pages.len() >= 2 {
+                    state.pages[1] = new_page;
+                } else {
+                    state.pages.push(new_page);
+                }
+            }
+            Err(e) => error!("Navigate failed to create page: {:?}", e),
+        }
+    }
     fn resume(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Error> {
         // Create window object
         let window = Arc::new(event_loop.create_window(Window::default_attributes())?);
@@ -106,66 +263,7 @@ impl App {
                         error!("Failed to apply page updates: {err:?}");
                     }
                     if page.take_needs_redraw() {
-                        // Rebuild layers and request redraw
-                        state.render_state.clear_layers();
-                        // Set canvas background from CONTENT page (index 1)
-                        if let Some(p) = state.pages.get_mut(1) {
-                            let cc = p.background_rgba();
-                            state.render_state.set_clear_color(cc);
-                        }
-                        let win_size = state.render_state.get_window().inner_size();
-                        let fw = win_size.width as f32;
-                        let fh = win_size.height as f32;
-                        let content_dl = state
-                            .pages
-                            .get_mut(1)
-                            .and_then(|p| p.display_list_retained_snapshot().ok());
-                        let chrome_dl = state
-                            .pages
-                            .get_mut(0)
-                            .and_then(|p| p.display_list_retained_snapshot().ok());
-                        if let Some(dl) = content_dl {
-                            // Prepend a full-viewport background for the content layer
-                            let cc = state
-                                .pages
-                                .get_mut(1)
-                                .map(|p| p.background_rgba())
-                                .unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                            let mut items = Vec::with_capacity(dl.items.len() + 1);
-                            items.push(DisplayItem::Rect {
-                                x: 0.0,
-                                y: 0.0,
-                                width: fw,
-                                height: fh,
-                                color: cc,
-                            });
-                            items.extend(dl.items);
-                            state
-                                .render_state
-                                .push_layer(Layer::Content(DisplayList::from_items(items)));
-                        }
-                        if let Some(dl) = chrome_dl {
-                            // Prepend a top strip background for the chrome layer
-                            let cc = state
-                                .pages
-                                .get_mut(0)
-                                .map(|p| p.background_rgba())
-                                .unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                            let mut items = Vec::with_capacity(dl.items.len() + 1);
-                            items.push(DisplayItem::Rect {
-                                x: 0.0,
-                                y: 0.0,
-                                width: fw,
-                                height: state.chrome_bar_height_px as f32,
-                                color: cc,
-                            });
-                            items.extend(dl.items);
-                            state
-                                .render_state
-                                .push_layer(Layer::Chrome(DisplayList::from_items(items)));
-                        }
-                        info!("App: requesting redraw");
-                        state.render_state.get_window().request_redraw();
+                        Self::rebuild_layers_after_update(state);
                     }
                 }
             }
@@ -201,62 +299,7 @@ impl App {
                         error!("Failed to apply page updates: {err:?}");
                     }
                     if page.take_needs_redraw() {
-                        state_ref.render_state.clear_layers();
-                        if let Some(p) = state_ref.pages.get_mut(1) {
-                            let cc = p.background_rgba();
-                            state_ref.render_state.set_clear_color(cc);
-                        }
-                        let win_size = state_ref.render_state.get_window().inner_size();
-                        let fw = win_size.width as f32;
-                        let fh = win_size.height as f32;
-                        let content_dl = state_ref
-                            .pages
-                            .get_mut(1)
-                            .and_then(|p| p.display_list_retained_snapshot().ok());
-                        let chrome_dl = state_ref
-                            .pages
-                            .get_mut(0)
-                            .and_then(|p| p.display_list_retained_snapshot().ok());
-                        if let Some(dl) = content_dl {
-                            let cc = state_ref
-                                .pages
-                                .get_mut(1)
-                                .map(|p| p.background_rgba())
-                                .unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                            let mut items = Vec::with_capacity(dl.items.len() + 1);
-                            items.push(DisplayItem::Rect {
-                                x: 0.0,
-                                y: 0.0,
-                                width: fw,
-                                height: fh,
-                                color: cc,
-                            });
-                            items.extend(dl.items);
-                            state_ref
-                                .render_state
-                                .push_layer(Layer::Content(DisplayList::from_items(items)));
-                        }
-                        if let Some(dl) = chrome_dl {
-                            let cc = state_ref
-                                .pages
-                                .get_mut(0)
-                                .map(|p| p.background_rgba())
-                                .unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                            let mut items = Vec::with_capacity(dl.items.len() + 1);
-                            items.push(DisplayItem::Rect {
-                                x: 0.0,
-                                y: 0.0,
-                                width: fw,
-                                height: state_ref.chrome_bar_height_px as f32,
-                                color: cc,
-                            });
-                            items.extend(dl.items);
-                            state_ref
-                                .render_state
-                                .push_layer(Layer::Chrome(DisplayList::from_items(items)));
-                        }
-                        info!("App: requesting redraw");
-                        state_ref.render_state.get_window().request_redraw();
+                        Self::rebuild_layers_after_update(state_ref);
                     }
                 }
             }
@@ -269,10 +312,15 @@ impl App {
                 let code_str: String = format!("{:?}", event.physical_key);
                 let is_down = event.state == ElementState::Pressed;
                 if let Some(page) = state_ref.pages.get_mut(idx) {
+                    let mods = KeyMods {
+                        ctrl: false,
+                        alt: false,
+                        shift: false,
+                    };
                     if is_down {
-                        page.dispatch_key_down(&key_str, &code_str, false, false, false);
+                        page.dispatch_key_down(&key_str, &code_str, mods);
                     } else {
-                        page.dispatch_key_up(&key_str, &code_str, false, false, false);
+                        page.dispatch_key_up(&key_str, &code_str, mods);
                     }
                     // Apply a single update for responsive interactions
                     if let Err(err) = state_ref.runtime.block_on(page.update()) {
@@ -288,12 +336,16 @@ impl App {
                             .pages
                             .get_mut(0)
                             .and_then(|p| p.display_list_retained_snapshot().ok());
-                        if let Some(dl) = content_dl {
-                            state_ref.render_state.push_layer(Layer::Content(dl));
-                        }
-                        if let Some(dl) = chrome_dl {
-                            state_ref.render_state.push_layer(Layer::Chrome(dl));
-                        }
+                        Self::push_layer_opt(
+                            state_ref,
+                            Layer::Content(DisplayList::new()),
+                            content_dl,
+                        );
+                        Self::push_layer_opt(
+                            state_ref,
+                            Layer::Chrome(DisplayList::new()),
+                            chrome_dl,
+                        );
                         info!("App: requesting redraw");
                         state_ref.render_state.get_window().request_redraw();
                     }
@@ -323,124 +375,15 @@ impl ApplicationHandler for App {
             // Drain any pending chromeHost commands
             loop {
                 match state.chrome_host_rx.try_recv() {
-                    Ok(cmd) => {
-                        match cmd {
-                            ChromeHostCommand::Navigate(url_str) => {
-                                let parsed = Url::parse(&url_str)
-                                    .or_else(|_| Url::parse(&format!("https://{}", url_str)));
-                                match parsed {
-                                    Ok(target_url) => {
-                                        let config = ValorConfig::from_env();
-                                        match state.runtime.block_on(HtmlPage::new(
-                                            state.runtime.handle(),
-                                            target_url,
-                                            config,
-                                        )) {
-                                            Ok(new_page) => {
-                                                if state.pages.len() >= 2 {
-                                                    state.pages[1] = new_page;
-                                                } else {
-                                                    state.pages.push(new_page);
-                                                }
-                                            }
-                                            Err(e) => {
-                                                error!("Navigate failed to create page: {:?}", e)
-                                            }
-                                        }
-                                    }
-                                    Err(e) => error!("Invalid URL '{}': {:?}", url_str, e),
-                                }
-                            }
-                            ChromeHostCommand::Back
-                            | ChromeHostCommand::Forward
-                            | ChromeHostCommand::Reload
-                            | ChromeHostCommand::OpenTab(_)
-                            | ChromeHostCommand::CloseTab(_) => {
-                                // TODO: implement history and tab model in later phases
-                                info!("chromeHost command stub: {:?}", cmd);
-                            }
-                        }
-                    }
+                    Ok(cmd) => Self::process_chrome_cmd(state, cmd),
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
                     Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
                 }
             }
 
             // During initial loading or navigation, tick pages; otherwise idle.
-            let loading_active = state.pages.iter().any(|p| !p.parsing_finished());
-            if loading_active {
-                let mut any_needs_redraw = false;
-                for page in &mut state.pages {
-                    if let Err(err) = state.runtime.block_on(page.update()) {
-                        error!("Failed to apply page updates: {err:?}");
-                    }
-                }
-
-                for page in &mut state.pages {
-                    if page.take_needs_redraw() {
-                        any_needs_redraw = true;
-                    }
-                }
-
-                if any_needs_redraw {
-                    state.render_state.clear_layers();
-                    // Always choose CONTENT page background for canvas clear color
-                    if let Some(page) = state.pages.get_mut(1) {
-                        let cc = page.background_rgba();
-                        state.render_state.set_clear_color(cc);
-                    }
-                    let win_size = state.render_state.get_window().inner_size();
-                    let fw = win_size.width as f32;
-                    let fh = win_size.height as f32;
-                    let content_dl = state
-                        .pages
-                        .get_mut(1)
-                        .and_then(|p| p.display_list_retained_snapshot().ok());
-                    let chrome_dl = state
-                        .pages
-                        .get_mut(0)
-                        .and_then(|p| p.display_list_retained_snapshot().ok());
-                    if let Some(dl) = content_dl {
-                        let cc = state
-                            .pages
-                            .get_mut(1)
-                            .map(|p| p.background_rgba())
-                            .unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                        let mut items = Vec::with_capacity(dl.items.len() + 1);
-                        items.push(DisplayItem::Rect {
-                            x: 0.0,
-                            y: 0.0,
-                            width: fw,
-                            height: fh,
-                            color: cc,
-                        });
-                        items.extend(dl.items);
-                        state
-                            .render_state
-                            .push_layer(Layer::Content(DisplayList::from_items(items)));
-                    }
-                    if let Some(dl) = chrome_dl {
-                        let cc = state
-                            .pages
-                            .get_mut(0)
-                            .map(|p| p.background_rgba())
-                            .unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                        let mut items = Vec::with_capacity(dl.items.len() + 1);
-                        items.push(DisplayItem::Rect {
-                            x: 0.0,
-                            y: 0.0,
-                            width: fw,
-                            height: state.chrome_bar_height_px as f32,
-                            color: cc,
-                        });
-                        items.extend(dl.items);
-                        state
-                            .render_state
-                            .push_layer(Layer::Chrome(DisplayList::from_items(items)));
-                    }
-                    info!("App: requesting redraw");
-                    state.render_state.get_window().request_redraw();
-                }
+            if state.pages.iter().any(|p| !p.parsing_finished()) {
+                Self::tick_pages_and_maybe_redraw(state);
             }
         }
     }

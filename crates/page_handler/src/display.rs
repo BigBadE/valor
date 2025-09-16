@@ -1,19 +1,140 @@
+use crate::snapshots::IRect;
 use css::layout_helpers::{collapse_whitespace, reorder_bidi_for_display};
 use js::NodeKey;
 use std::collections::HashMap;
 use wgpu_renderer::{DisplayItem, DisplayList};
 
+// Module-scoped aliases to simplify complex tuple types
+type SnapshotItem = (NodeKey, layouter::LayoutNodeKind, Vec<NodeKey>);
+type SnapshotSlice<'a> = &'a [SnapshotItem];
+
 pub struct RetainedInputs {
     pub rects: HashMap<NodeKey, layouter::LayoutRect>,
-    pub snapshot: Vec<(NodeKey, layouter::LayoutNodeKind, Vec<NodeKey>)>,
+    pub snapshot: Vec<SnapshotItem>,
     pub computed_map: HashMap<NodeKey, style_engine::ComputedStyle>,
     pub computed_fallback: HashMap<NodeKey, style_engine::ComputedStyle>,
     pub computed_robust: Option<HashMap<NodeKey, style_engine::ComputedStyle>>,
-    pub selection_overlay: Option<(i32, i32, i32, i32)>,
+    pub selection_overlay: Option<IRect>,
     pub focused_node: Option<NodeKey>,
     pub hud_enabled: bool,
     pub spillover_deferred: u64,
     pub last_style_restyled_nodes: u64,
+}
+
+#[inline]
+fn push_border_items(
+    list: &mut DisplayList,
+    rect: &layouter::LayoutRect,
+    cs: &style_engine::ComputedStyle,
+) {
+    if let Some(items) = build_border_items(rect, cs) {
+        for item in items {
+            list.push(item);
+        }
+    }
+}
+
+#[inline]
+fn build_border_items(
+    rect: &layouter::LayoutRect,
+    cs: &style_engine::ComputedStyle,
+) -> Option<Vec<DisplayItem>> {
+    use style_engine::BorderStyle;
+    let bw = cs.border_width;
+    let bs = cs.border_style;
+    let bc = cs.border_color;
+    let color = [
+        bc.red as f32 / 255.0,
+        bc.green as f32 / 255.0,
+        bc.blue as f32 / 255.0,
+        bc.alpha as f32 / 255.0,
+    ];
+    if !(color[3] > 0.0 && matches!(bs, BorderStyle::Solid)) {
+        return None;
+    }
+    let x = rect.x as f32;
+    let y = rect.y as f32;
+    let w = rect.width as f32;
+    let h = rect.height as f32;
+    let t = bw.top.max(0.0);
+    let r = bw.right.max(0.0);
+    let b = bw.bottom.max(0.0);
+    let l = bw.left.max(0.0);
+    let mut items: Vec<DisplayItem> = Vec::with_capacity(4);
+    if t > 0.0 {
+        items.push(DisplayItem::Rect {
+            x,
+            y,
+            width: w,
+            height: t,
+            color,
+        });
+    }
+    if b > 0.0 {
+        items.push(DisplayItem::Rect {
+            x,
+            y: y + h - b,
+            width: w,
+            height: b,
+            color,
+        });
+    }
+    if l > 0.0 {
+        items.push(DisplayItem::Rect {
+            x,
+            y,
+            width: l,
+            height: h,
+            color,
+        });
+    }
+    if r > 0.0 {
+        items.push(DisplayItem::Rect {
+            x: x + w - r,
+            y,
+            width: r,
+            height: h,
+            color,
+        });
+    }
+    Some(items)
+}
+
+#[inline]
+fn z_key_for_child(
+    child: NodeKey,
+    parent_map: &HashMap<NodeKey, NodeKey>,
+    computed_map: &HashMap<NodeKey, style_engine::ComputedStyle>,
+    computed_fallback: &HashMap<NodeKey, style_engine::ComputedStyle>,
+    computed_robust: &Option<HashMap<NodeKey, style_engine::ComputedStyle>>,
+) -> (i32, u64) {
+    // Inline nearest-style lookup to avoid deep nesting and inner function coupling
+    let style = {
+        let mut current = Some(child);
+        let mut found: Option<&style_engine::ComputedStyle> = None;
+        while let Some(nkey) = current {
+            if let Some(cs) = computed_robust
+                .as_ref()
+                .and_then(|m| m.get(&nkey))
+                .or_else(|| computed_fallback.get(&nkey))
+                .or_else(|| computed_map.get(&nkey))
+            {
+                found = Some(cs);
+                break;
+            }
+            current = parent_map.get(&nkey).copied();
+        }
+        found
+    };
+    let (_pos, zi) = style
+        .map(|cs| (cs.position, cs.z_index))
+        .unwrap_or((style_engine::Position::Static, None));
+    let bucket: i32 = match zi {
+        Some(v) if v < 0 => -1,
+        Some(v) if v > 0 => 1,
+        Some(_) | None => 0,
+    };
+    (bucket, child.0)
 }
 
 pub trait DisplayBuilder: Send + Sync {
@@ -21,12 +142,12 @@ pub trait DisplayBuilder: Send + Sync {
     fn build_rect_list(
         &self,
         rects: &HashMap<NodeKey, layouter::LayoutRect>,
-        snapshot: &[(NodeKey, layouter::LayoutNodeKind, Vec<NodeKey>)],
+        snapshot: SnapshotSlice,
     ) -> Vec<wgpu_renderer::DrawRect>;
     fn build_text_list(
         &self,
         rects: &HashMap<NodeKey, layouter::LayoutRect>,
-        snapshot: &[(NodeKey, layouter::LayoutNodeKind, Vec<NodeKey>)],
+        snapshot: SnapshotSlice,
         computed_map: &HashMap<NodeKey, style_engine::ComputedStyle>,
     ) -> Vec<wgpu_renderer::DrawText>;
 }
@@ -40,14 +161,14 @@ impl DisplayBuilder for DefaultDisplayBuilder {
     fn build_rect_list(
         &self,
         rects: &HashMap<NodeKey, layouter::LayoutRect>,
-        snapshot: &[(NodeKey, layouter::LayoutNodeKind, Vec<NodeKey>)],
+        snapshot: SnapshotSlice,
     ) -> Vec<wgpu_renderer::DrawRect> {
         build_rect_list(rects, snapshot)
     }
     fn build_text_list(
         &self,
         rects: &HashMap<NodeKey, layouter::LayoutRect>,
-        snapshot: &[(NodeKey, layouter::LayoutNodeKind, Vec<NodeKey>)],
+        snapshot: SnapshotSlice,
         computed_map: &HashMap<NodeKey, style_engine::ComputedStyle>,
     ) -> Vec<wgpu_renderer::DrawText> {
         build_text_list(rects, snapshot, computed_map)
@@ -56,7 +177,7 @@ impl DisplayBuilder for DefaultDisplayBuilder {
 
 pub fn build_rect_list(
     rects: &HashMap<NodeKey, layouter::LayoutRect>,
-    snapshot: &[(NodeKey, layouter::LayoutNodeKind, Vec<NodeKey>)],
+    snapshot: SnapshotSlice,
 ) -> Vec<wgpu_renderer::DrawRect> {
     let mut list: Vec<wgpu_renderer::DrawRect> = Vec::new();
     for (node, kind, _children) in snapshot.iter() {
@@ -78,7 +199,7 @@ pub fn build_rect_list(
 
 pub fn build_text_list(
     rects: &HashMap<NodeKey, layouter::LayoutRect>,
-    snapshot: &[(NodeKey, layouter::LayoutNodeKind, Vec<NodeKey>)],
+    snapshot: SnapshotSlice,
     computed_map: &HashMap<NodeKey, style_engine::ComputedStyle>,
 ) -> Vec<wgpu_renderer::DrawText> {
     let mut list: Vec<wgpu_renderer::DrawText> = Vec::new();
@@ -203,48 +324,76 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
         None
     }
 
-    fn recurse(
-        list: &mut DisplayList,
-        node: NodeKey,
-        kind_map: &HashMap<NodeKey, layouter::LayoutNodeKind>,
-        children_map: &HashMap<NodeKey, Vec<NodeKey>>,
-        rects: &HashMap<NodeKey, layouter::LayoutRect>,
+    // Structured walker to reduce argument counts and nesting.
+    #[inline]
+    fn order_children(
+        children: &[NodeKey],
+        parent_map: &HashMap<NodeKey, NodeKey>,
         computed_map: &HashMap<NodeKey, style_engine::ComputedStyle>,
         computed_fallback: &HashMap<NodeKey, style_engine::ComputedStyle>,
         computed_robust: &Option<HashMap<NodeKey, style_engine::ComputedStyle>>,
-        parent_map: &HashMap<NodeKey, NodeKey>,
-    ) {
-        let kind = match kind_map.get(&node) {
+    ) -> Vec<NodeKey> {
+        let mut ordered: Vec<NodeKey> = children.to_vec();
+        ordered.sort_by_key(|c| {
+            z_key_for_child(
+                *c,
+                parent_map,
+                computed_map,
+                computed_fallback,
+                computed_robust,
+            )
+        });
+        ordered
+    }
+
+    #[inline]
+    fn process_children(list: &mut DisplayList, node: NodeKey, ctx: &WalkCtx<'_>) {
+        if let Some(children) = ctx.children_map.get(&node) {
+            let ordered = order_children(
+                children,
+                ctx.parent_map,
+                ctx.computed_map,
+                ctx.computed_fallback,
+                ctx.computed_robust,
+            );
+            for child in ordered.into_iter() {
+                recurse(list, child, ctx);
+            }
+        }
+    }
+    struct WalkCtx<'a> {
+        kind_map: &'a HashMap<NodeKey, layouter::LayoutNodeKind>,
+        children_map: &'a HashMap<NodeKey, Vec<NodeKey>>,
+        rects: &'a HashMap<NodeKey, layouter::LayoutRect>,
+        computed_map: &'a HashMap<NodeKey, style_engine::ComputedStyle>,
+        computed_fallback: &'a HashMap<NodeKey, style_engine::ComputedStyle>,
+        computed_robust: &'a Option<HashMap<NodeKey, style_engine::ComputedStyle>>,
+        parent_map: &'a HashMap<NodeKey, NodeKey>,
+    }
+
+    fn recurse(list: &mut DisplayList, node: NodeKey, ctx: &WalkCtx<'_>) {
+        let kind = match ctx.kind_map.get(&node) {
             Some(k) => k,
             None => return,
         };
         match kind {
             layouter::LayoutNodeKind::Document => {
-                if let Some(children) = children_map.get(&node) {
+                if let Some(children) = ctx.children_map.get(&node) {
                     for &child in children {
-                        recurse(
-                            list,
-                            child,
-                            kind_map,
-                            children_map,
-                            rects,
-                            computed_map,
-                            computed_fallback,
-                            computed_robust,
-                            parent_map,
-                        );
+                        recurse(list, child, ctx);
                     }
                 }
             }
             layouter::LayoutNodeKind::Block { .. } => {
-                if let Some(rect) = rects.get(&node) {
+                if let Some(rect) = ctx.rects.get(&node) {
                     // Background fill from computed styles (with alpha)
                     let mut bg_rgba: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
-                    let cs_opt = computed_robust
+                    let cs_opt = ctx
+                        .computed_robust
                         .as_ref()
                         .and_then(|m| m.get(&node))
-                        .or_else(|| computed_fallback.get(&node))
-                        .or_else(|| computed_map.get(&node));
+                        .or_else(|| ctx.computed_fallback.get(&node))
+                        .or_else(|| ctx.computed_map.get(&node));
                     if let Some(cs) = cs_opt {
                         let bg = cs.background_color;
                         bg_rgba = [
@@ -263,74 +412,18 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                             color: bg_rgba,
                         });
                     }
-                    // CSS border rendering (solid only for now)
+                    // Borders
                     if let Some(cs) = cs_opt {
-                        use style_engine::BorderStyle;
-                        let bw = cs.border_width;
-                        let bs = cs.border_style;
-                        let bc = cs.border_color;
-                        let col = [
-                            bc.red as f32 / 255.0,
-                            bc.green as f32 / 255.0,
-                            bc.blue as f32 / 255.0,
-                            bc.alpha as f32 / 255.0,
-                        ];
-                        let has_alpha = col[3] > 0.0;
-                        if has_alpha && matches!(bs, BorderStyle::Solid) {
-                            let x = rect.x as f32;
-                            let y = rect.y as f32;
-                            let w = rect.width as f32;
-                            let h = rect.height as f32;
-                            let t = bw.top.max(0.0);
-                            let r = bw.right.max(0.0);
-                            let b = bw.bottom.max(0.0);
-                            let l = bw.left.max(0.0);
-                            if t > 0.0 {
-                                list.push(DisplayItem::Rect {
-                                    x,
-                                    y,
-                                    width: w,
-                                    height: t,
-                                    color: col,
-                                });
-                            }
-                            if b > 0.0 {
-                                list.push(DisplayItem::Rect {
-                                    x,
-                                    y: y + h - b,
-                                    width: w,
-                                    height: b,
-                                    color: col,
-                                });
-                            }
-                            if l > 0.0 {
-                                list.push(DisplayItem::Rect {
-                                    x,
-                                    y,
-                                    width: l,
-                                    height: h,
-                                    color: col,
-                                });
-                            }
-                            if r > 0.0 {
-                                list.push(DisplayItem::Rect {
-                                    x: x + w - r,
-                                    y,
-                                    width: r,
-                                    height: h,
-                                    color: col,
-                                });
-                            }
-                        }
+                        push_border_items(list, rect, cs);
                     }
-                    // overflow clip (style-driven via nearest element style)
+                    // overflow clip
                     let mut opened_clip = false;
                     let style_for_node = nearest_style(
                         node,
-                        parent_map,
-                        computed_map,
-                        computed_fallback,
-                        computed_robust,
+                        ctx.parent_map,
+                        ctx.computed_map,
+                        ctx.computed_fallback,
+                        ctx.computed_robust,
                     );
                     let overflow_hidden = style_for_node
                         .map(|cs| matches!(cs.overflow, style_engine::Overflow::Hidden))
@@ -344,42 +437,7 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                         });
                         opened_clip = true;
                     }
-                    if let Some(children) = children_map.get(&node) {
-                        // Stacking order: negative z-index below, then normal flow/auto, then positive z-index.
-                        let mut ordered: Vec<NodeKey> = children.clone();
-                        ordered.sort_by_key(|c| {
-                            let style = nearest_style(
-                                *c,
-                                parent_map,
-                                computed_map,
-                                computed_fallback,
-                                computed_robust,
-                            );
-                            let (_pos, zi) = style
-                                .map(|cs| (cs.position, cs.z_index))
-                                .unwrap_or((style_engine::Position::Static, None));
-                            let bucket: i32 = match zi {
-                                Some(v) if v < 0 => -1,
-                                Some(v) if v > 0 => 1,
-                                Some(_) | None => 0,
-                            };
-                            // Fixed/absolute with auto still in normal bucket to retain document order among autos
-                            (bucket, c.0)
-                        });
-                        for child in ordered.into_iter() {
-                            recurse(
-                                list,
-                                child,
-                                kind_map,
-                                children_map,
-                                rects,
-                                computed_map,
-                                computed_fallback,
-                                computed_robust,
-                                parent_map,
-                            );
-                        }
-                    }
+                    process_children(list, node, ctx);
                     if opened_clip {
                         list.push(DisplayItem::EndClip);
                     }
@@ -389,13 +447,13 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                 if text.trim().is_empty() {
                     return;
                 }
-                if let Some(rect) = rects.get(&node) {
+                if let Some(rect) = ctx.rects.get(&node) {
                     let (font_size, color_rgb) = if let Some(cs) = nearest_style(
                         node,
-                        parent_map,
-                        computed_map,
-                        computed_fallback,
-                        computed_robust,
+                        ctx.parent_map,
+                        ctx.computed_map,
+                        ctx.computed_fallback,
+                        ctx.computed_robust,
                     ) {
                         let c = cs.color;
                         (
@@ -416,17 +474,16 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
     }
 
     let mut list = DisplayList::new();
-    recurse(
-        &mut list,
-        NodeKey::ROOT,
-        &kind_map,
-        &children_map,
-        &rects,
-        &computed_map,
-        &computed_fallback,
-        &computed_robust,
-        &parent_map,
-    );
+    let ctx = WalkCtx {
+        kind_map: &kind_map,
+        children_map: &children_map,
+        rects: &rects,
+        computed_map: &computed_map,
+        computed_fallback: &computed_fallback,
+        computed_robust: &computed_robust,
+        parent_map: &parent_map,
+    };
+    recurse(&mut list, NodeKey::ROOT, &ctx);
 
     if let Some((x0, y0, x1, y1)) = selection_overlay {
         let sel_x = x0.min(x1);

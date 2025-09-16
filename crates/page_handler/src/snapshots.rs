@@ -1,4 +1,15 @@
-//! Snapshot helper module placeholder.
-//! Future work: move DOM/style/computed style/text snapshot helpers here from HtmlPage.
+//! Common snapshot types and aliases used across page_handler.
 
-// Intentionally empty for now; this module will host pure read-model snapshot helpers.
+use js::NodeKey;
+
+/// Tuple representing one entry in a layout snapshot: (node key, kind, children).
+pub type SnapshotItem = (NodeKey, layouter::LayoutNodeKind, Vec<NodeKey>);
+
+/// Owned snapshot list.
+pub type Snapshot = Vec<SnapshotItem>;
+
+/// Borrowed view of a snapshot.
+pub type SnapshotSlice<'a> = &'a [SnapshotItem];
+
+/// Integer rect shorthand: x0, y0, x1, y1
+pub type IRect = (i32, i32, i32, i32);

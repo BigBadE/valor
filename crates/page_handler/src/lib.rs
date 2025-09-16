@@ -3,7 +3,7 @@ pub mod config;
 mod display;
 mod display_api;
 mod embedded_chrome;
-mod events;
+pub mod events;
 pub mod focus;
 mod runtime;
 pub mod scheduler;

@@ -184,25 +184,29 @@ fn our_layout_json(
         && let Some(children) = children_by_key.get(&root_key)
         && let Some(body_child) = children.iter().find(|c| matches!(kind_by_key.get(*c), Some(LayoutNodeKind::Block { tag }) if tag.eq_ignore_ascii_case("body")))
     { root_key = *body_child; }
-    serialize_element_subtree_with_maps(
-        &kind_by_key,
-        &children_by_key,
-        &attrs_by_key,
-        rects,
-        computed,
-        root_key,
-    )
+    {
+        let ctx = LayoutCtx {
+            kind_by_key: &kind_by_key,
+            children_by_key: &children_by_key,
+            attrs_by_key: &attrs_by_key,
+            rects,
+            computed,
+        };
+        serialize_element_subtree(&ctx, root_key)
+    }
 }
 
 #[allow(dead_code)]
-fn serialize_element_subtree_with_maps(
-    kind_by_key: &HashMap<NodeKey, LayoutNodeKind>,
-    children_by_key: &HashMap<NodeKey, Vec<NodeKey>>,
-    attrs_by_key: &HashMap<NodeKey, HashMap<String, String>>,
-    rects: &HashMap<NodeKey, LayoutRect>,
-    computed: &HashMap<NodeKey, ComputedStyle>,
-    key: NodeKey,
-) -> Value {
+struct LayoutCtx<'a> {
+    kind_by_key: &'a HashMap<NodeKey, LayoutNodeKind>,
+    children_by_key: &'a HashMap<NodeKey, Vec<NodeKey>>,
+    attrs_by_key: &'a HashMap<NodeKey, HashMap<String, String>>,
+    rects: &'a HashMap<NodeKey, LayoutRect>,
+    computed: &'a HashMap<NodeKey, ComputedStyle>,
+}
+
+#[allow(dead_code)]
+fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
     fn is_non_rendering_tag(tag: &str) -> bool {
         matches!(
             tag,
@@ -255,19 +259,12 @@ fn serialize_element_subtree_with_maps(
             Auto => "auto",
         }
     }
-    fn recurse(
-        key: NodeKey,
-        kind_by_key: &HashMap<NodeKey, LayoutNodeKind>,
-        children_by_key: &HashMap<NodeKey, Vec<NodeKey>>,
-        attrs_by_key: &HashMap<NodeKey, HashMap<String, String>>,
-        rects: &HashMap<NodeKey, LayoutRect>,
-        computed: &HashMap<NodeKey, ComputedStyle>,
-    ) -> Value {
-        match kind_by_key.get(&key) {
+    fn recurse(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
+        match ctx.kind_by_key.get(&key) {
             Some(LayoutNodeKind::Block { tag }) => {
                 let mut rect_json = json!({"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0});
                 if !is_non_rendering_tag(tag.to_lowercase().as_str())
-                    && let Some(r) = rects.get(&key)
+                    && let Some(r) = ctx.rects.get(&key)
                 {
                     rect_json = json!({
                         "x": r.x as f64,
@@ -277,33 +274,27 @@ fn serialize_element_subtree_with_maps(
                     });
                 }
                 let mut children_json = Vec::new();
-                if let Some(children) = children_by_key.get(&key) {
-                    for child in children {
-                        if let Some(LayoutNodeKind::Block { .. }) = kind_by_key.get(child) {
-                            let v = recurse(
-                                *child,
-                                kind_by_key,
-                                children_by_key,
-                                attrs_by_key,
-                                rects,
-                                computed,
-                            );
-                            children_json.push(v);
-                        }
-                    }
+                if let Some(children) = ctx.children_by_key.get(&key) {
+                    children
+                        .iter()
+                        .filter(|c| {
+                            matches!(ctx.kind_by_key.get(*c), Some(LayoutNodeKind::Block { .. }))
+                        })
+                        .for_each(|c| children_json.push(recurse(ctx, *c)));
                 }
                 let mut obj = json!({
                     "tag": tag.to_lowercase(),
                     "rect": rect_json,
                     "children": children_json,
                 });
-                let id_val = attrs_by_key
+                let id_val = ctx
+                    .attrs_by_key
                     .get(&key)
                     .and_then(|attrs| attrs.get("id").cloned())
                     .unwrap_or_default();
                 obj["id"] = json!(id_val);
                 // Attach a subset of computed styles for deeper comparison
-                if let Some(cs) = computed.get(&key) {
+                if let Some(cs) = ctx.computed.get(&key) {
                     let eff_disp = effective_display(&cs.display);
                     let margin_json =
                         if tag.eq_ignore_ascii_case("html") || tag.eq_ignore_ascii_case("body") {
@@ -331,33 +322,19 @@ fn serialize_element_subtree_with_maps(
             }
             Some(LayoutNodeKind::Document) | Some(LayoutNodeKind::InlineText { .. }) | None => {
                 // For document or text nodes, dive into children to find first element
-                if let Some(children) = children_by_key.get(&key) {
-                    for child in children {
-                        if let Some(LayoutNodeKind::Block { .. }) = kind_by_key.get(child) {
-                            return recurse(
-                                *child,
-                                kind_by_key,
-                                children_by_key,
-                                attrs_by_key,
-                                rects,
-                                computed,
-                            );
-                        }
-                    }
+                if let Some(children) = ctx.children_by_key.get(&key)
+                    && let Some(first_block) = children.iter().find(|c| {
+                        matches!(ctx.kind_by_key.get(*c), Some(LayoutNodeKind::Block { .. }))
+                    })
+                {
+                    return recurse(ctx, *first_block);
                 }
                 // Fallback empty
                 json!({"tag": "", "rect": {"x":0.0,"y":0.0,"width":0.0,"height":0.0}, "children": []})
             }
         }
     }
-    recurse(
-        key,
-        kind_by_key,
-        children_by_key,
-        attrs_by_key,
-        rects,
-        computed,
-    )
+    recurse(ctx, key)
 }
 
 #[allow(dead_code)]

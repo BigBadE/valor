@@ -1,15 +1,14 @@
+use crate::snapshots::{IRect, SnapshotSlice};
 use js::NodeKey;
 use layouter::{LayoutNodeKind, LayoutRect};
 use std::collections::HashMap;
 
 pub fn selection_rects(
     rects: &HashMap<NodeKey, LayoutRect>,
-    snapshot: &[(NodeKey, LayoutNodeKind, Vec<NodeKey>)],
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
+    snapshot: SnapshotSlice,
+    sel: IRect,
 ) -> Vec<LayoutRect> {
+    let (x0, y0, x1, y1) = sel;
     let sel_x = x0.min(x1);
     let sel_y = y0.min(y1);
     let sel_w = (x0.max(x1) - sel_x).max(0);
@@ -49,7 +48,7 @@ pub fn selection_rects(
 
 pub fn caret_at(
     rects: &HashMap<NodeKey, LayoutRect>,
-    snapshot: &[(NodeKey, LayoutNodeKind, Vec<NodeKey>)],
+    snapshot: SnapshotSlice,
     x: i32,
     y: i32,
     hit: Option<NodeKey>,

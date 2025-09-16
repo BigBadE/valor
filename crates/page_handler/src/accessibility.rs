@@ -1,10 +1,11 @@
+use crate::snapshots::Snapshot;
 use css::layout_helpers::collapse_whitespace;
 use js::NodeKey;
 use layouter::LayoutNodeKind;
 use std::collections::HashMap;
 
 pub fn ax_tree_snapshot_from(
-    snapshot: Vec<(NodeKey, LayoutNodeKind, Vec<NodeKey>)>,
+    snapshot: Snapshot,
     attrs_map: HashMap<NodeKey, HashMap<String, String>>,
 ) -> String {
     let mut kind_by_key: HashMap<NodeKey, LayoutNodeKind> = HashMap::new();

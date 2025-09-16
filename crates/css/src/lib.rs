@@ -247,7 +247,7 @@ impl CSSMirror {
             if let Some(text) = self.style_text_by_node.get(node) {
                 let parsed = parser::parse_stylesheet(text, out.origin, base);
                 // Avoid truncation on 64-bit by saturating len to u32::MAX
-                let addend = u32::try_from(parsed.rules.len()).map_or(u32::MAX, |n| n);
+                let addend = u32::try_from(parsed.rules.len()).map_or(u32::MAX, |count| count);
                 base = base.saturating_add(addend);
                 out.rules.extend(parsed.rules);
             }
@@ -281,7 +281,7 @@ impl DOMSubscriber for CSSMirror {
             }
             RemoveNode { node } => {
                 if self.style_text_by_node.remove(&node).is_some() {
-                    self.style_nodes_order.retain(|n| *n != node);
+                    self.style_nodes_order.retain(|node_id| *node_id != node);
                     // Retract rules for this style node immediately
                     self.rebuild_styles_from_style_nodes();
                 }

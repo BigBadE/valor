@@ -1,4 +1,12 @@
 use crate::state::HtmlPage;
+
+/// Keyboard modifier flags for key events.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct KeyMods {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+}
 use anyhow::Error;
 use js::JsEngine;
 
@@ -79,17 +87,17 @@ impl HtmlPage {
     }
 
     /// Dispatch a synthetic keydown event with optional modifier flags.
-    pub fn dispatch_key_down(&mut self, key: &str, code: &str, ctrl: bool, alt: bool, shift: bool) {
+    pub fn dispatch_key_down(&mut self, key: &str, code: &str, mods: KeyMods) {
         let mut js = String::from("(function(){try{var e={type:'keydown',key:");
         js.push_str(&format!("{:?}", key));
         js.push_str(",code:");
         js.push_str(&format!("{:?}", code));
         js.push_str(",ctrlKey:");
-        js.push_str(if ctrl { "true" } else { "false" });
+        js.push_str(if mods.ctrl { "true" } else { "false" });
         js.push_str(",altKey:");
-        js.push_str(if alt { "true" } else { "false" });
+        js.push_str(if mods.alt { "true" } else { "false" });
         js.push_str(",shiftKey:");
-        js.push_str(if shift { "true" } else { "false" });
+        js.push_str(if mods.shift { "true" } else { "false" });
         js.push_str("};document.dispatchEvent(e);}catch(_){}})();");
         let _ = self
             .js_engine_mut()
@@ -98,17 +106,17 @@ impl HtmlPage {
     }
 
     /// Dispatch a synthetic keyup event with optional modifier flags.
-    pub fn dispatch_key_up(&mut self, key: &str, code: &str, ctrl: bool, alt: bool, shift: bool) {
+    pub fn dispatch_key_up(&mut self, key: &str, code: &str, mods: KeyMods) {
         let mut js = String::from("(function(){try{var e={type:'keyup',key:");
         js.push_str(&format!("{:?}", key));
         js.push_str(",code:");
         js.push_str(&format!("{:?}", code));
         js.push_str(",ctrlKey:");
-        js.push_str(if ctrl { "true" } else { "false" });
+        js.push_str(if mods.ctrl { "true" } else { "false" });
         js.push_str(",altKey:");
-        js.push_str(if alt { "true" } else { "false" });
+        js.push_str(if mods.alt { "true" } else { "false" });
         js.push_str(",shiftKey:");
-        js.push_str(if shift { "true" } else { "false" });
+        js.push_str(if mods.shift { "true" } else { "false" });
         js.push_str("};document.dispatchEvent(e);}catch(_){}})();");
         let _ = self
             .js_engine_mut()

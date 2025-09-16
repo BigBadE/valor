@@ -73,7 +73,10 @@ fn host_fn_dispatch(
     let host_context: &HostContext = &payload.0;
     let host_fn_kind: &HostFnKind = &payload.1;
 
-    #[allow(clippy::pattern_type_mismatch, reason = "Not sure how to fix this pattern type mismatch")]
+    #[allow(
+        clippy::pattern_type_mismatch,
+        reason = "Not sure how to fix this pattern type mismatch"
+    )]
     let HostFnKind::Sync(function_arc) = host_fn_kind;
     match (**function_arc)(host_context, collected) {
         Ok(result) => ret_val.set(jsvalue_to_local(scope, result)),
@@ -94,8 +97,8 @@ fn collect_js_args(scope: &mut HandleScope, args: &FunctionCallbackArguments) ->
     let mut collected: Vec<JSValue> = Vec::new();
     let length = args.length();
     let start: i32 = 0;
-    for i in start..length {
-        let value = args.get(i);
+    for index in start..length {
+        let value = args.get(index);
         if value.is_undefined() {
             collected.push(JSValue::Undefined);
             continue;
