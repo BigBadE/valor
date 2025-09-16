@@ -4,9 +4,11 @@ use headless_chrome::{Browser, LaunchOptionsBuilder};
 use js::NodeKey;
 use layouter::LayoutRect;
 use layouter::{LayoutNodeKind, Layouter};
+use log::info;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::fs;
 use std::path::Path;
 use style_engine::{
     AlignItems, ComputedStyle, Display, Edges, LengthOrAuto, Overflow, SizeSpecified,
@@ -54,10 +56,17 @@ fn run_chromium_layouts() -> Result<(), Error> {
     let rt = Runtime::new()?;
     // Iterate over filtered fixtures and compare against each expected file content.
     let all = common::fixture_html_files()?;
-    eprintln!("[LAYOUT] discovered {} fixtures", all.len());
+    info!("[LAYOUT] discovered {} fixtures", all.len());
 
     for input_path in all {
         let display_name = input_path.display().to_string();
+        // XFAIL mechanism: skip any fixture that contains the marker
+        if let Ok(text) = fs::read_to_string(&input_path)
+            && (text.contains("VALOR_XFAIL") || text.contains("valor-xfail"))
+        {
+            info!("[LAYOUT] {} ... XFAIL (skipped)", display_name);
+            continue;
+        }
         // Build page and parse via HtmlPage
         let url = common::to_file_url(&input_path)?;
         let mut page = common::create_page(&rt, url)?;

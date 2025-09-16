@@ -6,7 +6,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-anyhow.workspace = true
-log.workspace = true
-js.workspace = true
-css.workspace = true
+anyhow = "1"
+js = { path = "../../../js" }
+css = { path = "../../" }
+css_core = { path = "../core" }

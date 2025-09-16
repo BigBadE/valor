@@ -1,6 +1,6 @@
 //! CSS orchestrator and mirror types exposed to other crates.
 use anyhow::Result;
-use js::DOMUpdate;
+use js::{DOMSubscriber, DOMUpdate};
 use std::collections::HashMap;
 use url::Url;
 
@@ -10,16 +10,14 @@ pub use js::NodeKey;
 use crate::parser::parse_stylesheet;
 use css_core::CoreEngine;
 use css_core::layout_model::{LayoutNodeKind as CoreLayoutNodeKind, LayoutRect as CoreLayoutRect};
-use css_core::style_model::{
-    BorderStyle as CoreBorderStyle, ComputedStyle as CoreComputedStyle, Overflow as CoreOverflow,
-    Position as CorePosition,
+use css_core::types::{
+    Declaration as CoreDeclaration, Origin as CoreOrigin, Rule as CoreRule,
+    Stylesheet as CoreStylesheet,
 };
-use css_core::types::{Origin as CoreOrigin, Stylesheet as CoreStylesheet};
 
 pub mod style_types;
-use crate::style_types::{
-    BorderStyle, BorderWidths, ComputedStyle, LayoutNodeKind, LayoutRect, Overflow, Position, Rgba,
-};
+use crate::style_types::{ComputedStyle, LayoutNodeKind, LayoutRect};
+use std::collections::HashSet;
 
 pub mod types;
 
@@ -43,6 +41,8 @@ pub struct CSSMirror {
     style_nodes_order: Vec<NodeKey>,
     /// Map from style node key to its accumulated text content.
     style_text_by_node: HashMap<NodeKey, String>,
+    /// Style nodes to be skipped (e.g., test-injected reset styles).
+    style_skip_nodes: HashSet<NodeKey>,
 }
 
 impl Default for CSSMirror {
@@ -62,6 +62,7 @@ impl CSSMirror {
             discovered: Vec::new(),
             style_nodes_order: Vec::new(),
             style_text_by_node: HashMap::new(),
+            style_skip_nodes: HashSet::new(),
         }
     }
     #[inline]
@@ -72,6 +73,7 @@ impl CSSMirror {
             discovered: Vec::new(),
             style_nodes_order: Vec::new(),
             style_text_by_node: HashMap::new(),
+            style_skip_nodes: HashSet::new(),
         }
     }
     /// Mutable reference to the aggregated in-document stylesheet.
@@ -90,6 +92,9 @@ impl CSSMirror {
         let mut out = types::Stylesheet::default();
         let mut base: u32 = 0;
         for node in &self.style_nodes_order {
+            if self.style_skip_nodes.contains(node) {
+                continue;
+            }
             if let Some(text) = self.style_text_by_node.get(node) {
                 let parsed = parser::parse_stylesheet(text, out.origin, base);
                 // Avoid truncation on 64-bit by saturating len to u32::MAX
@@ -108,11 +113,11 @@ impl CSSMirror {
         orchestrator.replace_stylesheet(&self.styles);
     }
 }
-use js::DOMSubscriber;
+
 impl DOMSubscriber for CSSMirror {
     #[inline]
     fn apply_update(&mut self, update: DOMUpdate) -> Result<()> {
-        use DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr};
+        use DOMUpdate::*;
         match update {
             InsertElement {
                 parent: _parent,
@@ -142,7 +147,15 @@ impl DOMSubscriber for CSSMirror {
             EndOfDocument => {
                 self.rebuild_styles_from_style_nodes();
             }
-            SetAttr { .. } => {}
+            SetAttr { node, name, value } => {
+                // If this is a test-injected reset style element, mark it to be skipped.
+                if name.eq_ignore_ascii_case("data-valor-test-reset") && value == "1" {
+                    if self.style_text_by_node.contains_key(&node) {
+                        self.style_skip_nodes.insert(node);
+                        self.rebuild_styles_from_style_nodes();
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -168,64 +181,6 @@ impl Default for Orchestrator {
 }
 
 impl Orchestrator {
-    #[inline]
-    /// Map core computed styles to public `ComputedStyle` deterministically.
-    fn map_computed(
-        core_computed: HashMap<NodeKey, CoreComputedStyle>,
-    ) -> HashMap<NodeKey, ComputedStyle> {
-        let mut out: HashMap<NodeKey, ComputedStyle> = HashMap::new();
-        let mut pairs: Vec<(NodeKey, CoreComputedStyle)> = core_computed.into_iter().collect();
-        pairs.sort_by_key(|&(key, _)| key.0);
-        for (key, value) in pairs {
-            out.insert(
-                key,
-                ComputedStyle {
-                    color: Rgba {
-                        red: value.color.red,
-                        green: value.color.green,
-                        blue: value.color.blue,
-                        alpha: value.color.alpha,
-                    },
-                    background_color: Rgba {
-                        red: value.background_color.red,
-                        green: value.background_color.green,
-                        blue: value.background_color.blue,
-                        alpha: value.background_color.alpha,
-                    },
-                    border_width: BorderWidths {
-                        top: value.border_width.top,
-                        right: value.border_width.right,
-                        bottom: value.border_width.bottom,
-                        left: value.border_width.left,
-                    },
-                    border_style: match value.border_style {
-                        CoreBorderStyle::None => BorderStyle::None,
-                        CoreBorderStyle::Solid => BorderStyle::Solid,
-                    },
-                    border_color: Rgba {
-                        red: value.border_color.red,
-                        green: value.border_color.green,
-                        blue: value.border_color.blue,
-                        alpha: value.border_color.alpha,
-                    },
-                    font_size: value.font_size,
-                    overflow: match value.overflow {
-                        CoreOverflow::Visible => Overflow::Visible,
-                        CoreOverflow::Hidden => Overflow::Hidden,
-                    },
-                    position: match value.position {
-                        CorePosition::Static => Position::Static,
-                        CorePosition::Relative => Position::Relative,
-                        CorePosition::Absolute => Position::Absolute,
-                        CorePosition::Fixed => Position::Fixed,
-                    },
-                    z_index: value.z_index,
-                },
-            );
-        }
-        out
-    }
-
     #[inline]
     /// Map core layout rects to public `LayoutRect` deterministically.
     fn map_rects(core_rects: HashMap<NodeKey, CoreLayoutRect>) -> HashMap<NodeKey, LayoutRect> {
@@ -281,9 +236,30 @@ impl Orchestrator {
     /// Replace the current stylesheet used by the engine.
     #[inline]
     pub fn replace_stylesheet(&mut self, sheet: &types::Stylesheet) {
-        // Map orchestrator public type to core type
+        // Map orchestrator public type to core type, including rules
+        let mut core_rules = Vec::new();
+        for rule_pub in &sheet.rules {
+            let mut core_decls = Vec::new();
+            for decl_pub in &rule_pub.declarations {
+                core_decls.push(CoreDeclaration {
+                    name: decl_pub.name.clone(),
+                    value: decl_pub.value.clone(),
+                    important: decl_pub.important,
+                });
+            }
+            core_rules.push(CoreRule {
+                origin: match rule_pub.origin {
+                    types::Origin::UserAgent => CoreOrigin::UserAgent,
+                    types::Origin::User => CoreOrigin::User,
+                    types::Origin::Author => CoreOrigin::Author,
+                },
+                source_order: rule_pub.source_order,
+                prelude: rule_pub.prelude.clone(),
+                declarations: core_decls,
+            });
+        }
         let core_sheet = CoreStylesheet {
-            rules: Vec::new(),
+            rules: core_rules,
             origin: match sheet.origin {
                 types::Origin::UserAgent => CoreOrigin::UserAgent,
                 types::Origin::User => CoreOrigin::User,
@@ -313,7 +289,7 @@ impl Orchestrator {
         let core_snapshot = self.core.layout_snapshot();
 
         // Map core types to public orchestrator types
-        let computed = Self::map_computed(core_computed);
+        let computed = core_computed;
 
         let rects = Self::map_rects(core_rects);
 

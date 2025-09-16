@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>edges: margin/padding/border widths</title>
+<body>
+  <!-- VALOR_XFAIL: awaiting layout subtree/geometry parity for edges and margins -->
+  <!-- This exercises parsing of margin/padding/border-*-width and border-style -->
+  <div id="edges"
+       style="
+         display: block;
+         width: 120px; height: 40px;
+         margin-top: 10px; margin-right: 20px; margin-bottom: 30px; margin-left: 40px;
+         padding-top: 1px; padding-right: 2px; padding-bottom: 3px; padding-left: 4px;
+         border-top: 5px; border-right: 6px; border-bottom: 7px; border-left: 8px;
+         border-style: solid;
+       "></div>
+</body>

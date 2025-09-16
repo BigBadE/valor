@@ -1,6 +1,6 @@
 //! Stylesheet parser integration for the css orchestrator.
 
-use crate::types::{Origin, Rule, Stylesheet};
+use crate::types::{Declaration, Origin, Rule, Stylesheet};
 use css_syntax::parse_stylesheet as parse_syntax_stylesheet;
 
 /// Internal top-level state used when emitting `Rule`s from a parsed stylesheet.
@@ -61,10 +61,20 @@ fn parse_stylesheet_with_next(css: &str, origin: Origin, base_rule_idx: u32) -> 
         order: base_rule_idx,
     };
     let mut sheet = Stylesheet::with_origin(origin);
-    for _style_rule in parsed.rules {
+    for style_rule in parsed.rules {
+        let mut declarations_out: Vec<Declaration> = Vec::new();
+        for decl_syntax in style_rule.declarations {
+            declarations_out.push(Declaration {
+                name: decl_syntax.name,
+                value: decl_syntax.value,
+                important: decl_syntax.important,
+            });
+        }
         let rule = Rule {
             origin: state.origin,
             source_order: state.order,
+            prelude: style_rule.prelude,
+            declarations: declarations_out,
         };
         state.order = state.order.saturating_add(1);
         sheet.rules.push(rule);

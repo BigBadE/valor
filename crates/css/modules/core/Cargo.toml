@@ -10,3 +10,4 @@ anyhow.workspace = true
 js.workspace = true
 css_style_attr = { path = "../style_attr" }
 css_variables = { path = "../variables" }
+css_color = { path = "../color" }

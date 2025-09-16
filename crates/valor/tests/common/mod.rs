@@ -166,7 +166,7 @@ pub fn write_named_json_for_fixture(
 }
 
 pub fn fixtures_layout_dir() -> PathBuf {
-    fixtures_dir()
+    fixtures_dir().join("layout")
 }
 
 fn workspace_root_from_valor_manifest() -> PathBuf {
@@ -290,17 +290,27 @@ pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
     }
 
     // Keep only files that are under a subdirectory of a fixtures folder (not directly under .../fixtures).
-    // This applies both to valor's fixtures/* and each module's tests/fixtures/* structure.
+    // This applies both to valor's tests/fixtures/layout/* and each crate's tests/fixtures/layout/* structure.
     files.retain(|p| {
-        // Expect .../fixtures/<subdir>/file.html
-        p.parent()
-            .and_then(|d| d.parent().map(|pp| (pp.file_name(), d.file_name())))
-            .map(|(pp_name, d_name)| {
-                let is_under_fixtures = pp_name.map(|n| n == "fixtures").unwrap_or(false);
-                let not_directly_under_fixtures = d_name.map(|n| n != "fixtures").unwrap_or(false);
-                is_under_fixtures && not_directly_under_fixtures
-            })
-            .unwrap_or(false)
+        // Must have a parent directory that is not named "fixtures" (i.e., at least one subdir)
+        let parent_not_fixtures = p
+            .parent()
+            .and_then(|d| d.file_name())
+            .map(|n| n != "fixtures")
+            .unwrap_or(false);
+
+        // And somewhere in its ancestors there must be a directory named "fixtures"
+        let mut has_fixtures_ancestor = false;
+        for anc in p.ancestors().skip(1) {
+            // skip the file itself
+            if let Some(name) = anc.file_name()
+                && name == "fixtures"
+            {
+                has_fixtures_ancestor = true;
+                break;
+            }
+        }
+        has_fixtures_ancestor && parent_not_fixtures
     });
     files.sort();
     Ok(files)
