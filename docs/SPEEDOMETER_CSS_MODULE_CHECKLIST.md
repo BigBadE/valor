@@ -3,25 +3,25 @@
 This is the recommended order to bring up CSS functionality to run Speedometer. Each step is small and shippable, with clear acceptance criteria.
 
 ## Phase A — Core pipeline and style basics
-- [ ] CSS orchestrator and Core glue
+- [x] CSS orchestrator and Core glue
   - DOM updates → selectors/cascade → computed style → layout
   - Orchestrator returns: computed styles, node snapshot, rects, dirty rects
   - Invalidation for attribute/class/style changes
-- [ ] css_syntax + values/units parsing
+- [X] css_syntax + values/units parsing
   - Identifiers, numbers, percentages, px/em/rem, colors (hex/rgb[a]/basic names)
   - Tokenizer and basic error recovery
-- [ ] css_selectors
+- [x] css_selectors
   - Type, class, id, attribute [attr=value], descendant/child/sibling combinators
   - Specificity and match caching on element changes
-- [ ] css_cascade
+- [x] css_cascade
   - UA < user < author; importance; specificity; source order
   - Inheritance for core properties (font-size/family, color)
-- [ ] css_style_attr
+- [x] css_style_attr
   - Map style="" to inline declarations with author origin
   - Merge into cascade path
-- [ ] css_variables
+- [x] css_variables
   - MVP var() with fallback, inheritance, basic cycle detection
-- [ ] css_values_units
+- [x] css_values_units
   - Compute normalized values: lengths (px/em/rem), percentages (defer where needed), colors, keyword enums
   - Font-size scaling (em/rem resolution)
 

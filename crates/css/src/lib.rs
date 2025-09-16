@@ -7,6 +7,7 @@ use url::Url;
 pub use js::NodeKey;
 
 // Bring core types into scope to avoid fully qualified paths and satisfy clippy
+use crate::parser::parse_stylesheet;
 use css_core::CoreEngine;
 use css_core::layout_model::{LayoutNodeKind as CoreLayoutNodeKind, LayoutRect as CoreLayoutRect};
 use css_core::style_model::{
@@ -15,172 +16,16 @@ use css_core::style_model::{
 };
 use css_core::types::{Origin as CoreOrigin, Stylesheet as CoreStylesheet};
 
-pub mod types {
-    #[derive(Clone, Copy, Debug)]
-    pub enum Origin {
-        UserAgent,
-        User,
-        Author,
-    }
+pub mod style_types;
+use crate::style_types::{
+    BorderStyle, BorderWidths, ComputedStyle, LayoutNodeKind, LayoutRect, Overflow, Position, Rgba,
+};
 
-    #[derive(Clone, Debug)]
-    pub struct Stylesheet {
-        pub rules: Vec<Rule>,
-        pub origin: Origin,
-    }
-    impl Stylesheet {
-        #[inline]
-        pub const fn with_origin(origin: Origin) -> Self {
-            Self {
-                rules: Vec::new(),
-                origin,
-            }
-        }
-    }
-    impl Default for Stylesheet {
-        #[inline]
-        fn default() -> Self {
-            Self::with_origin(Origin::Author)
-        }
-    }
+pub mod types;
 
-    #[derive(Clone, Debug)]
-    pub struct Rule {
-        pub origin: Origin,
-        pub source_order: u32,
-    }
-}
+pub mod parser;
 
-pub mod parser {
-    use super::types::Rule;
-    use super::types::{Origin, Stylesheet};
-
-    pub struct StylesheetStreamParser {
-        /// Origin of the stylesheet rules (UA/User/Author).
-        origin: Origin,
-        /// Base source index for emitted rules.
-        base_rule_idx: u32,
-        /// Accumulated CSS text buffer.
-        buf: String,
-    }
-    impl StylesheetStreamParser {
-        #[inline]
-        pub const fn new(origin: Origin, base_rule_idx: u32) -> Self {
-            Self {
-                origin,
-                base_rule_idx,
-                buf: String::new(),
-            }
-        }
-        #[inline]
-        pub fn push_chunk(&mut self, text: &str, _accum: &mut Stylesheet) {
-            self.buf.push_str(text);
-        }
-        #[inline]
-        pub fn finish_with_next(self) -> (Stylesheet, Self) {
-            let sheet = Stylesheet::with_origin(self.origin);
-            let next = Self::new(self.origin, self.base_rule_idx);
-            (sheet, next)
-        }
-    }
-
-    #[inline]
-    pub fn parse_stylesheet(_css: &str, origin: Origin, base_rule_idx: u32) -> Stylesheet {
-        // Minimal shim: produce exactly one rule per <style> block, with monotonic source_order
-        let mut sheet = Stylesheet::with_origin(origin);
-        sheet.rules.push(Rule {
-            origin,
-            source_order: base_rule_idx,
-        });
-        sheet
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Rgba {
-    pub red: u8,
-    pub green: u8,
-    pub blue: u8,
-    pub alpha: u8,
-}
-#[derive(Clone, Copy, Debug, Default)]
-pub struct BorderWidths {
-    pub top: f32,
-    pub right: f32,
-    pub bottom: f32,
-    pub left: f32,
-}
-#[derive(Clone, Copy, Debug, Default)]
-pub enum BorderStyle {
-    #[default]
-    None,
-    Solid,
-}
-#[derive(Clone, Copy, Debug, Default)]
-pub enum Overflow {
-    #[default]
-    Visible,
-    Hidden,
-}
-#[derive(Clone, Copy, Debug, Default)]
-pub enum Position {
-    #[default]
-    Static,
-    Relative,
-    Absolute,
-    Fixed,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ComputedStyle {
-    pub color: Rgba,
-    pub background_color: Rgba,
-    pub border_width: BorderWidths,
-    pub border_style: BorderStyle,
-    pub border_color: Rgba,
-    pub font_size: f32,
-    pub overflow: Overflow,
-    pub position: Position,
-    pub z_index: Option<i32>,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LayoutRect {
-    pub x: i32,
-    pub y: i32,
-    pub width: i32,
-    pub height: i32,
-}
-#[derive(Debug, Clone)]
-pub enum LayoutNodeKind {
-    Document,
-    Block { tag: String },
-    InlineText { text: String },
-}
-
-pub mod layout_helpers {
-    #[inline]
-    pub fn collapse_whitespace(text: &str) -> String {
-        let mut out = String::with_capacity(text.len());
-        let mut in_ws = false;
-        for character in text.chars() {
-            if character.is_whitespace() {
-                if !in_ws {
-                    out.push(' ');
-                    in_ws = true;
-                }
-            } else {
-                in_ws = false;
-                out.push(character);
-            }
-        }
-        out.trim().to_owned()
-    }
-    #[inline]
-    pub fn reorder_bidi_for_display(text: &str) -> String {
-        text.to_owned()
-    }
-}
+pub mod layout_helpers;
 
 /// Snapshot of layout nodes and their child ordering for inspection.
 type LayoutSnapshot = Vec<(NodeKey, LayoutNodeKind, Vec<NodeKey>)>;
@@ -199,6 +44,7 @@ pub struct CSSMirror {
     /// Map from style node key to its accumulated text content.
     style_text_by_node: HashMap<NodeKey, String>,
 }
+
 impl Default for CSSMirror {
     #[inline]
     fn default() -> Self {
@@ -253,6 +99,13 @@ impl CSSMirror {
             }
         }
         self.styles = out;
+    }
+
+    /// Apply the aggregated in-document stylesheet to the given orchestrator.
+    /// This is the minimal glue to feed parsed CSS into the core engine.
+    #[inline]
+    pub fn apply_to_orchestrator(&self, orchestrator: &mut Orchestrator) {
+        orchestrator.replace_stylesheet(&self.styles);
     }
 }
 use js::DOMSubscriber;
@@ -408,12 +261,14 @@ impl Orchestrator {
             })
             .collect()
     }
+
     #[inline]
     pub fn new() -> Self {
         Self {
             core: CoreEngine::new(),
         }
     }
+
     /// Apply a `DOMUpdate` to the core engine.
     ///
     /// # Errors
@@ -422,6 +277,7 @@ impl Orchestrator {
     pub fn apply_dom_update(&mut self, update: DOMUpdate) -> Result<()> {
         self.core.apply_dom_update(update)
     }
+
     /// Replace the current stylesheet used by the engine.
     #[inline]
     pub fn replace_stylesheet(&mut self, sheet: &types::Stylesheet) {
@@ -435,6 +291,14 @@ impl Orchestrator {
             },
         };
         self.core.replace_stylesheet(core_sheet);
+    }
+
+    /// Parse the provided CSS text with the given origin and replace the current stylesheet.
+    /// This allows callers to bypass `CSSMirror` and feed raw CSS into the engine.
+    #[inline]
+    pub fn replace_stylesheet_from_css(&mut self, css_text: &str, origin: types::Origin) {
+        let parsed = parse_stylesheet(css_text, origin, 0);
+        self.replace_stylesheet(&parsed);
     }
     /// Execute one processing pass and return artifacts for rendering and inspection.
     ///

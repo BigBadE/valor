@@ -15,7 +15,7 @@ use tokio::runtime::Runtime;
 
 mod common;
 
-//#[test]
+#[test]
 fn run_chromium_layouts() -> Result<(), Error> {
     // Initialize logger to show logs during tests (including JS console.* forwarded via log)
     let _ = env_logger::builder()

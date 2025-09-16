@@ -199,6 +199,44 @@ pub fn fixtures_css_dir() -> PathBuf {
     fixtures_dir().join("css")
 }
 
+/// Discover layout fixture roots under every crate in the workspace: crates/*/tests/fixtures/layout
+fn workspace_crate_layout_fixture_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let root = workspace_root_from_valor_manifest();
+    let crates_dir = root.join("crates");
+    if let Ok(entries) = fs::read_dir(&crates_dir) {
+        for ent in entries.filter_map(|e| e.ok()) {
+            let cdir = ent.path();
+            if cdir.is_dir() {
+                let p = cdir.join("tests").join("fixtures").join("layout");
+                if p.exists() {
+                    roots.push(p);
+                }
+            }
+        }
+    }
+    roots
+}
+
+/// Discover graphics fixture roots under every crate in the workspace: crates/*/tests/fixtures/graphics
+fn workspace_crate_graphics_fixture_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let root = workspace_root_from_valor_manifest();
+    let crates_dir = root.join("crates");
+    if let Ok(entries) = fs::read_dir(&crates_dir) {
+        for ent in entries.filter_map(|e| e.ok()) {
+            let cdir = ent.path();
+            if cdir.is_dir() {
+                let p = cdir.join("tests").join("fixtures").join("graphics");
+                if p.exists() {
+                    roots.push(p);
+                }
+            }
+        }
+    }
+    roots
+}
+
 fn collect_html_recursively(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     let entries =
         fs::read_dir(dir).map_err(|e| anyhow!("Failed to read dir {}: {}", dir.display(), e))?;
@@ -219,10 +257,11 @@ fn collect_html_recursively(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 
 /// Discover all .html files under the tests/fixtures/layout directory recursively.
 pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
-    let dir = fixtures_layout_dir();
     let mut files: Vec<PathBuf> = Vec::new();
-    if dir.exists() {
-        collect_html_recursively(&dir, &mut files)?;
+    // Valor crate local layout fixtures
+    let local_layout = fixtures_layout_dir();
+    if local_layout.exists() {
+        collect_html_recursively(&local_layout, &mut files)?;
     } else {
         // Fallback: scan the legacy top-level fixtures dir non-recursively
         let legacy = fixtures_dir();
@@ -241,8 +280,12 @@ pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
             );
         }
     }
-    // Also include per-module CSS fixtures if present
+    // Include per-module CSS fixtures if present
     for root in module_css_fixture_roots() {
+        collect_html_recursively(&root, &mut files)?;
+    }
+    // Include layout fixtures from every crate in the workspace
+    for root in workspace_crate_layout_fixture_roots() {
         collect_html_recursively(&root, &mut files)?;
     }
 
@@ -250,6 +293,33 @@ pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
     // This applies both to valor's fixtures/* and each module's tests/fixtures/* structure.
     files.retain(|p| {
         // Expect .../fixtures/<subdir>/file.html
+        p.parent()
+            .and_then(|d| d.parent().map(|pp| (pp.file_name(), d.file_name())))
+            .map(|(pp_name, d_name)| {
+                let is_under_fixtures = pp_name.map(|n| n == "fixtures").unwrap_or(false);
+                let not_directly_under_fixtures = d_name.map(|n| n != "fixtures").unwrap_or(false);
+                is_under_fixtures && not_directly_under_fixtures
+            })
+            .unwrap_or(false)
+    });
+    files.sort();
+    Ok(files)
+}
+
+/// Discover all .html files under each crate's tests/fixtures/graphics directory recursively.
+pub fn graphics_fixture_html_files() -> Result<Vec<PathBuf>> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    // Valor crate local graphics fixtures
+    let local = fixtures_dir().join("graphics");
+    if local.exists() {
+        collect_html_recursively(&local, &mut files)?;
+    }
+    // Include graphics fixtures from every crate in the workspace
+    for root in workspace_crate_graphics_fixture_roots() {
+        collect_html_recursively(&root, &mut files)?;
+    }
+    // Keep only files that are under a subdirectory of a fixtures folder (not directly under .../fixtures).
+    files.retain(|p| {
         p.parent()
             .and_then(|d| d.parent().map(|pp| (pp.file_name(), d.file_name())))
             .map(|(pp_name, d_name)| {

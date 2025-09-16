@@ -4,3 +4,7 @@ edition.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+css_core = { path = "../core" }
+css_selectors = { path = "../selectors" }

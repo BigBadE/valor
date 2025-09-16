@@ -15,36 +15,7 @@ fn target_artifacts_dir() -> PathBuf {
     common::artifacts_subdir("graphics_artifacts")
 }
 
-fn fixtures_graphics_dir() -> PathBuf {
-    common::fixtures_dir().join("graphics")
-}
-
-fn collect_html_recursively(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let entries = fs::read_dir(dir)?;
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            collect_html_recursively(&p, out)?;
-        } else if p
-            .extension()
-            .map(|ext| ext.eq_ignore_ascii_case("html"))
-            .unwrap_or(false)
-        {
-            out.push(p);
-        }
-    }
-    Ok(())
-}
-
-fn list_graphics_fixtures() -> Result<Vec<PathBuf>> {
-    let dir = fixtures_graphics_dir();
-    let mut v = Vec::new();
-    if dir.exists() {
-        collect_html_recursively(&dir, &mut v)?;
-    }
-    v.sort();
-    Ok(v)
-}
+// Graphics fixtures are discovered across all crates by common::graphics_fixture_html_files()
 
 fn safe_stem(p: &Path) -> String {
     p.file_stem()
@@ -186,11 +157,10 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
     let out_dir = target_artifacts_dir();
     common::clear_dir(&out_dir)?;
 
-    let fixtures = list_graphics_fixtures()?;
+    let fixtures = common::graphics_fixture_html_files()?;
     if fixtures.is_empty() {
         eprintln!(
-            "[GRAPHICS] No fixtures under {} — add files under crates/valor/tests/fixtures/graphics/",
-            fixtures_graphics_dir().display()
+            "[GRAPHICS] No fixtures found — add files under any crate's tests/fixtures/graphics/ subfolders"
         );
         return Ok(());
     }
