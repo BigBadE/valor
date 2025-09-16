@@ -84,6 +84,143 @@ pub struct RenderState {
 }
 
 impl RenderState {
+    #[inline]
+    fn push_rect_vertices_ndc(&self, out: &mut Vec<Vertex>, rect_xywh: [f32; 4], color: [f32; 4]) {
+        let fw = self.size.width.max(1) as f32;
+        let fh = self.size.height.max(1) as f32;
+        let [x, y, w, h] = rect_xywh;
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let x0 = (x / fw) * 2.0 - 1.0;
+        let x1 = ((x + w) / fw) * 2.0 - 1.0;
+        let y0 = 1.0 - (y / fh) * 2.0;
+        let y1 = 1.0 - ((y + h) / fh) * 2.0;
+        let c = color;
+        out.extend_from_slice(&[
+            Vertex {
+                position: [x0, y0],
+                color: c,
+            },
+            Vertex {
+                position: [x1, y0],
+                color: c,
+            },
+            Vertex {
+                position: [x1, y1],
+                color: c,
+            },
+            Vertex {
+                position: [x0, y0],
+                color: c,
+            },
+            Vertex {
+                position: [x1, y1],
+                color: c,
+            },
+            Vertex {
+                position: [x0, y1],
+                color: c,
+            },
+        ]);
+    }
+
+    fn draw_layer(&mut self, pass: &mut RenderPass<'_>, dl: &DisplayList) {
+        // Draw rectangles using DL batching (no cache for per-layer path)
+        let batches = batch_display_list(dl, self.size.width, self.size.height);
+        for b in batches.into_iter() {
+            let mut vertices: Vec<Vertex> = Vec::with_capacity(b.quads.len() * 6);
+            for q in b.quads.iter() {
+                self.push_rect_vertices_ndc(&mut vertices, [q.x, q.y, q.width, q.height], q.color);
+            }
+            let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
+            let vertex_buffer = self.device.create_buffer_init(&util::BufferInitDescriptor {
+                label: Some("layer-rect-batch"),
+                contents: vertex_bytes,
+                usage: BufferUsages::VERTEX,
+            });
+            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            match b.scissor {
+                Some((x, y, w, h)) => pass.set_scissor_rect(x, y, w, h),
+                None => {
+                    pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1))
+                }
+            }
+            if !vertices.is_empty() {
+                pass.draw(0..(vertices.len() as u32), 0..1);
+            }
+        }
+        // Draw text for this layer on top of its rects
+        let layer_text: Vec<DrawText> = dl.items.iter().filter_map(map_text_item).collect();
+        if !layer_text.is_empty() {
+            self.glyphon_prepare_for(&layer_text);
+            let _ = self
+                .text_renderer
+                .render(&self.text_atlas, &self.viewport, pass);
+        }
+    }
+
+    fn rebuild_cached_batches(&mut self) {
+        if let Some(dl) = &self.retained_display_list {
+            let batches = batch_display_list(dl, self.size.width, self.size.height);
+            let mut cache: Vec<BatchCacheEntry> = Vec::with_capacity(batches.len());
+            for b in batches.into_iter() {
+                let mut vertices: Vec<Vertex> = Vec::with_capacity(b.quads.len() * 6);
+                for q in b.quads.iter() {
+                    self.push_rect_vertices_ndc(
+                        &mut vertices,
+                        [q.x, q.y, q.width, q.height],
+                        q.color,
+                    );
+                }
+                if vertices.is_empty() {
+                    cache.push((
+                        b.scissor,
+                        self.device.create_buffer(&BufferDescriptor {
+                            label: Some("empty-batch"),
+                            size: 4,
+                            usage: BufferUsages::VERTEX,
+                            mapped_at_creation: false,
+                        }),
+                        0,
+                    ));
+                } else {
+                    let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
+                    let vertex_buffer =
+                        self.device.create_buffer_init(&util::BufferInitDescriptor {
+                            label: Some("rect-batch"),
+                            contents: vertex_bytes,
+                            usage: BufferUsages::VERTEX,
+                        });
+                    cache.push((b.scissor, vertex_buffer, vertices.len() as u32));
+                }
+            }
+            self.cached_batches = Some(cache);
+            self.last_retained_list = self.retained_display_list.clone();
+            self.cache_builds = self.cache_builds.wrapping_add(1);
+        }
+    }
+
+    fn draw_cached_batches(&mut self, pass: &mut RenderPass<'_>, need_rebuild: bool) {
+        if let Some(ref cache) = self.cached_batches {
+            if !need_rebuild {
+                self.cache_reuses = self.cache_reuses.wrapping_add(1);
+            }
+            for (scissor_opt, buffer, count) in cache.iter() {
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                match scissor_opt {
+                    Some((x, y, w, h)) => pass.set_scissor_rect(*x, *y, *w, *h),
+                    None => {
+                        pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1))
+                    }
+                }
+                if *count > 0 {
+                    pass.draw(0..*count, 0..1);
+                }
+            }
+        }
+    }
+
     /// Create the GPU device/surface and initialize a simple render pipeline.
     pub async fn new(window: Arc<Window>) -> RenderState {
         let instance = Instance::new(&InstanceDescriptor::default());
@@ -107,6 +244,7 @@ impl RenderState {
         let surface_config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
+            // Request compatibility with the sRGB-format texture view we are going to create later.
             view_formats: vec![render_format],
             alpha_mode: CompositeAlphaMode::Auto,
             width: size.width,
@@ -384,47 +522,6 @@ impl RenderState {
             ..Default::default()
         });
 
-        // Build vertex data depending on retained vs immediate path
-        let fw = self.size.width.max(1) as f32;
-        let fh = self.size.height.max(1) as f32;
-
-        // Helper to convert a rect into two triangles worth of vertices (NDC space)
-        let push_rect_vertices =
-            |out: &mut Vec<Vertex>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]| {
-                if w <= 0.0 || h <= 0.0 {
-                    return;
-                }
-                let x0 = (x / fw) * 2.0 - 1.0;
-                let x1 = ((x + w) / fw) * 2.0 - 1.0;
-                let y0 = 1.0 - (y / fh) * 2.0;
-                let y1 = 1.0 - ((y + h) / fh) * 2.0;
-                let c = color;
-                out.push(Vertex {
-                    position: [x0, y0],
-                    color: c,
-                });
-                out.push(Vertex {
-                    position: [x1, y0],
-                    color: c,
-                });
-                out.push(Vertex {
-                    position: [x0, y1],
-                    color: c,
-                });
-                out.push(Vertex {
-                    position: [x1, y0],
-                    color: c,
-                });
-                out.push(Vertex {
-                    position: [x1, y1],
-                    color: c,
-                });
-                out.push(Vertex {
-                    position: [x0, y1],
-                    color: c,
-                });
-            };
-
         // Prepare text via glyphon for single-list paths
         if use_retained {
             if let Some(dl) = &self.retained_display_list {
@@ -465,79 +562,7 @@ impl RenderState {
                 for layer in self.layers.clone().iter() {
                     match layer {
                         Layer::Background => continue,
-                        Layer::Content(dl) | Layer::Chrome(dl) => {
-                            // Draw rectangles for this layer using DL batching (no cache for simplicity)
-                            let batches = batch_display_list(dl, self.size.width, self.size.height);
-                            for b in batches.into_iter() {
-                                let mut vertices: Vec<Vertex> =
-                                    Vec::with_capacity(b.quads.len() * 6);
-                                for q in b.quads.iter() {
-                                    push_rect_vertices(
-                                        &mut vertices,
-                                        q.x,
-                                        q.y,
-                                        q.width,
-                                        q.height,
-                                        q.color,
-                                    );
-                                }
-                                let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
-                                let vertex_buffer =
-                                    self.device.create_buffer_init(&util::BufferInitDescriptor {
-                                        label: Some("layer-rect-batch"),
-                                        contents: vertex_bytes,
-                                        usage: BufferUsages::VERTEX,
-                                    });
-                                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                                match b.scissor {
-                                    Some((x, y, w, h)) => pass.set_scissor_rect(x, y, w, h),
-                                    None => pass.set_scissor_rect(
-                                        0,
-                                        0,
-                                        self.size.width.max(1),
-                                        self.size.height.max(1),
-                                    ),
-                                }
-                                if vertices.is_empty() {
-                                    continue;
-                                }
-                                pass.draw(0..(vertices.len() as u32), 0..1);
-                            }
-                            // Draw text for this layer on top of its rects
-                            let layer_text: Vec<DrawText> = dl
-                                .items
-                                .iter()
-                                .filter_map(|item| {
-                                    if let DisplayItem::Text {
-                                        x,
-                                        y,
-                                        text,
-                                        color,
-                                        font_size,
-                                    } = item
-                                    {
-                                        Some(DrawText {
-                                            x: *x,
-                                            y: *y,
-                                            text: text.clone(),
-                                            color: *color,
-                                            font_size: *font_size,
-                                        })
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect();
-                            if layer_text.is_empty() {
-                                continue;
-                            }
-                            self.glyphon_prepare_for(&layer_text);
-                            let _ = self.text_renderer.render(
-                                &self.text_atlas,
-                                &self.viewport,
-                                &mut pass,
-                            );
-                        }
+                        Layer::Content(dl) | Layer::Chrome(dl) => self.draw_layer(&mut pass, dl),
                     }
                 }
             } else if use_retained {
@@ -549,62 +574,10 @@ impl RenderState {
                 } else {
                     true
                 };
-                if need_rebuild && let Some(dl) = &self.retained_display_list {
-                    let batches = batch_display_list(dl, self.size.width, self.size.height);
-                    let mut cache: Vec<BatchCacheEntry> = Vec::with_capacity(batches.len());
-                    for b in batches.into_iter() {
-                        let mut vertices: Vec<Vertex> = Vec::with_capacity(b.quads.len() * 6);
-                        for q in b.quads.iter() {
-                            push_rect_vertices(&mut vertices, q.x, q.y, q.width, q.height, q.color);
-                        }
-                        if vertices.is_empty() {
-                            // Store an empty draw to preserve batch/scissor alignment
-                            cache.push((
-                                b.scissor,
-                                self.device.create_buffer(&BufferDescriptor {
-                                    label: Some("empty-batch"),
-                                    size: 4,
-                                    usage: BufferUsages::VERTEX,
-                                    mapped_at_creation: false,
-                                }),
-                                0,
-                            ));
-                        } else {
-                            let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
-                            let vertex_buffer =
-                                self.device.create_buffer_init(&util::BufferInitDescriptor {
-                                    label: Some("rect-batch"),
-                                    contents: vertex_bytes,
-                                    usage: BufferUsages::VERTEX,
-                                });
-                            cache.push((b.scissor, vertex_buffer, vertices.len() as u32));
-                        }
-                    }
-                    self.cached_batches = Some(cache);
-                    self.last_retained_list = self.retained_display_list.clone();
-                    // Stats: count cache builds
-                    self.cache_builds = self.cache_builds.wrapping_add(1);
+                if need_rebuild {
+                    self.rebuild_cached_batches();
                 }
-                if let Some(ref cache) = self.cached_batches {
-                    if !need_rebuild {
-                        self.cache_reuses = self.cache_reuses.wrapping_add(1);
-                    }
-                    for (scissor_opt, buffer, count) in cache.iter() {
-                        pass.set_vertex_buffer(0, buffer.slice(..));
-                        match scissor_opt {
-                            Some((x, y, w, h)) => pass.set_scissor_rect(*x, *y, *w, *h),
-                            None => pass.set_scissor_rect(
-                                0,
-                                0,
-                                self.size.width.max(1),
-                                self.size.height.max(1),
-                            ),
-                        }
-                        if *count > 0 {
-                            pass.draw(0..*count, 0..1);
-                        }
-                    }
-                }
+                self.draw_cached_batches(&mut pass, need_rebuild);
                 // Render prepared glyphon text for retained path
                 let _ = self
                     .text_renderer
@@ -614,12 +587,9 @@ impl RenderState {
                 let mut vertices: Vec<Vertex> = Vec::with_capacity(self.display_list.len() * 6);
                 for rect in &self.display_list {
                     let rgba = [rect.color[0], rect.color[1], rect.color[2], 1.0];
-                    push_rect_vertices(
+                    self.push_rect_vertices_ndc(
                         &mut vertices,
-                        rect.x,
-                        rect.y,
-                        rect.width,
-                        rect.height,
+                        [rect.x, rect.y, rect.width, rect.height],
                         rgba,
                     );
                 }
