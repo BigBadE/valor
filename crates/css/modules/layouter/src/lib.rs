@@ -57,6 +57,8 @@ pub type SnapshotEntry = (NodeKey, LayoutNodeKind, Vec<NodeKey>);
 pub struct Layouter {
     /// Map of known DOM node keys to their layout-kind representation.
     nodes: HashMap<NodeKey, LayoutNodeKind>,
+    /// Children per parent in DOM order (elements only).
+    children: HashMap<NodeKey, Vec<NodeKey>>,
     /// Bounding rectangles for known nodes.
     rects: HashMap<NodeKey, LayoutRect>,
     /// Computed styles for known nodes.
@@ -81,35 +83,45 @@ pub struct Layouter {
     perf_updates_applied: u64,
     /// Rectangles that have been marked dirty since the last query.
     dirty_rects: Vec<LayoutRect>,
+    /// Tracked attributes for nodes used by serializers/tests (id/class/style).
+    attrs: HashMap<NodeKey, HashMap<String, String>>,
 }
 
 impl Layouter {
     #[inline]
     /// Creates a new `Layouter` with default state.
     pub fn new() -> Self {
-        Self::default()
+        let mut state = Self::default();
+        // Seed with a document root so snapshots have an anchor
+        state.nodes.insert(NodeKey::ROOT, LayoutNodeKind::Document);
+        state
     }
     #[inline]
     /// Returns a shallow snapshot of the known nodes.
     ///
     /// The children list is currently left empty to keep this shim lightweight.
     pub fn snapshot(&self) -> Vec<SnapshotEntry> {
-        if self.nodes.is_empty() {
-            vec![(NodeKey::ROOT, LayoutNodeKind::Document, vec![])]
-        } else {
-            // Return a shallow snapshot of known nodes without computing children here.
-            self.nodes
-                .iter()
-                .map(|(key, kind)| (*key, kind.clone(), Vec::new()))
-                .collect()
+        // Build entries in deterministic key order to avoid hash nondeterminism
+        let mut keys: Vec<NodeKey> = self.nodes.keys().copied().collect();
+        keys.sort_by_key(|key| key.0);
+        let mut out: Vec<SnapshotEntry> = Vec::with_capacity(keys.len());
+        for key in keys {
+            let kind = self
+                .nodes
+                .get(&key)
+                .cloned()
+                .unwrap_or(LayoutNodeKind::Document);
+            let children = self.children.get(&key).cloned().unwrap_or_default();
+            out.push((key, kind, children));
         }
+        out
     }
     #[inline]
     /// Returns a map of attributes for nodes, if any are tracked.
     ///
     /// Currently returns an empty map as a placeholder.
     pub fn attrs_map(&self) -> HashMap<NodeKey, HashMap<String, String>> {
-        HashMap::new()
+        self.attrs.clone()
     }
     #[inline]
     /// Sets the active stylesheet.
@@ -220,8 +232,37 @@ impl Layouter {
 impl DOMSubscriber for Layouter {
     #[inline]
     /// Applies a DOM update to the layouter, updating internal counters.
-    fn apply_update(&mut self, _update: DOMUpdate) -> Result<(), Error> {
+    fn apply_update(&mut self, update: DOMUpdate) -> Result<(), Error> {
         self.perf_updates_applied = self.perf_updates_applied.saturating_add(1);
+        match update {
+            DOMUpdate::InsertElement {
+                parent, node, tag, ..
+            } => {
+                self.nodes.insert(node, LayoutNodeKind::Block { tag });
+                self.children.entry(parent).or_default().push(node);
+            }
+            DOMUpdate::RemoveNode { node } => {
+                self.nodes.remove(&node);
+                self.rects.remove(&node);
+                self.computed_styles.remove(&node);
+                self.attrs.remove(&node);
+                // Remove from any parent's children list deterministically
+                let mut parent_keys: Vec<NodeKey> = self.children.keys().copied().collect();
+                parent_keys.sort_by_key(|key| key.0);
+                for parent in parent_keys {
+                    if let Some(kids) = self.children.get_mut(&parent)
+                        && let Some(pos) = kids.iter().position(|child_key| *child_key == node)
+                    {
+                        kids.remove(pos);
+                    }
+                }
+            }
+            DOMUpdate::SetAttr { node, name, value } => {
+                self.attrs.entry(node).or_default().insert(name, value);
+            }
+            DOMUpdate::InsertText { .. } | DOMUpdate::EndOfDocument => { /* ignore in minimal shim */
+            }
+        }
         Ok(())
     }
 }

@@ -10,6 +10,7 @@ use css::CSSMirror;
 use css::types::Stylesheet;
 use html::dom::DOM;
 use html::parser::HTMLParser;
+use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
 use js::{DOMMirror, DOMSubscriber, DOMUpdate, DomIndex, JsEngine};
 use js_engine_v8::V8Engine;
 use layouter::LayoutRect;
@@ -21,6 +22,10 @@ use std::sync::{Arc, Mutex};
 use style_engine::{ComputedStyle, StyleEngine};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::error::TryRecvError as UnboundedTryRecvError;
+
+// Type aliases to simplify frequent layout structure mappings
+type TagsByKey = HashMap<js::NodeKey, String>;
+type ElementChildren = HashMap<js::NodeKey, Vec<js::NodeKey>>;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::StreamExt;
@@ -695,6 +700,99 @@ impl HtmlPage {
     }
     pub(crate) fn layouter_computed_styles(&self) -> HashMap<js::NodeKey, ComputedStyle> {
         self.layouter_mirror.mirror().computed_styles().clone()
+    }
+
+    /// Return a structure-only snapshot for tests: (tags_by_key, element_children).
+    /// This is derived from the DOM/layout snapshot the page can produce and does not
+    /// depend on any internal layouter mirrors.
+    pub fn layout_structure_snapshot(&mut self) -> (TagsByKey, ElementChildren) {
+        // Ensure DOM is drained to get the latest nodes
+        let _ = self.dom_index_mirror.try_update_sync();
+        let (tags_by_key, element_children, _raw_children, _text_by_key) =
+            self.snapshot_layout_maps();
+        (tags_by_key, element_children)
+    }
+
+    /// Initialize a late `Layouter` subscriber (external mirror) from the current page state.
+    /// Replays the existing element structure and attributes into the provided mirror so it
+    /// can participate in layout and serialization even if it subscribed after parsing began.
+    pub fn bootstrap_layouter_subscriber(&mut self, mirror: &mut DOMMirror<Layouter>) {
+        // Take a structural snapshot and attrs from the internal layouter mirror
+        let snapshot = self.layouter_mirror.mirror().snapshot();
+        let attrs_map = self.layouter_mirror.mirror_mut().attrs_map();
+
+        // Build tags_by_key and element_children from the snapshot
+        let mut tags_by_key: HashMap<js::NodeKey, String> = HashMap::new();
+        let mut children_tmp: HashMap<js::NodeKey, Vec<js::NodeKey>> = HashMap::new();
+        for (key, kind, children) in snapshot.into_iter() {
+            if let layouter::LayoutNodeKind::Block { tag } = kind {
+                tags_by_key.insert(key, tag);
+            }
+            children_tmp.insert(key, children);
+        }
+        let mut element_children: HashMap<js::NodeKey, Vec<js::NodeKey>> = HashMap::new();
+        for (parent, kids) in children_tmp.into_iter() {
+            let filtered: Vec<js::NodeKey> = kids
+                .into_iter()
+                .filter(|c| tags_by_key.contains_key(c))
+                .collect();
+            element_children.insert(parent, filtered);
+        }
+
+        fn apply_attrs(
+            lay: &mut Layouter,
+            node: js::NodeKey,
+            attrs: &HashMap<js::NodeKey, HashMap<String, String>>,
+        ) {
+            let Some(map) = attrs.get(&node) else {
+                return;
+            };
+            for key_name in ["id", "class", "style"] {
+                if let Some(value) = map.get(key_name) {
+                    let _ = lay.apply_update(SetAttr {
+                        node,
+                        name: key_name.to_owned(),
+                        value: value.clone(),
+                    });
+                }
+            }
+        }
+
+        fn replay(
+            lay: &mut Layouter,
+            tags_by_key: &HashMap<js::NodeKey, String>,
+            element_children: &HashMap<js::NodeKey, Vec<js::NodeKey>>,
+            attrs: &HashMap<js::NodeKey, HashMap<String, String>>,
+            parent: js::NodeKey,
+        ) {
+            let Some(children) = element_children.get(&parent) else {
+                return;
+            };
+            for child in children {
+                let tag = tags_by_key
+                    .get(child)
+                    .cloned()
+                    .unwrap_or_else(|| String::from("div"));
+                let _ = lay.apply_update(InsertElement {
+                    parent,
+                    node: *child,
+                    tag,
+                    pos: 0,
+                });
+                apply_attrs(lay, *child, attrs);
+                replay(lay, tags_by_key, element_children, attrs, *child);
+            }
+        }
+
+        let lay = mirror.mirror_mut();
+        replay(
+            lay,
+            &tags_by_key,
+            &element_children,
+            &attrs_map,
+            js::NodeKey::ROOT,
+        );
+        let _ = lay.apply_update(EndOfDocument);
     }
     pub(crate) fn display_builder(&self) -> &dyn crate::display::DisplayBuilder {
         &*self.display_builder

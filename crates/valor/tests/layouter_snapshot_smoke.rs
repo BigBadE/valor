@@ -2,6 +2,8 @@
 
 use anyhow::Result;
 use js::NodeKey;
+use js::DOMSubscriber;
+use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
 use layouter::Layouter;
 use std::collections::HashMap;
 use tokio::runtime::Runtime;
@@ -26,7 +28,57 @@ fn layouter_snapshot_contains_section_children() -> Result<()> {
     })?;
     assert!(finished, "page parsing did not finish");
 
-    // Apply stylesheet and computed styles to the external layouter mirror and run layout
+    // Bootstrap the external layouter mirror with current structure and attrs, then apply stylesheet+computed
+    let (tags_by_key, element_children) = page.layout_structure_snapshot();
+    let attrs_map = page.layouter_attrs_map();
+
+    fn apply_attrs(
+        lay: &mut Layouter,
+        node: NodeKey,
+        attrs: &std::collections::HashMap<NodeKey, std::collections::HashMap<String, String>>,
+    ) {
+        let Some(map) = attrs.get(&node) else { return; };
+        for (name, value) in map {
+            if matches!(name.as_str(), "id" | "class" | "style") {
+                let _ = lay.apply_update(SetAttr {
+                    node,
+                    name: name.clone(),
+                    value: value.clone(),
+                });
+            }
+        }
+    }
+
+    fn replay(
+        lay: &mut Layouter,
+        tags_by_key: &std::collections::HashMap<NodeKey, String>,
+        element_children: &std::collections::HashMap<NodeKey, Vec<NodeKey>>,
+        attrs: &std::collections::HashMap<NodeKey, std::collections::HashMap<String, String>>,
+        parent: NodeKey,
+    ) {
+        let Some(children) = element_children.get(&parent) else { return; };
+        for child in children {
+            let tag = tags_by_key
+                .get(child)
+                .cloned()
+                .unwrap_or_else(|| "div".to_owned());
+            let _ = lay.apply_update(InsertElement { parent, node: *child, tag, pos: 0 });
+            apply_attrs(lay, *child, attrs);
+            replay(lay, tags_by_key, element_children, attrs, *child);
+        }
+    }
+
+    {
+        let layouter = layouter_mirror.mirror_mut();
+        replay(
+            layouter,
+            &tags_by_key,
+            &element_children,
+            &attrs_map,
+            NodeKey::ROOT,
+        );
+        let _ = layouter.apply_update(EndOfDocument);
+    }
     let sheet = page.styles_snapshot()?;
     let computed = page.computed_styles_snapshot()?;
     {
