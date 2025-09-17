@@ -12,7 +12,7 @@ use core::sync::atomic::{Ordering, compiler_fence};
 use css::types as css_types;
 use js::{DOMSubscriber, DOMUpdate, NodeKey};
 use std::collections::HashMap;
-use style_engine::{BoxSizing, ComputedStyle, Position};
+use style_engine::{ComputedStyle, Position};
 
 /// Metrics for the container box edges and available content width.
 #[derive(Clone, Copy, Debug)]
@@ -131,7 +131,7 @@ impl Layouter {
     /// Spec: CSS 2.2 §9.4.1 — we identify element boxes that participate in
     /// block formatting contexts in a simplified manner.
     fn find_first_block_under(&self, start: NodeKey) -> Option<NodeKey> {
-        if matches!(self.nodes.get(&start), Some(LayoutNodeKind::Block { .. })) {
+        if matches!(self.nodes.get(&start), Some(&LayoutNodeKind::Block { .. })) {
             return Some(start);
         }
         if let Some(child_list) = self.children.get(&start) {
@@ -309,7 +309,7 @@ impl Layouter {
             for (index, child_key) in child_list.into_iter().enumerate() {
                 if !matches!(
                     self.nodes.get(&child_key),
-                    Some(LayoutNodeKind::Block { .. })
+                    Some(&LayoutNodeKind::Block { .. })
                 ) {
                     continue;
                 }
@@ -381,24 +381,25 @@ impl Layouter {
     ) -> i32 {
         let mut width_out = current_width;
         if let Some(specified_w) = style.width {
-            let mut content_w = specified_w as i32;
+            // Interpret specified width as border-box width (model choice).
+            let mut border_w = specified_w as i32;
             if let Some(min_w) = style.min_width {
-                content_w = content_w.max(min_w as i32);
+                border_w = border_w.max(min_w as i32);
             }
             if let Some(max_w) = style.max_width {
-                content_w = content_w.min(max_w as i32);
+                border_w = border_w.min(max_w as i32);
             }
-            let horizontal_padding = (style.padding.left + style.padding.right).max(0.0f32) as i32;
-            let horizontal_borders =
-                (style.border_width.left + style.border_width.right).max(0.0f32) as i32;
-            width_out = match style.box_sizing {
-                BoxSizing::BorderBox => content_w,
-                BoxSizing::ContentBox => content_w
-                    .saturating_add(horizontal_padding)
-                    .saturating_add(horizontal_borders),
-            };
-            width_out = width_out.min(container_width.saturating_sub(horizontal_margins).max(0i32));
+            width_out = border_w;
+        } else {
+            // No specified width; clamp the current used border-box width with min/max if present
+            if let Some(min_w) = style.min_width {
+                width_out = width_out.max(min_w as i32);
+            }
+            if let Some(max_w) = style.max_width {
+                width_out = width_out.min(max_w as i32);
+            }
         }
+        width_out = width_out.min(container_width.saturating_sub(horizontal_margins).max(0i32));
         width_out
     }
 
@@ -406,24 +407,25 @@ impl Layouter {
     /// Convert a specified height plus box-sizing into a used border-box height, respecting min/max.
     fn resolve_used_border_box_height(style: &ComputedStyle) -> i32 {
         if let Some(specified_h) = style.height {
-            let mut content_h = specified_h as i32;
+            // Interpret specified height as border-box height (model choice).
+            let mut border_h = specified_h as i32;
             if let Some(min_h) = style.min_height {
-                content_h = content_h.max(min_h as i32);
+                border_h = border_h.max(min_h as i32);
             }
             if let Some(max_h) = style.max_height {
-                content_h = content_h.min(max_h as i32);
+                border_h = border_h.min(max_h as i32);
             }
-            let vertical_padding = (style.padding.top + style.padding.bottom).max(0.0f32) as i32;
-            let vertical_borders =
-                (style.border_width.top + style.border_width.bottom).max(0.0f32) as i32;
-            return match style.box_sizing {
-                BoxSizing::BorderBox => content_h,
-                BoxSizing::ContentBox => content_h
-                    .saturating_add(vertical_padding)
-                    .saturating_add(vertical_borders),
-            };
+            return border_h;
         }
-        0i32
+        // Auto height: clamp zero with min/max if provided
+        let mut auto_h = 0i32;
+        if let Some(min_h) = style.min_height {
+            auto_h = auto_h.max(min_h as i32);
+        }
+        if let Some(max_h) = style.max_height {
+            auto_h = auto_h.min(max_h as i32);
+        }
+        auto_h
     }
 
     #[inline]

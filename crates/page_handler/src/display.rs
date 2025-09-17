@@ -555,10 +555,7 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
     }
 
     if hud_enabled {
-        let hud = format!(
-            "restyled:{} spill:{}",
-            last_style_restyled_nodes, spillover_deferred
-        );
+        let hud = format!("restyled:{last_style_restyled_nodes} spill:{spillover_deferred}");
         list.push(DisplayItem::Text {
             x: 6.0,
             y: 14.0,

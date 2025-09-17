@@ -116,6 +116,11 @@ pub struct ComputedStyle {
     pub min_height: Option<f32>,
     pub max_width: Option<f32>,
     pub max_height: Option<f32>,
+    // Positional offsets (px) for positioned layout
+    pub top: Option<f32>,
+    pub left: Option<f32>,
+    pub right: Option<f32>,
+    pub bottom: Option<f32>,
     // Typography
     pub font_family: Option<String>,
     // Flexbox

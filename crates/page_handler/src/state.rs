@@ -162,7 +162,7 @@ impl HtmlPage {
             "file" => String::from("file://"),
             _ => {
                 let host = url.host_str().unwrap_or("");
-                let port = url.port().map(|p| format!(":{}", p)).unwrap_or_default();
+                let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
                 format!("{}://{}{}", url.scheme(), host, port)
             }
         };
@@ -241,7 +241,7 @@ impl HtmlPage {
                             html::parser::ScriptKind::Module => "module",
                             html::parser::ScriptKind::Classic => "script",
                         };
-                        let u = format!("inline:{}-{}", kind, self.script_counter);
+                        let u = format!("inline:{kind}-{}", self.script_counter);
                         self.script_counter = self.script_counter.wrapping_add(1);
                         u
                     } else {
@@ -285,8 +285,7 @@ impl HtmlPage {
             if let Some(bytes) =
                 crate::embedded_chrome::get_embedded_chrome_asset(path).or_else(|| {
                     crate::embedded_chrome::get_embedded_chrome_asset(&format!(
-                        "valor://chrome{}",
-                        path
+                        "valor://chrome{path}"
                     ))
                 })
             {
@@ -580,8 +579,7 @@ impl HtmlPage {
             let layout_time_ms = layouter.perf_layout_time_last_ms();
             let updates_applied = layouter.perf_updates_applied();
             info!(
-                "Layout: processed={node_count}, reflowed_nodes={}, dirty_subtrees={}, time_ms={}, updates_applied_total={}",
-                nodes_reflowed, dirty_subtrees, layout_time_ms, updates_applied
+                "Layout: processed={node_count}, reflowed_nodes={nodes_reflowed}, dirty_subtrees={dirty_subtrees}, time_ms={layout_time_ms}, updates_applied_total={updates_applied}"
             );
 
             // Forward dirty rectangles to the renderer for partial redraws

@@ -10,8 +10,8 @@ use core::mem::take;
 use css::types::{Origin as CssOrigin, Stylesheet as CssStylesheet};
 use css_core::style_model::{
     AlignItems as CoreAlignItems, BorderStyle as CoreBorderStyle, BorderWidths as CoreBorderWidths,
-    ComputedStyle as CoreComputedStyle, Display as CoreDisplay, Edges as CoreEdges,
-    Overflow as CoreOverflow, Position as CorePosition, Rgba as CoreRgba,
+    BoxSizing as CoreBoxSizing, ComputedStyle as CoreComputedStyle, Display as CoreDisplay,
+    Edges as CoreEdges, Overflow as CoreOverflow, Position as CorePosition, Rgba as CoreRgba,
 };
 use css_core::{
     CoreEngine as CoreCssEngine,
@@ -22,6 +22,98 @@ use css_core::{
 use js::DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr};
 use js::{DOMSubscriber, DOMUpdate, NodeKey};
 use std::collections::HashMap;
+
+#[inline]
+fn parse_inline_style_to_map(style_text: &str) -> HashMap<String, String> {
+    let mut map_out = HashMap::new();
+    for declaration in style_text.split(';') {
+        let mut split_iter = declaration.splitn(2, ':');
+        if let (Some(key_raw), Some(value_raw)) = (split_iter.next(), split_iter.next()) {
+            let key_norm = key_raw.trim().to_ascii_lowercase();
+            let value_norm = value_raw.trim().to_owned();
+            if !key_norm.is_empty() {
+                map_out.insert(key_norm, value_norm);
+            }
+        }
+    }
+    map_out
+}
+
+#[inline]
+fn parse_px_opt(text_opt: Option<&String>) -> Option<f32> {
+    let text = text_opt?;
+    text.trim_end_matches("px").trim().parse::<f32>().ok()
+}
+
+#[inline]
+fn apply_inline_decl_overrides(style_out: &mut ComputedStyle, decls: &HashMap<String, String>) {
+    if style_out.width.is_none() {
+        style_out.width = parse_px_opt(decls.get("width"));
+    }
+    if style_out.height.is_none() {
+        style_out.height = parse_px_opt(decls.get("height"));
+    }
+    if style_out.min_width.is_none() {
+        style_out.min_width = parse_px_opt(decls.get("min-width"));
+    }
+    if style_out.min_height.is_none() {
+        style_out.min_height = parse_px_opt(decls.get("min-height"));
+    }
+    if style_out.max_width.is_none() {
+        style_out.max_width = parse_px_opt(decls.get("max-width"));
+    }
+    if style_out.max_height.is_none() {
+        style_out.max_height = parse_px_opt(decls.get("max-height"));
+    }
+    if let Some(val) = decls.get("box-sizing")
+        && val.eq_ignore_ascii_case("border-box")
+    {
+        style_out.box_sizing = BoxSizing::BorderBox;
+    }
+    if let Some(px_value) = parse_px_opt(decls.get("border-top-width"))
+        && style_out.border_width.top <= 0.0
+    {
+        style_out.border_width.top = px_value;
+    }
+    if let Some(px_value) = parse_px_opt(decls.get("border-right-width"))
+        && style_out.border_width.right <= 0.0
+    {
+        style_out.border_width.right = px_value;
+    }
+    if let Some(px_value) = parse_px_opt(decls.get("border-bottom-width"))
+        && style_out.border_width.bottom <= 0.0
+    {
+        style_out.border_width.bottom = px_value;
+    }
+    if let Some(px_value) = parse_px_opt(decls.get("border-left-width"))
+        && style_out.border_width.left <= 0.0
+    {
+        style_out.border_width.left = px_value;
+    }
+}
+
+#[inline]
+fn merge_inline_fallbacks(
+    mapped: &mut HashMap<NodeKey, ComputedStyle>,
+    attrs: &HashMap<NodeKey, HashMap<String, String>>,
+) {
+    // Deterministic order for stability
+    let mut nodes_sorted: Vec<NodeKey> = attrs.keys().copied().collect();
+    nodes_sorted.sort_by_key(|node_key| node_key.0);
+    for node_key in nodes_sorted {
+        let Some(attr_map) = attrs.get(&node_key) else {
+            continue;
+        };
+        let Some(style_text) = attr_map.get("style") else {
+            continue;
+        };
+        let Some(style_out) = mapped.get_mut(&node_key) else {
+            continue;
+        };
+        let decls = parse_inline_style_to_map(style_text);
+        apply_inline_decl_overrides(style_out, &decls);
+    }
+}
 
 /// Apply a small subset of attributes (id, class, style) for `child`.
 #[inline]
@@ -492,6 +584,7 @@ impl StyleEngine {
         for (key, core_style) in pairs {
             mapped.insert(key, map_core_to_public(&core_style));
         }
+        merge_inline_fallbacks(&mut mapped, &self.attrs);
         self.style_changed = true;
         self.changed_nodes = mapped.keys().copied().collect();
         self.computed = mapped;
@@ -685,18 +778,21 @@ fn map_core_to_public(core_style: &CoreComputedStyle) -> ComputedStyle {
         overflow: map_overflow(core_style.overflow),
         position: map_position(core_style.position),
         z_index: core_style.z_index,
-        // Dimensions and extras: default until core exposes these; keep stable API
-        box_sizing: BoxSizing::ContentBox,
-        width: None,
-        height: None,
-        min_width: None,
-        min_height: None,
-        max_width: None,
-        max_height: None,
-        top: None,
-        left: None,
-        right: None,
-        bottom: None,
+        // Dimensions and extras mapped from core
+        box_sizing: match core_style.box_sizing {
+            CoreBoxSizing::BorderBox => BoxSizing::BorderBox,
+            CoreBoxSizing::ContentBox => BoxSizing::ContentBox,
+        },
+        width: core_style.width,
+        height: core_style.height,
+        min_width: core_style.min_width,
+        min_height: core_style.min_height,
+        max_width: core_style.max_width,
+        max_height: core_style.max_height,
+        top: core_style.top,
+        left: core_style.left,
+        right: core_style.right,
+        bottom: core_style.bottom,
         float: Float::None,
         clear: Clear::None,
     }

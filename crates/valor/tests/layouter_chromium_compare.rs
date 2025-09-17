@@ -63,14 +63,14 @@ fn run_chromium_layouts() -> Result<(), Error> {
     // Iterate over filtered fixtures and compare against each expected file content.
     let all = common::fixture_html_files()?;
     info!("[LAYOUT] discovered {} fixtures", all.len());
-
+    let mut ran = 0;
     for input_path in all {
         let display_name = input_path.display().to_string();
         // XFAIL mechanism: skip any fixture that contains the marker
         if let Ok(text) = fs::read_to_string(&input_path)
             && (text.contains("VALOR_XFAIL") || text.contains("valor-xfail"))
         {
-            info!("[LAYOUT] {} ... XFAIL (skipped)", display_name);
+            info!("[LAYOUT] {display_name} ... XFAIL (skipped)");
             continue;
         }
         // Build page and parse via HtmlPage
@@ -86,7 +86,7 @@ fn run_chromium_layouts() -> Result<(), Error> {
         })?;
         if !finished {
             let msg = "Parsing did not finish".to_string();
-            eprintln!("[LAYOUT] {} ... FAILED: {}", display_name, msg);
+            eprintln!("[LAYOUT] {display_name} ... FAILED: {msg}");
             failed.push((display_name.clone(), msg));
             continue;
         }
@@ -153,8 +153,7 @@ fn run_chromium_layouts() -> Result<(), Error> {
                 .filter(|(_, kind, _)| matches!(kind, LayoutNodeKind::Block { .. }))
                 .count();
             eprintln!(
-                "[LAYOUT][DIAG] external layouter after replay: updates_applied={}, blocks_in_snapshot={}",
-                updates_applied, blocks_count
+                "[LAYOUT][DIAG] external layouter after replay: updates_applied={updates_applied}, blocks_in_snapshot={blocks_count}"
             );
         }
 
@@ -176,8 +175,7 @@ fn run_chromium_layouts() -> Result<(), Error> {
             .filter(|(_, kind, _)| matches!(kind, LayoutNodeKind::Block { .. }))
             .count();
         eprintln!(
-            "[LAYOUT][DIAG] external layouter after replay: updates_applied={}, blocks_in_snapshot={}",
-            updates_applied, blocks_count
+            "[LAYOUT][DIAG] external layouter after replay: updates_applied={updates_applied}, blocks_in_snapshot={blocks_count}"
         );
         // Use the page's authoritative geometry from its internal layouter
         let rects = page.layouter_geometry_mut();
@@ -218,8 +216,8 @@ fn run_chromium_layouts() -> Result<(), Error> {
                 let ok = entry.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
                 let details = entry.get("details").and_then(|v| v.as_str()).unwrap_or("");
                 if !ok {
-                    let msg = format!("JS assertion failed: {} - {}", name, details);
-                    eprintln!("[LAYOUT] {} ... FAILED: {}", display_name, msg);
+                    let msg = format!("JS assertion failed: {name} - {details}");
+                    eprintln!("[LAYOUT] {display_name} ... FAILED: {msg}");
                     failed.push((display_name.clone(), msg));
                     continue;
                 }
@@ -229,7 +227,8 @@ fn run_chromium_layouts() -> Result<(), Error> {
         let eps = f32::EPSILON as f64 * 3.0;
         match common::compare_json_with_epsilon(&our_json, &ch_layout_json, eps) {
             Ok(_) => {
-                println!("[LAYOUT] {} ... ok", display_name);
+                println!("[LAYOUT] {display_name} ... ok");
+                ran += 1;
             }
             Err(msg) => {
                 // Extra diagnostics to aid debugging snapshot/attrs mismatches
@@ -271,12 +270,11 @@ fn run_chromium_layouts() -> Result<(), Error> {
                         }
                     }
                     eprintln!(
-                        "[LAYOUT][DIAG] first element child under ROOT has {} children",
-                        child_count
+                        "[LAYOUT][DIAG] first element child under ROOT has {child_count} children"
                     );
                 }
                 // The comparison message already contains the precise path and the element snippets for both sides.
-                eprintln!("[LAYOUT] {} ... FAILED: {}", display_name, msg);
+                eprintln!("[LAYOUT] {display_name} ... FAILED: {msg}");
                 failed.push((display_name.clone(), msg));
             }
         }
@@ -284,10 +282,11 @@ fn run_chromium_layouts() -> Result<(), Error> {
     if !failed.is_empty() {
         eprintln!("\n==== LAYOUT FAILURES ({} total) ====", failed.len());
         for (name, msg) in &failed {
-            eprintln!("- {}\n  {}\n", name, msg);
+            eprintln!("- {name}\n  {msg}\n");
         }
         panic!("{} layout fixture(s) failed; see log above.", failed.len());
     }
+    info!("[LAYOUT] {ran} fixtures passed");
     Ok(())
 }
 
@@ -355,6 +354,8 @@ struct LayoutCtx<'a> {
 
 #[allow(dead_code)]
 fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
+    // NOTE: The rect serialized here is the border-box rect from the layouter.
+    // Chromium's side uses getBoundingClientRect(), which is also border-box.
     fn is_non_rendering_tag(tag: &str) -> bool {
         matches!(
             tag,
@@ -365,9 +366,9 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
     fn to_px_or_auto(sz: &SizeSpecified) -> String {
         use LengthOrAuto::*;
         match sz {
-            Pixels(v) => format!("{}px", v),
+            Pixels(v) => format!("{v}px"),
             Auto => "auto".to_string(),
-            Percent(p) => format!("{}%", p),
+            Percent(p) => format!("{p}%"),
         }
     }
 

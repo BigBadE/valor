@@ -33,6 +33,30 @@ pub struct StyleComputer {
     parent_by_node: HashMap<NodeKey, NodeKey>,
 }
 
+/// Parse positional offsets (top/left/right/bottom) as pixels.
+fn apply_offsets(computed: &mut style_model::ComputedStyle, decls: &HashMap<String, String>) {
+    if let Some(value) = decls.get("top")
+        && let Some(pixels) = parse_px(value)
+    {
+        computed.top = Some(pixels);
+    }
+    if let Some(value) = decls.get("left")
+        && let Some(pixels) = parse_px(value)
+    {
+        computed.left = Some(pixels);
+    }
+    if let Some(value) = decls.get("right")
+        && let Some(pixels) = parse_px(value)
+    {
+        computed.right = Some(pixels);
+    }
+    if let Some(value) = decls.get("bottom")
+        && let Some(pixels) = parse_px(value)
+    {
+        computed.bottom = Some(pixels);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -276,6 +300,34 @@ fn apply_edges_and_borders(
             style_model::BorderStyle::None
         };
     }
+    // Default unspecified border widths for solid borders to a medium width (3px)
+    if matches!(computed.border_style, style_model::BorderStyle::Solid) {
+        let medium = 3.0f32;
+        if !decls.contains_key("border-top")
+            && !decls.contains_key("border-top-width")
+            && computed.border_width.top <= 0.0
+        {
+            computed.border_width.top = medium;
+        }
+        if !decls.contains_key("border-right")
+            && !decls.contains_key("border-right-width")
+            && computed.border_width.right <= 0.0
+        {
+            computed.border_width.right = medium;
+        }
+        if !decls.contains_key("border-bottom")
+            && !decls.contains_key("border-bottom-width")
+            && computed.border_width.bottom <= 0.0
+        {
+            computed.border_width.bottom = medium;
+        }
+        if !decls.contains_key("border-left")
+            && !decls.contains_key("border-left-width")
+            && computed.border_width.left <= 0.0
+        {
+            computed.border_width.left = medium;
+        }
+    }
 }
 
 /// Parse font-size and font-family.
@@ -297,10 +349,13 @@ fn apply_flex_scalars(computed: &mut style_model::ComputedStyle, decls: &HashMap
     {
         computed.flex_grow = number;
     }
-    if let Some(value) = decls.get("flex-shrink")
-        && let Ok(number) = value.trim().parse::<f32>()
-    {
-        computed.flex_shrink = number;
+    if let Some(value) = decls.get("flex-shrink") {
+        if let Ok(number) = value.trim().parse::<f32>() {
+            computed.flex_shrink = number;
+        }
+    } else {
+        // Normalize default flex-shrink to Chromium's default (1)
+        computed.flex_shrink = 1.0;
     }
     if let Some(value) = decls.get("flex-basis") {
         computed.flex_basis = parse_px(value);
@@ -364,6 +419,7 @@ fn build_computed_from_inline(decls: &HashMap<String, String>) -> style_model::C
     apply_typography(&mut computed, decls);
     apply_flex_scalars(&mut computed, decls);
     apply_flex_alignment(&mut computed, decls);
+    apply_offsets(&mut computed, decls);
     computed
 }
 

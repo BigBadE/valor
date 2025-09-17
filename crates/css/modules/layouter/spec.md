@@ -3,9 +3,9 @@
 Spec: https://www.w3.org/TR/CSS22/visuren.html#block-formatting
 
 ## Scope
-- Minimal external layouter used by tests as a mirror of the page’s DOM structure and attributes.
-- Provides a stub block formatting flow sufficient for fixtures bootstrapping and diagnostics.
-- Geometry from this external layouter is NOT authoritative; Chromium comparer reads geometry from the page’s internal layouter.
+- Authoritative layouter for the Valor page pipeline, wired into `HtmlPage` via `DOMMirror<Layouter>`.
+- Provides a pragmatic block formatting flow sufficient for initial fixtures, display list generation, and diagnostics.
+- Geometry emitted by this layouter is consumed by the renderer and tests; it is the single source of truth for layout in-page.
 
 Out of scope for this phase:
 - Inline formatting contexts, line boxes, text shaping.
@@ -23,9 +23,10 @@ Out of scope for this phase:
 - [~] 10.3.3 Width: over-constrained resolution
   - [~] Basic horizontal accounting (margin/padding/border) for width; full over-constraint resolution is TODO
 - [~] 8.3 Margin collapsing
-  - [~] Simple sibling margin collapsing (previous-bottom vs current-top via max) for direct children of the root container
+  - [~] Pairwise vertical margin collapsing for direct-flow blocks (handles positive/negative and mixed signs); container-top collapsing when no padding/border
 - [ ] 9.5 Floats
-- [ ] 9.4.3 Relative positioning offsets
+- [x] 9.4.3 Relative positioning offsets (basic)
+  - [x] Apply `top/left/right/bottom` adjustments when `position: relative`
 
 ## Parsing/Inputs
 - Inputs come from `StyleEngine` computed snapshot: `ComputedStyle` fields include `display`, `margin`, `padding`, and limited flex-related fields.
@@ -36,15 +37,37 @@ Out of scope for this phase:
   - Traverse first block descendant under `NodeKey::ROOT` (typically `html`/`body`), prefer `body` when `html`.
   - Compute container content width (ICB width minus container margin/border/padding) and emit a root rect.
   - Stack direct element children vertically.
-  - X = container content start + margin-left; Y accumulates with simple sibling margin collapsing (max of previous bottom vs current top).
-  - Width = container content width minus horizontal margins; height = 0 (content-size not computed in MVP).
+  - X = container content start + margin-left; Y accumulates with collapsed vertical margins (pairwise logic for previous-bottom vs current-top).
+  - Width = container content width minus horizontal margins (with min/max); declared width/height are treated as border-box sizes; auto height clamps with min/max.
+  - Spec references (CSS 2.2):
+    - Block width computation: §10.3.3 (over-constrained resolution), §10.3.1 (non-replaced block elements in normal flow)
+    - Block height computation: §10.6.3 (non-replaced elements in normal flow), with simplifications
+    - Box model and margins/borders/padding: §8.1, §8.3 (margin collapsing)
+  - Apply `position: relative` offsets to computed x/y.
+
+Implementation highlights (see `crates/css/modules/layouter/src/lib.rs`):
+- `choose_layout_root()` selects the first block under `#document`, preferring `body` under `html`.
+- `compute_container_metrics()` derives padding/border/margin and available content width from the root style.
+- `resolve_used_border_box_width()` and `resolve_used_border_box_height()` implement simplified CSS 2.2 sizing with `box-sizing` and min/max.
+- `collapse_margins_pair()` implements two-value vertical margin collapsing (positive/negative/mixed rules).
+- `apply_relative_offsets()` adjusts x/y for `position: relative` using `top/left/right/bottom`.
 
 ## Caching/Optimization
 - None in MVP. Counters are recorded for diagnostics only.
 
 ## Integration
 - Upstream: `style_engine` for `ComputedStyle` and stylesheet.
-- Downstream: test harnesses `layouter_snapshot_smoke.rs` and `layouter_chromium_compare.rs` consume structure, attrs, and counters. Chromium comparer reads geometry from the page’s internal layouter via `HtmlPage::layouter_geometry_mut()`. The external layouter’s geometry is for diagnostics and spec mapping.
+- In-page wiring: `HtmlPage` constructs `DOMMirror<Layouter>` and drives layout during updates (see `crates/page_handler/src/state.rs`).
+  - Layout geometry and snapshots are accessed via `HtmlPage` helpers like `layouter_geometry_mut()` and `layouter_snapshot()`.
+  - Renderer consumes layouter geometry to build retained display lists (see `crates/page_handler/src/display_api.rs`).
+- Downstream tests: `layouter_snapshot_smoke.rs`, `layouter_chromium_compare.rs`, and graphics tests use the layouter’s geometry and structure via the page API.
+
+### Rect model (border-box)
+- `LayoutRect` represents the border-box. Chromium-side JSON captures `getBoundingClientRect()`, which is also border-box. Equality checks should therefore compare border-box values.
+
+### Defaults normalization
+- Border defaults: if `border-style: solid` and a side’s width is unspecified, default that side to `3px`.
+- Flex defaults: if `flex-shrink` is unspecified, default to `1` (Chromium default) for comparison stability.
 
 ## Future work
 - Implement margin-collapsing and over-constrained width resolution per CSS 2.2.

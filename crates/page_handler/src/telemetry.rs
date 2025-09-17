@@ -32,6 +32,6 @@ pub fn perf_counters_json(c: &PerfCounters) -> String {
 
 pub fn maybe_emit(enabled: bool, json_line: &str) {
     if enabled {
-        println!("{}", json_line);
+        println!("{json_line}");
     }
 }

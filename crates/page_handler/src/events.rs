@@ -89,9 +89,9 @@ impl HtmlPage {
     /// Dispatch a synthetic keydown event with optional modifier flags.
     pub fn dispatch_key_down(&mut self, key: &str, code: &str, mods: KeyMods) {
         let mut js = String::from("(function(){try{var e={type:'keydown',key:");
-        js.push_str(&format!("{:?}", key));
+        js.push_str(&format!("{key:?}"));
         js.push_str(",code:");
-        js.push_str(&format!("{:?}", code));
+        js.push_str(&format!("{code:?}"));
         js.push_str(",ctrlKey:");
         js.push_str(if mods.ctrl { "true" } else { "false" });
         js.push_str(",altKey:");
@@ -108,9 +108,9 @@ impl HtmlPage {
     /// Dispatch a synthetic keyup event with optional modifier flags.
     pub fn dispatch_key_up(&mut self, key: &str, code: &str, mods: KeyMods) {
         let mut js = String::from("(function(){try{var e={type:'keyup',key:");
-        js.push_str(&format!("{:?}", key));
+        js.push_str(&format!("{key:?}"));
         js.push_str(",code:");
-        js.push_str(&format!("{:?}", code));
+        js.push_str(&format!("{code:?}"));
         js.push_str(",ctrlKey:");
         js.push_str(if mods.ctrl { "true" } else { "false" });
         js.push_str(",altKey:");
@@ -127,7 +127,7 @@ impl HtmlPage {
     /// Dispatch a synthetic text input (character) event. This is sent on ReceivedCharacter.
     pub fn dispatch_text_input(&mut self, text: &str) {
         let mut js = String::from("(function(){try{var e={type:'textinput',data:");
-        js.push_str(&format!("{:?}", text));
+        js.push_str(&format!("{text:?}"));
         js.push_str("};document.dispatchEvent(e);}catch(_){}})();");
         let _ = self
             .js_engine_mut()

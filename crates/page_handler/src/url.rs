@@ -50,7 +50,7 @@ pub async fn stream_url(
             }
             let path = url.path();
             let Some(bytes) = get_embedded_chrome_asset(path)
-                .or_else(|| get_embedded_chrome_asset(&format!("valor://chrome{}", path)))
+                .or_else(|| get_embedded_chrome_asset(&format!("valor://chrome{path}")))
             else {
                 return Err(anyhow!("Embedded asset not found for {}", url));
             };

@@ -71,7 +71,7 @@ impl App {
             | ChromeHostCommand::Reload
             | ChromeHostCommand::OpenTab(_)
             | ChromeHostCommand::CloseTab(_) => {
-                info!("chromeHost command stub: {:?}", cmd);
+                info!("chromeHost command stub: {cmd:?}");
             }
         }
     }
@@ -173,9 +173,9 @@ impl App {
     }
 
     fn handle_navigate(state: &mut AppState, url_str: String) {
-        let parsed = Url::parse(&url_str).or_else(|_| Url::parse(&format!("https://{}", url_str)));
+        let parsed = Url::parse(&url_str).or_else(|_| Url::parse(&format!("https://{url_str}")));
         let Ok(target_url) = parsed else {
-            error!("Invalid URL '{}': {:?}", url_str, parsed.err());
+            error!("Invalid URL '{url_str}': {:?}", parsed.err());
             return;
         };
         let config = ValorConfig::from_env();
@@ -190,7 +190,7 @@ impl App {
                     state.pages.push(new_page);
                 }
             }
-            Err(e) => error!("Navigate failed to create page: {:?}", e),
+            Err(e) => error!("Navigate failed to create page: {e:?}"),
         }
     }
     fn resume(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Error> {

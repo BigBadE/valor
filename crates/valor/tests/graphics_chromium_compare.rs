@@ -29,7 +29,7 @@ fn now_millis() -> String {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    format!("{}", ms)
+    format!("{ms}")
 }
 
 fn per_pixel_diff(a: &[u8], b: &[u8], eps: u8) -> (u64, u64) {
@@ -186,7 +186,7 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
         let name = safe_stem(&fixture);
         let chrome_png = capture_chrome_png(&browser, &fixture, 800, 600)?;
         // Always update a stable Chrome artifact only if contents changed
-        let stable_chrome = out_dir.join(format!("{}_chrome.png", name));
+        let stable_chrome = out_dir.join(format!("{name}_chrome.png"));
         let _ = common::write_bytes_if_changed(&stable_chrome, &chrome_png)?;
         // Decode Chrome PNG to RGBA8
         let chrome_img = image::load_from_memory(&chrome_png)?.to_rgba8();
@@ -200,7 +200,7 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
         if over > 0 {
             any_failed = true;
             let stamp = now_millis();
-            let base = out_dir.join(format!("{}_{}", name, stamp));
+            let base = out_dir.join(format!("{name}_{stamp}"));
             let chrome_path = base.with_extension("chrome.png");
             let valor_path = base.with_extension("valor.png");
             let diff_path = base.with_extension("diff.png");
