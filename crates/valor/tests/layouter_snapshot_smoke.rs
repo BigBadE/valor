@@ -1,9 +1,9 @@
 #![allow(clippy::missing_panics_doc, clippy::type_complexity)]
 
 use anyhow::Result;
-use js::NodeKey;
 use js::DOMSubscriber;
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
+use js::NodeKey;
 use layouter::Layouter;
 use std::collections::HashMap;
 use tokio::runtime::Runtime;
@@ -37,7 +37,9 @@ fn layouter_snapshot_contains_section_children() -> Result<()> {
         node: NodeKey,
         attrs: &std::collections::HashMap<NodeKey, std::collections::HashMap<String, String>>,
     ) {
-        let Some(map) = attrs.get(&node) else { return; };
+        let Some(map) = attrs.get(&node) else {
+            return;
+        };
         for (name, value) in map {
             if matches!(name.as_str(), "id" | "class" | "style") {
                 let _ = lay.apply_update(SetAttr {
@@ -56,13 +58,20 @@ fn layouter_snapshot_contains_section_children() -> Result<()> {
         attrs: &std::collections::HashMap<NodeKey, std::collections::HashMap<String, String>>,
         parent: NodeKey,
     ) {
-        let Some(children) = element_children.get(&parent) else { return; };
+        let Some(children) = element_children.get(&parent) else {
+            return;
+        };
         for child in children {
             let tag = tags_by_key
                 .get(child)
                 .cloned()
                 .unwrap_or_else(|| "div".to_owned());
-            let _ = lay.apply_update(InsertElement { parent, node: *child, tag, pos: 0 });
+            let _ = lay.apply_update(InsertElement {
+                parent,
+                node: *child,
+                tag,
+                pos: 0,
+            });
             apply_attrs(lay, *child, attrs);
             replay(lay, tags_by_key, element_children, attrs, *child);
         }

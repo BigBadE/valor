@@ -685,7 +685,8 @@ impl HtmlPage {
     pub(crate) fn layouter_try_update_sync(&mut self) -> Result<(), Error> {
         self.layouter_mirror.try_update_sync()
     }
-    pub(crate) fn layouter_geometry_mut(&mut self) -> HashMap<js::NodeKey, LayoutRect> {
+    /// Return a snapshot of the layouter's current geometry per node.
+    pub fn layouter_geometry_mut(&mut self) -> HashMap<js::NodeKey, LayoutRect> {
         self.layouter_mirror.mirror_mut().compute_layout_geometry()
     }
     pub(crate) fn layouter_snapshot_mut(&mut self) -> Snapshot {

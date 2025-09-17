@@ -129,6 +129,7 @@ multiple_crate_versions = { level = "allow", priority = 1 }
 module_name_repetitions = { level = "allow", priority = 1 }
 blanket_clippy_restriction_lints = { level = "allow", priority = 1 }
 cargo_common_metadata = { level = "allow", priority = 1 }
+cast_possible_truncation = { level = "allow", priority = 1 }
 pub_with_shorthand = { level = "allow", priority = 1 }
 exhaustive_structs = { level = "allow", priority = 1 }
 unseparated_literal_suffix = { level = "allow", priority = 1 }
