@@ -689,6 +689,10 @@ impl HtmlPage {
     pub(crate) fn layouter_snapshot(&self) -> Snapshot {
         self.layouter_mirror.mirror().snapshot()
     }
+    /// Clone and return the layouter's current attributes map (id/class/style) keyed by NodeKey.
+    pub fn layouter_attrs_map(&mut self) -> HashMap<js::NodeKey, HashMap<String, String>> {
+        self.layouter_mirror.mirror_mut().attrs_map()
+    }
     pub(crate) fn layouter_computed_styles(&self) -> HashMap<js::NodeKey, ComputedStyle> {
         self.layouter_mirror.mirror().computed_styles().clone()
     }

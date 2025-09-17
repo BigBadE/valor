@@ -37,6 +37,194 @@ fn apply_attrs_for_child(core: &mut CoreCssEngine, child: NodeKey, map: &HashMap
     }
 }
 
+// helper moved into main impl block below to avoid multiple inherent impls
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::missing_panics_doc,
+        reason = "simple unit tests may assert/panic"
+    )]
+    #![allow(
+        clippy::type_complexity,
+        reason = "test helper signature is verbose by nature"
+    )]
+    #![allow(
+        clippy::too_many_lines,
+        reason = "integration-style test is intentionally explicit"
+    )]
+    use super::*;
+    use css::types::{Declaration as CssDecl, Rule as CssRule};
+
+    fn build_sheet(rules: Vec<(&str, Vec<(&str, &str, bool)>, CssOrigin, u32)>) -> CssStylesheet {
+        let mut out = CssStylesheet::default();
+        for (prelude, decls, origin, source_order) in rules {
+            out.rules.push(CssRule {
+                prelude: prelude.to_owned(),
+                declarations: decls
+                    .into_iter()
+                    .map(|(name, value, important)| CssDecl {
+                        name: name.to_owned(),
+                        value: value.to_owned(),
+                        important,
+                    })
+                    .collect(),
+                origin,
+                source_order,
+            });
+        }
+        out
+    }
+
+    #[test]
+    fn replay_and_stylesheet_apply_row_desc() {
+        let mut engine = StyleEngine::new();
+        let sheet = build_sheet(vec![
+            (
+                "section",
+                vec![("display", "flex", false)],
+                CssOrigin::Author,
+                0,
+            ),
+            (
+                ".row div",
+                vec![("margin", "8px", false)],
+                CssOrigin::Author,
+                1,
+            ),
+            (
+                "#special",
+                vec![("margin", "16px", false)],
+                CssOrigin::Author,
+                2,
+            ),
+        ]);
+        engine.replace_stylesheet(sheet);
+
+        // Build a small DOM snapshot: section > [#a.box, #special.box, #c.box]
+        let section = NodeKey(1);
+        let node_a = NodeKey(2);
+        let special = NodeKey(3);
+        let node_c = NodeKey(4);
+
+        let mut tags_by_key: HashMap<NodeKey, String> = HashMap::new();
+        tags_by_key.insert(section, "section".to_owned());
+        tags_by_key.insert(node_a, "div".to_owned());
+        tags_by_key.insert(special, "div".to_owned());
+        tags_by_key.insert(node_c, "div".to_owned());
+
+        let mut element_children: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
+        element_children.insert(NodeKey::ROOT, vec![section]);
+        element_children.insert(section, vec![node_a, special, node_c]);
+
+        let mut attrs: HashMap<NodeKey, HashMap<String, String>> = HashMap::new();
+        attrs
+            .entry(section)
+            .or_default()
+            .insert("class".to_owned(), "row".to_owned());
+        attrs
+            .entry(node_a)
+            .or_default()
+            .insert("class".to_owned(), "box".to_owned());
+        attrs
+            .entry(node_a)
+            .or_default()
+            .insert("id".to_owned(), "a".to_owned());
+        attrs
+            .entry(special)
+            .or_default()
+            .insert("class".to_owned(), "box".to_owned());
+        attrs
+            .entry(special)
+            .or_default()
+            .insert("id".to_owned(), "special".to_owned());
+        attrs
+            .entry(node_c)
+            .or_default()
+            .insert("class".to_owned(), "box".to_owned());
+        attrs
+            .entry(node_c)
+            .or_default()
+            .insert("id".to_owned(), "c".to_owned());
+
+        engine.rebuild_from_layout_snapshot(&tags_by_key, &element_children, &attrs);
+        engine.recompute_dirty();
+
+        let snapshot = engine.computed_snapshot();
+        let comp_section = snapshot.get(&section).cloned().unwrap_or_default();
+        assert!(matches!(comp_section.display, Display::Flex));
+
+        let comp_a = snapshot.get(&node_a).cloned().unwrap_or_default();
+        let comp_special = snapshot.get(&special).cloned().unwrap_or_default();
+        let comp_c = snapshot.get(&node_c).cloned().unwrap_or_default();
+        assert!((comp_a.margin.left - 8.0).abs() < 0.01);
+        assert!((comp_a.margin.top - 8.0).abs() < 0.01);
+        assert!((comp_c.margin.left - 8.0).abs() < 0.01);
+        assert!((comp_special.margin.left - 16.0).abs() < 0.01);
+        assert!((comp_special.margin.top - 16.0).abs() < 0.01);
+    }
+}
+
+#[cfg(test)]
+mod extra_tests {
+    #![allow(
+        clippy::missing_panics_doc,
+        reason = "simple unit tests may assert/panic"
+    )]
+    #![allow(
+        clippy::type_complexity,
+        reason = "test helper signature is verbose by nature"
+    )]
+    use super::*;
+    use css::types::{Declaration as CssDecl, Rule as CssRule};
+
+    #[test]
+    fn ancestor_only_class_triggers_descendant_match() {
+        let mut engine = StyleEngine::new();
+        let mut sheet = CssStylesheet::default();
+        sheet.rules.push(CssRule {
+            prelude: ".row div".to_owned(),
+            declarations: vec![CssDecl {
+                name: "margin".to_owned(),
+                value: "8px".to_owned(),
+                important: false,
+            }],
+            origin: CssOrigin::Author,
+            source_order: 0,
+        });
+        engine.replace_stylesheet(sheet);
+
+        // Build a small DOM snapshot: section > [.row > #child1, #child2]
+        let section = NodeKey(1);
+        let child1 = NodeKey(2);
+        let child2 = NodeKey(3);
+
+        let mut tags_by_key: HashMap<NodeKey, String> = HashMap::new();
+        tags_by_key.insert(section, "section".to_owned());
+        tags_by_key.insert(child1, "div".to_owned());
+        tags_by_key.insert(child2, "div".to_owned());
+
+        let mut element_children: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
+        element_children.insert(NodeKey::ROOT, vec![section]);
+        element_children.insert(section, vec![child1, child2]);
+
+        let mut attrs: HashMap<NodeKey, HashMap<String, String>> = HashMap::new();
+        attrs
+            .entry(section)
+            .or_default()
+            .insert("class".to_owned(), "row".to_owned());
+
+        engine.rebuild_from_layout_snapshot(&tags_by_key, &element_children, &attrs);
+        engine.recompute_dirty();
+
+        let snapshot = engine.computed_snapshot();
+        let comp_child1 = snapshot.get(&child1).cloned().unwrap_or_default();
+        let comp_child2 = snapshot.get(&child2).cloned().unwrap_or_default();
+        assert!((comp_child1.margin.left - 8.0).abs() < 0.01);
+        assert!((comp_child2.margin.left - 8.0).abs() < 0.01);
+    }
+}
+
 /// Recursively replay a cached layout snapshot into the core engine.
 #[inline]
 fn replay_node(
@@ -282,6 +470,21 @@ impl StyleEngine {
     pub fn take_changed_nodes(&mut self) -> Vec<NodeKey> {
         take(&mut self.changed_nodes)
     }
+
+    /// Mark `node` and all its descendants as style-changed.
+    #[inline]
+    fn mark_subtree_changed(&mut self, node: NodeKey) {
+        let mut stack: Vec<NodeKey> = vec![node];
+        while let Some(current) = stack.pop() {
+            self.changed_nodes.push(current);
+            if let Some(children) = self.element_children.get(&current) {
+                for child in children {
+                    stack.push(*child);
+                }
+            }
+        }
+        self.style_changed = true;
+    }
 }
 
 impl DOMSubscriber for StyleEngine {
@@ -298,8 +501,8 @@ impl DOMSubscriber for StyleEngine {
                 if key == "id" || key == "class" || key == "style" {
                     let entry = self.attrs.entry(node).or_default();
                     entry.insert(key, value);
-                    self.style_changed = true;
-                    self.changed_nodes.push(node);
+                    // Mark this node and all descendants as changed to handle descendant selectors
+                    self.mark_subtree_changed(node);
                 }
             }
             RemoveNode { node } => {

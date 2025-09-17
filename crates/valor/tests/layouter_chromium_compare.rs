@@ -1,7 +1,12 @@
 #![allow(dead_code)]
+#![allow(
+    clippy::excessive_nesting,
+    reason = "diagnostic-only helper code in test harness"
+)]
 use anyhow::Error;
 use headless_chrome::{Browser, LaunchOptionsBuilder};
 use js::NodeKey;
+use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
 use layouter::LayoutRect;
 use layouter::{LayoutNodeKind, Layouter};
 use log::info;
@@ -85,11 +90,75 @@ fn run_chromium_layouts() -> Result<(), Error> {
             continue;
         }
 
+        // One more update + drain after parse finished to ensure all mirrors are fully synchronized.
+        // This helps when late stylesheet/attr merges happen right at end-of-document.
+        let _ = rt.block_on(page.update());
+        layouter_mirror.try_update_sync()?;
+
+        // Rebuild the external Layouter mirror from the page's current structure to avoid missing early DOM updates.
+        // 1) Take a snapshot from the page's internal layouter (structure + tags), and the attrs map.
+        let page_snapshot = page.layouter_snapshot();
+        let page_attrs = page.layouter_attrs_map();
+        // 2) Build lookup maps (tags_by_key, element_children)
+        let mut tags_by_key: HashMap<NodeKey, String> = HashMap::new();
+        let mut element_children: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
+        for (k, kind, children) in page_snapshot.into_iter() {
+            if let LayoutNodeKind::Block { tag } = kind {
+                tags_by_key.insert(k, tag);
+                let mut elem_kids: Vec<NodeKey> = Vec::new();
+                for c in children {
+                    if let Some(LayoutNodeKind::Block { .. }) = tags_by_key.get(&c).and_then(|_| Some(LayoutNodeKind::Block { tag: String::new() })) {
+                        // placeholder, will be overridden when we see child's own entry
+                        elem_kids.push(c);
+                    }
+                }
+                element_children.insert(k, elem_kids);
+            } else {
+                // still record children list for traversal
+                element_children.entry(k).or_default().extend(children);
+            }
+        }
+        // Fix element_children to contain only element kids using tags_by_key now populated
+        for (_p, kids) in element_children.iter_mut() {
+            kids.retain(|c| tags_by_key.contains_key(c));
+        }
+        // 3) Replay into the external layouter mirror via DOMUpdate events
+        fn replay_into_layouter(
+            lay: &mut Layouter,
+            tags_by_key: &HashMap<NodeKey, String>,
+            element_children: &HashMap<NodeKey, Vec<NodeKey>>,
+            attrs: &HashMap<NodeKey, HashMap<String, String>>,
+            parent: NodeKey,
+        ) {
+            if let Some(children) = element_children.get(&parent) {
+                for child in children {
+                    let tag = tags_by_key.get(child).cloned().unwrap_or_else(|| "div".to_owned());
+                    let _ = lay.apply_update(InsertElement { parent, node: *child, tag, pos: 0 });
+                    if let Some(map) = attrs.get(child) {
+                        for key_name in ["id", "class", "style"] {
+                            if let Some(val) = map.get(key_name) {
+                                let _ = lay.apply_update(SetAttr { node: *child, name: key_name.to_owned(), value: val.clone() });
+                            }
+                        }
+                    }
+                    replay_into_layouter(lay, tags_by_key, element_children, attrs, *child);
+                }
+            }
+        }
+        {
+            let lay = layouter_mirror.mirror_mut();
+            replay_into_layouter(lay, &tags_by_key, &element_children, &page_attrs, NodeKey::ROOT);
+            let _ = lay.apply_update(EndOfDocument);
+        }
+
         // Provide computed styles from the page's internal StyleEngine to Layouter
         let computed = page.computed_styles_snapshot()?;
         // Clone to retain for serialization while also passing into layouter
         let computed_for_serialization = computed.clone();
         let layouter = layouter_mirror.mirror_mut();
+        // Also set the current stylesheet on this external layouter mirror so display/flow is consistent
+        let sheet_for_layout = page.styles_snapshot()?;
+        layouter.set_stylesheet(sheet_for_layout);
         layouter.set_computed_styles(computed);
         let _count = layouter.compute_layout();
         let rects = layouter.compute_layout_geometry();
@@ -144,6 +213,49 @@ fn run_chromium_layouts() -> Result<(), Error> {
                 println!("[LAYOUT] {} ... ok", display_name);
             }
             Err(msg) => {
+                // Extra diagnostics to aid debugging snapshot/attrs mismatches
+                let layouter_ref = layouter_mirror.mirror_mut();
+                let snapshot_diag = layouter_ref.snapshot();
+                let attrs_map = layouter_ref.attrs_map();
+                let mut blocks = 0usize;
+                let mut root_children = Vec::new();
+                for (k, kind, children) in snapshot_diag.iter().cloned() {
+                    if matches!(kind, LayoutNodeKind::Block { .. }) {
+                        blocks += 1;
+                    }
+                    if k == NodeKey::ROOT {
+                        root_children = children;
+                    }
+                }
+                eprintln!(
+                    "[LAYOUT][DIAG] blocks={}, root_children_count={}, attrs_nodes={}",
+                    blocks,
+                    root_children.len(),
+                    attrs_map.len()
+                );
+                let mut first_elem: Option<NodeKey> = None;
+                for child in &root_children {
+                    let is_block = snapshot_diag.iter().any(|(k, kind, _)| {
+                        *k == *child && matches!(kind, LayoutNodeKind::Block { .. })
+                    });
+                    if is_block {
+                        first_elem = Some(*child);
+                        break;
+                    }
+                }
+                if let Some(elem) = first_elem {
+                    let mut child_count = 0usize;
+                    for (k, _kind, kids) in &snapshot_diag {
+                        if *k == elem {
+                            child_count = kids.len();
+                            break;
+                        }
+                    }
+                    eprintln!(
+                        "[LAYOUT][DIAG] first element child under ROOT has {} children",
+                        child_count
+                    );
+                }
                 // The comparison message already contains the precise path and the element snippets for both sides.
                 eprintln!("[LAYOUT] {} ... FAILED: {}", display_name, msg);
                 failed.push((display_name.clone(), msg));
@@ -176,12 +288,20 @@ fn our_layout_json(
     }
     // Also build attributes lookup to access element ids
     let attrs_by_key = layouter.attrs_map();
-    // Find first element child of ROOT (typically <html>)
+    // Find first element child of ROOT (typically <html>). If none, pick the first block anywhere.
     let mut root_elem: Option<NodeKey> = None;
     if let Some(children) = children_by_key.get(&NodeKey::ROOT) {
         for child in children {
             if matches!(kind_by_key.get(child), Some(LayoutNodeKind::Block { .. })) {
                 root_elem = Some(*child);
+                break;
+            }
+        }
+    }
+    if root_elem.is_none() {
+        for (k, kind, _) in &kind_by_key {
+            if matches!(kind, LayoutNodeKind::Block { .. }) {
+                root_elem = Some(*k);
                 break;
             }
         }
