@@ -2,9 +2,8 @@
 //! Maintains a `Stylesheet` and a small computed styles map for the root node.
 
 use std::collections::{HashMap, HashSet};
-use std::iter::Peekable;
 
-use crate::{style_model, types};
+use crate::{selectors, selectors::Specificity, style_model, types};
 use css_color::parse_css_color;
 use css_style_attr::parse_style_attribute_into_map;
 use css_variables::{CustomProperties, extract_custom_properties};
@@ -33,304 +32,6 @@ pub struct StyleComputer {
     /// Parent pointers for descendant/child combinator matching.
     parent_by_node: HashMap<NodeKey, NodeKey>,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::{
-        Declaration as CoreDecl, Origin as CoreOrigin, Rule as CoreRule, Stylesheet as CoreSheet,
-    };
-    use js::{DOMUpdate, NodeKey};
-
-    #[inline]
-    fn get_computed_for_test(
-        sc: &StyleComputer,
-        node: NodeKey,
-    ) -> Option<style_model::ComputedStyle> {
-        sc.computed.get(&node).cloned()
-    }
-
-    #[inline]
-    fn merged_decls_for_test(sc: &StyleComputer, node: NodeKey) -> HashMap<String, String> {
-        // Mirror of build_computed_from_sheet up to decl map; keep deterministic order.
-        let mut props: HashMap<String, CascadedDecl> = HashMap::new();
-        for rule in &sc.sheet.rules {
-            let selectors = parse_selector_list(&rule.prelude);
-            for selector in selectors {
-                if !matches_selector(node, &selector, sc) {
-                    continue;
-                }
-                let specificity = compute_specificity(&selector);
-                for decl in &rule.declarations {
-                    let entry = CascadedDecl {
-                        value: decl.value.clone(),
-                        important: decl.important,
-                        origin: rule.origin,
-                        specificity,
-                        source_order: rule.source_order,
-                        inline_boost: false,
-                    };
-                    cascade_put(&mut props, &decl.name, entry);
-                }
-            }
-        }
-        if let Some(inline) = sc.inline_decls_by_node.get(&node) {
-            // Iterate deterministically over inline decl names
-            let mut names: Vec<&String> = inline.keys().collect();
-            names.sort();
-            for name_ref in names {
-                let value = inline.get(name_ref).cloned().unwrap_or_default();
-                let entry = CascadedDecl {
-                    value,
-                    important: false,
-                    origin: types::Origin::Author,
-                    specificity: Specificity(1_000, 0, 0),
-                    source_order: u32::MAX,
-                    inline_boost: true,
-                };
-                cascade_put(&mut props, name_ref, entry);
-            }
-        }
-        // Produce a sorted Vec and collect into a map for stable behavior
-        let mut decls: HashMap<String, String> = HashMap::new();
-        let mut pairs: Vec<(String, String)> = props
-            .into_iter()
-            .map(|(name, entry)| (name, entry.value))
-            .collect();
-        pairs.sort_by(|left, right| left.0.cmp(&right.0));
-        for (name, value) in pairs {
-            decls.insert(name, value);
-        }
-        decls
-    }
-
-    fn sheet_for_selectors(
-        css_rules: Vec<(&str, Vec<(&str, &str, bool)>, CoreOrigin, u32)>,
-    ) -> CoreSheet {
-        let mut rules = Vec::new();
-        for (prelude, decls, origin, order) in css_rules {
-            let mut out: Vec<CoreDecl> = Vec::new();
-            for (name, value, important) in decls {
-                out.push(CoreDecl {
-                    name: name.to_string(),
-                    value: value.to_string(),
-                    important,
-                });
-            }
-            rules.push(CoreRule {
-                origin,
-                source_order: order,
-                prelude: prelude.to_string(),
-                declarations: out,
-            });
-        }
-        CoreSheet {
-            rules,
-            origin: CoreOrigin::Author,
-        }
-    }
-
-    #[test]
-    fn cascade_id_over_descendant_class() {
-        // .row div { margin: 8px } #special { margin: 16px } section { display: flex }
-        let sheet = sheet_for_selectors(vec![
-            (
-                "section",
-                vec![("display", "flex", false)],
-                CoreOrigin::Author,
-                0,
-            ),
-            (
-                ".row div",
-                vec![("margin", "8px", false)],
-                CoreOrigin::Author,
-                1,
-            ),
-            (
-                "#special",
-                vec![("margin", "16px", false)],
-                CoreOrigin::Author,
-                2,
-            ),
-        ]);
-
-        let mut style_computer = StyleComputer::new();
-        style_computer.replace_stylesheet(sheet);
-
-        // Build DOM
-        let section = NodeKey(1);
-        let a = NodeKey(2);
-        let special = NodeKey(3);
-        let c = NodeKey(4);
-        style_computer.apply_update(DOMUpdate::InsertElement {
-            parent: NodeKey::ROOT,
-            node: section,
-            tag: "section".into(),
-            pos: 0,
-        });
-        style_computer.apply_update(DOMUpdate::SetAttr {
-            node: section,
-            name: "class".into(),
-            value: "row".into(),
-        });
-        style_computer.apply_update(DOMUpdate::InsertElement {
-            parent: section,
-            node: a,
-            tag: "div".into(),
-            pos: 0,
-        });
-        style_computer.apply_update(DOMUpdate::SetAttr {
-            node: a,
-            name: "class".into(),
-            value: "box".into(),
-        });
-        style_computer.apply_update(DOMUpdate::SetAttr {
-            node: a,
-            name: "id".into(),
-            value: "a".into(),
-        });
-        style_computer.apply_update(DOMUpdate::InsertElement {
-            parent: section,
-            node: special,
-            tag: "div".into(),
-            pos: 1,
-        });
-        style_computer.apply_update(DOMUpdate::SetAttr {
-            node: special,
-            name: "class".into(),
-            value: "box".into(),
-        });
-        style_computer.apply_update(DOMUpdate::SetAttr {
-            node: special,
-            name: "id".into(),
-            value: "special".into(),
-        });
-        style_computer.apply_update(DOMUpdate::InsertElement {
-            parent: section,
-            node: c,
-            tag: "div".into(),
-            pos: 2,
-        });
-        style_computer.apply_update(DOMUpdate::SetAttr {
-            node: c,
-            name: "class".into(),
-            value: "box".into(),
-        });
-        style_computer.apply_update(DOMUpdate::SetAttr {
-            node: c,
-            name: "id".into(),
-            value: "c".into(),
-        });
-        style_computer.apply_update(DOMUpdate::EndOfDocument);
-
-        style_computer.recompute_dirty();
-        // Verify selector matching first
-        let selectors_desc = parse_selector_list(".row div");
-        let first_desc = selectors_desc
-            .first()
-            .expect(".row div parsed to empty selector list");
-        assert!(matches_selector(a, first_desc, &style_computer));
-        assert!(matches_selector(c, first_desc, &style_computer));
-        let selectors_id = parse_selector_list("#special");
-        let first_id = selectors_id
-            .first()
-            .expect("#special parsed to empty selector list");
-        assert!(matches_selector(special, first_id, &style_computer));
-        let computed_section = get_computed_for_test(&style_computer, section).unwrap_or_default();
-        assert_eq!(computed_section.display, style_model::Display::Flex);
-
-        let map_a = merged_decls_for_test(&style_computer, a);
-        assert_eq!(map_a.get("margin").map(String::as_str), Some("8px"));
-        let comp_a = get_computed_for_test(&style_computer, a).unwrap_or_default();
-        let comp_special = get_computed_for_test(&style_computer, special).unwrap_or_default();
-        let comp_c = get_computed_for_test(&style_computer, c).unwrap_or_default();
-        assert!((comp_a.margin.left - 8.0).abs() < 0.01);
-        assert!((comp_a.margin.top - 8.0).abs() < 0.01);
-        assert!((comp_c.margin.left - 8.0).abs() < 0.01);
-        assert!((comp_special.margin.left - 16.0).abs() < 0.01);
-        assert!((comp_special.margin.top - 16.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn combinator_child_vs_descendant() {
-        // section { display:flex } .wrapper .desc { margin:12px } .wrapper > .child { margin:4px }
-        let sheet = sheet_for_selectors(vec![
-            (
-                "section",
-                vec![("display", "flex", false)],
-                CoreOrigin::Author,
-                0,
-            ),
-            (
-                ".wrapper .desc",
-                vec![("margin", "12px", false)],
-                CoreOrigin::Author,
-                1,
-            ),
-            (
-                ".wrapper > .child",
-                vec![("margin", "4px", false)],
-                CoreOrigin::Author,
-                2,
-            ),
-        ]);
-        let mut style_computer = StyleComputer::new();
-        style_computer.replace_stylesheet(sheet);
-
-        let section = NodeKey(10);
-        let direct = NodeKey(11);
-        let nested_parent = NodeKey(12);
-        let nested = NodeKey(13);
-        style_computer.apply_update(DOMUpdate::InsertElement {
-            parent: NodeKey::ROOT,
-            node: section,
-            tag: "section".into(),
-            pos: 0,
-        });
-        style_computer.apply_update(DOMUpdate::SetAttr {
-            node: section,
-            name: "class".into(),
-            value: "wrapper".into(),
-        });
-        style_computer.apply_update(DOMUpdate::InsertElement {
-            parent: section,
-            node: direct,
-            tag: "div".into(),
-            pos: 0,
-        });
-        style_computer.apply_update(DOMUpdate::SetAttr {
-            node: direct,
-            name: "class".into(),
-            value: "box child".into(),
-        });
-        style_computer.apply_update(DOMUpdate::InsertElement {
-            parent: section,
-            node: nested_parent,
-            tag: "div".into(),
-            pos: 1,
-        });
-        style_computer.apply_update(DOMUpdate::InsertElement {
-            parent: nested_parent,
-            node: nested,
-            tag: "div".into(),
-            pos: 0,
-        });
-        style_computer.apply_update(DOMUpdate::SetAttr {
-            node: nested,
-            name: "class".into(),
-            value: "box desc".into(),
-        });
-        style_computer.apply_update(DOMUpdate::EndOfDocument);
-
-        style_computer.recompute_dirty();
-        let comp_direct = get_computed_for_test(&style_computer, direct).unwrap_or_default();
-        let comp_nested = get_computed_for_test(&style_computer, nested).unwrap_or_default();
-        assert!((comp_direct.margin.left - 4.0).abs() < 0.01);
-        assert!((comp_nested.margin.left - 12.0).abs() < 0.01);
-    }
-}
-
-// (moved test helpers into tests module to avoid multiple inherent impls)
 
 /// Insert a cascaded declaration into the property map if it wins over any existing one.
 #[inline]
@@ -587,23 +288,26 @@ fn build_computed_from_inline(decls: &HashMap<String, String>) -> style_model::C
     computed
 }
 
-/// Specificity represented as (ids, classes, tags)
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-struct Specificity(pub u32, pub u32, pub u32);
-
+/// A declaration tracked during cascading with metadata used to resolve conflicts.
 #[derive(Clone, Debug)]
 struct CascadedDecl {
+    /// Property value as authored (after variable substitution, if any).
     value: String,
+    /// Whether this declaration was marked `!important`.
     important: bool,
+    /// Origin of the rule (UA, user, author).
     origin: types::Origin,
-    specificity: Specificity,
+    /// Calculated selector specificity for the winning selector.
+    specificity: selectors::Specificity,
+    /// Rule source order used as a tie-breaker.
     source_order: u32,
-    // Inline style attribute boost
+    /// Inline style attribute boost flag.
     inline_boost: bool,
 }
 
+/// Return a small integral weight for origin precedence comparisons.
 #[inline]
-fn origin_weight(origin: types::Origin) -> u8 {
+const fn origin_weight(origin: types::Origin) -> u8 {
     match origin {
         types::Origin::UserAgent => 0,
         types::Origin::User => 1,
@@ -611,6 +315,7 @@ fn origin_weight(origin: types::Origin) -> u8 {
     }
 }
 
+/// Return true if `candidate` wins over `previous` according to CSS cascade rules.
 #[inline]
 fn wins_over(candidate: &CascadedDecl, previous: &CascadedDecl) -> bool {
     // Inline boost wins over everything else
@@ -642,229 +347,78 @@ fn wins_over(candidate: &CascadedDecl, previous: &CascadedDecl) -> bool {
     if candidate.source_order != previous.source_order {
         return candidate.source_order > previous.source_order;
     }
-
-    // Otherwise, keep previous deterministically
-    false
-}
-
-// -------------- Minimal selector model and parser --------------
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Combinator {
-    Descendant,
-    Child,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct SimpleSelector {
-    tag: Option<String>,
-    element_id: Option<String>,
-    classes: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SelectorPart {
-    sel: SimpleSelector,
-    combinator_to_next: Option<Combinator>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Selector(Vec<SelectorPart>);
-
 #[inline]
-fn compute_specificity(selector: &Selector) -> Specificity {
-    let mut ids = 0u32;
-    let mut classes = 0u32;
-    let mut tags = 0u32;
-    for part in &selector.0 {
-        if part.sel.element_id.is_some() {
-            ids = ids.saturating_add(1);
-        }
-        if !part.sel.classes.is_empty() {
-            classes = classes.saturating_add(part.sel.classes.len() as u32);
-        }
-        if part.sel.tag.is_some() {
-            tags = tags.saturating_add(1);
-        }
-    }
-    Specificity(ids, classes, tags)
-}
-
-#[inline]
-/// Consume an identifier from a character iterator.
-fn consume_ident<I>(chars: &mut Peekable<I>, allow_underscore: bool) -> String
-where
-    I: Iterator<Item = char>,
-{
-    let mut out = String::new();
-    while let Some(&character) = chars.peek() {
-        let ok = character.is_alphanumeric()
-            || character == '-'
-            || (allow_underscore && character == '_');
-        if !ok {
-            break;
-        }
-        out.push(character);
-        chars.next();
-    }
-    out
-}
-
-#[inline]
-fn commit_current_part(
-    parts: &mut Vec<SelectorPart>,
-    current: &mut SimpleSelector,
-    combinator: Combinator,
-) {
-    parts.push(SelectorPart {
-        sel: SimpleSelector {
-            tag: current.tag.take(),
-            element_id: current.element_id.take(),
-            classes: std::mem::take(&mut current.classes),
-        },
-        combinator_to_next: Some(combinator),
-    });
-}
-
-#[inline]
-fn parse_single_selector(selector_str: &str) -> Option<Selector> {
-    let mut chars = selector_str.trim().chars().peekable();
-    let mut parts: Vec<SelectorPart> = Vec::new();
-    let mut current = SimpleSelector::default();
-    let mut next_combinator: Option<Combinator> = None;
-    let mut saw_whitespace = false;
-
-    loop {
-        // Consume whitespace as a descendant combinator boundary.
-        while chars.peek().is_some_and(|c| c.is_ascii_whitespace()) {
-            saw_whitespace = true;
-            chars.next();
-        }
-        if saw_whitespace {
-            if current.tag.is_some() || current.element_id.is_some() || !current.classes.is_empty()
-            {
-                commit_current_part(&mut parts, &mut current, Combinator::Descendant);
-                next_combinator = None;
-            } else {
-                next_combinator = Some(Combinator::Descendant);
-            }
-        }
-        match chars.peek().copied() {
-            None => break,
-            Some('>') => {
-                chars.next();
-                // Commit current before marking combinator
-                if current.tag.is_some()
-                    || current.element_id.is_some()
-                    || !current.classes.is_empty()
-                {
-                    commit_current_part(&mut parts, &mut current, Combinator::Child);
-                    next_combinator = None;
-                } else {
-                    next_combinator = Some(Combinator::Child);
-                }
-            }
-            Some('#') => {
-                chars.next();
-                current.element_id = Some(consume_ident(&mut chars, true));
-            }
-            Some('.') => {
-                chars.next();
-                current.classes.push(consume_ident(&mut chars, true));
-            }
-            Some(character) if character.is_alphanumeric() => {
-                current.tag = Some(consume_ident(&mut chars, false));
-            }
-            Some(_) => {
-                // Unknown; skip
-                chars.next();
-            }
-        }
-    }
-    if current.tag.is_some() || current.element_id.is_some() || !current.classes.is_empty() {
-        parts.push(SelectorPart {
-            sel: current,
-            combinator_to_next: next_combinator.take(),
-        });
-        // The last part should not carry a combinator to next; override to None
-        if let Some(last) = parts.last_mut() {
-            last.combinator_to_next = None;
-        }
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(Selector(parts))
-    }
-}
-
-#[inline]
-fn parse_selector_list(input: &str) -> Vec<Selector> {
-    input.split(',').filter_map(parse_single_selector).collect()
-}
-
-#[inline]
-fn matches_simple_selector(node: NodeKey, sel: &SimpleSelector, sc: &StyleComputer) -> bool {
-    if let Some(tag) = &sel.tag {
-        let tag_name = sc.tag_by_node.get(&node);
-        if !tag_name.is_some_and(|s| s.eq_ignore_ascii_case(tag)) {
+fn matches_simple_selector(
+    node: NodeKey,
+    sel: &selectors::SimpleSelector,
+    style_comp: &StyleComputer,
+) -> bool {
+    if let Some(tag) = sel.tag() {
+        let tag_name = style_comp.tag_by_node.get(&node);
+        if !tag_name.is_some_and(|value| value.eq_ignore_ascii_case(tag)) {
             return false;
         }
     }
-    if let Some(element_id) = &sel.element_id {
-        let element_id_name = sc.id_by_node.get(&node);
-        if !element_id_name.is_some_and(|s| s.eq_ignore_ascii_case(element_id)) {
+    if let Some(element_id) = sel.element_id() {
+        let element_id_name = style_comp.id_by_node.get(&node);
+        if !element_id_name.is_some_and(|value| value.eq_ignore_ascii_case(element_id)) {
             return false;
         }
     }
-    for class in &sel.classes {
-        if !node_has_class(&sc.classes_by_node, &node, class) {
-            return false;
-        }
+    for class in sel.classes() {
+        if !node_has_class(&style_comp.classes_by_node, node, class) { return false; }
     }
     true
 }
 
-#[inline]
+/// Return true if the given node has the provided class in `classes_by_node`.
 fn node_has_class(
     classes_by_node: &HashMap<NodeKey, Vec<String>>,
-    node: &NodeKey,
+    node: NodeKey,
     class: &str,
 ) -> bool {
-    classes_by_node
-        .get(node)
-        .map(|list| {
-            list.iter()
-                .any(|existing| existing.eq_ignore_ascii_case(class))
-        })
-        .unwrap_or(false)
+    classes_by_node.get(&node).is_some_and(|list| {
+        list.iter()
+            .any(|existing| existing.eq_ignore_ascii_case(class))
+    })
 }
-fn matches_selector(start_node: NodeKey, selector: &Selector, sc: &StyleComputer) -> bool {
-    if selector.0.is_empty() {
+
+/// Check whether a node matches the given parsed selector using ancestor traversal.
+#[inline]
+fn matches_selector(
+    start_node: NodeKey,
+    selector: &selectors::Selector,
+    style_computer: &StyleComputer,
+) -> bool {
+    if selector.len() == 0 {
         return false;
     }
-    let mut index: usize = selector.0.len() - 1;
+    let mut reversed = (0..selector.len()).rev().peekable();
     let mut current_node = start_node;
     loop {
-        let part = &selector.0[index];
-        if !matches_simple_selector(current_node, &part.sel, sc) {
+        let Some(index) = reversed.next() else {
+            return false;
+        };
+        let Some(part) = selector.part(index) else {
+            return false;
+        };
+        if !matches_simple_selector(current_node, part.sel(), style_computer) {
             return false;
         }
-        if index == 0 {
+        if reversed.peek().is_none() {
             return true;
         }
-        let prev_index = index - 1;
-        let prev = &selector.0[prev_index];
-        match *prev
-            .combinator_to_next
-            .as_ref()
-            .unwrap_or(&Combinator::Descendant)
+        let Some(prev_index) = reversed.peek().copied() else { return false };
+        let Some(prev_part) = selector.part(prev_index) else { return false };
+        match prev_part
+            .combinator_to_next()
+            .unwrap_or(selectors::Combinator::Descendant)
         {
-            Combinator::Descendant => {
-                // Climb ancestors to find a match for prev
+            selectors::Combinator::Descendant => {
                 let mut climb = current_node;
                 let mut found = false;
-                while let Some(parent) = sc.parent_by_node.get(&climb).copied() {
-                    if matches_simple_selector(parent, &prev.sel, sc) {
+                while let Some(parent) = style_computer.parent_by_node.get(&climb).copied() {
+                    if matches_simple_selector(parent, prev_part.sel(), style_computer) {
                         current_node = parent;
                         found = true;
                         break;
@@ -874,21 +428,17 @@ fn matches_selector(start_node: NodeKey, selector: &Selector, sc: &StyleComputer
                 if !found {
                     return false;
                 }
-                if prev_index == 0 {
-                    return true;
-                }
-                index = prev_index - 1;
+                // consume prev index
+                let _consumed: Option<usize> = reversed.next();
             }
-            Combinator::Child => {
-                if let Some(parent) = sc.parent_by_node.get(&current_node).copied() {
-                    if !matches_simple_selector(parent, &prev.sel, sc) {
+            selectors::Combinator::Child => {
+                if let Some(parent) = style_computer.parent_by_node.get(&current_node).copied() {
+                    if !matches_simple_selector(parent, prev_part.sel(), style_computer) {
                         return false;
                     }
                     current_node = parent;
-                    if prev_index == 0 {
-                        return true;
-                    }
-                    index = prev_index - 1;
+                    // consume prev index
+                    let _consumed: Option<usize> = reversed.next();
                 } else {
                     return false;
                 }
@@ -933,7 +483,7 @@ impl StyleComputer {
         self.computed.clone()
     }
 
-    /// Mirror a DOMUpdate into the style subsystem state.
+    /// Mirror a `DOMUpdate` into the style subsystem state.
     pub fn apply_update(&mut self, update: DOMUpdate) {
         match update {
             DOMUpdate::InsertElement {
@@ -1002,24 +552,7 @@ impl StyleComputer {
             // Merge declarations from matching rules
             let mut props: HashMap<String, CascadedDecl> = HashMap::new();
             for rule in &self.sheet.rules {
-                let selectors = parse_selector_list(&rule.prelude);
-                for selector in selectors {
-                    if !matches_selector(node, &selector, self) {
-                        continue;
-                    }
-                    let specificity = compute_specificity(&selector);
-                    for decl in &rule.declarations {
-                        let entry = CascadedDecl {
-                            value: decl.value.clone(),
-                            important: decl.important,
-                            origin: rule.origin,
-                            specificity,
-                            source_order: rule.source_order,
-                            inline_boost: false,
-                        };
-                        cascade_put(&mut props, &decl.name, entry);
-                    }
-                }
+                apply_rule_to_props(rule, node, self, &mut props);
             }
             if let Some(inline) = self.inline_decls_by_node.get(&node) {
                 // Deterministic iteration
@@ -1058,6 +591,35 @@ impl StyleComputer {
         }
         self.style_changed = any_changed;
         any_changed
+    }
+}
+
+// -------------- Rule application helper --------------
+#[inline]
+/// Apply a single rule's winning declarations (if any) to the `props` map for `node`.
+fn apply_rule_to_props(
+    rule: &types::Rule,
+    node: NodeKey,
+    style_comp: &StyleComputer,
+    props: &mut HashMap<String, CascadedDecl>,
+) {
+    let selector_list = selectors::parse_selector_list(&rule.prelude);
+    for selector in selector_list {
+        if !matches_selector(node, &selector, style_comp) {
+            continue;
+        }
+        let specificity = selectors::compute_specificity(&selector);
+        for decl in &rule.declarations {
+            let entry = CascadedDecl {
+                value: decl.value.clone(),
+                important: decl.important,
+                origin: rule.origin,
+                specificity,
+                source_order: rule.source_order,
+                inline_boost: false,
+            };
+            cascade_put(props, &decl.name, entry);
+        }
     }
 }
 

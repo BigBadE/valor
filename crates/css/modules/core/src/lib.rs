@@ -9,6 +9,7 @@ use std::collections::HashMap;
 mod data;
 mod layout;
 pub mod layout_model;
+pub mod selectors;
 mod style;
 pub mod style_model;
 pub mod types;
