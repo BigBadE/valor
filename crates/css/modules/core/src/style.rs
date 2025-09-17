@@ -1,10 +1,10 @@
 //! Minimal style system stub used by the core engine.
 //! Maintains a `Stylesheet` and a small computed styles map for the root node.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::iter::Peekable;
 
 use crate::{style_model, types};
-use core::cmp::Ordering;
 use css_color::parse_css_color;
 use css_style_attr::parse_style_attribute_into_map;
 use css_variables::{CustomProperties, extract_custom_properties};
@@ -57,19 +57,20 @@ mod tests {
         for rule in &sc.sheet.rules {
             let selectors = parse_selector_list(&rule.prelude);
             for selector in selectors {
-                if matches_selector(node, &selector, sc) {
-                    let specificity = compute_specificity(&selector);
-                    for decl in &rule.declarations {
-                        let entry = CascadedDecl {
-                            value: decl.value.clone(),
-                            important: decl.important,
-                            origin: rule.origin,
-                            specificity,
-                            source_order: rule.source_order,
-                            inline_boost: false,
-                        };
-                        cascade_put(&mut props, &decl.name, entry);
-                    }
+                if !matches_selector(node, &selector, sc) {
+                    continue;
+                }
+                let specificity = compute_specificity(&selector);
+                for decl in &rule.declarations {
+                    let entry = CascadedDecl {
+                        value: decl.value.clone(),
+                        important: decl.important,
+                        origin: rule.origin,
+                        specificity,
+                        source_order: rule.source_order,
+                        inline_boost: false,
+                    };
+                    cascade_put(&mut props, &decl.name, entry);
                 }
             }
         }
@@ -584,4 +585,534 @@ fn build_computed_from_inline(decls: &HashMap<String, String>) -> style_model::C
     apply_flex_scalars(&mut computed, decls);
     apply_flex_alignment(&mut computed, decls);
     computed
+}
+
+/// Specificity represented as (ids, classes, tags)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct Specificity(pub u32, pub u32, pub u32);
+
+#[derive(Clone, Debug)]
+struct CascadedDecl {
+    value: String,
+    important: bool,
+    origin: types::Origin,
+    specificity: Specificity,
+    source_order: u32,
+    // Inline style attribute boost
+    inline_boost: bool,
+}
+
+#[inline]
+fn origin_weight(origin: types::Origin) -> u8 {
+    match origin {
+        types::Origin::UserAgent => 0,
+        types::Origin::User => 1,
+        types::Origin::Author => 2,
+    }
+}
+
+#[inline]
+fn wins_over(candidate: &CascadedDecl, previous: &CascadedDecl) -> bool {
+    // Inline boost wins over everything else
+    if candidate.inline_boost && !previous.inline_boost {
+        return true;
+    }
+    if previous.inline_boost && !candidate.inline_boost {
+        return false;
+    }
+
+    // !important beats non-important
+    if candidate.important != previous.important {
+        return candidate.important;
+    }
+
+    // Higher origin wins (not relevant in tests but keeps behavior sane)
+    let ow_c = origin_weight(candidate.origin);
+    let ow_p = origin_weight(previous.origin);
+    if ow_c != ow_p {
+        return ow_c > ow_p;
+    }
+
+    // Higher specificity wins
+    if candidate.specificity != previous.specificity {
+        return candidate.specificity > previous.specificity;
+    }
+
+    // Later source order wins
+    if candidate.source_order != previous.source_order {
+        return candidate.source_order > previous.source_order;
+    }
+
+    // Otherwise, keep previous deterministically
+    false
+}
+
+// -------------- Minimal selector model and parser --------------
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Combinator {
+    Descendant,
+    Child,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SimpleSelector {
+    tag: Option<String>,
+    element_id: Option<String>,
+    classes: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SelectorPart {
+    sel: SimpleSelector,
+    combinator_to_next: Option<Combinator>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Selector(Vec<SelectorPart>);
+
+#[inline]
+fn compute_specificity(selector: &Selector) -> Specificity {
+    let mut ids = 0u32;
+    let mut classes = 0u32;
+    let mut tags = 0u32;
+    for part in &selector.0 {
+        if part.sel.element_id.is_some() {
+            ids = ids.saturating_add(1);
+        }
+        if !part.sel.classes.is_empty() {
+            classes = classes.saturating_add(part.sel.classes.len() as u32);
+        }
+        if part.sel.tag.is_some() {
+            tags = tags.saturating_add(1);
+        }
+    }
+    Specificity(ids, classes, tags)
+}
+
+#[inline]
+/// Consume an identifier from a character iterator.
+fn consume_ident<I>(chars: &mut Peekable<I>, allow_underscore: bool) -> String
+where
+    I: Iterator<Item = char>,
+{
+    let mut out = String::new();
+    while let Some(&character) = chars.peek() {
+        let ok = character.is_alphanumeric()
+            || character == '-'
+            || (allow_underscore && character == '_');
+        if !ok {
+            break;
+        }
+        out.push(character);
+        chars.next();
+    }
+    out
+}
+
+#[inline]
+fn commit_current_part(
+    parts: &mut Vec<SelectorPart>,
+    current: &mut SimpleSelector,
+    combinator: Combinator,
+) {
+    parts.push(SelectorPart {
+        sel: SimpleSelector {
+            tag: current.tag.take(),
+            element_id: current.element_id.take(),
+            classes: std::mem::take(&mut current.classes),
+        },
+        combinator_to_next: Some(combinator),
+    });
+}
+
+#[inline]
+fn parse_single_selector(selector_str: &str) -> Option<Selector> {
+    let mut chars = selector_str.trim().chars().peekable();
+    let mut parts: Vec<SelectorPart> = Vec::new();
+    let mut current = SimpleSelector::default();
+    let mut next_combinator: Option<Combinator> = None;
+    let mut saw_whitespace = false;
+
+    loop {
+        // Consume whitespace as a descendant combinator boundary.
+        while chars.peek().is_some_and(|c| c.is_ascii_whitespace()) {
+            saw_whitespace = true;
+            chars.next();
+        }
+        if saw_whitespace {
+            if current.tag.is_some() || current.element_id.is_some() || !current.classes.is_empty()
+            {
+                commit_current_part(&mut parts, &mut current, Combinator::Descendant);
+                next_combinator = None;
+            } else {
+                next_combinator = Some(Combinator::Descendant);
+            }
+        }
+        match chars.peek().copied() {
+            None => break,
+            Some('>') => {
+                chars.next();
+                // Commit current before marking combinator
+                if current.tag.is_some()
+                    || current.element_id.is_some()
+                    || !current.classes.is_empty()
+                {
+                    commit_current_part(&mut parts, &mut current, Combinator::Child);
+                    next_combinator = None;
+                } else {
+                    next_combinator = Some(Combinator::Child);
+                }
+            }
+            Some('#') => {
+                chars.next();
+                current.element_id = Some(consume_ident(&mut chars, true));
+            }
+            Some('.') => {
+                chars.next();
+                current.classes.push(consume_ident(&mut chars, true));
+            }
+            Some(character) if character.is_alphanumeric() => {
+                current.tag = Some(consume_ident(&mut chars, false));
+            }
+            Some(_) => {
+                // Unknown; skip
+                chars.next();
+            }
+        }
+    }
+    if current.tag.is_some() || current.element_id.is_some() || !current.classes.is_empty() {
+        parts.push(SelectorPart {
+            sel: current,
+            combinator_to_next: next_combinator.take(),
+        });
+        // The last part should not carry a combinator to next; override to None
+        if let Some(last) = parts.last_mut() {
+            last.combinator_to_next = None;
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(Selector(parts))
+    }
+}
+
+#[inline]
+fn parse_selector_list(input: &str) -> Vec<Selector> {
+    input.split(',').filter_map(parse_single_selector).collect()
+}
+
+#[inline]
+fn matches_simple_selector(node: NodeKey, sel: &SimpleSelector, sc: &StyleComputer) -> bool {
+    if let Some(tag) = &sel.tag {
+        let tag_name = sc.tag_by_node.get(&node);
+        if !tag_name.is_some_and(|s| s.eq_ignore_ascii_case(tag)) {
+            return false;
+        }
+    }
+    if let Some(element_id) = &sel.element_id {
+        let element_id_name = sc.id_by_node.get(&node);
+        if !element_id_name.is_some_and(|s| s.eq_ignore_ascii_case(element_id)) {
+            return false;
+        }
+    }
+    for class in &sel.classes {
+        if !node_has_class(&sc.classes_by_node, &node, class) {
+            return false;
+        }
+    }
+    true
+}
+
+#[inline]
+fn node_has_class(
+    classes_by_node: &HashMap<NodeKey, Vec<String>>,
+    node: &NodeKey,
+    class: &str,
+) -> bool {
+    classes_by_node
+        .get(node)
+        .map(|list| {
+            list.iter()
+                .any(|existing| existing.eq_ignore_ascii_case(class))
+        })
+        .unwrap_or(false)
+}
+fn matches_selector(start_node: NodeKey, selector: &Selector, sc: &StyleComputer) -> bool {
+    if selector.0.is_empty() {
+        return false;
+    }
+    let mut index: usize = selector.0.len() - 1;
+    let mut current_node = start_node;
+    loop {
+        let part = &selector.0[index];
+        if !matches_simple_selector(current_node, &part.sel, sc) {
+            return false;
+        }
+        if index == 0 {
+            return true;
+        }
+        let prev_index = index - 1;
+        let prev = &selector.0[prev_index];
+        match *prev
+            .combinator_to_next
+            .as_ref()
+            .unwrap_or(&Combinator::Descendant)
+        {
+            Combinator::Descendant => {
+                // Climb ancestors to find a match for prev
+                let mut climb = current_node;
+                let mut found = false;
+                while let Some(parent) = sc.parent_by_node.get(&climb).copied() {
+                    if matches_simple_selector(parent, &prev.sel, sc) {
+                        current_node = parent;
+                        found = true;
+                        break;
+                    }
+                    climb = parent;
+                }
+                if !found {
+                    return false;
+                }
+                if prev_index == 0 {
+                    return true;
+                }
+                index = prev_index - 1;
+            }
+            Combinator::Child => {
+                if let Some(parent) = sc.parent_by_node.get(&current_node).copied() {
+                    if !matches_simple_selector(parent, &prev.sel, sc) {
+                        return false;
+                    }
+                    current_node = parent;
+                    if prev_index == 0 {
+                        return true;
+                    }
+                    index = prev_index - 1;
+                } else {
+                    return false;
+                }
+            }
+        }
+    }
+}
+
+// -------------- StyleComputer impl --------------
+impl StyleComputer {
+    #[inline]
+    /// Create a new `StyleComputer` with empty stylesheet and state.
+    pub fn new() -> Self {
+        Self {
+            sheet: types::Stylesheet::default(),
+            computed: HashMap::new(),
+            style_changed: false,
+            changed_nodes: Vec::new(),
+            inline_decls_by_node: HashMap::new(),
+            inline_custom_props_by_node: HashMap::new(),
+            tag_by_node: HashMap::new(),
+            id_by_node: HashMap::new(),
+            classes_by_node: HashMap::new(),
+            parent_by_node: HashMap::new(),
+        }
+    }
+
+    #[inline]
+    /// Replace the current stylesheet and mark all known nodes as dirty.
+    pub fn replace_stylesheet(&mut self, sheet: types::Stylesheet) {
+        self.sheet = sheet;
+        // Mark everything dirty
+        self.style_changed = true;
+        // Recompute all known nodes
+        self.changed_nodes = self.tag_by_node.keys().copied().collect();
+    }
+
+    #[inline]
+    /// Return a clone of the current computed styles snapshot.
+    pub fn computed_snapshot(&self) -> HashMap<NodeKey, style_model::ComputedStyle> {
+        // clone to keep deterministic order not required
+        self.computed.clone()
+    }
+
+    /// Mirror a DOMUpdate into the style subsystem state.
+    pub fn apply_update(&mut self, update: DOMUpdate) {
+        match update {
+            DOMUpdate::InsertElement {
+                parent, node, tag, ..
+            } => {
+                self.tag_by_node.insert(node, tag);
+                if parent == NodeKey::ROOT {
+                    self.parent_by_node.remove(&node);
+                } else {
+                    self.parent_by_node.insert(node, parent);
+                }
+                self.changed_nodes.push(node);
+            }
+            DOMUpdate::InsertText { .. } | DOMUpdate::EndOfDocument => {}
+            DOMUpdate::SetAttr { node, name, value } => {
+                if name.eq_ignore_ascii_case("id") {
+                    self.id_by_node.insert(node, value);
+                } else if name.eq_ignore_ascii_case("class") {
+                    let classes: Vec<String> = value
+                        .split(|character: char| character.is_ascii_whitespace())
+                        .filter(|segment| !segment.is_empty())
+                        .map(|segment: &str| segment.to_owned())
+                        .collect();
+                    self.classes_by_node.insert(node, classes);
+                } else if name.eq_ignore_ascii_case("style") {
+                    let map = parse_style_attribute_into_map(&value);
+                    let custom = extract_custom_properties(&map);
+                    self.inline_decls_by_node.insert(node, map);
+                    self.inline_custom_props_by_node.insert(node, custom);
+                }
+                self.changed_nodes.push(node);
+            }
+            DOMUpdate::RemoveNode { node } => {
+                self.tag_by_node.remove(&node);
+                self.id_by_node.remove(&node);
+                self.classes_by_node.remove(&node);
+                self.inline_decls_by_node.remove(&node);
+                self.inline_custom_props_by_node.remove(&node);
+                self.parent_by_node.remove(&node);
+                self.computed.remove(&node);
+                self.style_changed = true;
+            }
+        }
+    }
+
+    /// Recompute styles for nodes changed since the last pass; returns whether any styles changed.
+    pub fn recompute_dirty(&mut self) -> bool {
+        if self.changed_nodes.is_empty() && self.computed.is_empty() {
+            // Ensure root exists at least
+            self.computed.entry(NodeKey::ROOT).or_default();
+        }
+        let mut any_changed = false;
+        let mut visited: HashSet<NodeKey> = HashSet::new();
+        // Deduplicate nodes to recompute
+        let mut nodes: Vec<NodeKey> = Vec::new();
+        for node_id in self.changed_nodes.drain(..) {
+            if visited.insert(node_id) {
+                nodes.push(node_id);
+            }
+        }
+        // Always include root if we have any elements
+        if !self.tag_by_node.is_empty() && !visited.contains(&NodeKey::ROOT) {
+            nodes.push(NodeKey::ROOT);
+        }
+        for node in nodes {
+            // Merge declarations from matching rules
+            let mut props: HashMap<String, CascadedDecl> = HashMap::new();
+            for rule in &self.sheet.rules {
+                let selectors = parse_selector_list(&rule.prelude);
+                for selector in selectors {
+                    if !matches_selector(node, &selector, self) {
+                        continue;
+                    }
+                    let specificity = compute_specificity(&selector);
+                    for decl in &rule.declarations {
+                        let entry = CascadedDecl {
+                            value: decl.value.clone(),
+                            important: decl.important,
+                            origin: rule.origin,
+                            specificity,
+                            source_order: rule.source_order,
+                            inline_boost: false,
+                        };
+                        cascade_put(&mut props, &decl.name, entry);
+                    }
+                }
+            }
+            if let Some(inline) = self.inline_decls_by_node.get(&node) {
+                // Deterministic iteration
+                let mut names: Vec<&String> = inline.keys().collect();
+                names.sort();
+                for name in names {
+                    let value = inline.get(name).cloned().unwrap_or_default();
+                    let entry = CascadedDecl {
+                        value,
+                        important: false,
+                        origin: types::Origin::Author,
+                        specificity: Specificity(1_000, 0, 0),
+                        source_order: u32::MAX,
+                        inline_boost: true,
+                    };
+                    cascade_put(&mut props, name, entry);
+                }
+            }
+            // Flatten to string map
+            let mut decls: HashMap<String, String> = HashMap::new();
+            // Stable order insert
+            let mut pairs: Vec<(String, CascadedDecl)> = props.into_iter().collect();
+            pairs.sort_by(|left, right| left.0.cmp(&right.0));
+            for (name, entry) in pairs {
+                decls.insert(name, entry.value);
+            }
+
+            // Build computed
+            let computed = build_computed_from_inline(&decls);
+            // Compare against previous
+            let prev = self.computed.get(&node).cloned();
+            if prev.as_ref() != Some(&computed) {
+                self.computed.insert(node, computed.clone());
+                any_changed = true;
+            }
+        }
+        self.style_changed = any_changed;
+        any_changed
+    }
+}
+
+// -------------- Value parsers --------------
+/// Parse a CSS length in pixels; accepts unitless as px for tests. Returns None for auto/none.
+#[inline]
+fn parse_px(input: &str) -> Option<f32> {
+    let trimmed = input.trim();
+    if trimmed.eq_ignore_ascii_case("auto") || trimmed.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    if let Some(px_suffix_str) = trimmed.strip_suffix("px") {
+        return px_suffix_str.trim().parse::<f32>().ok();
+    }
+    // Accept unitless as pixels for tests
+    trimmed.parse::<f32>().ok()
+}
+
+/// Parse an integer value (used for z-index).
+#[inline]
+fn parse_int(input: &str) -> Option<i32> {
+    input.trim().parse::<i32>().ok()
+}
+
+/// Apply color-related properties from declarations to the computed style.
+#[inline]
+fn apply_colors(computed: &mut style_model::ComputedStyle, decls: &HashMap<String, String>) {
+    if let Some(value) = decls.get("color")
+        && let Some((red8, green8, blue8, alpha8)) = parse_css_color(value)
+    {
+        computed.color = style_model::Rgba {
+            red: red8,
+            green: green8,
+            blue: blue8,
+            alpha: alpha8,
+        };
+    }
+    if let Some(value) = decls.get("background-color")
+        && let Some((red8, green8, blue8, alpha8)) = parse_css_color(value)
+    {
+        computed.background_color = style_model::Rgba {
+            red: red8,
+            green: green8,
+            blue: blue8,
+            alpha: alpha8,
+        };
+    }
+    if let Some(value) = decls.get("border-color")
+        && let Some((red8, green8, blue8, alpha8)) = parse_css_color(value)
+    {
+        computed.border_color = style_model::Rgba {
+            red: red8,
+            green: green8,
+            blue: blue8,
+            alpha: alpha8,
+        };
+    }
 }
