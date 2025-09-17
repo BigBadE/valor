@@ -1,60 +1,79 @@
 //! Selector parsing and specificity utilities for the core CSS engine.
-use std::iter::Peekable;
+use core::iter::Peekable;
+use core::mem::take;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Combinator between two selector parts.
 pub(crate) enum Combinator {
+    /// Descendant combinator.
     Descendant,
+    /// Child combinator.
     Child,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// A simple selector consisting of a tag name, an element id, and a list of classes.
 pub(crate) struct SimpleSelector {
+    /// Optional tag name, lower-cased, for type selectors.
     tag: Option<String>,
+    /// Optional element id, for `#id` selectors.
     element_id: Option<String>,
+    /// Class list for `.class` selectors.
     classes: Vec<String>,
 }
 
 impl SimpleSelector {
     #[inline]
+    /// Optional tag name, lower-cased, for type selectors.
     pub(crate) fn tag(&self) -> Option<&str> {
         self.tag.as_deref()
     }
     #[inline]
+    /// Optional element id, for `#id` selectors.
     pub(crate) fn element_id(&self) -> Option<&str> {
         self.element_id.as_deref()
     }
     #[inline]
+    /// Class list for `.class` selectors.
     pub(crate) fn classes(&self) -> &[String] {
         &self.classes
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// One compound selector part and the combinator to the next (if any).
 pub(crate) struct SelectorPart {
+    /// The simple selector list (type/id/classes) of this compound.
     sel: SimpleSelector,
+    /// The combinator that links this part to the next one.
     combinator_to_next: Option<Combinator>,
 }
 
 impl SelectorPart {
     #[inline]
-    pub(crate) fn sel(&self) -> &SimpleSelector {
+    /// Access the simple selector of this part.
+    pub(crate) const fn sel(&self) -> &SimpleSelector {
         &self.sel
     }
     #[inline]
+    /// The combinator to the next part, if present.
     pub(crate) fn combinator_to_next(&self) -> Option<Combinator> {
         self.combinator_to_next.clone()
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// A full selector consisting of multiple parts.
 pub(crate) struct Selector(Vec<SelectorPart>);
 
 impl Selector {
     #[inline]
-    pub(crate) fn len(&self) -> usize {
+    /// Number of parts in this selector.
+    pub(crate) const fn len(&self) -> usize {
         self.0.len()
     }
     #[inline]
+    /// Return the selector part at `index`, if present.
     pub(crate) fn part(&self, index: usize) -> Option<&SelectorPart> {
         self.0.get(index)
     }
@@ -72,10 +91,10 @@ where
 {
     let mut out = String::new();
     while let Some(&character) = chars.peek() {
-        let ok = character.is_alphanumeric()
+        let is_acceptable = character.is_alphanumeric()
             || character == '-'
             || (allow_underscore && character == '_');
-        if !ok {
+        if !is_acceptable {
             break;
         }
         out.push(character);
@@ -85,6 +104,7 @@ where
 }
 
 #[inline]
+/// Push the current simple selector into `parts` and reset `current`, attaching `combinator`.
 fn commit_current_part(
     parts: &mut Vec<SelectorPart>,
     current: &mut SimpleSelector,
@@ -94,13 +114,14 @@ fn commit_current_part(
         sel: SimpleSelector {
             tag: current.tag.take(),
             element_id: current.element_id.take(),
-            classes: std::mem::take(&mut current.classes),
+            classes: take(&mut current.classes),
         },
         combinator_to_next: Some(combinator),
     });
 }
 
 #[inline]
+/// Compute the specificity (ids, classes, tags) for a parsed selector.
 pub(crate) fn compute_specificity(selector: &Selector) -> Specificity {
     let mut ids = 0u32;
     let mut classes = 0u32;
@@ -110,7 +131,8 @@ pub(crate) fn compute_specificity(selector: &Selector) -> Specificity {
             ids = ids.saturating_add(1);
         }
         if !part.sel.classes.is_empty() {
-            classes = classes.saturating_add(part.sel.classes.len() as u32);
+            let len_u32 = u32::try_from(part.sel.classes.len()).unwrap_or(u32::MAX);
+            classes = classes.saturating_add(len_u32);
         }
         if part.sel.tag.is_some() {
             tags = tags.saturating_add(1);
@@ -120,6 +142,7 @@ pub(crate) fn compute_specificity(selector: &Selector) -> Specificity {
 }
 
 #[inline]
+/// Parse a single selector string into a `Selector`.
 fn parse_single_selector(selector_str: &str) -> Option<Selector> {
     let mut chars = selector_str.trim().chars().peekable();
     let mut parts: Vec<SelectorPart> = Vec::new();
@@ -129,7 +152,7 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
 
     loop {
         // Consume whitespace as a descendant combinator boundary.
-        while chars.peek().is_some_and(|c| c.is_ascii_whitespace()) {
+        while chars.peek().is_some_and(char::is_ascii_whitespace) {
             saw_whitespace = true;
             chars.next();
         }
@@ -189,6 +212,7 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
 }
 
 #[inline]
+/// Parse a selector list separated by commas into a vector of `Selector`s.
 pub(crate) fn parse_selector_list(input: &str) -> Vec<Selector> {
     input.split(',').filter_map(parse_single_selector).collect()
 }

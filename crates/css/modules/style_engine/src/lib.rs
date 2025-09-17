@@ -1,20 +1,73 @@
 //! Minimal CSS style engine facade used by tests and higher layers.
 //!
-//! This module now delegates style computation to the real css_core engine by
+//! This module now delegates style computation to the real `css_core` engine by
 //! replaying the current layout snapshot (tags, structure) and attributes
 //! (id/class/style) into `css_core::CoreEngine`. The resulting computed styles
 //! are mapped into this crate's `ComputedStyle` for layouter and tests.
 
 use anyhow::Result;
 use core::mem::take;
-use core::sync::atomic::Ordering;
-use css::types::Stylesheet as CssStylesheet;
-use css_core::CoreEngine as CoreCssEngine;
-use css_core::types::{
-    Declaration as CoreDecl, Origin as CoreOrigin, Rule as CoreRule, Stylesheet as CoreSheet,
+use css::types::{Origin as CssOrigin, Stylesheet as CssStylesheet};
+use css_core::style_model::{
+    AlignItems as CoreAlignItems, BorderStyle as CoreBorderStyle,
+    ComputedStyle as CoreComputedStyle, Display as CoreDisplay, Overflow as CoreOverflow,
+    Position as CorePosition,
 };
+use css_core::{
+    CoreEngine as CoreCssEngine,
+    types::{
+        Declaration as CoreDecl, Origin as CoreOrigin, Rule as CoreRule, Stylesheet as CoreSheet,
+    },
+};
+use js::DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr};
 use js::{DOMSubscriber, DOMUpdate, NodeKey};
 use std::collections::HashMap;
+
+/// Apply a small subset of attributes (id, class, style) for `child`.
+#[inline]
+fn apply_attrs_for_child(core: &mut CoreCssEngine, child: NodeKey, map: &HashMap<String, String>) {
+    for key_name in ["id", "class", "style"] {
+        if let Some(value) = map.get(key_name) {
+            let _ignored = core.apply_dom_update(SetAttr {
+                node: child,
+                name: key_name.to_owned(),
+                value: value.clone(),
+            });
+        }
+    }
+}
+
+/// Recursively replay a cached layout snapshot into the core engine.
+#[inline]
+fn replay_node(
+    core: &mut CoreCssEngine,
+    tags_by_key: &HashMap<NodeKey, String>,
+    attrs: &HashMap<NodeKey, HashMap<String, String>>,
+    element_children: &HashMap<NodeKey, Vec<NodeKey>>,
+    parent: NodeKey,
+) {
+    let Some(children) = element_children.get(&parent) else {
+        return;
+    };
+    for child in children {
+        let tag = tags_by_key
+            .get(child)
+            .cloned()
+            .unwrap_or_else(|| String::from("div"));
+        let _ignored_ok = core
+            .apply_dom_update(InsertElement {
+                parent,
+                node: *child,
+                tag,
+                pos: 0,
+            })
+            .is_ok();
+        if let Some(map) = attrs.get(child) {
+            apply_attrs_for_child(core, *child, map);
+        }
+        replay_node(core, tags_by_key, attrs, element_children, *child);
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Rgba {
@@ -177,7 +230,7 @@ impl StyleEngine {
     }
 
     #[inline]
-    pub fn force_full_restyle(&mut self) {
+    pub const fn force_full_restyle(&mut self) {
         // Request a full restyle on the next recompute.
         self.style_changed = true;
     }
@@ -187,54 +240,6 @@ impl StyleEngine {
         // Rebuild the core engine from the cached layout snapshot and attributes.
         self.core = CoreCssEngine::new();
 
-        // Replay structure breadth-first from ROOT using cached element_children
-        fn replay_node(
-            core: &mut CoreCssEngine,
-            tags_by_key: &HashMap<NodeKey, String>,
-            attrs: &HashMap<NodeKey, HashMap<String, String>>,
-            element_children: &HashMap<NodeKey, Vec<NodeKey>>,
-            parent: NodeKey,
-        ) {
-            if let Some(children) = element_children.get(&parent) {
-                for &child in children {
-                    let tag = tags_by_key
-                        .get(&child)
-                        .cloned()
-                        .unwrap_or_else(|| String::from("div"));
-                    let _ = core.apply_dom_update(DOMUpdate::InsertElement {
-                        parent,
-                        node: child,
-                        tag,
-                        pos: 0,
-                    });
-                    if let Some(map) = attrs.get(&child) {
-                        if let Some(id_val) = map.get("id") {
-                            let _ = core.apply_dom_update(DOMUpdate::SetAttr {
-                                node: child,
-                                name: String::from("id"),
-                                value: id_val.clone(),
-                            });
-                        }
-                        if let Some(class_val) = map.get("class") {
-                            let _ = core.apply_dom_update(DOMUpdate::SetAttr {
-                                node: child,
-                                name: String::from("class"),
-                                value: class_val.clone(),
-                            });
-                        }
-                        if let Some(style_val) = map.get("style") {
-                            let _ = core.apply_dom_update(DOMUpdate::SetAttr {
-                                node: child,
-                                name: String::from("style"),
-                                value: style_val.clone(),
-                            });
-                        }
-                    }
-                    // Recurse
-                    replay_node(core, tags_by_key, attrs, element_children, child);
-                }
-            }
-        }
         replay_node(
             &mut self.core,
             &self.tags_by_key,
@@ -242,7 +247,9 @@ impl StyleEngine {
             &self.element_children,
             NodeKey::ROOT,
         );
-        let _ = self.core.apply_dom_update(DOMUpdate::EndOfDocument);
+        if self.core.apply_dom_update(EndOfDocument).is_err() {
+            // Non-fatal in tests; continue recompute path.
+        }
 
         // Replace stylesheet in core
         self.core
@@ -252,8 +259,10 @@ impl StyleEngine {
         let _styles_changed = self.core.recompute_styles();
         let core_snapshot = self.core.computed_snapshot();
         let mut mapped: HashMap<NodeKey, ComputedStyle> = HashMap::new();
-        for (key, cs) in core_snapshot {
-            mapped.insert(key, map_core_to_public(&cs));
+        let mut pairs: Vec<(NodeKey, CoreComputedStyle)> = core_snapshot.into_iter().collect();
+        pairs.sort_by_key(|&(key, _)| key.0);
+        for (key, core_style) in pairs {
+            mapped.insert(key, map_core_to_public(&core_style));
         }
         self.style_changed = true;
         self.changed_nodes = mapped.keys().copied().collect();
@@ -264,7 +273,7 @@ impl StyleEngine {
         self.computed.clone()
     }
     #[inline]
-    pub fn take_and_clear_style_changed(&mut self) -> bool {
+    pub const fn take_and_clear_style_changed(&mut self) -> bool {
         let was_style_changed = self.style_changed;
         self.style_changed = false;
         was_style_changed
@@ -278,7 +287,6 @@ impl StyleEngine {
 impl DOMSubscriber for StyleEngine {
     #[inline]
     fn apply_update(&mut self, update: DOMUpdate) -> Result<()> {
-        use DOMUpdate::*;
         match update {
             InsertElement { node, .. } => {
                 // Ensure an entry exists for this node in case attrs are set before snapshot
@@ -307,26 +315,27 @@ impl DOMSubscriber for StyleEngine {
 
 // ===== Mapping helpers =====
 
+/// Map public `css::types::Stylesheet` to core `CoreSheet`.
 fn map_sheet_to_core(sheet: &CssStylesheet) -> CoreSheet {
     let mut rules_out: Vec<CoreRule> = Vec::new();
-    for r in &sheet.rules {
+    for rule_pub in &sheet.rules {
         let mut decls: Vec<CoreDecl> = Vec::new();
-        for d in &r.declarations {
+        for decl_pub in &rule_pub.declarations {
             decls.push(CoreDecl {
-                name: d.name.clone(),
-                value: d.value.clone(),
-                important: d.important,
+                name: decl_pub.name.clone(),
+                value: decl_pub.value.clone(),
+                important: decl_pub.important,
             });
         }
-        let origin = match r.origin {
-            css::types::Origin::UserAgent => CoreOrigin::UserAgent,
-            css::types::Origin::User => CoreOrigin::User,
-            css::types::Origin::Author => CoreOrigin::Author,
+        let origin = match rule_pub.origin {
+            CssOrigin::UserAgent => CoreOrigin::UserAgent,
+            CssOrigin::User => CoreOrigin::User,
+            CssOrigin::Author => CoreOrigin::Author,
         };
         rules_out.push(CoreRule {
             origin,
-            source_order: r.source_order,
-            prelude: r.prelude.clone(),
+            source_order: rule_pub.source_order,
+            prelude: rule_pub.prelude.clone(),
             declarations: decls,
         });
     }
@@ -336,78 +345,76 @@ fn map_sheet_to_core(sheet: &CssStylesheet) -> CoreSheet {
     }
 }
 
-fn map_core_to_public(cs: &css_core::style_model::ComputedStyle) -> ComputedStyle {
-    // Map fields we serialize in the layout comparer harness
+/// Map a core computed style into the public `ComputedStyle` used by layouter/tests.
+fn map_core_to_public(core_style: &CoreComputedStyle) -> ComputedStyle {
     ComputedStyle {
         color: Rgba {
-            red: cs.color.red,
-            green: cs.color.green,
-            blue: cs.color.blue,
-            alpha: cs.color.alpha,
+            red: core_style.color.red,
+            green: core_style.color.green,
+            blue: core_style.color.blue,
+            alpha: core_style.color.alpha,
         },
         background_color: Rgba {
-            red: cs.background_color.red,
-            green: cs.background_color.green,
-            blue: cs.background_color.blue,
-            alpha: cs.background_color.alpha,
+            red: core_style.background_color.red,
+            green: core_style.background_color.green,
+            blue: core_style.background_color.blue,
+            alpha: core_style.background_color.alpha,
         },
         border_width: Edges {
-            top: cs.border_width.top,
-            right: cs.border_width.right,
-            bottom: cs.border_width.bottom,
-            left: cs.border_width.left,
+            top: core_style.border_width.top,
+            right: core_style.border_width.right,
+            bottom: core_style.border_width.bottom,
+            left: core_style.border_width.left,
         },
-        border_style: match cs.border_style {
-            css_core::style_model::BorderStyle::Solid => BorderStyle::Solid,
-            _ => BorderStyle::None,
+        border_style: match core_style.border_style {
+            CoreBorderStyle::Solid => BorderStyle::Solid,
+            CoreBorderStyle::None => BorderStyle::None,
         },
         border_color: Rgba {
-            red: cs.border_color.red,
-            green: cs.border_color.green,
-            blue: cs.border_color.blue,
-            alpha: cs.border_color.alpha,
+            red: core_style.border_color.red,
+            green: core_style.border_color.green,
+            blue: core_style.border_color.blue,
+            alpha: core_style.border_color.alpha,
         },
-        display: match cs.display {
-            css_core::style_model::Display::Flex => Display::Flex,
-            css_core::style_model::Display::Inline => Display::Inline,
-            css_core::style_model::Display::InlineFlex => Display::InlineFlex,
-            _ => Display::Block,
+        display: match core_style.display {
+            CoreDisplay::Flex => Display::Flex,
+            CoreDisplay::Inline => Display::Inline,
+            CoreDisplay::Block | CoreDisplay::Contents => Display::Block,
         },
         margin: Edges {
-            top: cs.margin.top,
-            right: cs.margin.right,
-            bottom: cs.margin.bottom,
-            left: cs.margin.left,
+            top: core_style.margin.top,
+            right: core_style.margin.right,
+            bottom: core_style.margin.bottom,
+            left: core_style.margin.left,
         },
         padding: Edges {
-            top: cs.padding.top,
-            right: cs.padding.right,
-            bottom: cs.padding.bottom,
-            left: cs.padding.left,
+            top: core_style.padding.top,
+            right: core_style.padding.right,
+            bottom: core_style.padding.bottom,
+            left: core_style.padding.left,
         },
-        flex_basis: match cs.flex_basis {
-            Some(px) => LengthOrAuto::Pixels(px),
-            None => LengthOrAuto::Auto,
+        flex_basis: core_style
+            .flex_basis
+            .map_or(LengthOrAuto::Auto, LengthOrAuto::Pixels),
+        flex_grow: core_style.flex_grow,
+        flex_shrink: core_style.flex_shrink,
+        align_items: match core_style.align_items {
+            CoreAlignItems::Center => AlignItems::Center,
+            CoreAlignItems::FlexStart => AlignItems::FlexStart,
+            CoreAlignItems::FlexEnd => AlignItems::FlexEnd,
+            CoreAlignItems::Stretch => AlignItems::Stretch,
         },
-        flex_grow: cs.flex_grow,
-        flex_shrink: cs.flex_shrink,
-        align_items: match cs.align_items {
-            css_core::style_model::AlignItems::Center => AlignItems::Center,
-            css_core::style_model::AlignItems::FlexStart => AlignItems::FlexStart,
-            css_core::style_model::AlignItems::FlexEnd => AlignItems::FlexEnd,
-            _ => AlignItems::Stretch,
+        font_size: core_style.font_size,
+        overflow: match core_style.overflow {
+            CoreOverflow::Hidden => Overflow::Hidden,
+            CoreOverflow::Visible => Overflow::Visible,
         },
-        font_size: cs.font_size,
-        overflow: match cs.overflow {
-            css_core::style_model::Overflow::Hidden => Overflow::Hidden,
-            _ => Overflow::Visible,
+        position: match core_style.position {
+            CorePosition::Static => Position::Static,
+            CorePosition::Relative => Position::Relative,
+            CorePosition::Absolute => Position::Absolute,
+            CorePosition::Fixed => Position::Fixed,
         },
-        position: match cs.position {
-            css_core::style_model::Position::Relative => Position::Relative,
-            css_core::style_model::Position::Absolute => Position::Absolute,
-            css_core::style_model::Position::Fixed => Position::Fixed,
-            _ => Position::Static,
-        },
-        z_index: cs.z_index,
+        z_index: core_style.z_index,
     }
 }

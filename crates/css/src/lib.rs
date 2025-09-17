@@ -1,5 +1,6 @@
 //! CSS orchestrator and mirror types exposed to other crates.
 use anyhow::Result;
+use js::DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr};
 use js::{DOMSubscriber, DOMUpdate};
 use std::collections::HashMap;
 use url::Url;
@@ -117,7 +118,6 @@ impl CSSMirror {
 impl DOMSubscriber for CSSMirror {
     #[inline]
     fn apply_update(&mut self, update: DOMUpdate) -> Result<()> {
-        use DOMUpdate::*;
         match update {
             InsertElement {
                 parent: _parent,
@@ -149,11 +149,12 @@ impl DOMSubscriber for CSSMirror {
             }
             SetAttr { node, name, value } => {
                 // If this is a test-injected reset style element, mark it to be skipped.
-                if name.eq_ignore_ascii_case("data-valor-test-reset") && value == "1" {
-                    if self.style_text_by_node.contains_key(&node) {
-                        self.style_skip_nodes.insert(node);
-                        self.rebuild_styles_from_style_nodes();
-                    }
+                if name.eq_ignore_ascii_case("data-valor-test-reset")
+                    && value == "1"
+                    && self.style_text_by_node.contains_key(&node)
+                {
+                    self.style_skip_nodes.insert(node);
+                    self.rebuild_styles_from_style_nodes();
                 }
             }
         }

@@ -33,6 +33,19 @@ pub struct StyleComputer {
     parent_by_node: HashMap<NodeKey, NodeKey>,
 }
 
+/// Return true if `node` has the given CSS class in `classes_by_node`.
+#[inline]
+fn node_has_class(
+    classes_by_node: &HashMap<NodeKey, Vec<String>>,
+    node: NodeKey,
+    class_name: &str,
+) -> bool {
+    classes_by_node.get(&node).is_some_and(|list| {
+        list.iter()
+            .any(|value| value.eq_ignore_ascii_case(class_name))
+    })
+}
+
 /// Insert a cascaded declaration into the property map if it wins over any existing one.
 #[inline]
 fn cascade_put(props: &mut HashMap<String, CascadedDecl>, name: &str, entry: CascadedDecl) {
@@ -47,42 +60,42 @@ fn cascade_put(props: &mut HashMap<String, CascadedDecl>, name: &str, entry: Cas
 /// Parse 4 edge values with longhand names like "{prefix}-top" in pixels.
 fn parse_edges(prefix: &str, decls: &HashMap<String, String>) -> style_model::Edges {
     // Start from shorthand if present
-    let mut edges = if let Some(shorthand) = decls.get(prefix) {
-        let parts: Vec<&str> = shorthand
-            .split(|character: char| character.is_ascii_whitespace())
-            .filter(|segment| !segment.is_empty())
-            .collect();
-        let numbers: Vec<f32> = parts.into_iter().filter_map(parse_px).collect();
-        match numbers.as_slice() {
-            [one] => style_model::Edges {
-                top: *one,
-                right: *one,
-                bottom: *one,
-                left: *one,
-            },
-            [top, right] => style_model::Edges {
-                top: *top,
-                right: *right,
-                bottom: *top,
-                left: *right,
-            },
-            [top, right, bottom] => style_model::Edges {
-                top: *top,
-                right: *right,
-                bottom: *bottom,
-                left: *right,
-            },
-            [top, right, bottom, left] => style_model::Edges {
-                top: *top,
-                right: *right,
-                bottom: *bottom,
-                left: *left,
-            },
-            _ => style_model::Edges::default(),
-        }
-    } else {
-        style_model::Edges::default()
-    };
+    let mut edges = decls
+        .get(prefix)
+        .map_or_else(style_model::Edges::default, |shorthand| {
+            let numbers: Vec<f32> = shorthand
+                .split(|character: char| character.is_ascii_whitespace())
+                .filter(|segment| !segment.is_empty())
+                .filter_map(parse_px)
+                .collect();
+            match *numbers.as_slice() {
+                [one] => style_model::Edges {
+                    top: one,
+                    right: one,
+                    bottom: one,
+                    left: one,
+                },
+                [top, right] => style_model::Edges {
+                    top,
+                    right,
+                    bottom: top,
+                    left: right,
+                },
+                [top, right, bottom] => style_model::Edges {
+                    top,
+                    right,
+                    bottom,
+                    left: right,
+                },
+                [top, right, bottom, left] => style_model::Edges {
+                    top,
+                    right,
+                    bottom,
+                    left,
+                },
+                _ => style_model::Edges::default(),
+            }
+        });
     // Longhands override shorthand sides if present
     if let Some(value) = decls.get(&format!("{prefix}-top"))
         && let Some(pixels) = parse_px(value)
@@ -347,6 +360,11 @@ fn wins_over(candidate: &CascadedDecl, previous: &CascadedDecl) -> bool {
     if candidate.source_order != previous.source_order {
         return candidate.source_order > previous.source_order;
     }
+    // Otherwise, keep previous deterministically
+    false
+}
+
+/// Check if `node` matches a simple selector (tag/id/classes) using `style_comp` state.
 #[inline]
 fn matches_simple_selector(
     node: NodeKey,
@@ -366,21 +384,11 @@ fn matches_simple_selector(
         }
     }
     for class in sel.classes() {
-        if !node_has_class(&style_comp.classes_by_node, node, class) { return false; }
+        if !node_has_class(&style_comp.classes_by_node, node, class) {
+            return false;
+        }
     }
     true
-}
-
-/// Return true if the given node has the provided class in `classes_by_node`.
-fn node_has_class(
-    classes_by_node: &HashMap<NodeKey, Vec<String>>,
-    node: NodeKey,
-    class: &str,
-) -> bool {
-    classes_by_node.get(&node).is_some_and(|list| {
-        list.iter()
-            .any(|existing| existing.eq_ignore_ascii_case(class))
-    })
 }
 
 /// Check whether a node matches the given parsed selector using ancestor traversal.
@@ -397,7 +405,7 @@ fn matches_selector(
     let mut current_node = start_node;
     loop {
         let Some(index) = reversed.next() else {
-            return false;
+            return true;
         };
         let Some(part) = selector.part(index) else {
             return false;
@@ -408,12 +416,16 @@ fn matches_selector(
         if reversed.peek().is_none() {
             return true;
         }
-        let Some(prev_index) = reversed.peek().copied() else { return false };
-        let Some(prev_part) = selector.part(prev_index) else { return false };
-        match prev_part
+        let Some(prev_index) = reversed.peek().copied() else {
+            return false;
+        };
+        let Some(prev_part) = selector.part(prev_index) else {
+            return false;
+        };
+        let combinator = prev_part
             .combinator_to_next()
-            .unwrap_or(selectors::Combinator::Descendant)
-        {
+            .unwrap_or(selectors::Combinator::Descendant);
+        match combinator {
             selectors::Combinator::Descendant => {
                 let mut climb = current_node;
                 let mut found = false;
@@ -595,8 +607,8 @@ impl StyleComputer {
 }
 
 // -------------- Rule application helper --------------
-#[inline]
 /// Apply a single rule's winning declarations (if any) to the `props` map for `node`.
+#[inline]
 fn apply_rule_to_props(
     rule: &types::Rule,
     node: NodeKey,
