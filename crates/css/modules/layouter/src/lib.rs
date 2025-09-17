@@ -12,7 +12,26 @@ use core::sync::atomic::{Ordering, compiler_fence};
 use css::types as css_types;
 use js::{DOMSubscriber, DOMUpdate, NodeKey};
 use std::collections::HashMap;
-use style_engine::ComputedStyle;
+use style_engine::{BoxSizing, ComputedStyle, Position};
+
+/// Metrics for the container box edges and available content width.
+#[derive(Clone, Copy, Debug)]
+struct ContainerMetrics {
+    /// Content box width available to children inside the container.
+    container_width: i32,
+    /// Container padding-left in pixels (clamped to >= 0).
+    padding_left: i32,
+    /// Container padding-top in pixels (clamped to >= 0).
+    padding_top: i32,
+    /// Container border-left width in pixels (clamped to >= 0).
+    border_left: i32,
+    /// Container border-top width in pixels (clamped to >= 0).
+    border_top: i32,
+    /// Container margin-left in pixels (may be negative).
+    margin_left: i32,
+    /// Container margin-top in pixels (may be negative).
+    margin_top: i32,
+}
 
 /// A rectangle in device-independent pixels.
 ///
@@ -93,6 +112,20 @@ pub struct Layouter {
 
 impl Layouter {
     #[inline]
+    /// Collapse two vertical margins `margin_a` and `margin_b` following CSS 2.2 §8.3 rules for pairs:
+    /// - If both are positive, result is max(a, b).
+    /// - If both are negative, result is min(a, b) (more negative).
+    /// - If mixed signs, result is a + b (the algebraic sum of the most positive and most negative values).
+    fn collapse_margins_pair(margin_a: i32, margin_b: i32) -> i32 {
+        if margin_a >= 0i32 && margin_b >= 0i32 {
+            return margin_a.max(margin_b);
+        }
+        if margin_a <= 0i32 && margin_b <= 0i32 {
+            return margin_a.min(margin_b);
+        }
+        margin_a.saturating_add(margin_b)
+    }
+    #[inline]
     /// Find the first block-level node under `start` using a depth-first search.
     ///
     /// Spec: CSS 2.2 §9.4.1 — we identify element boxes that participate in
@@ -162,89 +195,78 @@ impl Layouter {
     pub fn set_stylesheet(&mut self, stylesheet: css_types::Stylesheet) {
         self.stylesheet = stylesheet;
     }
+
     #[inline]
     /// Replaces the current computed-style map.
     pub fn set_computed_styles(&mut self, map: HashMap<NodeKey, ComputedStyle>) {
         self.computed_styles = map;
     }
+
     #[inline]
-    /// Returns whether there are material changes requiring a layout.
-    pub const fn has_material_dirty(&self) -> bool {
-        false
-    }
-    #[inline]
-    /// Marks that a layout tick occurred without any meaningful work.
-    pub fn mark_noop_layout_tick(&mut self) {
+    /// Computes a naive block layout and returns the number of nodes affected.
+    pub fn compute_layout(&mut self) -> usize {
+        // Reset perf counters at the top of the pass
+        self.perf_layout_time_last_ms = 0;
+        self.perf_updates_applied = 0;
         self.perf_nodes_reflowed_last = 0;
         self.perf_dirty_subtrees_last = 0;
         self.perf_layout_time_last_ms = 0;
         // ensure not const-eligible
         compiler_fence(Ordering::SeqCst);
+        self.layout_root()
     }
+
     #[inline]
-    /// Computes a naive block layout and returns the number of nodes affected.
-    ///
-    /// Spec: CSS 2.2 §9.4.1 (Block formatting contexts) — This implementation
-    /// stacks block-level boxes vertically in DOM order, applying margins and
-    /// padding. It does not implement margin collapsing, over-constrained width
-    /// resolution, floats, or inline layout.
-    pub fn compute_layout(&mut self) -> usize {
-        // Very small, deterministic block stacker used by tests. Geometry here
-        // is not authoritative for Chromium comparison; the test harness reads
-        // geometry from the page's internal layouter. We still compute simple
-        // rects for diagnostics and future expansion.
-
-        // Start a new pass
-        self.perf_nodes_reflowed_last = 0;
-        self.perf_dirty_subtrees_last = 0;
-        self.perf_layout_time_last_ms = 0;
-
-        // Fixed initial containing block width matching test window size.
-        // Height is not used; content height is simplified to 0.
-        let icb_width: i32 = INITIAL_CONTAINING_BLOCK_WIDTH;
-
-        // Choose layout root similar to the Chromium harness: first block under ROOT,
-        // and if it's <html>, prefer its <body> child.
-        let Some(mut root) = self.find_first_block_under(NodeKey::ROOT) else {
-            // No elements to layout
-            self.rects.clear();
-            compiler_fence(Ordering::SeqCst);
-            return 0;
-        };
-
-        let root_is_html = self
-            .tag_of(root)
-            .is_some_and(|tag| tag.eq_ignore_ascii_case("html"));
-        if root_is_html
-            && let Some(child_list) = self.children.get(&root)
-            && let Some(found_body) = child_list.iter().copied().find(|child_key| {
-                self.tag_of(*child_key)
-                    .is_some_and(|tname| tname.eq_ignore_ascii_case("body"))
-            })
-        {
-            root = found_body;
-        }
-
-        // Establish container edges for the chosen root (treat as containing block)
+    /// Compute container metrics for `root` given an initial containing block width.
+    fn compute_container_metrics(&self, root: NodeKey, icb_width: i32) -> ContainerMetrics {
         let root_style = self
             .computed_styles
             .get(&root)
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
-        let container_padding_left = root_style.padding.left.max(0.0) as i32;
-        let container_padding_right = root_style.padding.right.max(0.0) as i32;
-        let container_border_left = root_style.border_width.left.max(0.0) as i32;
-        let container_border_right = root_style.border_width.right.max(0.0) as i32;
-        let container_margin_left = root_style.margin.left.max(0.0) as i32;
-        let container_margin_right = root_style.margin.right.max(0.0) as i32;
 
-        let horizontal_non_content = container_padding_left
-            .saturating_add(container_padding_right)
-            .saturating_add(container_border_left)
-            .saturating_add(container_border_right)
-            .saturating_add(container_margin_left)
-            .saturating_add(container_margin_right);
-        let container_width = icb_width.saturating_sub(horizontal_non_content).max(0);
+        let padding_left = root_style.padding.left.max(0.0f32) as i32;
+        let padding_right = root_style.padding.right.max(0.0f32) as i32;
+        let padding_top = root_style.padding.top.max(0.0f32) as i32;
+        let border_left = root_style.border_width.left.max(0.0f32) as i32;
+        let border_right = root_style.border_width.right.max(0.0f32) as i32;
+        let border_top = root_style.border_width.top.max(0.0f32) as i32;
+        let margin_left = root_style.margin.left as i32;
+        let margin_right = root_style.margin.right as i32;
+        let margin_top = root_style.margin.top as i32;
+
+        let horizontal_non_content = padding_left
+            .saturating_add(padding_right)
+            .saturating_add(border_left)
+            .saturating_add(border_right)
+            .saturating_add(margin_left)
+            .saturating_add(margin_right);
+        let container_width = icb_width.saturating_sub(horizontal_non_content).max(0i32);
+
+        ContainerMetrics {
+            container_width,
+            padding_left,
+            padding_top,
+            border_left,
+            border_top,
+            margin_left,
+            margin_top,
+        }
+    }
+
+    /// Lays out the root node and its children (partial CSS 2.2 support: width/min/max, box-sizing, simple margin collapsing, relative offsets).
+    fn layout_root(&mut self) -> usize {
+        // Fixed initial containing block width matching test window size.
+        // Height is not used; content height is simplified to 0.
+        let icb_width: i32 = INITIAL_CONTAINING_BLOCK_WIDTH;
+
+        let Some(root) = self.choose_layout_root() else {
+            self.rects.clear();
+            compiler_fence(Ordering::SeqCst);
+            return 0;
+        };
+
+        let metrics = Self::compute_container_metrics(self, root, icb_width);
 
         // Emit a rect for the root itself (content box width; height is unknown -> 0)
         self.rects.insert(
@@ -252,18 +274,39 @@ impl Layouter {
             LayoutRect {
                 x: 0,
                 y: 0,
-                width: container_width,
+                width: metrics.container_width,
                 height: 0,
             },
         );
 
-        // Stack direct element children of the chosen root vertically with simple sibling margin collapsing.
-        let mut y_cursor: i32 = 0;
-        let mut previous_bottom_margin: i32 = 0;
-        let mut reflowed_count = 0usize;
+        let (reflowed_count, content_height) = self.layout_block_children(root, &metrics);
 
+        // Update root rect height with the computed content height
+        if let Some(root_rect) = self.rects.get_mut(&root) {
+            root_rect.height = content_height.max(0i32);
+        }
+
+        self.perf_nodes_reflowed_last = reflowed_count as u64;
+        // Ensure not const-eligible and signal that something changed
+        if reflowed_count > 0 {
+            self.dirty_rects.push(LayoutRect {
+                x: 0,
+                y: 0,
+                width: metrics.container_width,
+                height: content_height.max(0i32),
+            });
+        }
+        compiler_fence(Ordering::SeqCst);
+        reflowed_count
+    }
+
+    /// Layout direct block children under `root` using the provided container metrics.
+    fn layout_block_children(&mut self, root: NodeKey, metrics: &ContainerMetrics) -> (usize, i32) {
+        let mut reflowed_count = 0usize;
+        let mut y_cursor: i32 = 0;
         if let Some(child_list) = self.children.get(&root).cloned() {
-            for child_key in child_list {
+            let mut previous_bottom_margin: i32 = 0;
+            for (index, child_key) in child_list.into_iter().enumerate() {
                 if !matches!(
                     self.nodes.get(&child_key),
                     Some(LayoutNodeKind::Block { .. })
@@ -276,58 +319,153 @@ impl Layouter {
                     .cloned()
                     .unwrap_or_else(ComputedStyle::default);
 
-                let margin_left = style.margin.left.max(0.0) as i32;
-                let margin_right = style.margin.right.max(0.0) as i32;
-                let margin_top = style.margin.top.max(0.0) as i32;
-                let margin_bottom = style.margin.bottom.max(0.0) as i32;
+                let margin_left = style.margin.left as i32;
+                let margin_right = style.margin.right as i32;
+                let margin_top = style.margin.top as i32;
+                let margin_bottom = style.margin.bottom as i32;
 
-                // Simple sibling margin collapsing: collapse previous bottom and current top using max()
-                let collapsed_vertical_margin = previous_bottom_margin.max(margin_top);
+                let collapsed_vertical_margin =
+                    if index == 0 && metrics.padding_top == 0i32 && metrics.border_top == 0i32 {
+                        Self::collapse_margins_pair(metrics.margin_top, margin_top)
+                    } else {
+                        Self::collapse_margins_pair(previous_bottom_margin, margin_top)
+                    };
 
-                // Position: x at content start + margin-left; y at current cursor + collapsed margin
-                let x_position = container_margin_left
-                    .saturating_add(container_border_left)
-                    .saturating_add(container_padding_left)
-                    .saturating_add(margin_left);
-                let y_position = y_cursor.saturating_add(collapsed_vertical_margin);
+                let x_position = metrics
+                    .margin_left
+                    .saturating_add(metrics.border_left)
+                    .saturating_add(metrics.padding_left)
+                    .saturating_add(margin_left.max(0i32));
+                let y_position = y_cursor.saturating_add(collapsed_vertical_margin.max(0i32));
 
-                // Available width inside container content minus horizontal margins
-                let horizontal_margins = margin_left.saturating_add(margin_right);
-                let width_available = container_width.saturating_sub(horizontal_margins).max(0);
-                let computed_width = width_available;
+                let horizontal_margins =
+                    margin_left.max(0i32).saturating_add(margin_right.max(0i32));
+                let mut used_border_box_width = metrics
+                    .container_width
+                    .saturating_sub(horizontal_margins)
+                    .max(0i32);
+                used_border_box_width = Self::resolve_used_border_box_width(
+                    &style,
+                    metrics.container_width,
+                    horizontal_margins,
+                    used_border_box_width,
+                );
 
-                // Height remains unknown without content size: 0 for MVP
-                let computed_height = 0i32;
+                let (x_adjust, y_adjust) = Self::apply_relative_offsets(&style);
 
+                let computed_height = Self::resolve_used_border_box_height(&style);
                 self.rects.insert(
                     child_key,
                     LayoutRect {
-                        x: x_position,
-                        y: y_position,
-                        width: computed_width,
+                        x: x_position.saturating_add(x_adjust),
+                        y: y_position.saturating_add(y_adjust),
+                        width: used_border_box_width,
                         height: computed_height,
                     },
                 );
                 reflowed_count = reflowed_count.saturating_add(1);
-
-                // Advance cursor: current y plus height plus bottom margin
                 y_cursor = y_position.saturating_add(computed_height);
                 previous_bottom_margin = margin_bottom;
             }
         }
+        (reflowed_count, y_cursor)
+    }
 
-        self.perf_nodes_reflowed_last = reflowed_count as u64;
-        // Ensure not const-eligible and signal that something changed
-        if reflowed_count > 0 {
-            self.dirty_rects.push(LayoutRect {
-                x: 0,
-                y: 0,
-                width: container_width,
-                height: y_cursor.max(0i32),
-            });
+    #[inline]
+    /// Convert a specified width plus box-sizing into a used border-box width, respecting min/max and container availability.
+    fn resolve_used_border_box_width(
+        style: &ComputedStyle,
+        container_width: i32,
+        horizontal_margins: i32,
+        current_width: i32,
+    ) -> i32 {
+        let mut width_out = current_width;
+        if let Some(specified_w) = style.width {
+            let mut content_w = specified_w as i32;
+            if let Some(min_w) = style.min_width {
+                content_w = content_w.max(min_w as i32);
+            }
+            if let Some(max_w) = style.max_width {
+                content_w = content_w.min(max_w as i32);
+            }
+            let horizontal_padding = (style.padding.left + style.padding.right).max(0.0f32) as i32;
+            let horizontal_borders =
+                (style.border_width.left + style.border_width.right).max(0.0f32) as i32;
+            width_out = match style.box_sizing {
+                BoxSizing::BorderBox => content_w,
+                BoxSizing::ContentBox => content_w
+                    .saturating_add(horizontal_padding)
+                    .saturating_add(horizontal_borders),
+            };
+            width_out = width_out.min(container_width.saturating_sub(horizontal_margins).max(0i32));
         }
-        compiler_fence(Ordering::SeqCst);
-        reflowed_count
+        width_out
+    }
+
+    #[inline]
+    /// Convert a specified height plus box-sizing into a used border-box height, respecting min/max.
+    fn resolve_used_border_box_height(style: &ComputedStyle) -> i32 {
+        if let Some(specified_h) = style.height {
+            let mut content_h = specified_h as i32;
+            if let Some(min_h) = style.min_height {
+                content_h = content_h.max(min_h as i32);
+            }
+            if let Some(max_h) = style.max_height {
+                content_h = content_h.min(max_h as i32);
+            }
+            let vertical_padding = (style.padding.top + style.padding.bottom).max(0.0f32) as i32;
+            let vertical_borders =
+                (style.border_width.top + style.border_width.bottom).max(0.0f32) as i32;
+            return match style.box_sizing {
+                BoxSizing::BorderBox => content_h,
+                BoxSizing::ContentBox => content_h
+                    .saturating_add(vertical_padding)
+                    .saturating_add(vertical_borders),
+            };
+        }
+        0i32
+    }
+
+    #[inline]
+    /// Compute relative x/y adjustments from `top/left/right/bottom` when `position: relative`.
+    const fn apply_relative_offsets(style: &ComputedStyle) -> (i32, i32) {
+        if !matches!(style.position, Position::Relative) {
+            return (0i32, 0i32);
+        }
+        let mut x_adjust = 0i32;
+        let mut y_adjust = 0i32;
+        if let Some(left_off) = style.left {
+            x_adjust = x_adjust.saturating_add(left_off as i32);
+        }
+        if let Some(right_off) = style.right {
+            x_adjust = x_adjust.saturating_sub(right_off as i32);
+        }
+        if let Some(top_off) = style.top {
+            y_adjust = y_adjust.saturating_add(top_off as i32);
+        }
+        if let Some(bottom_off) = style.bottom {
+            y_adjust = y_adjust.saturating_sub(bottom_off as i32);
+        }
+        (x_adjust, y_adjust)
+    }
+
+    #[inline]
+    /// Choose the layout root: first block under `#document`; if it is `html`, prefer its `body` child.
+    fn choose_layout_root(&self) -> Option<NodeKey> {
+        let mut root = self.find_first_block_under(NodeKey::ROOT)?;
+        let root_is_html = self
+            .tag_of(root)
+            .is_some_and(|tag| tag.eq_ignore_ascii_case("html"));
+        if root_is_html
+            && let Some(child_list) = self.children.get(&root)
+            && let Some(found_body) = child_list.iter().copied().find(|child_key| {
+                self.tag_of(*child_key)
+                    .is_some_and(|tname| tname.eq_ignore_ascii_case("body"))
+            })
+        {
+            root = found_body;
+        }
+        Some(root)
     }
     #[inline]
     /// Returns a copy of the current layout geometry per node.
@@ -402,6 +540,22 @@ impl Layouter {
     pub const fn computed_styles(&self) -> &HashMap<NodeKey, ComputedStyle> {
         &self.computed_styles
     }
+
+    #[inline]
+    /// Returns true if there are any dirty rectangles pending since the last layout tick.
+    pub const fn has_material_dirty(&self) -> bool {
+        !self.dirty_rects.is_empty()
+    }
+
+    #[inline]
+    /// Record a noop layout tick for callers that advance time without changes.
+    pub fn mark_noop_layout_tick(&mut self) {
+        // Keep counters consistent with a noop frame and provide a fence to
+        // discourage accidental constant-folding in release.
+        self.perf_nodes_reflowed_last = 0;
+        self.perf_dirty_subtrees_last = 0;
+        compiler_fence(Ordering::SeqCst);
+    }
 }
 
 impl DOMSubscriber for Layouter {
@@ -414,7 +568,10 @@ impl DOMSubscriber for Layouter {
                 parent, node, tag, ..
             } => {
                 self.nodes.insert(node, LayoutNodeKind::Block { tag });
-                self.children.entry(parent).or_default().push(node);
+                let entry = self.children.entry(parent).or_default();
+                if !entry.contains(&node) {
+                    entry.push(node);
+                }
             }
             DOMUpdate::RemoveNode { node } => {
                 self.nodes.remove(&node);

@@ -9,9 +9,9 @@ use anyhow::Result;
 use core::mem::take;
 use css::types::{Origin as CssOrigin, Stylesheet as CssStylesheet};
 use css_core::style_model::{
-    AlignItems as CoreAlignItems, BorderStyle as CoreBorderStyle,
-    ComputedStyle as CoreComputedStyle, Display as CoreDisplay, Overflow as CoreOverflow,
-    Position as CorePosition,
+    AlignItems as CoreAlignItems, BorderStyle as CoreBorderStyle, BorderWidths as CoreBorderWidths,
+    ComputedStyle as CoreComputedStyle, Display as CoreDisplay, Edges as CoreEdges,
+    Overflow as CoreOverflow, Position as CorePosition, Rgba as CoreRgba,
 };
 use css_core::{
     CoreEngine as CoreCssEngine,
@@ -309,6 +309,30 @@ pub enum Position {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+pub enum BoxSizing {
+    #[default]
+    ContentBox,
+    BorderBox,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Float {
+    #[default]
+    None,
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Clear {
+    #[default]
+    None,
+    Left,
+    Right,
+    Both,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
 pub enum AlignItems {
     #[default]
     Stretch,
@@ -355,6 +379,22 @@ pub struct ComputedStyle {
     pub overflow: Overflow,
     pub position: Position,
     pub z_index: Option<i32>,
+    // Box/dimensions
+    pub box_sizing: BoxSizing,
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+    pub min_width: Option<f32>,
+    pub min_height: Option<f32>,
+    pub max_width: Option<f32>,
+    pub max_height: Option<f32>,
+    // Offsets (for positioned layout)
+    pub top: Option<f32>,
+    pub left: Option<f32>,
+    pub right: Option<f32>,
+    pub bottom: Option<f32>,
+    // Floats
+    pub float: Float,
+    pub clear: Clear,
 }
 
 #[derive(Default)]
@@ -548,76 +588,116 @@ fn map_sheet_to_core(sheet: &CssStylesheet) -> CoreSheet {
     }
 }
 
+/// Map a core RGBA color to the public RGBA struct.
+/// Maps a core RGBA color to a public RGBA color.
+const fn map_rgba(core_rgba: CoreRgba) -> Rgba {
+    Rgba {
+        red: core_rgba.red,
+        green: core_rgba.green,
+        blue: core_rgba.blue,
+        alpha: core_rgba.alpha,
+    }
+}
+
+/// Map core `Edges` to public `Edges` for margin/padding.
+const fn map_edges(core_edges: CoreEdges) -> Edges {
+    Edges {
+        top: core_edges.top,
+        right: core_edges.right,
+        bottom: core_edges.bottom,
+        left: core_edges.left,
+    }
+}
+
+/// Map core `BorderWidths` to public `Edges` for border widths.
+const fn map_border_widths_to_edges(core_border_widths: CoreBorderWidths) -> Edges {
+    Edges {
+        top: core_border_widths.top,
+        right: core_border_widths.right,
+        bottom: core_border_widths.bottom,
+        left: core_border_widths.left,
+    }
+}
+
+/// Map core border style enum to public border style.
+const fn map_border_style(border_style: CoreBorderStyle) -> BorderStyle {
+    match border_style {
+        CoreBorderStyle::Solid => BorderStyle::Solid,
+        CoreBorderStyle::None => BorderStyle::None,
+    }
+}
+
+/// Map core display enum to public display for layout consumers.
+const fn map_display(display: CoreDisplay) -> Display {
+    match display {
+        CoreDisplay::Flex => Display::Flex,
+        CoreDisplay::Inline => Display::Inline,
+        CoreDisplay::Block | CoreDisplay::Contents => Display::Block,
+    }
+}
+
+/// Map core align-items enum to public align-items.
+const fn map_align_items(align_items: CoreAlignItems) -> AlignItems {
+    match align_items {
+        CoreAlignItems::Center => AlignItems::Center,
+        CoreAlignItems::FlexStart => AlignItems::FlexStart,
+        CoreAlignItems::FlexEnd => AlignItems::FlexEnd,
+        CoreAlignItems::Stretch => AlignItems::Stretch,
+    }
+}
+
+/// Map core overflow enum to public overflow.
+const fn map_overflow(overflow: CoreOverflow) -> Overflow {
+    match overflow {
+        CoreOverflow::Hidden => Overflow::Hidden,
+        CoreOverflow::Visible => Overflow::Visible,
+    }
+}
+
+/// Map core positioning enum to public positioning.
+const fn map_position(position: CorePosition) -> Position {
+    match position {
+        CorePosition::Static => Position::Static,
+        CorePosition::Relative => Position::Relative,
+        CorePosition::Absolute => Position::Absolute,
+        CorePosition::Fixed => Position::Fixed,
+    }
+}
+
 /// Map a core computed style into the public `ComputedStyle` used by layouter/tests.
 fn map_core_to_public(core_style: &CoreComputedStyle) -> ComputedStyle {
     ComputedStyle {
-        color: Rgba {
-            red: core_style.color.red,
-            green: core_style.color.green,
-            blue: core_style.color.blue,
-            alpha: core_style.color.alpha,
-        },
-        background_color: Rgba {
-            red: core_style.background_color.red,
-            green: core_style.background_color.green,
-            blue: core_style.background_color.blue,
-            alpha: core_style.background_color.alpha,
-        },
-        border_width: Edges {
-            top: core_style.border_width.top,
-            right: core_style.border_width.right,
-            bottom: core_style.border_width.bottom,
-            left: core_style.border_width.left,
-        },
-        border_style: match core_style.border_style {
-            CoreBorderStyle::Solid => BorderStyle::Solid,
-            CoreBorderStyle::None => BorderStyle::None,
-        },
-        border_color: Rgba {
-            red: core_style.border_color.red,
-            green: core_style.border_color.green,
-            blue: core_style.border_color.blue,
-            alpha: core_style.border_color.alpha,
-        },
-        display: match core_style.display {
-            CoreDisplay::Flex => Display::Flex,
-            CoreDisplay::Inline => Display::Inline,
-            CoreDisplay::Block | CoreDisplay::Contents => Display::Block,
-        },
-        margin: Edges {
-            top: core_style.margin.top,
-            right: core_style.margin.right,
-            bottom: core_style.margin.bottom,
-            left: core_style.margin.left,
-        },
-        padding: Edges {
-            top: core_style.padding.top,
-            right: core_style.padding.right,
-            bottom: core_style.padding.bottom,
-            left: core_style.padding.left,
-        },
+        color: map_rgba(core_style.color),
+        background_color: map_rgba(core_style.background_color),
+        border_width: map_border_widths_to_edges(core_style.border_width),
+        border_style: map_border_style(core_style.border_style),
+        border_color: map_rgba(core_style.border_color),
+        display: map_display(core_style.display),
+        margin: map_edges(core_style.margin),
+        padding: map_edges(core_style.padding),
         flex_basis: core_style
             .flex_basis
             .map_or(LengthOrAuto::Auto, LengthOrAuto::Pixels),
         flex_grow: core_style.flex_grow,
         flex_shrink: core_style.flex_shrink,
-        align_items: match core_style.align_items {
-            CoreAlignItems::Center => AlignItems::Center,
-            CoreAlignItems::FlexStart => AlignItems::FlexStart,
-            CoreAlignItems::FlexEnd => AlignItems::FlexEnd,
-            CoreAlignItems::Stretch => AlignItems::Stretch,
-        },
+        align_items: map_align_items(core_style.align_items),
         font_size: core_style.font_size,
-        overflow: match core_style.overflow {
-            CoreOverflow::Hidden => Overflow::Hidden,
-            CoreOverflow::Visible => Overflow::Visible,
-        },
-        position: match core_style.position {
-            CorePosition::Static => Position::Static,
-            CorePosition::Relative => Position::Relative,
-            CorePosition::Absolute => Position::Absolute,
-            CorePosition::Fixed => Position::Fixed,
-        },
+        overflow: map_overflow(core_style.overflow),
+        position: map_position(core_style.position),
         z_index: core_style.z_index,
+        // Dimensions and extras: default until core exposes these; keep stable API
+        box_sizing: BoxSizing::ContentBox,
+        width: None,
+        height: None,
+        min_width: None,
+        min_height: None,
+        max_width: None,
+        max_height: None,
+        top: None,
+        left: None,
+        right: None,
+        bottom: None,
+        float: Float::None,
+        clear: Clear::None,
     }
 }

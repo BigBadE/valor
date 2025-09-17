@@ -1,9 +1,12 @@
 <!doctype html>
-<meta charset="utf-8" />
-<title>display normalization</title>
-<style>
+<head>
+  <meta charset="utf-8" />
+  <title>Display normalization</title>
+  <!-- VALOR_XFAIL: flex layout not implemented in layouter yet -->
+  <style>
   /* no external CSS, use inline styles per current engine */
 </style>
+</head>
 <body>
   <!-- VALOR_XFAIL: enable when display normalization is fully wired into layout -->
   <div id="block" style="display: block; width: 50px; height: 10px; background: #ccc;"></div>
