@@ -33,6 +33,72 @@ pub struct StyleComputer {
     parent_by_node: HashMap<NodeKey, NodeKey>,
 }
 
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::missing_panics_doc,
+        reason = "simple unit tests may assert/panic"
+    )]
+    #![allow(clippy::min_ident_chars, reason = "short local ids in tests are fine")]
+    #![allow(
+        clippy::indexing_slicing,
+        reason = "kept simple for readability in tests"
+    )]
+    #![allow(
+        clippy::expect_used,
+        reason = "explicit expect improves test failure messages"
+    )]
+    #![allow(clippy::get_first, reason = "test clarity over micro-idioms")]
+    use super::*;
+
+    #[test]
+    fn selector_match_row_descendant_div() {
+        let section = NodeKey(1);
+        let child = NodeKey(2);
+
+        let mut style_comp = StyleComputer::new();
+        style_comp.tag_by_node.insert(section, "section".to_owned());
+        style_comp.tag_by_node.insert(child, "div".to_owned());
+        style_comp.parent_by_node.insert(child, section);
+        style_comp
+            .classes_by_node
+            .insert(section, vec!["row".to_owned()]);
+
+        let list = selectors::parse_selector_list(".row div");
+        assert_eq!(list.len(), 1);
+        let sel = list.first().expect("selector parsed");
+        assert!(super::matches_selector(child, sel, &style_comp));
+    }
+
+    #[test]
+    fn selector_match_wrapper_child_desc() {
+        let section = NodeKey(10);
+        let parent = NodeKey(11);
+        let child = NodeKey(12);
+
+        let mut style_comp = StyleComputer::new();
+        style_comp.tag_by_node.insert(section, "section".to_owned());
+        style_comp.tag_by_node.insert(parent, "div".to_owned());
+        style_comp.tag_by_node.insert(child, "div".to_owned());
+        style_comp.parent_by_node.insert(parent, section);
+        style_comp.parent_by_node.insert(child, parent);
+        style_comp
+            .classes_by_node
+            .insert(section, vec!["wrapper".to_owned()]);
+        style_comp
+            .classes_by_node
+            .insert(parent, vec!["child".to_owned()]);
+        style_comp
+            .classes_by_node
+            .insert(child, vec!["desc".to_owned()]);
+
+        let list = selectors::parse_selector_list(".wrapper > .child .desc");
+        assert_eq!(list.len(), 1);
+        let sel = list.first().expect("selector parsed");
+        assert!(super::matches_selector(child, sel, &style_comp));
+    }
+}
+
 /// Return true if `node` has the given CSS class in `classes_by_node`.
 #[inline]
 fn node_has_class(
@@ -440,8 +506,6 @@ fn matches_selector(
                 if !found {
                     return false;
                 }
-                // consume prev index
-                let _consumed: Option<usize> = reversed.next();
             }
             selectors::Combinator::Child => {
                 if let Some(parent) = style_computer.parent_by_node.get(&current_node).copied() {
@@ -449,8 +513,6 @@ fn matches_selector(
                         return false;
                     }
                     current_node = parent;
-                    // consume prev index
-                    let _consumed: Option<usize> = reversed.next();
                 } else {
                     return false;
                 }
