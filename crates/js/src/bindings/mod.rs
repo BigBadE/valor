@@ -295,6 +295,113 @@ pub fn build_document_namespace() -> HostNamespace {
         },
     );
 
+    // appendStyleText(cssText) -> create <style data-valor-test-reset="1">cssText</style> under <head>
+    let append_style_text = Arc::new(
+        move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
+            if args.is_empty() {
+                return Err(JSError::TypeError(String::from(
+                    "appendStyleText(cssText) requires 1 argument",
+                )));
+            }
+            let css_text = match &args[0] {
+                JSValue::String(s) => s.clone(),
+                _ => return Err(JSError::TypeError(String::from("cssText must be string"))),
+            };
+            use crate::{DOMUpdate as DU, NodeKey};
+            // Resolve <head> key if present, otherwise attach to ROOT
+            let head_key_opt: Option<NodeKey> = {
+                let guard = context
+                    .dom_index
+                    .lock()
+                    .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
+                // Prefer first child of <html> with tag 'head'; else try any 'head' in index
+                let mut found: Option<NodeKey> = None;
+                for (k, tag) in guard.tag_by_key.iter() {
+                    if tag.eq_ignore_ascii_case("head") {
+                        found = Some(*k);
+                        break;
+                    }
+                }
+                found
+            };
+            let parent_key = head_key_opt.unwrap_or(NodeKey::ROOT);
+
+            // Mint element and text node keys
+            let style_key = {
+                let local_id = context.js_local_id_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                let mut mgr = context
+                    .js_node_keys
+                    .lock()
+                    .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
+                mgr.key_of(local_id)
+            };
+            if let Ok(mut map) = context.js_created_nodes.lock() {
+                map.insert(
+                    style_key,
+                    CreatedNodeInfo {
+                        kind: CreatedNodeKind::Element {
+                            tag: String::from("style"),
+                        },
+                    },
+                );
+            }
+            let text_key = {
+                let local_id = context.js_local_id_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                let mut mgr = context
+                    .js_node_keys
+                    .lock()
+                    .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
+                mgr.key_of(local_id)
+            };
+            if let Ok(mut map) = context.js_created_nodes.lock() {
+                map.insert(
+                    text_key,
+                    CreatedNodeInfo {
+                        kind: CreatedNodeKind::Text {
+                            text: css_text.clone(),
+                        },
+                    },
+                );
+            }
+
+            // Update DomIndex eagerly
+            if let Ok(mut idx) = context.dom_index.lock() {
+                // Insert style under parent
+                dom::reparent_child(&mut idx, style_key, parent_key, usize::MAX);
+                idx.tag_by_key.insert(style_key, String::from("style"));
+                // Insert text under style at position 0
+                dom::reparent_child(&mut idx, text_key, style_key, 0);
+                idx.text_by_key.insert(text_key, css_text.clone());
+            }
+
+            // Emit updates: InsertElement(style under parent) + SetAttr(data-valor-test-reset) + InsertText(text under style)
+            let updates: Vec<DU> = vec![
+                DU::InsertElement {
+                    parent: parent_key,
+                    node: style_key,
+                    tag: String::from("style"),
+                    pos: usize::MAX,
+                },
+                DU::SetAttr {
+                    node: style_key,
+                    name: String::from("data-valor-test-reset"),
+                    value: String::from("1"),
+                },
+                DU::InsertText {
+                    parent: style_key,
+                    node: text_key,
+                    text: css_text,
+                    pos: 0,
+                },
+            ];
+            context
+                .dom_sender
+                .try_send(updates)
+                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
+            Ok(JSValue::Undefined)
+        },
+    );
+
     // createTextNode(text)
     let create_text = Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -1321,6 +1428,7 @@ pub fn build_document_namespace() -> HostNamespace {
         .with_sync_fn("querySelectorAll", query_selector_all)
         .with_sync_fn("getChildIndex", get_child_index)
         .with_sync_fn("getChildrenKeys", get_children_keys)
+        .with_sync_fn("appendStyleText", append_style_text)
         .with_sync_fn("getTagName", get_tag_name)
         .with_sync_fn("getParentKey", get_parent_key)
         .with_sync_fn("getInnerHTML", get_inner_html)

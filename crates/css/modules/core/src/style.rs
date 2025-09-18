@@ -493,6 +493,11 @@ fn matches_simple_selector(
     sel: &selectors::SimpleSelector,
     style_comp: &StyleComputer,
 ) -> bool {
+    // Universal selector ('*') matches any element. Selectors Level 4 §2.2
+    // https://www.w3.org/TR/selectors-4/#universal-selector
+    if sel.is_universal() {
+        return true;
+    }
     if let Some(tag) = sel.tag() {
         let tag_name = style_comp.tag_by_node.get(&node);
         if !tag_name.is_some_and(|value| value.eq_ignore_ascii_case(tag)) {

@@ -17,7 +17,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 use style_engine::{
-    AlignItems, ComputedStyle, Display, Edges, LengthOrAuto, Overflow, SizeSpecified,
+    AlignItems, BoxSizing, ComputedStyle, Display, Edges, LengthOrAuto, Overflow, SizeSpecified,
 };
 use tokio::runtime::Runtime;
 
@@ -76,6 +76,9 @@ fn run_chromium_layouts() -> Result<(), Error> {
         // Build page and parse via HtmlPage
         let url = common::to_file_url(&input_path)?;
         let mut page = common::create_page(&rt, url)?;
+        // Inject the same CSS reset into our engine that we inject into Chromium
+        // to ensure both sides receive identical author CSS for fair comparison.
+        page.eval_js(common::css_reset_injection_script())?;
         // Attach a Layouter mirror to the page's DOM stream
         let mut layouter_mirror = page.create_mirror(Layouter::new());
 
@@ -408,6 +411,12 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
             Auto => "auto",
         }
     }
+    fn box_sizing_to_str(b: &BoxSizing) -> &'static str {
+        match b {
+            BoxSizing::BorderBox => "border-box",
+            BoxSizing::ContentBox => "content-box",
+        }
+    }
     fn recurse(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
         match ctx.kind_by_key.get(&key) {
             Some(LayoutNodeKind::Block { tag }) => {
@@ -453,6 +462,7 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
                         };
                     let style_json = json!({
                         "display": eff_disp,
+                        "boxSizing": box_sizing_to_str(&cs.box_sizing),
                         "flexBasis": to_px_or_auto(&cs.flex_basis),
                         "flexGrow": cs.flex_grow as f64,
                         "flexShrink": cs.flex_shrink as f64,
@@ -522,6 +532,7 @@ fn chromium_layout_json_in_tab(tab: &headless_chrome::Tab, path: &Path) -> anyho
             }
             return {
                 display: display,
+                boxSizing: (cs.boxSizing || '').toLowerCase(),
                 flexBasis: cs.flexBasis || '',
                 flexGrow: Number(cs.flexGrow || 0),
                 flexShrink: Number(cs.flexShrink || 0),

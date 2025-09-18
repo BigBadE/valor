@@ -23,6 +23,8 @@ use js::DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAtt
 use js::{DOMSubscriber, DOMUpdate, NodeKey};
 use std::collections::HashMap;
 
+/// Parse an inline `style` attribute string (e.g. "width: 10px; height: 20px")
+/// into a lowercase key -> raw value map.
 #[inline]
 fn parse_inline_style_to_map(style_text: &str) -> HashMap<String, String> {
     let mut map_out = HashMap::new();
@@ -39,12 +41,15 @@ fn parse_inline_style_to_map(style_text: &str) -> HashMap<String, String> {
     map_out
 }
 
+/// Parse an optional CSS length value in pixels like "12px" into a number.
 #[inline]
 fn parse_px_opt(text_opt: Option<&String>) -> Option<f32> {
     let text = text_opt?;
     text.trim_end_matches("px").trim().parse::<f32>().ok()
 }
 
+/// Apply inline `style` declaration fallbacks to a computed style when not
+/// already decided by the core engine (e.g. width/height/border widths).
 #[inline]
 fn apply_inline_decl_overrides(style_out: &mut ComputedStyle, decls: &HashMap<String, String>) {
     if style_out.width.is_none() {
@@ -92,6 +97,8 @@ fn apply_inline_decl_overrides(style_out: &mut ComputedStyle, decls: &HashMap<St
     }
 }
 
+/// Merge inline `style` attributes from `attrs` into the mapped styles for
+/// nodes, preserving deterministic order for stability.
 #[inline]
 fn merge_inline_fallbacks(
     mapped: &mut HashMap<NodeKey, ComputedStyle>,

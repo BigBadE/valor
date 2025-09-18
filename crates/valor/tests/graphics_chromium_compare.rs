@@ -96,6 +96,8 @@ fn build_valor_display_list_for(path: &Path) -> Result<wgpu_renderer::DisplayLis
     let rt = tokio::runtime::Runtime::new()?;
     let url = common::to_file_url(path)?;
     let mut page = common::create_page(&rt, url)?;
+    // Inject the same CSS reset used for Chromium to keep comparisons fair
+    page.eval_js(common::css_reset_injection_script())?;
     let finished = common::update_until_finished_simple(&rt, &mut page)?;
     if !finished {
         return Err(anyhow!("Valor parsing did not finish"));
@@ -147,9 +149,8 @@ fn rasterize_display_list_to_rgba(
     out
 }
 
-//#[test]
+#[test]
 fn chromium_graphics_smoke_compare_png() -> Result<()> {
-    // Note: will likely fail (placeholder Valor) — saves artifacts for inspection.
     let _ = env_logger::builder().is_test(false).try_init();
 
     // Route layouter cache to target dir and ensure artifacts dir is clean
@@ -157,7 +158,8 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
     let out_dir = target_artifacts_dir();
     common::clear_dir(&out_dir)?;
 
-    let fixtures = common::graphics_fixture_html_files()?;
+    // Use the same fixtures as the layout comparer so this test always has inputs
+    let fixtures = common::fixture_html_files()?;
     if fixtures.is_empty() {
         eprintln!(
             "[GRAPHICS] No fixtures found — add files under any crate's tests/fixtures/graphics/ subfolders"
@@ -183,6 +185,13 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
     let mut any_failed = false;
 
     for fixture in fixtures {
+        // Skip fixtures explicitly marked as expected failures
+        if let Ok(text) = std::fs::read_to_string(&fixture)
+            && (text.contains("VALOR_XFAIL") || text.contains("valor-xfail"))
+        {
+            eprintln!("[GRAPHICS] {} ... XFAIL (skipped)", fixture.display());
+            continue;
+        }
         let name = safe_stem(&fixture);
         let chrome_png = capture_chrome_png(&browser, &fixture, 800, 600)?;
         // Always update a stable Chrome artifact only if contents changed

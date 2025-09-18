@@ -98,8 +98,6 @@ pub struct HtmlPage {
     needs_redraw: bool,
     /// Whether to emit perf telemetry lines per tick.
     telemetry_enabled: bool,
-    /// One-time guard for merging inline <style> rules into the author stylesheet after load.
-    inline_styles_merged_once: bool,
 }
 
 impl HtmlPage {
@@ -220,7 +218,6 @@ impl HtmlPage {
             needs_redraw: false,
             hud_enabled: config.hud_enabled,
             telemetry_enabled: config.telemetry_enabled,
-            inline_styles_merged_once: false,
         })
     }
 
@@ -476,38 +473,12 @@ impl HtmlPage {
             .sync_attrs_from_map(&lay_attrs);
 
         // Snapshot structure once and optionally rebuild StyleEngine's inventory
-        let (tags_by_key, element_children, raw_children, text_by_key) =
+        let (tags_by_key, element_children, _raw_children, _text_by_key) =
             self.snapshot_layout_maps();
         self.maybe_rebuild_style_nodes_after_load(&tags_by_key, &element_children, &lay_attrs);
 
-        // Merge inline <style> content once post-load into the author stylesheet
-        trace!(
-            "process_css_and_styles: author_styles.rules={} (pre-merge)",
-            self.css_mirror.mirror_mut().styles().rules.len()
-        );
-        let mut author_styles = self.css_mirror.mirror_mut().styles().clone();
-        if self.loader.is_none() && !self.inline_styles_merged_once {
-            let inline_style_css =
-                self.extract_inline_style_css(&tags_by_key, &raw_children, &text_by_key);
-            let inline_style_css_trimmed = inline_style_css.trim().to_string();
-            if !inline_style_css_trimmed.is_empty() {
-                let author_count = author_styles.rules.len() as u32;
-                let mut stream = css::parser::StylesheetStreamParser::new(
-                    css::types::Origin::Author,
-                    author_count,
-                );
-                let mut acc = css::types::Stylesheet::default();
-                stream.push_chunk(&inline_style_css_trimmed, &mut acc);
-                let (tail, _next) = stream.finish_with_next();
-                acc.rules.extend(tail.rules);
-                author_styles.rules.extend(acc.rules);
-                self.inline_styles_merged_once = true;
-            }
-        }
-        trace!(
-            "process_css_and_styles: author_styles.rules={} (post-merge)",
-            author_styles.rules.len()
-        );
+        // Use CSSMirror's aggregated in-document stylesheet (rebuilds on <style> updates)
+        let author_styles = self.css_mirror.mirror_mut().styles().clone();
 
         // Replace stylesheet and recompute dirty styles once per tick
         self.style_engine_mirror

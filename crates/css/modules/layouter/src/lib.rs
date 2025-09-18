@@ -6,6 +6,9 @@
 //!
 //! Spec: <https://www.w3.org/TR/CSS22/visuren.html#block-formatting>
 
+mod sizing;
+
+use crate::sizing::{used_border_box_height, used_border_box_width};
 use anyhow::Error;
 use core::mem::take;
 use core::sync::atomic::{Ordering, compiler_fence};
@@ -232,15 +235,15 @@ impl Layouter {
         let border_right = root_style.border_width.right.max(0.0f32) as i32;
         let border_top = root_style.border_width.top.max(0.0f32) as i32;
         let margin_left = root_style.margin.left as i32;
-        let margin_right = root_style.margin.right as i32;
         let margin_top = root_style.margin.top as i32;
 
+        // CSS 2.2 §8.1 Box model: margins lie outside the border.
+        // CSS 2.2 §10.1 Containing block: the content/padding edge forms the containing block,
+        // not including margins. Therefore, do NOT subtract margins from the available width.
         let horizontal_non_content = padding_left
             .saturating_add(padding_right)
             .saturating_add(border_left)
-            .saturating_add(border_right)
-            .saturating_add(margin_left)
-            .saturating_add(margin_right);
+            .saturating_add(border_right);
         let container_width = icb_width.saturating_sub(horizontal_non_content).max(0i32);
 
         ContainerMetrics {
@@ -268,7 +271,8 @@ impl Layouter {
 
         let metrics = Self::compute_container_metrics(self, root, icb_width);
 
-        // Emit a rect for the root itself (content box width; height is unknown -> 0)
+        // Emit a preliminary rect for the root itself (border-box width; height is 0 for now)
+        // Y offset is adjusted below after we consider parent–first-child top margin collapse.
         self.rects.insert(
             root,
             LayoutRect {
@@ -281,9 +285,37 @@ impl Layouter {
 
         let (reflowed_count, content_height) = self.layout_block_children(root, &metrics);
 
-        // Update root rect height with the computed content height
+        // CSS 2.2 §8.3.1 Collapsing margins:
+        // The top margin of a box and the top margin of its first in-flow block-level child
+        // collapse if the parent has no top border or padding.
+        // We model this by offsetting the root's Y by the positive part of the collapsed margin,
+        // and by not counting that offset in the root's used height.
+        let first_child_top_collapse_pos = if metrics.padding_top == 0i32
+            && metrics.border_top == 0i32
+            && let Some(child_list) = self.children.get(&root)
+            && let Some(&first_child) = child_list
+                .iter()
+                .find(|&&key| matches!(self.nodes.get(&key), Some(&LayoutNodeKind::Block { .. })))
+        {
+            let first_style = self
+                .computed_styles
+                .get(&first_child)
+                .cloned()
+                .unwrap_or_else(ComputedStyle::default);
+            let collapsed =
+                Self::collapse_margins_pair(metrics.margin_top, first_style.margin.top as i32);
+            collapsed.max(0i32)
+        } else {
+            0i32
+        };
+
+        // Update root rect y/height with the computed adjustments
         if let Some(root_rect) = self.rects.get_mut(&root) {
-            root_rect.height = content_height.max(0i32);
+            root_rect.y = first_child_top_collapse_pos;
+            // Exclude the positive collapsed top margin from the root's used height.
+            root_rect.height = content_height
+                .saturating_sub(first_child_top_collapse_pos)
+                .max(0i32);
         }
 
         self.perf_nodes_reflowed_last = reflowed_count as u64;
@@ -340,20 +372,15 @@ impl Layouter {
 
                 let horizontal_margins =
                     margin_left.max(0i32).saturating_add(margin_right.max(0i32));
-                let mut used_border_box_width = metrics
+                let fill_available_width = metrics
                     .container_width
                     .saturating_sub(horizontal_margins)
                     .max(0i32);
-                used_border_box_width = Self::resolve_used_border_box_width(
-                    &style,
-                    metrics.container_width,
-                    horizontal_margins,
-                    used_border_box_width,
-                );
+                let used_border_box_width = used_border_box_width(&style, fill_available_width);
 
                 let (x_adjust, y_adjust) = Self::apply_relative_offsets(&style);
 
-                let computed_height = Self::resolve_used_border_box_height(&style);
+                let computed_height = used_border_box_height(&style);
                 self.rects.insert(
                     child_key,
                     LayoutRect {
@@ -369,63 +396,6 @@ impl Layouter {
             }
         }
         (reflowed_count, y_cursor)
-    }
-
-    #[inline]
-    /// Convert a specified width plus box-sizing into a used border-box width, respecting min/max and container availability.
-    fn resolve_used_border_box_width(
-        style: &ComputedStyle,
-        container_width: i32,
-        horizontal_margins: i32,
-        current_width: i32,
-    ) -> i32 {
-        let mut width_out = current_width;
-        if let Some(specified_w) = style.width {
-            // Interpret specified width as border-box width (model choice).
-            let mut border_w = specified_w as i32;
-            if let Some(min_w) = style.min_width {
-                border_w = border_w.max(min_w as i32);
-            }
-            if let Some(max_w) = style.max_width {
-                border_w = border_w.min(max_w as i32);
-            }
-            width_out = border_w;
-        } else {
-            // No specified width; clamp the current used border-box width with min/max if present
-            if let Some(min_w) = style.min_width {
-                width_out = width_out.max(min_w as i32);
-            }
-            if let Some(max_w) = style.max_width {
-                width_out = width_out.min(max_w as i32);
-            }
-        }
-        width_out = width_out.min(container_width.saturating_sub(horizontal_margins).max(0i32));
-        width_out
-    }
-
-    #[inline]
-    /// Convert a specified height plus box-sizing into a used border-box height, respecting min/max.
-    fn resolve_used_border_box_height(style: &ComputedStyle) -> i32 {
-        if let Some(specified_h) = style.height {
-            // Interpret specified height as border-box height (model choice).
-            let mut border_h = specified_h as i32;
-            if let Some(min_h) = style.min_height {
-                border_h = border_h.max(min_h as i32);
-            }
-            if let Some(max_h) = style.max_height {
-                border_h = border_h.min(max_h as i32);
-            }
-            return border_h;
-        }
-        // Auto height: clamp zero with min/max if provided
-        let mut auto_h = 0i32;
-        if let Some(min_h) = style.min_height {
-            auto_h = auto_h.max(min_h as i32);
-        }
-        if let Some(max_h) = style.max_height {
-            auto_h = auto_h.min(max_h as i32);
-        }
-        auto_h
     }
 
     #[inline]

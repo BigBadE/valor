@@ -12,7 +12,10 @@ pub(crate) enum Combinator {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-/// A simple selector consisting of a tag name, an element id, and a list of classes.
+/// A simple selector consisting of a tag name, an element id, a list of classes, or the universal selector.
+///
+/// Universal selector reference: Selectors Level 4 — 2.2. Universal selector ('*')
+/// <https://www.w3.org/TR/selectors-4/#universal-selector>
 pub(crate) struct SimpleSelector {
     /// Optional tag name, lower-cased, for type selectors.
     tag: Option<String>,
@@ -20,6 +23,8 @@ pub(crate) struct SimpleSelector {
     element_id: Option<String>,
     /// Class list for `.class` selectors.
     classes: Vec<String>,
+    /// Whether this selector is the universal selector ('*').
+    universal: bool,
 }
 
 impl SimpleSelector {
@@ -37,6 +42,11 @@ impl SimpleSelector {
     /// Class list for `.class` selectors.
     pub(crate) fn classes(&self) -> &[String] {
         &self.classes
+    }
+    #[inline]
+    /// True if this simple selector is the universal selector ('*').
+    pub(crate) const fn is_universal(&self) -> bool {
+        self.universal
     }
 }
 
@@ -115,6 +125,7 @@ fn commit_current_part(
             tag: current.tag.take(),
             element_id: current.element_id.take(),
             classes: take(&mut current.classes),
+            universal: take(&mut current.universal),
         },
         combinator_to_next: Some(combinator),
     });
@@ -157,7 +168,10 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
             chars.next();
         }
         if saw_whitespace {
-            if current.tag.is_some() || current.element_id.is_some() || !current.classes.is_empty()
+            if current.universal
+                || current.tag.is_some()
+                || current.element_id.is_some()
+                || !current.classes.is_empty()
             {
                 commit_current_part(&mut parts, &mut current, Combinator::Descendant);
                 next_combinator = None;
@@ -169,7 +183,8 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
             None => break,
             Some('>') => {
                 chars.next();
-                if current.tag.is_some()
+                if current.universal
+                    || current.tag.is_some()
                     || current.element_id.is_some()
                     || !current.classes.is_empty()
                 {
@@ -178,6 +193,12 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
                 } else {
                     next_combinator = Some(Combinator::Child);
                 }
+            }
+            Some('*') => {
+                // Universal selector — matches any element.
+                // Selectors Level 4 §2.2: https://www.w3.org/TR/selectors-4/#universal-selector
+                chars.next();
+                current.universal = true;
             }
             Some('#') => {
                 chars.next();
@@ -195,7 +216,11 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
             }
         }
     }
-    if current.tag.is_some() || current.element_id.is_some() || !current.classes.is_empty() {
+    if current.universal
+        || current.tag.is_some()
+        || current.element_id.is_some()
+        || !current.classes.is_empty()
+    {
         parts.push(SelectorPart {
             sel: current,
             combinator_to_next: next_combinator.take(),

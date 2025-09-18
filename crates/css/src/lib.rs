@@ -18,7 +18,6 @@ use css_core::types::{
 
 pub mod style_types;
 use crate::style_types::{ComputedStyle, LayoutNodeKind, LayoutRect};
-use std::collections::HashSet;
 
 pub mod types;
 
@@ -42,8 +41,6 @@ pub struct CSSMirror {
     style_nodes_order: Vec<NodeKey>,
     /// Map from style node key to its accumulated text content.
     style_text_by_node: HashMap<NodeKey, String>,
-    /// Style nodes to be skipped (e.g., test-injected reset styles).
-    style_skip_nodes: HashSet<NodeKey>,
 }
 
 impl Default for CSSMirror {
@@ -63,7 +60,6 @@ impl CSSMirror {
             discovered: Vec::new(),
             style_nodes_order: Vec::new(),
             style_text_by_node: HashMap::new(),
-            style_skip_nodes: HashSet::new(),
         }
     }
     #[inline]
@@ -74,7 +70,6 @@ impl CSSMirror {
             discovered: Vec::new(),
             style_nodes_order: Vec::new(),
             style_text_by_node: HashMap::new(),
-            style_skip_nodes: HashSet::new(),
         }
     }
     /// Mutable reference to the aggregated in-document stylesheet.
@@ -93,9 +88,6 @@ impl CSSMirror {
         let mut out = types::Stylesheet::default();
         let mut base: u32 = 0;
         for node in &self.style_nodes_order {
-            if self.style_skip_nodes.contains(node) {
-                continue;
-            }
             if let Some(text) = self.style_text_by_node.get(node) {
                 let parsed = parser::parse_stylesheet(text, out.origin, base);
                 // Avoid truncation on 64-bit by saturating len to u32::MAX
@@ -129,12 +121,16 @@ impl DOMSubscriber for CSSMirror {
                 {
                     self.style_nodes_order.push(node);
                     self.style_text_by_node.insert(node, String::new());
+                    // Rebuild aggregated stylesheet when a new <style> is inserted.
+                    self.rebuild_styles_from_style_nodes();
                 }
             }
             InsertText { parent, text, .. } => {
                 if self.style_text_by_node.contains_key(&parent) {
                     let entry = self.style_text_by_node.entry(parent).or_default();
                     entry.push_str(&text);
+                    // Rebuild aggregated stylesheet when <style> text changes.
+                    self.rebuild_styles_from_style_nodes();
                 }
             }
             RemoveNode { node } => {
@@ -147,16 +143,7 @@ impl DOMSubscriber for CSSMirror {
             EndOfDocument => {
                 self.rebuild_styles_from_style_nodes();
             }
-            SetAttr { node, name, value } => {
-                // If this is a test-injected reset style element, mark it to be skipped.
-                if name.eq_ignore_ascii_case("data-valor-test-reset")
-                    && value == "1"
-                    && self.style_text_by_node.contains_key(&node)
-                {
-                    self.style_skip_nodes.insert(node);
-                    self.rebuild_styles_from_style_nodes();
-                }
-            }
+            SetAttr { .. } => {}
         }
         Ok(())
     }

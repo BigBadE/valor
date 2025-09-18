@@ -694,12 +694,19 @@ pub fn css_reset_injection_script() -> &'static str {
     r#"(function(){
         try {
             var css = "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;font-family:monospace,'Courier New',Courier,Consolas,'Liberation Mono',Menlo,Monaco,'DejaVu Sans Mono',monospace;}html,body{margin:0 !important;padding:0 !important;}body{margin:0 !important;}h1,h2,h3,h4,h5,h6,p{margin:0;padding:0;}ul,ol{margin:0;padding:0;list-style:none;}";
-            var style = document.createElement('style');
-            style.setAttribute('data-valor-test-reset','1');
-            style.type = 'text/css';
-            style.appendChild(document.createTextNode(css));
-            var head = document.head || document.getElementsByTagName('head')[0] || document.documentElement;
-            head.appendChild(style);
+            // Idempotent: skip if we've already added our reset style element
+            var existing = (typeof document.querySelector === 'function') ? document.querySelector("style[data-valor-test-reset='1']") : null;
+            if (existing) { return true; }
+            if (document && typeof document.appendStyleText === 'function') {
+                document.appendStyleText(css);
+            } else {
+                var style = document.createElement('style');
+                style.setAttribute('data-valor-test-reset','1');
+                style.type = 'text/css';
+                style.appendChild(document.createTextNode(css));
+                var head = document.head || document.getElementsByTagName('head')[0] || document.documentElement;
+                head.appendChild(style);
+            }
             // Also enforce via inline styles to ensure immediate override
             var de = document.documentElement; if (de && de.style){ de.style.margin='0'; de.style.padding='0'; de.style.fontFamily='monospace'; }
             var b = document.body; if (b && b.style){ b.style.margin='0'; b.style.padding='0'; b.style.fontFamily='monospace'; }
