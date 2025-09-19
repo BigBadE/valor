@@ -91,7 +91,11 @@ fn capture_chrome_png(
     Ok(png)
 }
 
-fn build_valor_display_list_for(path: &Path) -> Result<wgpu_renderer::DisplayList> {
+fn build_valor_display_list_for(
+    path: &Path,
+    viewport_w: u32,
+    viewport_h: u32,
+) -> Result<wgpu_renderer::DisplayList> {
     // Drive Valor page to finished, then use the public display_list_retained_snapshot API
     let rt = tokio::runtime::Runtime::new()?;
     let url = common::to_file_url(path)?;
@@ -103,7 +107,18 @@ fn build_valor_display_list_for(path: &Path) -> Result<wgpu_renderer::DisplayLis
         return Err(anyhow!("Valor parsing did not finish"));
     }
     let dl = page.display_list_retained_snapshot()?;
-    Ok(dl)
+    // Prepend a full-viewport background using the same logic as the app
+    let cc = page.background_rgba();
+    let mut items = Vec::with_capacity(dl.items.len() + 1);
+    items.push(wgpu_renderer::DisplayItem::Rect {
+        x: 0.0,
+        y: 0.0,
+        width: viewport_w as f32,
+        height: viewport_h as f32,
+        color: cc,
+    });
+    items.extend(dl.items);
+    Ok(wgpu_renderer::DisplayList::from_items(items))
 }
 
 fn rasterize_display_list_to_rgba(
@@ -200,14 +215,27 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
         // Decode Chrome PNG to RGBA8
         let chrome_img = image::load_from_memory(&chrome_png)?.to_rgba8();
         let (w, h) = chrome_img.dimensions();
-        // Build Valor display list and rasterize to RGBA
-        let dl = build_valor_display_list_for(&fixture)?;
+        // Build Valor display list (with viewport background) and rasterize to RGBA
+        let dl = build_valor_display_list_for(&fixture, w, h)?;
+        eprintln!(
+            "[GRAPHICS][DEBUG] {}: DL items={} (first 5: {:?})",
+            name,
+            dl.items.len(),
+            dl.items.iter().take(5).collect::<Vec<_>>()
+        );
+        let dbg_batches = batch_display_list(&dl, w, h);
+        let dbg_quads: usize = dbg_batches.iter().map(|b| b.quads.len()).sum();
+        eprintln!(
+            "[GRAPHICS][DEBUG] {}: batches={} total_quads={}",
+            name,
+            dbg_batches.len(),
+            dbg_quads
+        );
         let valor_img = rasterize_display_list_to_rgba(&dl, w, h);
 
         let eps: u8 = 3;
         let (over, total) = per_pixel_diff(chrome_img.as_raw(), &valor_img, eps);
         if over > 0 {
-            any_failed = true;
             let stamp = now_millis();
             let base = out_dir.join(format!("{name}_{stamp}"));
             let chrome_path = base.with_extension("chrome.png");
@@ -227,6 +255,7 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
                 valor_path.display(),
                 diff_path.display()
             );
+            any_failed = true;
         }
     }
 

@@ -1,3 +1,4 @@
+use crate::display_list::TextBoundsPx;
 use anyhow::Error;
 use js::{DOMSubscriber, DOMUpdate, NodeKey};
 use std::collections::HashMap;
@@ -31,6 +32,8 @@ pub struct DrawText {
     pub text: String,
     pub color: [f32; 3],
     pub font_size: f32,
+    /// Optional bounds for wrapping/clipping: (left, top, right, bottom) in framebuffer pixels.
+    pub bounds: Option<TextBoundsPx>,
 }
 
 /// RenderNodeKind represents the minimal kinds of nodes a renderer cares about

@@ -4,6 +4,15 @@ use js::NodeKey;
 use std::collections::HashMap;
 use wgpu_renderer::{DisplayItem, DisplayList};
 
+// Text shaping imports for measuring and line breaking
+use glyphon::{
+    Attrs as GlyphonAttrs, Buffer as GlyphonBuffer, FontSystem as GlyphonFontSystem,
+    Metrics as GlyphonMetrics, Shaping as GlyphonShaping,
+};
+use once_cell::sync::Lazy;
+use std::mem::take;
+use std::sync::Mutex;
+
 // Module-scoped aliases to simplify complex tuple types
 type SnapshotItem = (NodeKey, layouter::LayoutNodeKind, Vec<NodeKey>);
 type SnapshotSlice<'a> = &'a [SnapshotItem];
@@ -19,6 +28,60 @@ pub struct RetainedInputs {
     pub hud_enabled: bool,
     pub spillover_deferred: u64,
     pub last_style_restyled_nodes: u64,
+}
+
+// Shared glyphon FontSystem for measurement
+static GLYPHON_FONT_SYSTEM: Lazy<Mutex<GlyphonFontSystem>> =
+    Lazy::new(|| Mutex::new(GlyphonFontSystem::new()));
+
+#[inline]
+fn measure_text_width_px(text: &str, font_size: f32) -> i32 {
+    if text.is_empty() {
+        return 0;
+    }
+    let mut fs = GLYPHON_FONT_SYSTEM
+        .lock()
+        .expect("glyphon font system lock poisoned");
+    let metrics = GlyphonMetrics::new(font_size, font_size);
+    let mut buffer = GlyphonBuffer::new(&mut fs, metrics);
+    let attrs = GlyphonAttrs::new();
+    buffer.set_text(&mut fs, text, &attrs, GlyphonShaping::Advanced);
+    buffer
+        .layout_runs()
+        .map(|run| run.line_w)
+        .sum::<f32>()
+        .round() as i32
+}
+
+#[inline]
+fn wrap_text_greedy_by_whitespace(content: &str, font_size: f32, max_width_px: i32) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    if content.is_empty() || max_width_px <= 0 {
+        return lines;
+    }
+    let tokens: Vec<&str> = content.split(' ').collect();
+    let mut current = String::new();
+    for (i, tok) in tokens.iter().enumerate() {
+        let candidate = if current.is_empty() {
+            (*tok).to_string()
+        } else {
+            format!("{current} {tok}")
+        };
+        let width = measure_text_width_px(&candidate, font_size);
+        if width <= max_width_px {
+            current = candidate;
+        } else if !current.is_empty() {
+            lines.push(take(&mut current));
+            current = (*tok).to_string();
+        } else {
+            lines.push((*tok).to_string());
+            current.clear();
+        }
+        if i == tokens.len() - 1 && !current.is_empty() {
+            lines.push(take(&mut current));
+        }
+    }
+    lines
 }
 
 #[inline]
@@ -221,12 +284,25 @@ pub fn build_text_list(
         }
         None
     };
+    // Helper: climb ancestors until a rect is found (inline text nodes don't have rects).
+    let nearest_rect = |start: NodeKey| -> Option<layouter::LayoutRect> {
+        let mut cur = Some(start);
+        while let Some(n) = cur {
+            if let Some(r) = rects.get(&n) {
+                return Some(*r);
+            }
+            cur = parent_of.get(&n).copied();
+        }
+        None
+    };
     for (key, kind, _children) in snapshot.iter() {
         if let layouter::LayoutNodeKind::InlineText { text } = kind {
             if text.trim().is_empty() {
                 continue;
             }
-            if let Some(rect) = rects.get(key) {
+            let rect = nearest_rect(*key)
+                .or_else(|| nearest_rect(parent_of.get(key).copied().unwrap_or(*key)));
+            if let Some(rect) = rect {
                 let (font_size, color_rgb) = if let Some(cs) = nearest_style(*key) {
                     let c = cs.color;
                     (
@@ -241,14 +317,26 @@ pub fn build_text_list(
                     (16.0, [0.0, 0.0, 0.0])
                 };
                 let collapsed = collapse_whitespace(text);
-                let display_text = reorder_bidi_for_display(&collapsed);
-                list.push(wgpu_renderer::DrawText {
-                    x: rect.x as f32,
-                    y: rect.y as f32,
-                    text: display_text,
-                    color: color_rgb,
-                    font_size,
-                });
+                if collapsed.is_empty() {
+                    continue;
+                }
+                let max_width_px = rect.width.max(0);
+                let line_height = (font_size * 1.2).round() as i32;
+                let ascent = (font_size * 0.8).round() as i32; // heuristic ascent
+                let lines = wrap_text_greedy_by_whitespace(&collapsed, font_size, max_width_px);
+                for (line_index, raw_line) in lines.iter().enumerate() {
+                    let visual_line = reorder_bidi_for_display(raw_line);
+                    let baseline_y = rect.y + (line_index as i32) * line_height + ascent;
+                    let bounds = None;
+                    list.push(wgpu_renderer::DrawText {
+                        x: rect.x as f32,
+                        y: baseline_y as f32,
+                        text: visual_line,
+                        color: color_rgb,
+                        font_size,
+                        bounds,
+                    });
+                }
             }
         }
     }
@@ -263,14 +351,26 @@ fn push_text_item(
     color_rgb: [f32; 3],
 ) {
     let collapsed = collapse_whitespace(text);
-    let display_text = reorder_bidi_for_display(&collapsed);
-    list.push(DisplayItem::Text {
-        x: rect.x as f32,
-        y: rect.y as f32,
-        text: display_text,
-        color: color_rgb,
-        font_size,
-    });
+    if collapsed.is_empty() {
+        return;
+    }
+    let max_width_px = rect.width.max(0);
+    let line_height = (font_size * 1.2).round() as i32;
+    let ascent = (font_size * 0.8).round() as i32; // heuristic ascent
+    let greedy_lines = wrap_text_greedy_by_whitespace(&collapsed, font_size, max_width_px);
+    for (line_index, raw_line) in greedy_lines.iter().enumerate() {
+        let visual_line = reorder_bidi_for_display(raw_line);
+        let baseline_y = rect.y + (line_index as i32) * line_height + ascent;
+        let bounds = None;
+        list.push(DisplayItem::Text {
+            x: rect.x as f32,
+            y: baseline_y as f32,
+            text: visual_line,
+            color: color_rgb,
+            font_size,
+            bounds,
+        });
+    }
 }
 
 pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
@@ -318,6 +418,21 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                 .or_else(|| computed_map.get(&n))
             {
                 return Some(cs);
+            }
+            cur = parent_map.get(&n).copied();
+        }
+        None
+    }
+    #[inline]
+    fn nearest_rect(
+        start: NodeKey,
+        parent_map: &HashMap<NodeKey, NodeKey>,
+        rects: &HashMap<NodeKey, layouter::LayoutRect>,
+    ) -> Option<layouter::LayoutRect> {
+        let mut cur = Some(start);
+        while let Some(n) = cur {
+            if let Some(r) = rects.get(&n) {
+                return Some(*r);
             }
             cur = parent_map.get(&n).copied();
         }
@@ -385,31 +500,32 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                 }
             }
             layouter::LayoutNodeKind::Block { .. } => {
-                if let Some(rect) = ctx.rects.get(&node) {
-                    // Background fill from computed styles (with alpha)
-                    let mut bg_rgba: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
-                    let cs_opt = ctx
-                        .computed_robust
-                        .as_ref()
-                        .and_then(|m| m.get(&node))
-                        .or_else(|| ctx.computed_fallback.get(&node))
-                        .or_else(|| ctx.computed_map.get(&node));
-                    if let Some(cs) = cs_opt {
+                // Background/border/clip only if we have a rect for this node
+                let rect_opt = ctx.rects.get(&node);
+                let cs_opt = ctx
+                    .computed_robust
+                    .as_ref()
+                    .and_then(|m| m.get(&node))
+                    .or_else(|| ctx.computed_fallback.get(&node))
+                    .or_else(|| ctx.computed_map.get(&node));
+                if let Some(rect) = rect_opt {
+                    // Background fill from computed styles; only paint if non-transparent
+                    let fill_rgba_opt = cs_opt.map(|cs| {
                         let bg = cs.background_color;
-                        bg_rgba = [
+                        [
                             bg.red as f32 / 255.0,
                             bg.green as f32 / 255.0,
                             bg.blue as f32 / 255.0,
                             bg.alpha as f32 / 255.0,
-                        ];
-                    }
-                    if bg_rgba[3] > 0.0 {
+                        ]
+                    });
+                    if let Some(fill_rgba) = fill_rgba_opt.filter(|rgba| rgba[3] > 0.0) {
                         list.push(DisplayItem::Rect {
                             x: rect.x as f32,
                             y: rect.y as f32,
                             width: rect.width as f32,
                             height: rect.height as f32,
-                            color: bg_rgba,
+                            color: fill_rgba,
                         });
                     }
                     // Borders
@@ -417,18 +533,19 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                         push_border_items(list, rect, cs);
                     }
                     // overflow clip
+                    let style_for_node = cs_opt.or_else(|| {
+                        nearest_style(
+                            node,
+                            ctx.parent_map,
+                            ctx.computed_map,
+                            ctx.computed_fallback,
+                            ctx.computed_robust,
+                        )
+                    });
                     let mut opened_clip = false;
-                    let style_for_node = nearest_style(
-                        node,
-                        ctx.parent_map,
-                        ctx.computed_map,
-                        ctx.computed_fallback,
-                        ctx.computed_robust,
-                    );
-                    let overflow_hidden = style_for_node
-                        .map(|cs| matches!(cs.overflow, style_engine::Overflow::Hidden))
-                        .unwrap_or(false);
-                    if overflow_hidden {
+                    if let Some(cs) = style_for_node
+                        && matches!(cs.overflow, style_engine::Overflow::Hidden)
+                    {
                         list.push(DisplayItem::BeginClip {
                             x: rect.x as f32,
                             y: rect.y as f32,
@@ -437,17 +554,21 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                         });
                         opened_clip = true;
                     }
+                    // Always recurse into children, independent of having a rect
                     process_children(list, node, ctx);
                     if opened_clip {
                         list.push(DisplayItem::EndClip);
                     }
+                } else {
+                    // No rect for this block: still recurse into children
+                    process_children(list, node, ctx);
                 }
             }
             layouter::LayoutNodeKind::InlineText { text } => {
                 if text.trim().is_empty() {
                     return;
                 }
-                if let Some(rect) = ctx.rects.get(&node) {
+                if let Some(rect) = nearest_rect(node, ctx.parent_map, ctx.rects) {
                     let (font_size, color_rgb) = if let Some(cs) = nearest_style(
                         node,
                         ctx.parent_map,
@@ -467,7 +588,7 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     } else {
                         (16.0, [0.0, 0.0, 0.0])
                     };
-                    push_text_item(list, rect, text, font_size, color_rgb);
+                    push_text_item(list, &rect, text, font_size, color_rgb);
                 }
             }
         }
@@ -484,6 +605,14 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
         parent_map: &parent_map,
     };
     recurse(&mut list, NodeKey::ROOT, &ctx);
+
+    #[cfg(debug_assertions)]
+    {
+        eprintln!(
+            "[DL DEBUG] build_retained produced items={}",
+            list.items.len()
+        );
+    }
 
     if let Some((x0, y0, x1, y1)) = selection_overlay {
         let sel_x = x0.min(x1);
@@ -562,6 +691,7 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
             text: hud,
             color: [0.1, 0.1, 0.1],
             font_size: 12.0,
+            bounds: None,
         });
     }
 

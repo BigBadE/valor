@@ -218,7 +218,10 @@ impl App {
             last_cursor_pos: None,
             chrome_bar_height_px: 56.0,
         });
-
+        // Build initial layers so the first redraw has content instead of a blank clear.
+        if let Some(state) = self.state.as_mut() {
+            Self::rebuild_layers_after_update(state);
+        }
         window.request_redraw();
         Ok(())
     }

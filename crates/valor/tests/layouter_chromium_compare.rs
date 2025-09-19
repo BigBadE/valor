@@ -433,12 +433,22 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
                 }
                 let mut children_json = Vec::new();
                 if let Some(children) = ctx.children_by_key.get(&key) {
-                    children
-                        .iter()
-                        .filter(|c| {
-                            matches!(ctx.kind_by_key.get(*c), Some(LayoutNodeKind::Block { .. }))
-                        })
-                        .for_each(|c| children_json.push(recurse(ctx, *c)));
+                    children.iter().for_each(|c| {
+                        let mut include = false;
+                        if let Some(LayoutNodeKind::Block { tag }) = ctx.kind_by_key.get(c) {
+                            let not_non_rendering =
+                                !is_non_rendering_tag(tag.to_lowercase().as_str());
+                            let not_display_none = ctx
+                                .computed
+                                .get(c)
+                                .map(|cs| !matches!(cs.display, Display::None))
+                                .unwrap_or(true);
+                            include = not_non_rendering && not_display_none;
+                        }
+                        if include {
+                            children_json.push(recurse(ctx, *c));
+                        }
+                    });
                 }
                 let mut obj = json!({
                     "tag": tag.to_lowercase(),
@@ -515,6 +525,11 @@ fn chromium_layout_json_in_tab(tab: &headless_chrome::Tab, path: &Path) -> anyho
             var tag = String(el.tagName).toLowerCase();
             // Ignore the test-injected reset style element to avoid mismatches
             if (tag === 'style' && el.getAttribute('data-valor-test-reset') === '1') return true;
+            // Skip elements that do not generate a box
+            try {
+                var cs = window.getComputedStyle(el);
+                if (cs && String(cs.display||'').toLowerCase() === 'none') return true;
+            } catch (e) { /* ignore */ }
             return false;
         }
         function pickStyle(el, cs) {

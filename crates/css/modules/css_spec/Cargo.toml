@@ -1,9 +1,8 @@
 [package]
-name = "css_text"
+name = "css_spec_removed"
 edition.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-style_engine.workspace = true

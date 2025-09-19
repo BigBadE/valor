@@ -1,5 +1,5 @@
-//! CSS Text Module Level 3 — Line breaking, white space, justification, transforms.
-//! Spec: <https://www.w3.org/TR/css-text-3/>
+//! CSS Text — minimal utilities for inline text handling.
+//! This crate provides small, spec-inspired helpers used by layouter and tests.
 
 use style_engine::ComputedStyle;
 

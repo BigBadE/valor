@@ -7,6 +7,9 @@
 
 use crate::renderer::{DrawRect, DrawText};
 
+/// Framebuffer pixel bounds for text (left, top, right, bottom).
+pub type TextBoundsPx = (i32, i32, i32, i32);
+
 // Compact aliases to keep tuple-heavy types readable and satisfy clippy's type_complexity.
 pub type Scissor = (u32, u32, u32, u32);
 
@@ -30,6 +33,8 @@ pub enum DisplayItem {
         text: String,
         color: [f32; 3],
         font_size: f32,
+        /// Optional bounds for wrapping/clipping in framebuffer pixels.
+        bounds: Option<TextBoundsPx>,
     },
     /// Push a rectangular clip onto the stack (placeholder; enforced as a scissor in RenderState for now).
     BeginClip {
@@ -129,12 +134,14 @@ impl DisplayList {
                     text,
                     color,
                     font_size,
+                    bounds,
                 } => texts.push(DrawText {
                     x: *x,
                     y: *y,
                     text: text.clone(),
                     color: *color,
                     font_size: *font_size,
+                    bounds: *bounds,
                 }),
                 DisplayItem::BeginClip { .. }
                 | DisplayItem::EndClip
@@ -311,6 +318,7 @@ mod tests {
             text: "hi".to_string(),
             color: [0.0, 0.0, 0.0],
             font_size: 12.0,
+            bounds: None,
         });
         match a.diff(&b) {
             DisplayListDiff::ReplaceAll(items) => assert_eq!(items.len(), 2),
@@ -335,6 +343,7 @@ mod tests {
                 text: "abc".into(),
                 color: [0.0, 0.0, 0.0],
                 font_size: 14.0,
+                bounds: None,
             },
         ]);
         let (rects, texts) = list.flatten_to_immediate();

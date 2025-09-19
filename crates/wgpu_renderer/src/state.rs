@@ -13,6 +13,27 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 #[inline]
+fn dl_non_empty_texts(dl: &DisplayList) -> Option<Vec<DrawText>> {
+    let texts: Vec<DrawText> = dl.items.iter().filter_map(map_text_item).collect();
+    if texts.is_empty() { None } else { Some(texts) }
+}
+
+#[inline]
+fn collect_layer_texts(layers: &[Layer]) -> Vec<Vec<DrawText>> {
+    let mut out: Vec<Vec<DrawText>> = Vec::new();
+    for layer in layers {
+        let dl = match layer {
+            Layer::Content(dl) | Layer::Chrome(dl) => dl,
+            Layer::Background => continue,
+        };
+        if let Some(v) = dl_non_empty_texts(dl) {
+            out.push(v);
+        }
+    }
+    out
+}
+
+#[inline]
 fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
     if let DisplayItem::Text {
         x,
@@ -20,6 +41,7 @@ fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
         text,
         color,
         font_size,
+        bounds,
     } = item
     {
         return Some(DrawText {
@@ -28,6 +50,7 @@ fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
             text: text.clone(),
             color: *color,
             font_size: *font_size,
+            bounds: *bounds,
         });
     }
     None
@@ -150,14 +173,6 @@ impl RenderState {
                 pass.draw(0..(vertices.len() as u32), 0..1);
             }
         }
-        // Draw text for this layer on top of its rects
-        let layer_text: Vec<DrawText> = dl.items.iter().filter_map(map_text_item).collect();
-        if !layer_text.is_empty() {
-            self.glyphon_prepare_for(&layer_text);
-            let _ = self
-                .text_renderer
-                .render(&self.text_atlas, &self.viewport, pass);
-        }
     }
 
     fn rebuild_cached_batches(&mut self) {
@@ -277,6 +292,10 @@ impl RenderState {
             },
         );
 
+        // Ensure system fonts are available for glyphon
+        let mut font_system_runtime = FontSystem::new();
+        font_system_runtime.db_mut().load_system_fonts();
+
         RenderState {
             window,
             device,
@@ -292,7 +311,7 @@ impl RenderState {
             text_list: Vec::new(),
             retained_display_list: None,
             // Glyphon text state
-            font_system: FontSystem::new(),
+            font_system: font_system_runtime,
             swash_cache: SwashCache::new(),
             text_atlas: text_atlas_local,
             text_renderer: text_renderer_local,
@@ -390,12 +409,13 @@ impl RenderState {
         let start = std::time::Instant::now();
         let framebuffer_width = self.size.width;
         let framebuffer_height = self.size.height;
+        let scale: f32 = self.window.scale_factor() as f32;
         // Build buffers first
         let mut buffers: Vec<GlyphonBuffer> = Vec::with_capacity(self.text_list.len());
         for item in &self.text_list {
             let mut buffer = GlyphonBuffer::new(
                 &mut self.font_system,
-                Metrics::new(item.font_size, item.font_size),
+                Metrics::new(item.font_size * scale, item.font_size * scale),
             );
             let attrs = Attrs::new();
             buffer.set_text(&mut self.font_system, &item.text, &attrs, Shaping::Advanced);
@@ -404,23 +424,27 @@ impl RenderState {
         // Build areas referencing buffers
         let mut areas: Vec<TextArea> = Vec::with_capacity(self.text_list.len());
         for (index, item) in self.text_list.iter().enumerate() {
-            let red = (item.color[0].clamp(0.0, 1.0) * 255.0).round() as u8;
-            let green = (item.color[1].clamp(0.0, 1.0) * 255.0).round() as u8;
-            let blue = (item.color[2].clamp(0.0, 1.0) * 255.0).round() as u8;
-            let color = GlyphonColor(
-                ((255u32) << 24) | ((red as u32) << 16) | ((green as u32) << 8) | (blue as u32),
-            );
-            let bounds = TextBounds {
-                left: 0,
-                top: 0,
-                right: framebuffer_width as i32,
-                bottom: framebuffer_height as i32,
+            // Visible on white: use opaque black (ARGB alpha-highest)
+            let color = GlyphonColor(0xFF00_0000);
+            let bounds = match item.bounds {
+                Some((l, t, r, b)) => TextBounds {
+                    left: (l as f32 * scale).round() as i32,
+                    top: (t as f32 * scale).round() as i32,
+                    right: (r as f32 * scale).round() as i32,
+                    bottom: (b as f32 * scale).round() as i32,
+                },
+                None => TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: framebuffer_width as i32,
+                    bottom: framebuffer_height as i32,
+                },
             };
             let buffer_ref = &buffers[index];
             areas.push(TextArea {
                 buffer: buffer_ref,
-                left: item.x,
-                top: item.y,
+                left: item.x * scale,
+                top: item.y * scale,
                 scale: 1.0,
                 bounds,
                 default_color: color,
@@ -435,7 +459,8 @@ impl RenderState {
                 height: framebuffer_height,
             },
         );
-        let _ = self.text_renderer.prepare(
+        let areas_count = areas.len();
+        let prep_res = self.text_renderer.prepare(
             &self.device,
             &self.queue,
             &mut self.font_system,
@@ -444,6 +469,12 @@ impl RenderState {
             areas,
             &mut self.swash_cache,
         );
+        if cfg!(debug_assertions) {
+            eprintln!(
+                "glyphon_prepare: areas={} viewport={}x{} result={:?}",
+                areas_count, framebuffer_width, framebuffer_height, prep_res
+            );
+        }
         let elapsed_ms = start.elapsed().as_millis() as u64;
         if cfg!(debug_assertions) {
             eprintln!(
@@ -458,11 +489,12 @@ impl RenderState {
     fn glyphon_prepare_for(&mut self, items: &[DrawText]) {
         let framebuffer_width = self.size.width;
         let framebuffer_height = self.size.height;
+        let scale: f32 = self.window.scale_factor() as f32;
         let mut buffers: Vec<GlyphonBuffer> = Vec::with_capacity(items.len());
         for item in items.iter() {
             let mut buffer = GlyphonBuffer::new(
                 &mut self.font_system,
-                Metrics::new(item.font_size, item.font_size),
+                Metrics::new(item.font_size * scale, item.font_size * scale),
             );
             let attrs = Attrs::new();
             buffer.set_text(&mut self.font_system, &item.text, &attrs, Shaping::Advanced);
@@ -470,23 +502,26 @@ impl RenderState {
         }
         let mut areas: Vec<TextArea> = Vec::with_capacity(items.len());
         for (index, item) in items.iter().enumerate() {
-            let red = (item.color[0].clamp(0.0, 1.0) * 255.0).round() as u8;
-            let green = (item.color[1].clamp(0.0, 1.0) * 255.0).round() as u8;
-            let blue = (item.color[2].clamp(0.0, 1.0) * 255.0).round() as u8;
-            let color = GlyphonColor(
-                ((255u32) << 24) | ((red as u32) << 16) | ((green as u32) << 8) | (blue as u32),
-            );
-            let bounds = TextBounds {
-                left: 0,
-                top: 0,
-                right: framebuffer_width as i32,
-                bottom: framebuffer_height as i32,
+            let color = GlyphonColor(0xFF00_0000);
+            let bounds = match item.bounds {
+                Some((l, t, r, b)) => TextBounds {
+                    left: (l as f32 * scale).round() as i32,
+                    top: (t as f32 * scale).round() as i32,
+                    right: (r as f32 * scale).round() as i32,
+                    bottom: (b as f32 * scale).round() as i32,
+                },
+                None => TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: framebuffer_width as i32,
+                    bottom: framebuffer_height as i32,
+                },
             };
             let buffer_ref = &buffers[index];
             areas.push(TextArea {
                 buffer: buffer_ref,
-                left: item.x,
-                top: item.y,
+                left: item.x * scale,
+                top: item.y * scale,
                 scale: 1.0,
                 bounds,
                 default_color: color,
@@ -500,7 +535,8 @@ impl RenderState {
                 height: framebuffer_height,
             },
         );
-        let _ = self.text_renderer.prepare(
+        let areas_len = areas.len();
+        let prep_res = self.text_renderer.prepare(
             &self.device,
             &self.queue,
             &mut self.font_system,
@@ -509,6 +545,16 @@ impl RenderState {
             areas,
             &mut self.swash_cache,
         );
+        if cfg!(debug_assertions) {
+            eprintln!(
+                "glyphon_prepare_for: items={} areas={} viewport={}x{} result={:?}",
+                items.len(),
+                areas_len,
+                framebuffer_width,
+                framebuffer_height,
+                prep_res
+            );
+        }
     }
 
     /// Render a frame by clearing and drawing quads from the current display list.
@@ -534,6 +580,7 @@ impl RenderState {
         }
 
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        // First pass: rectangles only
         {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("main-pass"),
@@ -578,10 +625,6 @@ impl RenderState {
                     self.rebuild_cached_batches();
                 }
                 self.draw_cached_batches(&mut pass, need_rebuild);
-                // Render prepared glyphon text for retained path
-                let _ = self
-                    .text_renderer
-                    .render(&self.text_atlas, &self.viewport, &mut pass);
             } else {
                 // Immediate path: batch all rects into one draw call as before
                 let mut vertices: Vec<Vertex> = Vec::with_capacity(self.display_list.len() * 6);
@@ -605,11 +648,238 @@ impl RenderState {
                 if self.vertex_count > 0 {
                     pass.draw(0..self.vertex_count, 0..1);
                 }
-                // Render prepared glyphon text on top
+            }
+        }
+
+        // Second pass: text rendering
+        {
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("text-pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &texture_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        // Keep rects, draw text on top
+                        load: LoadOp::Load,
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            if use_layers {
+                let layer_texts = collect_layer_texts(&self.layers);
+                for layer_text in layer_texts.into_iter() {
+                    self.glyphon_prepare_for(&layer_text);
+                    pass.set_viewport(
+                        0.0,
+                        0.0,
+                        self.size.width as f32,
+                        self.size.height as f32,
+                        0.0,
+                        1.0,
+                    );
+                    pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
+                    let _ = self
+                        .text_renderer
+                        .render(&self.text_atlas, &self.viewport, &mut pass);
+                }
+            } else if use_retained {
+                if let Some(dl) = &self.retained_display_list {
+                    self.text_list = dl.items.iter().filter_map(map_text_item).collect();
+                }
+                self.glyphon_prepare();
+                pass.set_viewport(
+                    0.0,
+                    0.0,
+                    self.size.width as f32,
+                    self.size.height as f32,
+                    0.0,
+                    1.0,
+                );
+                pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
+                let _ = self
+                    .text_renderer
+                    .render(&self.text_atlas, &self.viewport, &mut pass);
+            } else {
+                // Immediate path: use whatever self.text_list was set to externally
+                self.glyphon_prepare();
+                pass.set_viewport(
+                    0.0,
+                    0.0,
+                    self.size.width as f32,
+                    self.size.height as f32,
+                    0.0,
+                    1.0,
+                );
+                pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
                 let _ = self
                     .text_renderer
                     .render(&self.text_atlas, &self.viewport, &mut pass);
             }
+
+            // PROBE: draw a fixed string to validate glyph pipeline visibility
+            let scale: f32 = self.window.scale_factor() as f32;
+            let mut probe_buffer = GlyphonBuffer::new(
+                &mut self.font_system,
+                Metrics::new(48.0 * scale, 48.0 * scale),
+            );
+            let attrs = Attrs::new();
+            probe_buffer.set_text(&mut self.font_system, "VALOR", &attrs, Shaping::Advanced);
+            let probe_bounds = TextBounds {
+                left: 0,
+                top: 0,
+                right: self.size.width as i32,
+                bottom: self.size.height as i32,
+            };
+            let probe_color_argb_black = GlyphonColor(0xFF00_0000);
+            let probe_area_argb = TextArea {
+                buffer: &probe_buffer,
+                left: 20.0 * scale,
+                top: 40.0 * scale,
+                scale: 1.0,
+                bounds: probe_bounds,
+                default_color: probe_color_argb_black,
+                custom_glyphs: &[],
+            };
+            self.viewport.update(
+                &self.queue,
+                Resolution {
+                    width: self.size.width,
+                    height: self.size.height,
+                },
+            );
+            let probe_prep_res1 = self.text_renderer.prepare(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.text_atlas,
+                &self.viewport,
+                core::iter::once(probe_area_argb),
+                &mut self.swash_cache,
+            );
+            if cfg!(debug_assertions) {
+                eprintln!("probe1 prepare: {:?}", probe_prep_res1);
+            }
+            pass.set_viewport(
+                0.0,
+                0.0,
+                self.size.width as f32,
+                self.size.height as f32,
+                0.0,
+                1.0,
+            );
+            pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
+            let _ = self
+                .text_renderer
+                .render(&self.text_atlas, &self.viewport, &mut pass);
+
+            // Second probe with RGBA alpha-lowest packing at a different Y
+            let mut probe_buffer2 = GlyphonBuffer::new(
+                &mut self.font_system,
+                Metrics::new(48.0 * scale, 48.0 * scale),
+            );
+            probe_buffer2.set_text(&mut self.font_system, "VALOR", &attrs, Shaping::Advanced);
+            let probe_color_rgba_black = GlyphonColor(0x0000_00FF);
+            let probe_area_rgba = TextArea {
+                buffer: &probe_buffer2,
+                left: 20.0 * scale,
+                top: 100.0 * scale,
+                scale: 1.0,
+                bounds: probe_bounds,
+                default_color: probe_color_rgba_black,
+                custom_glyphs: &[],
+            };
+            let probe_prep_res2 = self.text_renderer.prepare(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.text_atlas,
+                &self.viewport,
+                core::iter::once(probe_area_rgba),
+                &mut self.swash_cache,
+            );
+            if cfg!(debug_assertions) {
+                eprintln!("probe2 prepare: {:?}", probe_prep_res2);
+            }
+            pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
+            let _ = self
+                .text_renderer
+                .render(&self.text_atlas, &self.viewport, &mut pass);
+        }
+
+        // Final isolated pass: render probe only (diagnostic)
+        {
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("text-probe-pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &texture_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Load,
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            let scale: f32 = self.window.scale_factor() as f32;
+            let mut probe_buffer = GlyphonBuffer::new(
+                &mut self.font_system,
+                Metrics::new(48.0 * scale, 48.0 * scale),
+            );
+            let attrs = Attrs::new();
+            probe_buffer.set_text(&mut self.font_system, "VALOR", &attrs, Shaping::Advanced);
+            let probe_bounds = TextBounds {
+                left: 0,
+                top: 0,
+                right: self.size.width as i32,
+                bottom: self.size.height as i32,
+            };
+            let probe_color = GlyphonColor(0xFF00_0000);
+            let probe_area = TextArea {
+                buffer: &probe_buffer,
+                left: 40.0 * scale,
+                top: 160.0 * scale,
+                scale: 1.0,
+                bounds: probe_bounds,
+                default_color: probe_color,
+                custom_glyphs: &[],
+            };
+            self.viewport.update(
+                &self.queue,
+                Resolution {
+                    width: self.size.width,
+                    height: self.size.height,
+                },
+            );
+            let _ = self.text_renderer.prepare(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.text_atlas,
+                &self.viewport,
+                core::iter::once(probe_area),
+                &mut self.swash_cache,
+            );
+            pass.set_viewport(
+                0.0,
+                0.0,
+                self.size.width as f32,
+                self.size.height as f32,
+                0.0,
+                1.0,
+            );
+            pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
+            let _ = self
+                .text_renderer
+                .render(&self.text_atlas, &self.viewport, &mut pass);
         }
 
         self.queue.submit([encoder.finish()]);

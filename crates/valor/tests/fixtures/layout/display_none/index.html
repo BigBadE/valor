@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>display:none skips subtree</title>
+<style>
+  /* Author stylesheet also sets margins to make geometry visible */
+  .box { margin: 10px; }
+</style>
+<body>
+  <div id="a" class="box" style="margin-top:20px">A</div>
+  <div id="skip" class="box" style="display:none">SHOULD NOT APPEAR</div>
+  <div id="b" class="box">B</div>
+  <script>
+    // VALOR fixture: no JS needed; static layout compare
+  </script>
+</body>

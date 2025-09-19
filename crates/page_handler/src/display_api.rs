@@ -13,9 +13,12 @@ impl HtmlPage {
 
     /// Build a retained display list combining rectangles, text, and overlays.
     pub fn display_list_retained_snapshot(&mut self) -> Result<DisplayList, Error> {
-        // IMPORTANT: Side-effect free: only read mirrors here.
+        // Ensure mirrors are up-to-date before snapshotting for rendering.
+        self.layouter_try_update_sync()?;
+        // Guarantee at least one layout pass so geometry isn't empty when taking a snapshot.
+        self.ensure_layout_now();
         let rects = self.layouter_geometry_mut();
-        let snapshot = self.layouter_snapshot();
+        let snapshot = self.layouter_snapshot_mut();
         // Use layouter's view for styles to avoid recomputation here
         let computed_map = self.layouter_computed_styles();
         let robust_styles = computed_map.clone();
@@ -71,6 +74,10 @@ impl HtmlPage {
             && let Some(cs) = computed.get(&k)
         {
             let c = cs.background_color;
+            // If transparent (alpha == 0), default to white canvas background like browsers.
+            if c.alpha == 0 {
+                return [1.0, 1.0, 1.0, 1.0];
+            }
             // Force opaque alpha for canvas clear; background painting of elements can carry alpha separately.
             return [
                 c.red as f32 / 255.0,
@@ -79,6 +86,7 @@ impl HtmlPage {
                 1.0,
             ];
         }
+        // Fallback: white background
         [1.0, 1.0, 1.0, 1.0]
     }
 

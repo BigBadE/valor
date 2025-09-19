@@ -43,6 +43,7 @@ pub enum Display {
     Inline,
     Block,
     Flex,
+    None,
     Contents,
 }
 

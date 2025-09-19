@@ -1,5 +1,5 @@
 [package]
-name = "css_text"
+name = "css_text_utils"
 edition.workspace = true
 
 [lints]

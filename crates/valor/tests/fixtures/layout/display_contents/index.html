@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>display:contents lifts children</title>
+<style>
+  .outer { margin: 5px; padding: 5px; }
+  .child { margin: 10px; }
+</style>
+<body>
+  <div id="a" class="child">A</div>
+  <div id="lift" class="outer" style="display:contents">
+    <div id="b" class="child">B</div>
+    <div id="c" class="child">C</div>
+  </div>
+  <div id="d" class="child">D</div>
+  <script>
+    // VALOR fixture: no JS needed; static layout compare
+  </script>
+</body>

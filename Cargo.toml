@@ -93,6 +93,7 @@ css_syntax = { path = "crates/css/modules/syntax" }
 #css_text_decoration = { path = "crates/css/modules/text_decoration" }
 layouter = { path = "crates/css/modules/layouter" }
 style_engine = { path = "crates/css/modules/style_engine" }
+css_text = { path = "crates/css/modules/text" }
 
 [profile.dev]
 opt-level = 1
@@ -109,6 +110,7 @@ nonstandard-style = "deny"
 refining-impl-trait = "deny"
 unused = "deny"
 
+# Strict lints, should not be changed.
 [workspace.lints.clippy]
 all = "deny"
 cargo = "deny"

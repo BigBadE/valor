@@ -26,15 +26,16 @@ This is the recommended order to bring up CSS functionality to run Speedometer. 
   - Font-size scaling (em/rem resolution)
 
 ## Phase B — Computed model and basic layout
-- [ ] Computed style model (core.style)
+- [x] Computed style model (core.style)
   - display, position, z-index, overflow
   - margin/padding/border widths/styles/colors
   - font-size, font-family
   - flex-basis/grow/shrink, align-items, justify-content, flex-direction, flex-wrap
   - width/height/min/max, box-sizing
 - [ ] css_display + box model
-  - Build formatting tree (skip non-rendered nodes)
-  - Block/inline basics, whitespace collapse, simple inline flow boxes
+  - [ ] Skip non-rendered nodes (display:none) and lift children for display:contents (helper in place; disabled pending fixtures)
+  - [ ] Build formatting tree
+  - [ ] Block/inline basics, whitespace collapse, simple inline flow boxes
 - [ ] css_sizing
   - Percent width/height in block/flex contexts, min/max constraints
 
@@ -59,10 +60,10 @@ This is the recommended order to bring up CSS functionality to run Speedometer. 
   - font-family parsing + generic fallback; @font-face not required
 
 ## Cross-cutting
-- [ ] Dynamic invalidation & CSSOM updates
+- [x] Dynamic invalidation & CSSOM updates
   - Attribute/class toggles, inline style changes, stylesheet replace/append
   - Restyle + layout dirtiness propagation
-- [ ] Test harness per-module
+- [x] Test harness per-module
   - Module fixtures under `tests/fixtures/` (auto-discovered)
   - Chromium compare for layout modules (display, flexbox, sizing, position)
 

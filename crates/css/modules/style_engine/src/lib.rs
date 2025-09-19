@@ -23,104 +23,7 @@ use js::DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAtt
 use js::{DOMSubscriber, DOMUpdate, NodeKey};
 use std::collections::HashMap;
 
-/// Parse an inline `style` attribute string (e.g. "width: 10px; height: 20px")
-/// into a lowercase key -> raw value map.
-#[inline]
-fn parse_inline_style_to_map(style_text: &str) -> HashMap<String, String> {
-    let mut map_out = HashMap::new();
-    for declaration in style_text.split(';') {
-        let mut split_iter = declaration.splitn(2, ':');
-        if let (Some(key_raw), Some(value_raw)) = (split_iter.next(), split_iter.next()) {
-            let key_norm = key_raw.trim().to_ascii_lowercase();
-            let value_norm = value_raw.trim().to_owned();
-            if !key_norm.is_empty() {
-                map_out.insert(key_norm, value_norm);
-            }
-        }
-    }
-    map_out
-}
-
-/// Parse an optional CSS length value in pixels like "12px" into a number.
-#[inline]
-fn parse_px_opt(text_opt: Option<&String>) -> Option<f32> {
-    let text = text_opt?;
-    text.trim_end_matches("px").trim().parse::<f32>().ok()
-}
-
-/// Apply inline `style` declaration fallbacks to a computed style when not
-/// already decided by the core engine (e.g. width/height/border widths).
-#[inline]
-fn apply_inline_decl_overrides(style_out: &mut ComputedStyle, decls: &HashMap<String, String>) {
-    if style_out.width.is_none() {
-        style_out.width = parse_px_opt(decls.get("width"));
-    }
-    if style_out.height.is_none() {
-        style_out.height = parse_px_opt(decls.get("height"));
-    }
-    if style_out.min_width.is_none() {
-        style_out.min_width = parse_px_opt(decls.get("min-width"));
-    }
-    if style_out.min_height.is_none() {
-        style_out.min_height = parse_px_opt(decls.get("min-height"));
-    }
-    if style_out.max_width.is_none() {
-        style_out.max_width = parse_px_opt(decls.get("max-width"));
-    }
-    if style_out.max_height.is_none() {
-        style_out.max_height = parse_px_opt(decls.get("max-height"));
-    }
-    if let Some(val) = decls.get("box-sizing")
-        && val.eq_ignore_ascii_case("border-box")
-    {
-        style_out.box_sizing = BoxSizing::BorderBox;
-    }
-    if let Some(px_value) = parse_px_opt(decls.get("border-top-width"))
-        && style_out.border_width.top <= 0.0
-    {
-        style_out.border_width.top = px_value;
-    }
-    if let Some(px_value) = parse_px_opt(decls.get("border-right-width"))
-        && style_out.border_width.right <= 0.0
-    {
-        style_out.border_width.right = px_value;
-    }
-    if let Some(px_value) = parse_px_opt(decls.get("border-bottom-width"))
-        && style_out.border_width.bottom <= 0.0
-    {
-        style_out.border_width.bottom = px_value;
-    }
-    if let Some(px_value) = parse_px_opt(decls.get("border-left-width"))
-        && style_out.border_width.left <= 0.0
-    {
-        style_out.border_width.left = px_value;
-    }
-}
-
-/// Merge inline `style` attributes from `attrs` into the mapped styles for
-/// nodes, preserving deterministic order for stability.
-#[inline]
-fn merge_inline_fallbacks(
-    mapped: &mut HashMap<NodeKey, ComputedStyle>,
-    attrs: &HashMap<NodeKey, HashMap<String, String>>,
-) {
-    // Deterministic order for stability
-    let mut nodes_sorted: Vec<NodeKey> = attrs.keys().copied().collect();
-    nodes_sorted.sort_by_key(|node_key| node_key.0);
-    for node_key in nodes_sorted {
-        let Some(attr_map) = attrs.get(&node_key) else {
-            continue;
-        };
-        let Some(style_text) = attr_map.get("style") else {
-            continue;
-        };
-        let Some(style_out) = mapped.get_mut(&node_key) else {
-            continue;
-        };
-        let decls = parse_inline_style_to_map(style_text);
-        apply_inline_decl_overrides(style_out, &decls);
-    }
-}
+// Removed legacy inline-style fallback: css_core is now the single source of truth.
 
 /// Apply a small subset of attributes (id, class, style) for `child`.
 #[inline]
@@ -380,6 +283,7 @@ pub enum Display {
     None,
     Flex,
     InlineFlex,
+    Contents,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -591,7 +495,6 @@ impl StyleEngine {
         for (key, core_style) in pairs {
             mapped.insert(key, map_core_to_public(&core_style));
         }
-        merge_inline_fallbacks(&mut mapped, &self.attrs);
         self.style_changed = true;
         self.changed_nodes = mapped.keys().copied().collect();
         self.computed = mapped;
@@ -732,7 +635,9 @@ const fn map_display(display: CoreDisplay) -> Display {
     match display {
         CoreDisplay::Flex => Display::Flex,
         CoreDisplay::Inline => Display::Inline,
-        CoreDisplay::Block | CoreDisplay::Contents => Display::Block,
+        CoreDisplay::Block => Display::Block,
+        CoreDisplay::Contents => Display::Contents,
+        CoreDisplay::None => Display::None,
     }
 }
 

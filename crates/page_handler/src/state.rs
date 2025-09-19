@@ -526,9 +526,15 @@ impl HtmlPage {
     /// Compute layout and forward dirty rectangles to renderer (single frame budget policy)
     fn compute_layout(&mut self, style_changed: bool) -> Result<(), Error> {
         let _span = info_span!("page.compute_layout").entered();
-        // Determine if layout should run based on actual style or material layouter changes
+        // Determine if layout should run based on actual style or material layouter changes,
+        // and also ensure we run at least once if no geometry has been computed yet.
         let has_material_dirty = self.layouter_mirror.mirror_mut().has_material_dirty();
-        let should_layout = style_changed || has_material_dirty;
+        let geometry_empty = self
+            .layouter_mirror
+            .mirror_mut()
+            .compute_layout_geometry()
+            .is_empty();
+        let should_layout = style_changed || has_material_dirty || geometry_empty;
 
         if should_layout {
             // Respect frame budget: run layout at most once per frame window
@@ -670,6 +676,19 @@ impl HtmlPage {
     }
     pub(crate) fn layouter_computed_styles(&self) -> HashMap<js::NodeKey, ComputedStyle> {
         self.layouter_mirror.mirror().computed_styles().clone()
+    }
+
+    /// Ensure a layout pass has been run at least once or if material dirt is pending.
+    /// This synchronous helper is intended for display snapshot code paths that
+    /// cannot await the normal async update loop but need non-empty geometry.
+    pub fn ensure_layout_now(&mut self) {
+        let lay = self.layouter_mirror.mirror_mut();
+        let need = lay.compute_layout_geometry().is_empty() || lay.has_material_dirty();
+        if need {
+            let _ = lay.compute_layout();
+            // Mark that a redraw would be needed if a UI were present.
+            self.needs_redraw = true;
+        }
     }
 
     /// Return a structure-only snapshot for tests: (tags_by_key, element_children).

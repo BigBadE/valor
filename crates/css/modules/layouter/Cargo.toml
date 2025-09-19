@@ -14,3 +14,4 @@ js.workspace = true
 once_cell.workspace = true
 css.workspace = true
 style_engine.workspace = true
+css_text.workspace = true
