@@ -67,6 +67,25 @@ fn apply_typography(computed: &mut style_model::ComputedStyle, decls: &HashMap<S
     if let Some(value) = decls.get("font-family") {
         computed.font_family = Some(value.clone());
     }
+    // Compute line-height: 'normal' -> None; number -> number * font-size; percentage -> resolved;
+    // length (px) -> as-is. Other units not yet supported in this minimal engine.
+    if let Some(raw) = decls.get("line-height") {
+        let trimmed = raw.trim();
+        if trimmed.eq_ignore_ascii_case("normal") {
+            computed.line_height = None;
+        } else if let Some(percent_str) = trimmed.strip_suffix('%') {
+            if let Ok(percent_value) = percent_str.trim().parse::<f32>() {
+                computed.line_height = Some(computed.font_size * (percent_value / 100.0));
+            }
+        } else if let Some(px_str) = trimmed.strip_suffix("px") {
+            if let Ok(pixel_value) = px_str.trim().parse::<f32>() {
+                computed.line_height = Some(pixel_value);
+            }
+        } else if let Ok(number) = trimmed.parse::<f32>() {
+            // Unitless number multiplies element's font-size
+            computed.line_height = Some(number * computed.font_size);
+        }
+    }
 }
 
 /// Parse flex scalars: grow, shrink, basis.

@@ -379,6 +379,9 @@ pub struct ComputedStyle {
     pub flex_shrink: f32,
     pub align_items: AlignItems,
     pub font_size: f32,
+    /// Computed line-height in pixels when specified as a length, or None when 'normal'/auto.
+    /// Follow-up work: wire from `css_core` when available, and support number/percentage.
+    pub line_height: Option<f32>,
     pub overflow: Overflow,
     pub position: Position,
     pub z_index: Option<i32>,
@@ -687,6 +690,7 @@ fn map_core_to_public(core_style: &CoreComputedStyle) -> ComputedStyle {
         flex_shrink: core_style.flex_shrink,
         align_items: map_align_items(core_style.align_items),
         font_size: core_style.font_size,
+        line_height: core_style.line_height,
         overflow: map_overflow(core_style.overflow),
         position: map_position(core_style.position),
         z_index: core_style.z_index,

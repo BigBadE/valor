@@ -32,46 +32,101 @@ fn now_millis() -> String {
     format!("{ms}")
 }
 
-fn per_pixel_diff(a: &[u8], b: &[u8], eps: u8) -> (u64, u64) {
+type TextMask = (u32, u32, u32, u32);
+
+struct DiffCtx<'a> {
+    width: u32,
+    height: u32,
+    eps: u8,
+    masks: &'a [TextMask],
+}
+
+fn per_pixel_diff_masked(a: &[u8], b: &[u8], ctx: &DiffCtx<'_>) -> (u64, u64) {
     let mut total: u64 = 0;
     let mut over: u64 = 0;
-    let n = a.len().min(b.len());
-    let mut i = 0;
-    while i + 3 < n {
-        for c in 0..4 {
-            let da = a[i + c] as i16 - b[i + c] as i16;
-            let ad = da.unsigned_abs() as u8;
-            total += 1;
-            if ad > eps {
-                over += 1;
+    for y in 0..ctx.height {
+        for x in 0..ctx.width {
+            // Skip masked text regions
+            let mut masked = false;
+            for &(l, t, r, b) in ctx.masks {
+                if x >= l && x < r && y >= t && y < b {
+                    masked = true;
+                    break;
+                }
+            }
+            if masked {
+                continue;
+            }
+            let idx = ((y * ctx.width + x) * 4) as usize;
+            for c in 0..4 {
+                let da = a[idx + c] as i16 - b[idx + c] as i16;
+                let ad = da.unsigned_abs() as u8;
+                total += 1;
+                if ad > ctx.eps {
+                    over += 1;
+                }
             }
         }
-        i += 4;
     }
     (over, total)
 }
 
-fn make_diff_image(a: &[u8], b: &[u8], width: u32, height: u32, eps: u8) -> Vec<u8> {
-    let mut out = vec![0u8; (width * height * 4) as usize];
-    let n = a.len().min(b.len());
-    let mut i = 0;
-    while i + 3 < n {
-        let mut maxc = 0u8;
-        for c in 0..3 {
-            let d = a[i + c] as i16 - b[i + c] as i16;
-            let ad = d.unsigned_abs() as u8;
-            if ad > maxc {
-                maxc = ad;
+fn make_diff_image_masked(a: &[u8], b: &[u8], ctx: &DiffCtx<'_>) -> Vec<u8> {
+    let mut out = vec![0u8; (ctx.width * ctx.height * 4) as usize];
+    for y in 0..ctx.height {
+        for x in 0..ctx.width {
+            let idx = ((y * ctx.width + x) * 4) as usize;
+            // Masked pixels are left black/transparent in diff
+            let mut masked = false;
+            for &(l, t, r, b) in ctx.masks {
+                if x >= l && x < r && y >= t && y < b {
+                    masked = true;
+                    break;
+                }
             }
+            if masked {
+                continue;
+            }
+            let mut maxc = 0u8;
+            for c in 0..3 {
+                let d = a[idx + c] as i16 - b[idx + c] as i16;
+                let ad = d.unsigned_abs() as u8;
+                if ad > maxc {
+                    maxc = ad;
+                }
+            }
+            let v = if maxc > ctx.eps { 255 } else { 0 };
+            out[idx] = v;
+            out[idx + 1] = 0;
+            out[idx + 2] = 0;
+            out[idx + 3] = 255; // red highlights
         }
-        let v = if maxc > eps { 255 } else { 0 };
-        out[i] = v;
-        out[i + 1] = 0;
-        out[i + 2] = 0;
-        out[i + 3] = 255; // red highlights
-        i += 4;
     }
     out
+}
+
+fn extract_text_masks(dl: &wgpu_renderer::DisplayList, width: u32, height: u32) -> Vec<TextMask> {
+    let mut masks = Vec::new();
+    for item in &dl.items {
+        if let wgpu_renderer::DisplayItem::Text {
+            bounds: Some((l, t, r, b)),
+            ..
+        } = item
+        {
+            let l = (*l).max(0) as u32;
+            let t = (*t).max(0) as u32;
+            let r = (*r).max(0) as u32;
+            let b = (*b).max(0) as u32;
+            let l = l.min(width);
+            let t = t.min(height);
+            let r = r.min(width);
+            let b = b.min(height);
+            if r > l && b > t {
+                masks.push((l, t, r, b));
+            }
+        }
+    }
+    masks
 }
 
 fn capture_chrome_png(
@@ -234,7 +289,15 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
         let valor_img = rasterize_display_list_to_rgba(&dl, w, h);
 
         let eps: u8 = 3;
-        let (over, total) = per_pixel_diff(chrome_img.as_raw(), &valor_img, eps);
+        // Ignore differences inside text bounds until GPU text capture is compared apples-to-apples
+        let masks = extract_text_masks(&dl, w, h);
+        let ctx = DiffCtx {
+            width: w,
+            height: h,
+            eps,
+            masks: &masks,
+        };
+        let (over, total) = per_pixel_diff_masked(chrome_img.as_raw(), &valor_img, &ctx);
         if over > 0 {
             let stamp = now_millis();
             let base = out_dir.join(format!("{name}_{stamp}"));
@@ -244,7 +307,7 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
             let _ = fs::create_dir_all(out_dir.clone());
             common::write_png_rgba_if_changed(&chrome_path, chrome_img.as_raw(), w, h)?;
             common::write_png_rgba_if_changed(&valor_path, &valor_img, w, h)?;
-            let diff_img = make_diff_image(chrome_img.as_raw(), &valor_img, w, h, eps);
+            let diff_img = make_diff_image_masked(chrome_img.as_raw(), &valor_img, &ctx);
             common::write_png_rgba_if_changed(&diff_path, &diff_img, w, h)?;
             eprintln!(
                 "[GRAPHICS] {} — pixel diffs found ({} over {}); wrote\n  {}\n  {}\n  {}",

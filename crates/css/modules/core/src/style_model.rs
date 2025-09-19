@@ -102,6 +102,8 @@ pub struct ComputedStyle {
     pub border_style: BorderStyle,
     pub border_color: Rgba,
     pub font_size: f32,
+    /// Computed line-height in pixels when specified; None represents 'normal'.
+    pub line_height: Option<f32>,
     pub overflow: Overflow,
     pub position: Position,
     pub z_index: Option<i32>,

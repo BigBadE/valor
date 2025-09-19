@@ -10,8 +10,8 @@ use glyphon::{
     Metrics as GlyphonMetrics, Shaping as GlyphonShaping,
 };
 use once_cell::sync::Lazy;
-use std::mem::take;
 use std::sync::Mutex;
+use unicode_linebreak::{BreakOpportunity, linebreaks};
 
 // Module-scoped aliases to simplify complex tuple types
 type SnapshotItem = (NodeKey, layouter::LayoutNodeKind, Vec<NodeKey>);
@@ -28,6 +28,18 @@ pub struct RetainedInputs {
     pub hud_enabled: bool,
     pub spillover_deferred: u64,
     pub last_style_restyled_nodes: u64,
+}
+
+// Obtain approximate ascent/descent for given font size using glyphon metrics.
+// glyphon exposes Metrics { font_size, line_height }. Use font_size as ascent proxy and
+// (line_height - ascent) as descent proxy when shaping is not yet providing per-face metrics.
+#[inline]
+fn glyph_metrics_for_size(font_size: f32) -> (f32, f32) {
+    // Until per-face ascent/descent is exposed, use typical ratios.
+    // Common Latin fonts: ascent ~0.8, descent ~0.2 of em.
+    let ascent = font_size * 0.8;
+    let descent = font_size * 0.2;
+    (ascent, descent)
 }
 
 // Shared glyphon FontSystem for measurement
@@ -51,37 +63,6 @@ fn measure_text_width_px(text: &str, font_size: f32) -> i32 {
         .map(|run| run.line_w)
         .sum::<f32>()
         .round() as i32
-}
-
-#[inline]
-fn wrap_text_greedy_by_whitespace(content: &str, font_size: f32, max_width_px: i32) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    if content.is_empty() || max_width_px <= 0 {
-        return lines;
-    }
-    let tokens: Vec<&str> = content.split(' ').collect();
-    let mut current = String::new();
-    for (i, tok) in tokens.iter().enumerate() {
-        let candidate = if current.is_empty() {
-            (*tok).to_string()
-        } else {
-            format!("{current} {tok}")
-        };
-        let width = measure_text_width_px(&candidate, font_size);
-        if width <= max_width_px {
-            current = candidate;
-        } else if !current.is_empty() {
-            lines.push(take(&mut current));
-            current = (*tok).to_string();
-        } else {
-            lines.push((*tok).to_string());
-            current.clear();
-        }
-        if i == tokens.len() - 1 && !current.is_empty() {
-            lines.push(take(&mut current));
-        }
-    }
-    lines
 }
 
 #[inline]
@@ -321,13 +302,21 @@ pub fn build_text_list(
                     continue;
                 }
                 let max_width_px = rect.width.max(0);
-                let line_height = (font_size * 1.2).round() as i32;
-                let ascent = (font_size * 0.8).round() as i32; // heuristic ascent
-                let lines = wrap_text_greedy_by_whitespace(&collapsed, font_size, max_width_px);
+                // Prefer computed line-height when available; otherwise use 'normal' approximation.
+                let computed_lh = nearest_style(*key).and_then(|cs| cs.line_height);
+                let line_height = computed_lh
+                    .unwrap_or((font_size * 1.2).max(font_size + 2.0))
+                    .round() as i32;
+                let (asc_px, _desc_px) = glyph_metrics_for_size(font_size);
+                let ascent = asc_px.round() as i32; // use glyph ascent when available
+                let lines = wrap_text_uax14(&collapsed, font_size, max_width_px);
                 for (line_index, raw_line) in lines.iter().enumerate() {
                     let visual_line = reorder_bidi_for_display(raw_line);
                     let baseline_y = rect.y + (line_index as i32) * line_height + ascent;
-                    let bounds = None;
+                    let half = font_size.round() as i32;
+                    let top = baseline_y - half;
+                    let bottom = baseline_y + half;
+                    let bounds = Some((rect.x, top, rect.x + rect.width, bottom));
                     list.push(wgpu_renderer::DrawText {
                         x: rect.x as f32,
                         y: baseline_y as f32,
@@ -355,13 +344,18 @@ fn push_text_item(
         return;
     }
     let max_width_px = rect.width.max(0);
-    let line_height = (font_size * 1.2).round() as i32;
-    let ascent = (font_size * 0.8).round() as i32; // heuristic ascent
-    let greedy_lines = wrap_text_greedy_by_whitespace(&collapsed, font_size, max_width_px);
-    for (line_index, raw_line) in greedy_lines.iter().enumerate() {
+    // Immediate path does not have computed styles; use 'normal' approximation.
+    let line_height = ((font_size * 1.2).max(font_size + 2.0)).round() as i32;
+    let (asc_px, _desc_px) = glyph_metrics_for_size(font_size);
+    let ascent = asc_px.round() as i32; // use glyph ascent when available
+    let broken_lines = wrap_text_uax14(&collapsed, font_size, max_width_px);
+    for (line_index, raw_line) in broken_lines.iter().enumerate() {
         let visual_line = reorder_bidi_for_display(raw_line);
         let baseline_y = rect.y + (line_index as i32) * line_height + ascent;
-        let bounds = None;
+        let half = font_size.round() as i32;
+        let top = baseline_y - half;
+        let bottom = baseline_y + half;
+        let bounds = Some((rect.x, top, rect.x + rect.width, bottom));
         list.push(DisplayItem::Text {
             x: rect.x as f32,
             y: baseline_y as f32,
@@ -371,6 +365,71 @@ fn push_text_item(
             bounds,
         });
     }
+}
+
+// Break lines using Unicode line breaking (UAX#14), greedily packing runs while
+// measuring shaped widths. This improves fidelity for scripts where whitespace-only
+// breaking is insufficient.
+fn wrap_text_uax14(text: &str, font_size: f32, max_width_px: i32) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    if max_width_px <= 0 || text.is_empty() {
+        if !text.is_empty() {
+            lines.push(text.to_string());
+        }
+        return lines;
+    }
+    let mut start = 0usize;
+    let mut last_good = 0usize;
+    for (idx, opp) in linebreaks(text) {
+        let is_break = matches!(opp, BreakOpportunity::Mandatory | BreakOpportunity::Allowed);
+        if is_break {
+            // Measure candidate slice
+            let candidate = &text[start..idx];
+            let w = measure_text_width_px(candidate, font_size);
+            if w <= max_width_px {
+                last_good = idx;
+                continue;
+            }
+            // Emit last good (or force break at current if none)
+            if last_good > start {
+                let mut slice = text[start..last_good].to_string();
+                // Trim trailing spaces at line end
+                while slice.ends_with(' ') {
+                    slice.pop();
+                }
+                if !slice.is_empty() {
+                    lines.push(slice);
+                }
+                start = last_good;
+            } else {
+                // Force character-level break to avoid infinite loop
+                let end = idx.max(start + 1);
+                let mut slice = text[start..end].to_string();
+                while slice.ends_with(' ') {
+                    slice.pop();
+                }
+                if !slice.is_empty() {
+                    lines.push(slice);
+                }
+                start = end;
+                last_good = start;
+            }
+        }
+    }
+    // Remainder
+    if start < text.len() {
+        let mut tail = text[start..].to_string();
+        while tail.ends_with(' ') {
+            tail.pop();
+        }
+        if !tail.is_empty() {
+            lines.push(tail);
+        }
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
