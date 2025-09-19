@@ -307,15 +307,17 @@ pub fn build_text_list(
                 let line_height = computed_lh
                     .unwrap_or((font_size * 1.2).max(font_size + 2.0))
                     .round() as i32;
-                let (asc_px, _desc_px) = glyph_metrics_for_size(font_size);
-                let ascent = asc_px.round() as i32; // use glyph ascent when available
+                let (asc_px, desc_px) = glyph_metrics_for_size(font_size);
+                let ascent = asc_px.round() as i32; // placeholder until face metrics are available
+                let _descent = desc_px.round() as i32;
                 let lines = wrap_text_uax14(&collapsed, font_size, max_width_px);
                 for (line_index, raw_line) in lines.iter().enumerate() {
                     let visual_line = reorder_bidi_for_display(raw_line);
-                    let baseline_y = rect.y + (line_index as i32) * line_height + ascent;
-                    let half = font_size.round() as i32;
-                    let top = baseline_y - half;
-                    let bottom = baseline_y + half;
+                    let line_top = rect.y + (line_index as i32) * line_height;
+                    let baseline_y = line_top + ascent;
+                    // Use line box bounds: top at line_top; bottom at line_top + line_height
+                    let top = line_top;
+                    let bottom = line_top + line_height;
                     let bounds = Some((rect.x, top, rect.x + rect.width, bottom));
                     list.push(wgpu_renderer::DrawText {
                         x: rect.x as f32,
@@ -346,15 +348,16 @@ fn push_text_item(
     let max_width_px = rect.width.max(0);
     // Immediate path does not have computed styles; use 'normal' approximation.
     let line_height = ((font_size * 1.2).max(font_size + 2.0)).round() as i32;
-    let (asc_px, _desc_px) = glyph_metrics_for_size(font_size);
-    let ascent = asc_px.round() as i32; // use glyph ascent when available
+    let (asc_px, desc_px) = glyph_metrics_for_size(font_size);
+    let ascent = asc_px.round() as i32; // placeholder until face metrics are available
+    let _descent = desc_px.round() as i32;
     let broken_lines = wrap_text_uax14(&collapsed, font_size, max_width_px);
     for (line_index, raw_line) in broken_lines.iter().enumerate() {
         let visual_line = reorder_bidi_for_display(raw_line);
-        let baseline_y = rect.y + (line_index as i32) * line_height + ascent;
-        let half = font_size.round() as i32;
-        let top = baseline_y - half;
-        let bottom = baseline_y + half;
+        let line_top = rect.y + (line_index as i32) * line_height;
+        let baseline_y = line_top + ascent;
+        let top = line_top;
+        let bottom = line_top + line_height;
         let bounds = Some((rect.x, top, rect.x + rect.width, bottom));
         list.push(DisplayItem::Text {
             x: rect.x as f32,
