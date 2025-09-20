@@ -73,7 +73,7 @@ pub struct RenderState {
     device: Device,
     queue: Queue,
     size: PhysicalSize<u32>,
-    surface: Surface<'static>,
+    surface: Option<Surface<'static>>,
     surface_format: TextureFormat,
     render_format: TextureFormat,
     pipeline: RenderPipeline,
@@ -107,6 +107,165 @@ pub struct RenderState {
 }
 
 impl RenderState {
+    /// Record all render passes (rectangles + text) into the provided texture view.
+    /// This uses the exact same code paths as `render()`.
+    fn record_draw_passes(&mut self, texture_view: &TextureView, encoder: &mut CommandEncoder) {
+        let use_layers = !self.layers.is_empty();
+        let use_retained = self.retained_display_list.is_some() && !use_layers;
+
+        // Prepare text via glyphon for single-list paths
+        if use_retained {
+            if let Some(dl) = &self.retained_display_list {
+                self.text_list = dl.items.iter().filter_map(map_text_item).collect();
+            }
+            self.glyphon_prepare();
+        } else if !use_layers {
+            // Immediate path uses whatever self.text_list was set to externally
+            self.glyphon_prepare();
+        }
+
+        // First pass: rectangles only
+        {
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("main-pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: texture_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(Color {
+                            r: self.clear_color[0] as f64,
+                            g: self.clear_color[1] as f64,
+                            b: self.clear_color[2] as f64,
+                            a: self.clear_color[3] as f64,
+                        }),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            pass.set_pipeline(&self.pipeline);
+
+            if use_layers {
+                for layer in self.layers.clone().iter() {
+                    match layer {
+                        Layer::Background => continue,
+                        Layer::Content(dl) | Layer::Chrome(dl) => self.draw_layer(&mut pass, dl),
+                    }
+                }
+            } else if use_retained {
+                // Use (or build) cached GPU buffers for retained DL batches.
+                let need_rebuild = if let (Some(prev), Some(cur)) =
+                    (&self.last_retained_list, &self.retained_display_list)
+                {
+                    prev != cur
+                } else {
+                    true
+                };
+                if need_rebuild {
+                    self.rebuild_cached_batches();
+                }
+                self.draw_cached_batches(&mut pass, need_rebuild);
+            } else {
+                // Immediate path: batch all rects into one draw call as before
+                let mut vertices: Vec<Vertex> = Vec::with_capacity(self.display_list.len() * 6);
+                for rect in &self.display_list {
+                    let rgba = [rect.color[0], rect.color[1], rect.color[2], 1.0];
+                    self.push_rect_vertices_ndc(
+                        &mut vertices,
+                        [rect.x, rect.y, rect.width, rect.height],
+                        rgba,
+                    );
+                }
+                let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
+                let vertex_buffer = self.device.create_buffer_init(&util::BufferInitDescriptor {
+                    label: Some("rect-vertices"),
+                    contents: vertex_bytes,
+                    usage: BufferUsages::VERTEX,
+                });
+                self.vertex_buffer = vertex_buffer;
+                self.vertex_count = vertices.len() as u32;
+                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                if self.vertex_count > 0 {
+                    pass.draw(0..self.vertex_count, 0..1);
+                }
+            }
+        }
+
+        // Second pass: text rendering
+        {
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("text-pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: texture_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        // Keep rects, draw text on top
+                        load: LoadOp::Load,
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            if use_layers {
+                let layer_texts = collect_layer_texts(&self.layers);
+                for layer_text in layer_texts.into_iter() {
+                    self.glyphon_prepare_for(&layer_text);
+                    pass.set_viewport(
+                        0.0,
+                        0.0,
+                        self.size.width as f32,
+                        self.size.height as f32,
+                        0.0,
+                        1.0,
+                    );
+                    pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
+                    let _ = self
+                        .text_renderer
+                        .render(&self.text_atlas, &self.viewport, &mut pass);
+                }
+            } else if use_retained {
+                if let Some(dl) = &self.retained_display_list {
+                    self.text_list = dl.items.iter().filter_map(map_text_item).collect();
+                }
+                self.glyphon_prepare();
+                pass.set_viewport(
+                    0.0,
+                    0.0,
+                    self.size.width as f32,
+                    self.size.height as f32,
+                    0.0,
+                    1.0,
+                );
+                pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
+                let _ = self
+                    .text_renderer
+                    .render(&self.text_atlas, &self.viewport, &mut pass);
+            } else {
+                // Immediate path: use whatever self.text_list was set to externally
+                self.glyphon_prepare();
+                pass.set_viewport(
+                    0.0,
+                    0.0,
+                    self.size.width as f32,
+                    self.size.height as f32,
+                    0.0,
+                    1.0,
+                );
+                pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
+                let _ = self
+                    .text_renderer
+                    .render(&self.text_atlas, &self.viewport, &mut pass);
+            }
+        }
+    }
     #[inline]
     fn push_rect_vertices_ndc(&self, out: &mut Vec<Vertex>, rect_xywh: [f32; 4], color: [f32; 4]) {
         let fw = self.size.width.max(1) as f32;
@@ -238,9 +397,16 @@ impl RenderState {
 
     /// Create the GPU device/surface and initialize a simple render pipeline.
     pub async fn new(window: Arc<Window>) -> RenderState {
-        let instance = Instance::new(&InstanceDescriptor::default());
+        let instance = Instance::new(&InstanceDescriptor {
+            backends: Backends::DX12 | Backends::GL,
+            ..Default::default()
+        });
         let adapter = instance
-            .request_adapter(&RequestAdapterOptions::default())
+            .request_adapter(&RequestAdapterOptions {
+                power_preference: Default::default(),
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
             .await
             .unwrap();
         let (device, queue) = adapter
@@ -250,24 +416,42 @@ impl RenderState {
 
         let size = window.inner_size();
 
-        let surface = instance.create_surface(window.clone()).unwrap();
-        let capabilities = surface.get_capabilities(&adapter);
-        let surface_format = capabilities.formats[0];
-        let render_format = surface_format.add_srgb_suffix();
-
-        // Configure the surface before creating the pipeline
-        let surface_config = SurfaceConfiguration {
-            usage: TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
-            // Request compatibility with the sRGB-format texture view we are going to create later.
-            view_formats: vec![render_format],
-            alpha_mode: CompositeAlphaMode::Auto,
-            width: size.width,
-            height: size.height,
-            desired_maximum_frame_latency: 2,
-            present_mode: PresentMode::AutoVsync,
-        };
-        surface.configure(&device, &surface_config);
+        // Try to create a surface; if capabilities are empty, fall back to offscreen mode.
+        let (surface_opt, surface_format, render_format) =
+            match instance.create_surface(window.clone()) {
+                Ok(surface) => {
+                    let capabilities = surface.get_capabilities(&adapter);
+                    if capabilities.formats.is_empty() {
+                        // Headless path: no surface formats available
+                        (
+                            None,
+                            TextureFormat::Rgba8Unorm,
+                            TextureFormat::Rgba8UnormSrgb,
+                        )
+                    } else {
+                        let sfmt = capabilities.formats[0];
+                        let rfmt = sfmt.add_srgb_suffix();
+                        // Configure the surface before creating the pipeline
+                        let surface_config = SurfaceConfiguration {
+                            usage: TextureUsages::RENDER_ATTACHMENT,
+                            format: sfmt,
+                            view_formats: vec![rfmt],
+                            alpha_mode: CompositeAlphaMode::Auto,
+                            width: size.width,
+                            height: size.height,
+                            desired_maximum_frame_latency: 2,
+                            present_mode: PresentMode::AutoVsync,
+                        };
+                        surface.configure(&device, &surface_config);
+                        (Some(surface), sfmt, rfmt)
+                    }
+                }
+                Err(_) => (
+                    None,
+                    TextureFormat::Rgba8Unorm,
+                    TextureFormat::Rgba8UnormSrgb,
+                ),
+            };
 
         // Build pipeline and buffers now that formats are known
         let (pipeline, vertex_buffer, vertex_count) =
@@ -301,7 +485,7 @@ impl RenderState {
             device,
             queue,
             size,
-            surface,
+            surface: surface_opt,
             surface_format,
             render_format,
             pipeline,
@@ -354,7 +538,9 @@ impl RenderState {
             desired_maximum_frame_latency: 2,
             present_mode: PresentMode::AutoVsync,
         };
-        self.surface.configure(&self.device, &surface_config);
+        if let Some(s) = &self.surface {
+            s.configure(&self.device, &surface_config);
+        }
     }
 
     /// Handle window resize and reconfigure the surface.
@@ -560,172 +746,110 @@ impl RenderState {
     /// Render a frame by clearing and drawing quads from the current display list.
     pub fn render(&mut self) -> Result<(), anyhow::Error> {
         let _span = info_span!("renderer.render").entered();
-        let use_layers = !self.layers.is_empty();
-        let use_retained = self.retained_display_list.is_some() && !use_layers;
-        let surface_texture = self.surface.get_current_texture()?;
+        let surface = self
+            .surface
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no surface available for on-screen render"))?;
+        let surface_texture = surface.get_current_texture()?;
         let texture_view = surface_texture.texture.create_view(&TextureViewDescriptor {
             format: Some(self.render_format),
             ..Default::default()
         });
-
-        // Prepare text via glyphon for single-list paths
-        if use_retained {
-            if let Some(dl) = &self.retained_display_list {
-                self.text_list = dl.items.iter().filter_map(map_text_item).collect();
-            }
-            self.glyphon_prepare();
-        } else if !use_layers {
-            // Immediate path uses whatever self.text_list was set to externally
-            self.glyphon_prepare();
-        }
-
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        // First pass: rectangles only
-        {
-            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("main-pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &texture_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(Color {
-                            r: self.clear_color[0] as f64,
-                            g: self.clear_color[1] as f64,
-                            b: self.clear_color[2] as f64,
-                            a: self.clear_color[3] as f64,
-                        }),
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            pass.set_pipeline(&self.pipeline);
-
-            if use_layers {
-                for layer in self.layers.clone().iter() {
-                    match layer {
-                        Layer::Background => continue,
-                        Layer::Content(dl) | Layer::Chrome(dl) => self.draw_layer(&mut pass, dl),
-                    }
-                }
-            } else if use_retained {
-                // Use (or build) cached GPU buffers for retained DL batches.
-                let need_rebuild = if let (Some(prev), Some(cur)) =
-                    (&self.last_retained_list, &self.retained_display_list)
-                {
-                    prev != cur
-                } else {
-                    true
-                };
-                if need_rebuild {
-                    self.rebuild_cached_batches();
-                }
-                self.draw_cached_batches(&mut pass, need_rebuild);
-            } else {
-                // Immediate path: batch all rects into one draw call as before
-                let mut vertices: Vec<Vertex> = Vec::with_capacity(self.display_list.len() * 6);
-                for rect in &self.display_list {
-                    let rgba = [rect.color[0], rect.color[1], rect.color[2], 1.0];
-                    self.push_rect_vertices_ndc(
-                        &mut vertices,
-                        [rect.x, rect.y, rect.width, rect.height],
-                        rgba,
-                    );
-                }
-                let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
-                let vertex_buffer = self.device.create_buffer_init(&util::BufferInitDescriptor {
-                    label: Some("rect-vertices"),
-                    contents: vertex_bytes,
-                    usage: BufferUsages::VERTEX,
-                });
-                self.vertex_buffer = vertex_buffer;
-                self.vertex_count = vertices.len() as u32;
-                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                if self.vertex_count > 0 {
-                    pass.draw(0..self.vertex_count, 0..1);
-                }
-            }
-        }
-
-        // Second pass: text rendering
-        {
-            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("text-pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &texture_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations {
-                        // Keep rects, draw text on top
-                        load: LoadOp::Load,
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            if use_layers {
-                let layer_texts = collect_layer_texts(&self.layers);
-                for layer_text in layer_texts.into_iter() {
-                    self.glyphon_prepare_for(&layer_text);
-                    pass.set_viewport(
-                        0.0,
-                        0.0,
-                        self.size.width as f32,
-                        self.size.height as f32,
-                        0.0,
-                        1.0,
-                    );
-                    pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
-                    let _ = self
-                        .text_renderer
-                        .render(&self.text_atlas, &self.viewport, &mut pass);
-                }
-            } else if use_retained {
-                if let Some(dl) = &self.retained_display_list {
-                    self.text_list = dl.items.iter().filter_map(map_text_item).collect();
-                }
-                self.glyphon_prepare();
-                pass.set_viewport(
-                    0.0,
-                    0.0,
-                    self.size.width as f32,
-                    self.size.height as f32,
-                    0.0,
-                    1.0,
-                );
-                pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
-                let _ = self
-                    .text_renderer
-                    .render(&self.text_atlas, &self.viewport, &mut pass);
-            } else {
-                // Immediate path: use whatever self.text_list was set to externally
-                self.glyphon_prepare();
-                pass.set_viewport(
-                    0.0,
-                    0.0,
-                    self.size.width as f32,
-                    self.size.height as f32,
-                    0.0,
-                    1.0,
-                );
-                pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
-                let _ = self
-                    .text_renderer
-                    .render(&self.text_atlas, &self.viewport, &mut pass);
-            }
-        }
-
+        self.record_draw_passes(&texture_view, &mut encoder);
         self.queue.submit([encoder.finish()]);
         self.window.pre_present_notify();
         surface_texture.present();
         Ok(())
+    }
+
+    /// Render a frame and return the framebuffer RGBA bytes using the exact same drawing path.
+    pub fn render_to_rgba(&mut self) -> Result<Vec<u8>, anyhow::Error> {
+        // Always render to an offscreen texture so we can COPY_SRC safely.
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+
+        let offscreen = self.device.create_texture(&TextureDescriptor {
+            label: Some("offscreen-target"),
+            size: Extent3d {
+                width: self.size.width,
+                height: self.size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: self.render_format,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = offscreen.create_view(&TextureViewDescriptor {
+            format: Some(self.render_format),
+            ..Default::default()
+        });
+        self.record_draw_passes(&view, &mut encoder);
+
+        // Read back with 256-byte aligned rows
+        let width = self.size.width;
+        let height = self.size.height;
+        let bpp = 4u32;
+        let row_bytes = width * bpp;
+        let padded_bpr = row_bytes.div_ceil(256) * 256;
+        let buffer_size = (padded_bpr as u64) * (height as u64);
+        let readback = self.device.create_buffer(&BufferDescriptor {
+            label: Some("render-readback"),
+            size: buffer_size,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            TexelCopyTextureInfo {
+                texture: &offscreen,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bpr),
+                    rows_per_image: Some(height),
+                },
+            },
+            Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        self.queue.submit([encoder.finish()]);
+
+        // Map and repack into tightly packed RGBA
+        let slice = readback.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(MapMode::Read, move |res| {
+            let _ = sender.send(res);
+        });
+        loop {
+            let _ = self.device.poll(wgpu::PollType::Wait);
+            if let Ok(res) = receiver.try_recv() {
+                res?;
+                break;
+            }
+        }
+        let mapped = slice.get_mapped_range();
+        let mut out = vec![0u8; (row_bytes as usize) * (height as usize)];
+        for row in 0..height as usize {
+            let src_off = row * (padded_bpr as usize);
+            let dst_off = row * (row_bytes as usize);
+            out[dst_off..dst_off + (row_bytes as usize)]
+                .copy_from_slice(&mapped[src_off..src_off + (row_bytes as usize)]);
+        }
+        drop(mapped);
+        readback.unmap();
+
+        Ok(out)
     }
 }
 

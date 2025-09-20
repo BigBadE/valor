@@ -6,8 +6,14 @@ use headless_chrome::{
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 use wgpu_renderer::display_list::batch_display_list;
+use winit::dpi::PhysicalSize;
+use winit::event_loop::EventLoop;
+#[cfg(target_os = "windows")]
+use winit::platform::windows::EventLoopBuilderExtWindows;
+use winit::window::Window;
 
 mod common;
 
@@ -176,47 +182,50 @@ fn build_valor_display_list_for(
     Ok(wgpu_renderer::DisplayList::from_items(items))
 }
 
+static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+static RENDER_STATE: OnceLock<Mutex<wgpu_renderer::state::RenderState>> = OnceLock::new();
+static WINDOW: OnceLock<Arc<Window>> = OnceLock::new();
+
 fn rasterize_display_list_to_rgba(
     dl: &wgpu_renderer::DisplayList,
     width: u32,
     height: u32,
 ) -> Vec<u8> {
-    // Simple CPU rasterizer for solid rects with alpha; text is currently ignored in DL batching
-    let mut out = vec![255u8; (width * height * 4) as usize]; // white background
-    let batches = batch_display_list(dl, width, height);
-    for b in batches.into_iter() {
-        // Determine scissor box
-        let (sx, sy, sw, sh) = b.scissor.unwrap_or((0, 0, width, height));
-        let sx1 = (sx + sw).min(width);
-        let sy1 = (sy + sh).min(height);
-        for q in b.quads.iter() {
-            let x0 = q.x.max(sx as f32).floor().max(0.0) as u32;
-            let y0 = q.y.max(sy as f32).floor().max(0.0) as u32;
-            let x1 = (q.x + q.width).ceil().min(sx1 as f32).max(0.0) as u32;
-            let y1 = (q.y + q.height).ceil().min(sy1 as f32).max(0.0) as u32;
-            let sr = (q.color[0].clamp(0.0, 1.0) * 255.0).round() as u8;
-            let sg = (q.color[1].clamp(0.0, 1.0) * 255.0).round() as u8;
-            let sb = (q.color[2].clamp(0.0, 1.0) * 255.0).round() as u8;
-            let sa = (q.color[3].clamp(0.0, 1.0) * 255.0).round() as u8;
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let idx = ((y * width + x) * 4) as usize;
-                    // Alpha blend src over dst in sRGB byte space (approximate)
-                    let da = out[idx + 3];
-                    let inv_a = 255u16.saturating_sub(sa as u16);
-                    out[idx] =
-                        (((sr as u16) * (sa as u16) + (out[idx] as u16) * inv_a) / 255) as u8;
-                    out[idx + 1] =
-                        (((sg as u16) * (sa as u16) + (out[idx + 1] as u16) * inv_a) / 255) as u8;
-                    out[idx + 2] =
-                        (((sb as u16) * (sa as u16) + (out[idx + 2] as u16) * inv_a) / 255) as u8;
-                    out[idx + 3] = 255u8
-                        .saturating_sub(((255u16 - da as u16) * (255u16 - sa as u16) / 255) as u8);
-                }
+    // Initialize single runtime
+    let rt = RUNTIME
+        .get_or_init(|| tokio::runtime::Runtime::new().expect("tokio runtime"));
+
+    // Initialize single hidden window + RenderState once, then reuse and resize per render
+    let state_mutex = RENDER_STATE.get_or_init(|| {
+        // Create a hidden window using a temporary EventLoop, then drop the loop.
+        #[allow(deprecated)]
+        let window = {
+            let mut builder = EventLoop::<()>::builder();
+            #[cfg(target_os = "windows")]
+            {
+                let _ = builder.with_any_thread(true);
             }
-        }
-    }
-    out
+            let el = builder.build().expect("failed to create event loop");
+            el.create_window(
+                Window::default_attributes()
+                    .with_visible(false)
+                    .with_inner_size(PhysicalSize::new(width, height)),
+            )
+            .expect("failed to create hidden window")
+        };
+        let window = Arc::new(window);
+        let _ = WINDOW.set(window.clone());
+        let state = rt.block_on(wgpu_renderer::state::RenderState::new(window));
+        Mutex::new(state)
+    });
+
+    let mut state = state_mutex.lock().expect("lock render state");
+    // Ensure size matches current request
+    state.resize(PhysicalSize::new(width, height));
+    state.set_retained_display_list(dl.clone());
+    state
+        .render_to_rgba()
+        .expect("gpu render_to_rgba failed")
 }
 
 #[test]
@@ -298,7 +307,10 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
             masks: &masks,
         };
         let (over, total) = per_pixel_diff_masked(chrome_img.as_raw(), &valor_img, &ctx);
-        if over > 0 {
+        let diff_ratio = (over as f64) / (total as f64);
+        // Allow a small tolerance for GPU AA/rounding differences
+        let allowed = 0.010; // 1.0%
+        if diff_ratio > allowed {
             let stamp = now_millis();
             let base = out_dir.join(format!("{name}_{stamp}"));
             let chrome_path = base.with_extension("chrome.png");
@@ -310,15 +322,25 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
             let diff_img = make_diff_image_masked(chrome_img.as_raw(), &valor_img, &ctx);
             common::write_png_rgba_if_changed(&diff_path, &diff_img, w, h)?;
             eprintln!(
-                "[GRAPHICS] {} — pixel diffs found ({} over {}); wrote\n  {}\n  {}\n  {}",
+                "[GRAPHICS] {} — pixel diffs found ({} over {}, {:.4}%); wrote\n  {}\n  {}\n  {}",
                 name,
                 over,
                 total,
+                diff_ratio * 100.0,
                 chrome_path.display(),
                 valor_path.display(),
                 diff_path.display()
             );
             any_failed = true;
+        } else if over > 0 {
+            eprintln!(
+                "[GRAPHICS] {} — pixel diffs under tolerance ({} over {}, {:.4}% <= {:.2}%); accepting",
+                name,
+                over,
+                total,
+                diff_ratio * 100.0,
+                allowed * 100.0
+            );
         }
     }
 

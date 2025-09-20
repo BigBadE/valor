@@ -1,6 +1,7 @@
 use crate::snapshots::IRect;
 use css::layout_helpers::{collapse_whitespace, reorder_bidi_for_display};
 use js::NodeKey;
+use log::warn;
 use std::collections::HashMap;
 use wgpu_renderer::{DisplayItem, DisplayList};
 
@@ -30,16 +31,65 @@ pub struct RetainedInputs {
     pub last_style_restyled_nodes: u64,
 }
 
-// Obtain approximate ascent/descent for given font size using glyphon metrics.
-// glyphon exposes Metrics { font_size, line_height }. Use font_size as ascent proxy and
-// (line_height - ascent) as descent proxy when shaping is not yet providing per-face metrics.
+// Attempt to derive ascent/descent from the actual shaped line content. At this pinned
+// glyphon/cosmic-text revision, we can access run glyphs and their cache keys to obtain
+// a font_id; however, resolving that id into per-face metrics is not available via a stable
+// public API here. As a result, we currently fall back to a safe heuristic while keeping the
+// shaping of the real line content in one place to swap in true metrics when available.
 #[inline]
-fn glyph_metrics_for_size(font_size: f32) -> (f32, f32) {
-    // Until per-face ascent/descent is exposed, use typical ratios.
-    // Common Latin fonts: ascent ~0.8, descent ~0.2 of em.
-    let ascent = font_size * 0.8;
-    let descent = font_size * 0.2;
-    (ascent, descent)
+fn derive_line_metrics_from_content(
+    line_text: &str,
+    font_size: f32,
+) -> (f32, f32, f32, Option<f32>) {
+    if line_text.is_empty() {
+        // Nothing to measure; avoid shaping overhead.
+        return (font_size * 0.8, font_size * 0.2, 0.0, None);
+    }
+    let mut fs = GLYPHON_FONT_SYSTEM
+        .lock()
+        .expect("glyphon font system lock poisoned");
+    let metrics = GlyphonMetrics::new(font_size, font_size);
+    let mut buffer = GlyphonBuffer::new(&mut fs, metrics);
+    let attrs = GlyphonAttrs::new();
+    buffer.set_text(&mut fs, line_text, &attrs, GlyphonShaping::Advanced);
+    // Probe the first run/glyph to obtain the font_id being used for this content.
+    // Keep this in case future versions allow resolving face metrics via font_id.
+    let first_run = match buffer.layout_runs().next() {
+        Some(r) => r,
+        None => {
+            warn!(
+                "glyph metrics fallback: no runs; using heuristic; content='{}' size={}",
+                line_text, font_size
+            );
+            return (font_size * 0.8, font_size * 0.2, 0.0, None);
+        }
+    };
+    let glyph = match first_run.glyphs.first() {
+        Some(g) => g,
+        None => {
+            warn!(
+                "glyph metrics fallback: no glyphs; using heuristic; content='{}' size={}",
+                line_text, font_size
+            );
+            return (font_size * 0.8, font_size * 0.2, 0.0, None);
+        }
+    };
+    // We have access to glyph.font_id, but at this revision we compute used line-height
+    // from the shaped glyph's optional line height when present, and fall back to heuristic
+    // ascent/descent ratios. This keeps us consistent with the buffer's shaping.
+    let used_line_height_opt = glyph.line_height_opt;
+    let ascent_px = font_size * 0.8;
+    let descent_px = font_size * 0.2;
+    if used_line_height_opt.is_none() {
+        warn!(
+            "glyph metrics fallback: no glyph line_height; using heuristic; content='{}' size={}",
+            line_text, font_size
+        );
+    }
+    let leading_px = used_line_height_opt
+        .map(|lh| (lh - (ascent_px + descent_px)).max(0.0))
+        .unwrap_or(0.0);
+    (ascent_px, descent_px, leading_px, used_line_height_opt)
 }
 
 // Shared glyphon FontSystem for measurement
@@ -302,12 +352,16 @@ pub fn build_text_list(
                     continue;
                 }
                 let max_width_px = rect.width.max(0);
-                // Prefer computed line-height when available; otherwise use 'normal' approximation.
+                // Prefer computed line-height when available; otherwise use real metrics if available.
+                let (asc_px, desc_px, lead_px, lh_from_glyph) =
+                    derive_line_metrics_from_content(&collapsed, font_size);
                 let computed_lh = nearest_style(*key).and_then(|cs| cs.line_height);
-                let line_height = computed_lh
-                    .unwrap_or((font_size * 1.2).max(font_size + 2.0))
-                    .round() as i32;
-                let (asc_px, desc_px) = glyph_metrics_for_size(font_size);
+                let used_line_height = computed_lh.or(lh_from_glyph).unwrap_or_else(|| {
+                    // Spec-like normal using metrics; keep a minimum padding to avoid clip.
+                    let sum = asc_px + desc_px + lead_px;
+                    sum.max(font_size + 2.0)
+                });
+                let line_height = used_line_height.round() as i32;
                 let ascent = asc_px.round() as i32; // placeholder until face metrics are available
                 let _descent = desc_px.round() as i32;
                 let lines = wrap_text_uax14(&collapsed, font_size, max_width_px);
@@ -346,9 +400,12 @@ fn push_text_item(
         return;
     }
     let max_width_px = rect.width.max(0);
-    // Immediate path does not have computed styles; use 'normal' approximation.
-    let line_height = ((font_size * 1.2).max(font_size + 2.0)).round() as i32;
-    let (asc_px, desc_px) = glyph_metrics_for_size(font_size);
+    // Immediate path does not have computed styles; prefer glyph-provided line height.
+    let (asc_px, desc_px, lead_px, lh_from_glyph) =
+        derive_line_metrics_from_content(&collapsed, font_size);
+    let used_line_height =
+        lh_from_glyph.unwrap_or_else(|| (asc_px + desc_px + lead_px).max(font_size + 2.0));
+    let line_height = used_line_height.round() as i32;
     let ascent = asc_px.round() as i32; // placeholder until face metrics are available
     let _descent = desc_px.round() as i32;
     let broken_lines = wrap_text_uax14(&collapsed, font_size, max_width_px);

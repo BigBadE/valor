@@ -11,3 +11,4 @@ anyhow.workspace = true
 bytemuck.workspace = true
 glyphon.workspace = true
 tracing.workspace = true
+pollster = "0.3"
