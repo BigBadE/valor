@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>box: basic vertical margin collapsing</title>
+<style>
+  .wrap {
+    width: 300px;
+    padding: 0;
+    border: 0;
+    margin: 0;
+    background: #f7f7f7;
+  }
+  .block {
+    width: 100px;
+    height: 20px;
+    margin: 10px 0 15px 0; /* top 10, bottom 15 */
+    background: #ddd;
+  }
+</style>
+<div class="wrap">
+  <div id="one" class="block">one</div>
+  <div id="two" class="block">two</div>
+</div>

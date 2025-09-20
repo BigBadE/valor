@@ -34,14 +34,17 @@ Out of scope (for now):
 
 ## Parsing/Algorithms overview
 - Parsing: `display` handled in `apply_layout_keywords()` with tolerant keyword matching.
-- Box generation helper: `layouter::box_tree::flatten_display_children()` exists for display-aware child lists (none/contents), but is currently configured as a pass-through to preserve the graphics test baseline. It can be re-enabled when fixtures and comparer are prepared to account for the geometry changes.
+- Box generation helper: `layouter::box_tree::flatten_display_children()` actively applies display-aware child selection:
+  - Skips `display:none` subtrees entirely.
+  - Lifts children of `display:contents` nodes.
+  - Returns other nodes as-is; inline handling remains a future step in the inline layout module.
 
 ## Integration
 - Upstream:
   - `css_core` computes `ComputedStyle.display`.
   - Mapped to public `style_engine::Display` in `map_display()`.
 - Downstream:
-  - `Layouter` wires a `box_tree` hook for potential display-aware child flattening. For now it returns raw children to keep golden images stable; enable once dedicated fixtures are un-XFAILed.
+  - `Layouter` uses `box_tree::flatten_display_children()` when selecting child lists for block layout, so `display:none` and `display:contents` are effective during layout.
 
 ## Future work
 - Build explicit formatting tree and migrate flattening to a display/box tree builder stage.

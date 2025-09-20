@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- VALOR_XFAIL: parent border-box height nuances with auto height and margin interplay under content-box; tracked in box/spec.md -->
+<meta charset="utf-8" />
+<title>box: margins, padding, borders</title>
+<style>
+  .container {
+    width: 400px;
+    height: auto;
+    padding: 10px 20px;
+    border: 5px solid black;
+    margin: 8px 12px 16px 4px;
+    box-sizing: content-box; /* child metrics should subtract padding+border */
+    background: #eee;
+  }
+  .child {
+    width: 200px;
+    height: 40px;
+    margin: 6px 7px 8px 9px;
+    padding: 3px 4px 5px 6px;
+    border: 2px solid #333;
+    background: #ccc;
+  }
+</style>
+<div id="root" class="container">
+  <div id="a" class="child">A</div>
+  <div id="b" class="child" style="margin-left:-10px">B</div>
+</div>

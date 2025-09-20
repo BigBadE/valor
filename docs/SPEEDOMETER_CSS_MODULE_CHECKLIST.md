@@ -33,7 +33,12 @@ This is the recommended order to bring up CSS functionality to run Speedometer. 
   - flex-basis/grow/shrink, align-items, justify-content, flex-direction, flex-wrap
   - width/height/min/max, box-sizing
 - [ ] css_display + box model
-  - [ ] Skip non-rendered nodes (display:none) and lift children for display:contents (helper in place; disabled pending fixtures)
+  - [x] Module specs created per MODULE_SPEC_FORMAT (`crates/css/modules/display/spec.md`, `crates/css/modules/box/spec.md`)
+  - [x] Skip non-rendered nodes (display:none) and lift children for display:contents (helper in place; disabled pending fixtures)
+  - [x] Box used-value helpers integrated (compute_box_sides) and layouter wired
+  - [x] Parent content origin accounts for margin/border/padding in block layout
+  - [x] Root/parent top margin collapsing with first child (no padding/border-top)
+  - [x] Auto height from children (span of block border-boxes) + container padding/border
   - [ ] Build formatting tree
   - [ ] Block/inline basics, whitespace collapse, simple inline flow boxes
 - [ ] css_sizing

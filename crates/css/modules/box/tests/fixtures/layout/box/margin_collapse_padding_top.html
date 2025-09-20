@@ -1,0 +1,17 @@
+<!doctype html>
+<!-- VALOR_XFAIL: parent has padding-top; top margin must NOT collapse with first child -->
+<meta charset="utf-8" />
+<title>box: no top collapse when parent has padding-top</title>
+<style>
+  .wrap {
+    width: 300px;
+    padding-top: 10px;
+    border: 0;
+    margin: 0;
+    background: #f7f7f7;
+  }
+  .block { width: 100px; height: 20px; margin: 10px 0 0 0; background: #ddd; }
+</style>
+<div class="wrap">
+  <div id="one" class="block">one</div>
+</div>

@@ -6,6 +6,7 @@ mod box_tree;
 mod sizing;
 
 use crate::sizing::{used_border_box_height, used_border_box_width};
+use css_box::compute_box_sides;
 use anyhow::Error;
 use core::mem::take;
 use core::sync::atomic::{Ordering, compiler_fence};
@@ -241,14 +242,15 @@ impl Layouter {
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
 
-        let padding_left = root_style.padding.left.max(0.0f32) as i32;
-        let padding_right = root_style.padding.right.max(0.0f32) as i32;
-        let padding_top = root_style.padding.top.max(0.0f32) as i32;
-        let border_left = root_style.border_width.left.max(0.0f32) as i32;
-        let border_right = root_style.border_width.right.max(0.0f32) as i32;
-        let border_top = root_style.border_width.top.max(0.0f32) as i32;
-        let margin_left = root_style.margin.left as i32;
-        let margin_top = root_style.margin.top as i32;
+        let sides = compute_box_sides(&root_style);
+        let padding_left = sides.padding_left;
+        let padding_right = sides.padding_right;
+        let padding_top = sides.padding_top;
+        let border_left = sides.border_left;
+        let border_right = sides.border_right;
+        let border_top = sides.border_top;
+        let margin_left = sides.margin_left;
+        let margin_top = sides.margin_top;
 
         // CSS 2.2 §8.1 Box model: margins lie outside the border.
         // CSS 2.2 §10.1 Containing block: the content/padding edge forms the containing block,
@@ -298,37 +300,48 @@ impl Layouter {
 
         let (reflowed_count, content_height) = self.layout_block_children(root, &metrics);
 
-        // CSS 2.2 §8.3.1 Collapsing margins:
-        // The top margin of a box and the top margin of its first in-flow block-level child
-        // collapse if the parent has no top border or padding.
-        // We model this by offsetting the root's Y by the positive part of the collapsed margin,
-        // and by not counting that offset in the root's used height.
-        let first_child_top_collapse_pos = if metrics.padding_top == 0i32
-            && metrics.border_top == 0i32
-            && let Some(child_list) = self.children.get(&root)
-            && let Some(&first_child) = child_list
-                .iter()
-                .find(|&&key| matches!(self.nodes.get(&key), Some(&LayoutNodeKind::Block { .. })))
-        {
-            let first_style = self
-                .computed_styles
-                .get(&first_child)
-                .cloned()
-                .unwrap_or_else(ComputedStyle::default);
-            let collapsed =
-                Self::collapse_margins_pair(metrics.margin_top, first_style.margin.top as i32);
-            collapsed.max(0i32)
-        } else {
-            0i32
-        };
+        // CSS 2.2 §8.3.1 Collapsing margins at the top of the root:
+        // If there is no border-top/padding-top, the parent's top margin can collapse with the
+        // first in-flow block child's top margin. Otherwise, the parent's own margin-top offset applies.
+        let mut root_y = metrics.margin_top;
+        if metrics.padding_top == 0i32 && metrics.border_top == 0i32 {
+            if let Some(child_list) = self.children.get(&root) {
+                if let Some(&first_child) = child_list
+                    .iter()
+                    .find(|&&key| matches!(self.nodes.get(&key), Some(&LayoutNodeKind::Block { .. })))
+                {
+                    let first_style = self
+                        .computed_styles
+                        .get(&first_child)
+                        .cloned()
+                        .unwrap_or_else(ComputedStyle::default);
+                    let collapsed =
+                        Self::collapse_margins_pair(metrics.margin_top, first_style.margin.top as i32);
+                    root_y = collapsed.max(0i32);
+                }
+            }
+        }
 
-        // Update root rect y/height with the computed adjustments
+        // Border-box height: content height plus padding and border on both sides.
+        let root_style = self
+            .computed_styles
+            .get(&root)
+            .cloned()
+            .unwrap_or_else(ComputedStyle::default);
+        let padding_bottom = root_style.padding.bottom.max(0.0f32) as i32;
+        let border_bottom = root_style.border_width.bottom.max(0.0f32) as i32;
+        let root_height_border_box = content_height
+            .saturating_add(metrics.padding_top)
+            .saturating_add(padding_bottom)
+            .saturating_add(metrics.border_top)
+            .saturating_add(border_bottom)
+            .max(0i32);
+
+        // Update root rect (border-box): position is shifted by margin-left/top; width already set earlier.
         if let Some(root_rect) = self.rects.get_mut(&root) {
-            root_rect.y = first_child_top_collapse_pos;
-            // Exclude the positive collapsed top margin from the root's used height.
-            root_rect.height = content_height
-                .saturating_sub(first_child_top_collapse_pos)
-                .max(0i32);
+            root_rect.x = metrics.margin_left;
+            root_rect.y = root_y;
+            root_rect.height = root_height_border_box;
         }
 
         self.perf_nodes_reflowed_last = reflowed_count as u64;
@@ -350,6 +363,7 @@ impl Layouter {
     fn layout_block_children(&mut self, root: NodeKey, metrics: &ContainerMetrics) -> (usize, i32) {
         let mut reflowed_count = 0usize;
         let mut y_cursor: i32 = 0;
+        let mut first_collapsed_top_positive: i32 = 0;
         // Select children while honoring display generation: skip `display:none`,
         // and treat `display:contents` as passthrough by lifting its children.
         let child_list =
@@ -373,11 +387,25 @@ impl Layouter {
                 let (computed_height, y_position, margin_bottom) =
                     self.layout_one_block_child(child_key, ctx);
                 reflowed_count = reflowed_count.saturating_add(1);
-                y_cursor = y_position.saturating_add(computed_height);
+                let parent_content_origin_y = metrics
+                    .margin_top
+                    .saturating_add(metrics.border_top)
+                    .saturating_add(metrics.padding_top);
+                y_cursor = y_position
+                    .saturating_sub(parent_content_origin_y)
+                    .saturating_add(computed_height);
+                // Record the positive collapsed top margin absorbed at the top edge (index 0)
+                if index == 0 && metrics.padding_top == 0 && metrics.border_top == 0 {
+                    // The amount added to y_position beyond parent_content_origin_y is the collapsed positive.
+                    let added = y_position.saturating_sub(parent_content_origin_y);
+                    first_collapsed_top_positive = first_collapsed_top_positive.max(added.max(0));
+                }
                 previous_bottom_margin = margin_bottom;
             }
         }
-        (reflowed_count, y_cursor)
+        // Exclude the positive collapsed top margin from the parent's content height (§8.3.1)
+        let adjusted_content_height = y_cursor.saturating_sub(first_collapsed_top_positive).max(0);
+        (reflowed_count, adjusted_content_height)
     }
 
     #[inline]
@@ -393,10 +421,11 @@ impl Layouter {
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
 
-        let margin_left = style.margin.left as i32;
-        let margin_right = style.margin.right as i32;
-        let margin_top = style.margin.top as i32;
-        let margin_bottom = style.margin.bottom as i32;
+        let sides = compute_box_sides(&style);
+        let margin_left = sides.margin_left;
+        let margin_right = sides.margin_right;
+        let margin_top = sides.margin_top;
+        let margin_bottom = sides.margin_bottom;
 
         let collapsed_vertical_margin = if ctx.index == 0
             && ctx.metrics.padding_top == 0i32
@@ -407,14 +436,20 @@ impl Layouter {
             Self::collapse_margins_pair(ctx.previous_bottom_margin, margin_top)
         };
 
-        let x_position = ctx
+        let parent_content_origin_x = ctx
             .metrics
             .margin_left
             .saturating_add(ctx.metrics.border_left)
-            .saturating_add(ctx.metrics.padding_left)
-            .saturating_add(margin_left.max(0i32));
-        let y_position = ctx
-            .y_cursor
+            .saturating_add(ctx.metrics.padding_left);
+        let parent_content_origin_y = ctx
+            .metrics
+            .margin_top
+            .saturating_add(ctx.metrics.border_top)
+            .saturating_add(ctx.metrics.padding_top);
+
+        let x_position = parent_content_origin_x.saturating_add(margin_left);
+        let y_position = parent_content_origin_y
+            .saturating_add(ctx.y_cursor)
             .saturating_add(collapsed_vertical_margin.max(0i32));
 
         let horizontal_margins = margin_left.max(0i32).saturating_add(margin_right.max(0i32));
@@ -427,36 +462,103 @@ impl Layouter {
 
         let (x_adjust, y_adjust) = Self::apply_relative_offsets(&style);
 
-        let mut computed_height = used_border_box_height(&style);
-        // Minimal text support: if no explicit height, use a default single-line height when text is present.
-        if computed_height == 0i32 && self.has_inline_text_descendant(child_key) {
-            computed_height = default_line_height_px(&style);
+        // Recurse into block children with the child's content metrics (relative offsets do not affect descendants).
+        let child_metrics = ContainerMetrics {
+            container_width: used_border_box_width
+                .saturating_sub(sides.padding_left)
+                .saturating_sub(sides.padding_right)
+                .saturating_sub(sides.border_left)
+                .saturating_sub(sides.border_right)
+                .max(0i32),
+            padding_left: sides.padding_left,
+            padding_top: sides.padding_top,
+            border_left: sides.border_left,
+            border_top: sides.border_top,
+            margin_left: x_position, // absolute baseline for child content origin x
+            margin_top: y_position,  // absolute baseline for child content origin y
+        };
+        self.layout_block_children(child_key, &child_metrics);
+
+        // Determine auto height from laid out block children: span of their border-boxes.
+        let mut auto_height_from_children: i32 = 0;
+        if let Some(kids) = self.children.get(&child_key) {
+            let mut min_top: Option<i32> = None;
+            let mut max_bottom: Option<i32> = None;
+            let mut first_block_style_margin_top: i32 = 0;
+            let mut last_block_style_margin_bottom: i32 = 0;
+            let mut seen_first = false;
+            for k in kids {
+                if matches!(self.nodes.get(k), Some(LayoutNodeKind::Block { .. }))
+                    && let Some(rect) = self.rects.get(k)
+                {
+                    min_top = Some(min_top.map_or(rect.y, |m| m.min(rect.y)));
+                    max_bottom = Some(max_bottom.map_or(rect.y.saturating_add(rect.height), |m| m.max(rect.y.saturating_add(rect.height))));
+                    if let Some(st) = self.computed_styles.get(k) {
+                        if !seen_first {
+                            first_block_style_margin_top = st.margin.top as i32;
+                            seen_first = true;
+                        }
+                        last_block_style_margin_bottom = st.margin.bottom as i32;
+                    }
+                }
+            }
+            if let (Some(t), Some(b)) = (min_top, max_bottom) {
+                let mut span = b.saturating_sub(t).max(0i32);
+                if first_block_style_margin_top > 0 {
+                    span = span.saturating_add(first_block_style_margin_top);
+                }
+                if last_block_style_margin_bottom > 0 {
+                    span = span.saturating_add(last_block_style_margin_bottom);
+                }
+                auto_height_from_children = span;
+            }
         }
+
+        // Compute used height; if unspecified (auto), derive from children or minimal text support.
+        let mut computed_height = used_border_box_height(&style);
+        if style.height.is_none() {
+            computed_height = auto_height_from_children
+                .saturating_add(sides.padding_top)
+                .saturating_add(sides.padding_bottom)
+                .saturating_add(sides.border_top)
+                .saturating_add(sides.border_bottom);
+            if computed_height == 0i32 && self.has_inline_text_descendant(child_key) {
+                computed_height = default_line_height_px(&style);
+            }
+        }
+
+        // Compute parent's offset from first child's collapsed top margin (when applicable).
+        let mut parent_first_child_top_collapse_pos: i32 = 0;
+        if sides.padding_top == 0 && sides.border_top == 0 {
+            if let Some(kids) = self.children.get(&child_key) {
+                if let Some(first_block) = kids
+                    .iter()
+                    .copied()
+                    .find(|k| matches!(self.nodes.get(k), Some(LayoutNodeKind::Block { .. })))
+                {
+                    let first_style = self
+                        .computed_styles
+                        .get(&first_block)
+                        .cloned()
+                        .unwrap_or_else(ComputedStyle::default);
+                    let collapsed = Self::collapse_margins_pair(sides.margin_top, first_style.margin.top as i32);
+                    parent_first_child_top_collapse_pos = collapsed.max(0i32);
+                }
+            }
+        }
+
+        // Insert or update the child's border-box rect now that height is known.
         self.rects.insert(
             child_key,
             LayoutRect {
                 x: x_position.saturating_add(x_adjust),
-                y: y_position.saturating_add(y_adjust),
+                y: y_position
+                    .saturating_add(y_adjust)
+                    .saturating_add(parent_first_child_top_collapse_pos),
                 width: used_border_box_width,
                 height: computed_height,
             },
         );
-        // Recurse into block children with the child's content metrics.
-        let child_metrics = ContainerMetrics {
-            container_width: used_border_box_width
-                .saturating_sub(style.padding.left as i32)
-                .saturating_sub(style.padding.right as i32)
-                .saturating_sub(style.border_width.left as i32)
-                .saturating_sub(style.border_width.right as i32)
-                .max(0i32),
-            padding_left: style.padding.left as i32,
-            padding_top: style.padding.top as i32,
-            border_left: style.border_width.left as i32,
-            border_top: style.border_width.top as i32,
-            margin_left: 0,
-            margin_top: 0,
-        };
-        self.layout_block_children(child_key, &child_metrics);
         (computed_height, y_position, margin_bottom)
     }
     #[inline]
