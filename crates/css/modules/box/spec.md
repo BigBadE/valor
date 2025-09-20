@@ -94,6 +94,5 @@ Out of scope (for now):
 
 ## Test status (fixtures)
 - Passing:
-  - `box/margin_collapse_basic.html` — temporarily XFAILed while we finalize root content-height for collapsed margins, then will un-XFAIL.
-- XFAIL (tracked here):
-  - `box/margins_padding_borders.html` — parent border-box height nuances with auto height and margin interplay under content-box.
+  - `box/margin_collapse_basic.html`
+  - `box/margins_padding_borders.html`

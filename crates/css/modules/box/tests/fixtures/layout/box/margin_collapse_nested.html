@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- VALOR_XFAIL: nested margin collapsing across parent/child and sibling boundaries (CSS 2.2 §8.3.1 multi-way) -->
+<meta charset="utf-8" />
+<title>box: nested vertical margin collapsing</title>
+<style>
+  .outer { width: 400px; margin: 0; padding: 0; border: 0; background: #eef; }
+  .inner { width: 300px; margin: 15px 0 12px 0; padding: 0; border: 0; background: #dde; }
+  .a { height: 20px; margin: 10px 0 8px 0; background: #cfc; }
+  .b { height: 20px; margin: 6px 0 5px 0; background: #fcf; }
+</style>
+<div class="outer">
+  <div id="inner" class="inner">
+    <div id="a" class="a">a</div>
+    <div id="b" class="b">b</div>
+  </div>
+</div>

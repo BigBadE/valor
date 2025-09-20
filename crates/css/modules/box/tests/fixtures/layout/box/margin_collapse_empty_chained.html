@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>box: deep chained collapsing via empty inner containers</title>
+<style>
+  .outer { width: 400px; margin: 0; padding: 0; border: 0; background: #eef; }
+  .mid { margin: 12px 0 10px 0; padding: 0; border: 0; }
+  .inner { margin: 9px 0 7px 0; padding: 0; border: 0; height: 0; }
+  .content { height: 20px; margin: 6px 0 5px 0; background: #ddd; }
+</style>
+<div class="outer">
+  <div class="mid">
+    <div class="inner"></div>
+    <div id="content" class="content">content</div>
+  </div>
+</div>

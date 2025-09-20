@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>box: negative last bottom margin with parent bottom padding/border</title>
+<style>
+  .wrap { width: 400px; margin: 0; padding: 10px 0; border-bottom: 6px solid black; background: #f7f7f7; }
+  .one { width: 200px; height: 20px; margin: 10px 0 15px 0; background: #ddd; }
+  .two { width: 200px; height: 20px; margin: 6px 0 -8px 0; background: #ccc; }
+</style>
+<div class="wrap">
+  <div id="one" class="one">one</div>
+  <div id="two" class="two">two</div>
+</div>
