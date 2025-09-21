@@ -393,6 +393,10 @@ pub struct ComputedStyle {
     pub min_height: Option<f32>,
     pub max_width: Option<f32>,
     pub max_height: Option<f32>,
+    /// True if margin-left was specified as 'auto' (shim-only until core exposes this state).
+    pub margin_left_auto: bool,
+    /// True if margin-right was specified as 'auto' (shim-only until core exposes this state).
+    pub margin_right_auto: bool,
     // Offsets (for positioned layout)
     pub top: Option<f32>,
     pub left: Option<f32>,
@@ -709,6 +713,9 @@ fn map_core_to_public(core_style: &CoreComputedStyle) -> ComputedStyle {
         left: core_style.left,
         right: core_style.right,
         bottom: core_style.bottom,
+        // Until core exposes auto margins, default to false. Tests may construct these directly.
+        margin_left_auto: false,
+        margin_right_auto: false,
         float: Float::None,
         clear: Clear::None,
     }

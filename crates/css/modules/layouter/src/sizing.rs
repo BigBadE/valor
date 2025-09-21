@@ -14,6 +14,10 @@ fn sum_horizontal(style: &ComputedStyle) -> i32 {
     (pad + border) as i32
 }
 
+/* tests are defined at the end of this file */
+
+/* tests moved to end of file */
+
 /// Sum vertical padding and border widths in pixels (clamped to >= 0).
 #[inline]
 fn sum_vertical(style: &ComputedStyle) -> i32 {
@@ -62,9 +66,12 @@ pub fn used_border_box_width(style: &ComputedStyle, fill_available_border_box_wi
         out = out.min(max_bb);
     }
 
-    // Clamp to container availability as a final guard.
-    out.min(fill_available_border_box_width).max(0i32)
+    // Do not clamp to container availability here: per CSS 2.2 §10.3.3,
+    // when over-constrained, margins absorb the difference. Keep width non-negative only.
+    out.max(0i32)
 }
+
+/* tests moved to end of file */
 
 /// Compute the used border-box height respecting `box-sizing`.
 ///

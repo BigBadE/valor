@@ -6,11 +6,11 @@ mod box_tree;
 mod sizing;
 
 use crate::sizing::{used_border_box_height, used_border_box_width};
-use css_box::compute_box_sides;
 use anyhow::Error;
 use core::mem::take;
 use core::sync::atomic::{Ordering, compiler_fence};
 use css::types as css_types;
+use css_box::compute_box_sides;
 use css_text::default_line_height_px;
 use js::{DOMSubscriber, DOMUpdate, NodeKey};
 use std::collections::HashMap;
@@ -33,6 +33,43 @@ struct ContainerMetrics {
     margin_left: i32,
     /// Container margin-top in pixels (may be negative).
     margin_top: i32,
+}
+
+/// Context for computing content and border-box heights for the root element.
+#[derive(Clone, Copy)]
+struct RootHeightsCtx {
+    /// The root node key being laid out.
+    root: NodeKey,
+    /// Container metrics of the root's content box.
+    metrics: ContainerMetrics,
+    /// Final y position for the root after top-margin collapse handling.
+    root_y: i32,
+    /// Last positive bottom margin reported by child layout to include when needed.
+    root_last_pos_mb: i32,
+    /// Maximum bottom extent of children (including positive bottom margins), if any.
+    content_bottom: Option<i32>,
+}
+
+/// Horizontal padding and border widths for a child box (in pixels, clamped >= 0).
+#[derive(Clone, Copy)]
+struct HorizontalEdges {
+    /// Child padding-left in pixels.
+    padding_left: i32,
+    /// Child padding-right in pixels.
+    padding_right: i32,
+    /// Child border-left in pixels.
+    border_left: i32,
+    /// Child border-right in pixels.
+    border_right: i32,
+}
+
+/// Top padding and border widths for a child box (in pixels, clamped >= 0).
+#[derive(Clone, Copy)]
+struct TopEdges {
+    /// Child padding-top in pixels.
+    padding_top: i32,
+    /// Child border-top in pixels.
+    border_top: i32,
 }
 
 /// Context for laying out a single block child.
@@ -142,6 +179,39 @@ impl Layouter {
             return margin_a.min(margin_b);
         }
         margin_a.saturating_add(margin_b)
+    }
+
+    #[inline]
+    /// Resolve margin-left/right when specified as 'auto' in the shim.
+    ///
+    /// Rules (simplified shim consistent with §10.3.3 and our available inputs):
+    /// - Both auto: resolve both to 0.
+    /// - One auto: resolve it so that `margin_left` + `border_box_width` + `margin_right` == `container_content_width`,
+    ///   clamped to >= 0. The non-auto side keeps its specified (possibly negative) margin.
+    fn resolve_horizontal_auto_margins(
+        style: &ComputedStyle,
+        container_content_width: i32,
+        used_border_box_width: i32,
+        margin_left: i32,
+        margin_right: i32,
+    ) -> (i32, i32) {
+        let left_auto = style.margin_left_auto;
+        let right_auto = style.margin_right_auto;
+        if left_auto && right_auto {
+            return (0i32, 0i32);
+        }
+        if left_auto ^ right_auto {
+            let other = if left_auto { margin_right } else { margin_left };
+            let remaining = container_content_width
+                .saturating_sub(used_border_box_width)
+                .saturating_sub(other);
+            let resolved = remaining.max(0i32);
+            if left_auto {
+                return (resolved, margin_right);
+            }
+            return (margin_left, resolved);
+        }
+        (margin_left, margin_right)
     }
     #[inline]
     /// Find the first block-level node under `start` using a depth-first search.
@@ -298,106 +368,159 @@ impl Layouter {
             },
         );
 
-        let (reflowed_count, _content_height_from_cursor, root_last_pos_mb) = self.layout_block_children(root, &metrics);
+        let (reflowed_count, _content_height_from_cursor, root_last_pos_mb) =
+            self.layout_block_children(root, &metrics);
 
-        // CSS 2.2 §8.3.1 Collapsing margins at the top of the root:
-        // If there is no border-top/padding-top, the parent's top margin can collapse with the
-        // first in-flow block child's top margin. Otherwise, the parent's own margin-top offset applies.
-        let mut root_y = metrics.margin_top;
-        if metrics.padding_top == 0i32 && metrics.border_top == 0i32 {
-            if let Some(child_list) = self.children.get(&root) {
-                if let Some(&first_child) = child_list
-                    .iter()
-                    .find(|&&key| matches!(self.nodes.get(&key), Some(&LayoutNodeKind::Block { .. })))
-                {
-                    let first_style = self
-                        .computed_styles
-                        .get(&first_child)
-                        .cloned()
-                        .unwrap_or_else(ComputedStyle::default);
-                    let collapsed =
-                        Self::collapse_margins_pair(metrics.margin_top, first_style.margin.top as i32);
-                    root_y = collapsed.max(0i32);
-                }
-            }
+        // Determine root y after potential top-margin collapse with the first block child.
+        let root_y = Self::compute_root_y_after_top_collapse(self, root, &metrics);
+
+        // Compute content extents from child rects and derive content height.
+        let (content_top, content_bottom) = self.aggregate_content_extents(root);
+        let root_y_aligned = if metrics.padding_top == 0i32
+            && metrics.border_top == 0i32
+            && let Some(top_value) = content_top
+        {
+            top_value.max(0i32)
+        } else {
+            root_y
+        };
+        let (content_height, root_height_border_box) = self.compute_root_heights(RootHeightsCtx {
+            root,
+            metrics,
+            root_y: root_y_aligned,
+            root_last_pos_mb,
+            content_bottom,
+        });
+
+        self.update_root_rect(root, &metrics, root_y_aligned, root_height_border_box);
+
+        self.perf_nodes_reflowed_last = reflowed_count as u64;
+        // Ensure not const-eligible and signal that something changed
+        self.push_dirty_rect_if_changed(metrics.container_width, content_height, reflowed_count);
+        compiler_fence(Ordering::SeqCst);
+        reflowed_count
+    }
+
+    /// Compute the root y position after collapsing the parent's top margin with the first child's top margin when eligible.
+    fn compute_root_y_after_top_collapse(&self, root: NodeKey, metrics: &ContainerMetrics) -> i32 {
+        if metrics.padding_top == 0i32
+            && metrics.border_top == 0i32
+            && let Some(child_list) = self.children.get(&root)
+            && let Some(&first_child) = child_list
+                .iter()
+                .find(|&&key| matches!(self.nodes.get(&key), Some(&LayoutNodeKind::Block { .. })))
+        {
+            let first_style = self
+                .computed_styles
+                .get(&first_child)
+                .cloned()
+                .unwrap_or_else(ComputedStyle::default);
+            let collapsed =
+                Self::collapse_margins_pair(metrics.margin_top, first_style.margin.top as i32);
+            return collapsed.max(0i32);
         }
+        metrics.margin_top
+    }
 
-        // Recompute content height from child rects: top for chained collapse; bottom for extent.
+    /// Aggregate the minimum top and maximum bottom (including positive bottom margin) across block children.
+    fn aggregate_content_extents(&self, root: NodeKey) -> (Option<i32>, Option<i32>) {
         let mut content_top: Option<i32> = None;
         let mut content_bottom: Option<i32> = None;
-        if let Some(kids) = self.children.get(&root) {
-            for k in kids {
-                if matches!(self.nodes.get(k), Some(LayoutNodeKind::Block { .. })) {
-                    if let Some(r) = self.rects.get(k) {
-                        content_top = Some(content_top.map_or(r.y, |t| t.min(r.y)));
-                        let mb = self
-                            .computed_styles
-                            .get(k)
-                            .map(|st| st.margin.bottom as i32)
-                            .unwrap_or(0)
-                            .max(0);
-                        let bottom = r.y.saturating_add(r.height).saturating_add(mb);
-                        content_bottom = Some(content_bottom.map_or(bottom, |b| b.max(bottom)));
-                    }
+        if let Some(children) = self.children.get(&root) {
+            for child_key in children {
+                if matches!(
+                    self.nodes.get(child_key),
+                    Some(LayoutNodeKind::Block { .. })
+                ) && let Some(rect) = self.rects.get(child_key)
+                {
+                    content_top =
+                        Some(content_top.map_or(rect.y, |current_top| current_top.min(rect.y)));
+                    let bottom_margin = self
+                        .computed_styles
+                        .get(child_key)
+                        .map_or(0i32, |style| style.margin.bottom as i32)
+                        .max(0i32);
+                    let bottom = rect
+                        .y
+                        .saturating_add(rect.height)
+                        .saturating_add(bottom_margin);
+                    content_bottom = Some(
+                        content_bottom.map_or(bottom, |current_bottom| current_bottom.max(bottom)),
+                    );
                 }
             }
         }
-        // If no padding/border-top, allow chained top-collapsing by aligning root_y to actual top.
-        if metrics.padding_top == 0 && metrics.border_top == 0 {
-            if let Some(t) = content_top {
-                root_y = t.max(0);
-            }
-        }
-        // Content origin is below root borders and padding.
-        let content_origin = root_y
-            .saturating_add(metrics.border_top)
-            .saturating_add(metrics.padding_top);
-        // Ensure inclusion of the last positive bottom margin reported by child layout.
-        let content_bottom = content_bottom.map(|b| b.saturating_add(root_last_pos_mb));
-        let content_height = match content_bottom {
-            Some(b) => b.saturating_sub(content_origin).max(0i32),
-            None => 0,
-        };
+        (content_top, content_bottom)
+    }
 
-        // Border-box height: content height plus padding and border on both sides.
+    /// Compute content height and root border-box height.
+    fn compute_root_heights(&self, ctx: RootHeightsCtx) -> (i32, i32) {
+        let content_origin = ctx
+            .root_y
+            .saturating_add(ctx.metrics.border_top)
+            .saturating_add(ctx.metrics.padding_top);
+        let content_bottom_with_parent_mb = ctx
+            .content_bottom
+            .map(|bottom_value| bottom_value.saturating_add(ctx.root_last_pos_mb));
+        let content_height = content_bottom_with_parent_mb.map_or(0i32, |bottom_value| {
+            bottom_value.saturating_sub(content_origin).max(0i32)
+        });
+
         let root_style = self
             .computed_styles
-            .get(&root)
+            .get(&ctx.root)
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
         let padding_bottom = root_style.padding.bottom.max(0.0f32) as i32;
         let border_bottom = root_style.border_width.bottom.max(0.0f32) as i32;
         let root_height_border_box = content_height
-            .saturating_add(metrics.padding_top)
+            .saturating_add(ctx.metrics.padding_top)
             .saturating_add(padding_bottom)
-            .saturating_add(metrics.border_top)
+            .saturating_add(ctx.metrics.border_top)
             .saturating_add(border_bottom)
             .max(0i32);
+        (content_height, root_height_border_box)
+    }
 
-        // Update root rect (border-box): position is shifted by margin-left/top; width already set earlier.
+    /// Update the root rectangle with final y and height.
+    fn update_root_rect(
+        &mut self,
+        root: NodeKey,
+        metrics: &ContainerMetrics,
+        root_y: i32,
+        root_height_border_box: i32,
+    ) {
         if let Some(root_rect) = self.rects.get_mut(&root) {
             root_rect.x = metrics.margin_left;
             root_rect.y = root_y;
             root_rect.height = root_height_border_box;
         }
+    }
 
-        self.perf_nodes_reflowed_last = reflowed_count as u64;
-        // Ensure not const-eligible and signal that something changed
+    /// Push a dirty rectangle when reflow changed any nodes.
+    fn push_dirty_rect_if_changed(
+        &mut self,
+        width: i32,
+        content_height: i32,
+        reflowed_count: usize,
+    ) {
         if reflowed_count > 0 {
             self.dirty_rects.push(LayoutRect {
                 x: 0,
                 y: 0,
-                width: metrics.container_width,
+                width,
                 height: content_height.max(0i32),
             });
         }
-        compiler_fence(Ordering::SeqCst);
-        reflowed_count
     }
 
     /// Layout direct block children under `root` using the provided container metrics.
     /// Returns `(reflowed_count, total_content_height, last_positive_bottom_margin)`.
-    fn layout_block_children(&mut self, root: NodeKey, metrics: &ContainerMetrics) -> (usize, i32, i32) {
+    fn layout_block_children(
+        &mut self,
+        root: NodeKey,
+        metrics: &ContainerMetrics,
+    ) -> (usize, i32, i32) {
         let mut reflowed_count = 0usize;
         let mut y_cursor: i32 = 0;
         let mut first_collapsed_top_positive: i32 = 0;
@@ -433,22 +556,30 @@ impl Layouter {
                     .saturating_sub(parent_content_origin_y)
                     .saturating_add(computed_height);
                 // Record the positive collapsed top margin absorbed at the top edge (index 0)
-                if index == 0 && metrics.padding_top == 0 && metrics.border_top == 0 {
+                if index == 0 && metrics.padding_top == 0i32 && metrics.border_top == 0i32 {
                     // The amount added to y_position beyond parent_content_origin_y is the collapsed positive.
                     let added = y_position.saturating_sub(parent_content_origin_y);
-                    first_collapsed_top_positive = first_collapsed_top_positive.max(added.max(0));
+                    first_collapsed_top_positive =
+                        first_collapsed_top_positive.max(added.max(0i32));
                 }
                 previous_bottom_margin = margin_bottom;
             }
-            last_positive_bottom_margin = previous_bottom_margin.max(0);
+            last_positive_bottom_margin = previous_bottom_margin.max(0i32);
         }
         // Exclude the positive collapsed top margin from the parent's content height (§8.3.1)
-        let adjusted_content_height = y_cursor.saturating_sub(first_collapsed_top_positive).max(0);
-        (reflowed_count, adjusted_content_height, last_positive_bottom_margin)
+        let adjusted_content_height = y_cursor
+            .saturating_sub(first_collapsed_top_positive)
+            .max(0i32);
+        (
+            reflowed_count,
+            adjusted_content_height,
+            last_positive_bottom_margin,
+        )
     }
 
     #[inline]
     /// Lay out a single block-level child and return `(height, y_position, margin_bottom)`.
+    /// Helper methods below keep this function concise for clippy.
     fn layout_one_block_child(
         &mut self,
         child_key: NodeKey,
@@ -466,7 +597,10 @@ impl Layouter {
         let margin_top = sides.margin_top;
         let margin_bottom = sides.margin_bottom;
 
-        let collapsed_vertical_margin = if ctx.index == 0 && ctx.metrics.padding_top == 0 && ctx.metrics.border_top == 0 {
+        let collapsed_vertical_margin = if ctx.index == 0
+            && ctx.metrics.padding_top == 0i32
+            && ctx.metrics.border_top == 0i32
+        {
             // Parent's margin_top is not available here (metrics.margin_top carries absolute baseline),
             // so collapse child's top margin with zero per container-level handling.
             Self::collapse_margins_pair(0, margin_top)
@@ -474,54 +608,56 @@ impl Layouter {
             Self::collapse_margins_pair(ctx.previous_bottom_margin, margin_top)
         };
 
-        let parent_content_origin_x = ctx
-            .metrics
-            .margin_left
-            .saturating_add(ctx.metrics.border_left)
-            .saturating_add(ctx.metrics.padding_left);
-        let parent_content_origin_y = ctx
-            .metrics
-            .margin_top
-            .saturating_add(ctx.metrics.border_top)
-            .saturating_add(ctx.metrics.padding_top);
+        let (parent_content_origin_x, parent_content_origin_y) =
+            Self::parent_content_origin(&ctx.metrics);
 
-        let x_position = parent_content_origin_x.saturating_add(margin_left);
-        let y_position = parent_content_origin_y
-            .saturating_add(ctx.y_cursor)
-            .saturating_add(collapsed_vertical_margin.max(0i32));
-
-        let horizontal_margins = margin_left.max(0i32).saturating_add(margin_right.max(0i32));
-        let fill_available_width = ctx
-            .metrics
-            .container_width
-            .saturating_sub(horizontal_margins)
-            .max(0i32);
+        // Resolve auto margins per CSS 2.2 §10.3.3 (shim rules):
+        // - If both left/right are auto, resolve both to 0 and let width consume available.
+        // - If exactly one is auto, resolve it so the sum fits the containing block width; clamp to >= 0.
+        let fill_available_width =
+            Self::compute_fill_available_width(&ctx.metrics, margin_left, margin_right);
         let used_border_box_width = used_border_box_width(&style, fill_available_width);
+        let (resolved_margin_left, _resolved_margin_right) = Self::resolve_horizontal_auto_margins(
+            &style,
+            ctx.metrics.container_width,
+            used_border_box_width,
+            margin_left,
+            margin_right,
+        );
+
+        let x_position = parent_content_origin_x.saturating_add(resolved_margin_left);
+        let y_position = Self::compute_y_position(
+            parent_content_origin_y,
+            ctx.y_cursor,
+            collapsed_vertical_margin,
+        );
+
+        // used_border_box_width computed above
 
         let (x_adjust, y_adjust) = Self::apply_relative_offsets(&style);
 
         // Recurse into block children with the child's content metrics (relative offsets do not affect descendants).
-        let child_metrics = ContainerMetrics {
-            container_width: used_border_box_width
-                .saturating_sub(sides.padding_left)
-                .saturating_sub(sides.padding_right)
-                .saturating_sub(sides.border_left)
-                .saturating_sub(sides.border_right)
-                .max(0i32),
-            padding_left: sides.padding_left,
-            padding_top: sides.padding_top,
-            border_left: sides.border_left,
-            border_top: sides.border_top,
-            margin_left: x_position, // absolute baseline for child content origin x
-            margin_top: y_position,  // absolute baseline for child content origin y
-        };
-        let (_, mut child_content_height, child_last_pos_mb) = self.layout_block_children(child_key, &child_metrics);
+        let child_metrics = Self::build_child_metrics(
+            used_border_box_width,
+            HorizontalEdges {
+                padding_left: sides.padding_left,
+                padding_right: sides.padding_right,
+                border_left: sides.border_left,
+                border_right: sides.border_right,
+            },
+            TopEdges {
+                padding_top: sides.padding_top,
+                border_top: sides.border_top,
+            },
+            x_position,
+            y_position,
+        );
+        let (_, mut child_content_height, child_last_pos_mb) =
+            self.layout_block_children(child_key, &child_metrics);
         // If this container has bottom padding or border, the last child's positive bottom margin
         // is inside the content area (no bottom collapsing with parent). Include it in content height.
-        if sides.padding_bottom > 0 || sides.border_bottom > 0 {
-            if child_last_pos_mb > 0 {
-                child_content_height = child_content_height.saturating_add(child_last_pos_mb);
-            }
+        if (sides.padding_bottom > 0i32 || sides.border_bottom > 0i32) && child_last_pos_mb > 0i32 {
+            child_content_height = child_content_height.saturating_add(child_last_pos_mb);
         }
 
         // Compute used height; if unspecified (auto), derive from children or minimal text support.
@@ -538,9 +674,9 @@ impl Layouter {
         }
 
         // Insert or update the child's border-box rect now that height is known.
-        let rect_y = y_position
-            .saturating_add(y_adjust);
-        self.rects.insert(
+        let rect_y = y_position.saturating_add(y_adjust);
+        Self::insert_child_rect(
+            &mut self.rects,
             child_key,
             LayoutRect {
                 x: x_position.saturating_add(x_adjust),
@@ -551,6 +687,74 @@ impl Layouter {
         );
         (computed_height, y_position, margin_bottom)
     }
+
+    #[inline]
+    fn compute_y_position(origin_y: i32, cursor: i32, collapsed_vertical_margin: i32) -> i32 {
+        origin_y
+            .saturating_add(cursor)
+            .saturating_add(collapsed_vertical_margin.max(0i32))
+    }
+
+    /// Compute the parent's content origin from its margins, borders, and padding.
+    const fn parent_content_origin(metrics: &ContainerMetrics) -> (i32, i32) {
+        let x = metrics
+            .margin_left
+            .saturating_add(metrics.border_left)
+            .saturating_add(metrics.padding_left);
+        let y = metrics
+            .margin_top
+            .saturating_add(metrics.border_top)
+            .saturating_add(metrics.padding_top);
+        (x, y)
+    }
+
+    /// Compute the fill-available width for a child by subtracting positive horizontal margins.
+    fn compute_fill_available_width(
+        metrics: &ContainerMetrics,
+        margin_left: i32,
+        margin_right: i32,
+    ) -> i32 {
+        let horizontal_margins = margin_left.max(0i32).saturating_add(margin_right.max(0i32));
+        metrics
+            .container_width
+            .saturating_sub(horizontal_margins)
+            .max(0i32)
+    }
+
+    /// Build `ContainerMetrics` for a child from its used width and edge aggregates.
+    fn build_child_metrics(
+        used_border_box_width: i32,
+        horizontal: HorizontalEdges,
+        top: TopEdges,
+        x_position: i32,
+        y_position: i32,
+    ) -> ContainerMetrics {
+        ContainerMetrics {
+            container_width: used_border_box_width
+                .saturating_sub(horizontal.padding_left)
+                .saturating_sub(horizontal.padding_right)
+                .saturating_sub(horizontal.border_left)
+                .saturating_sub(horizontal.border_right)
+                .max(0i32),
+            padding_left: horizontal.padding_left,
+            padding_top: top.padding_top,
+            border_left: horizontal.border_left,
+            border_top: top.border_top,
+            margin_left: x_position,
+            margin_top: y_position,
+        }
+    }
+
+    #[inline]
+    /// Insert or update the child's rectangle in the layout map.
+    fn insert_child_rect(
+        rects: &mut HashMap<NodeKey, LayoutRect>,
+        child_key: NodeKey,
+        rect: LayoutRect,
+    ) {
+        rects.insert(child_key, rect);
+    }
+
     #[inline]
     /// Returns true if the node has any inline text descendant recorded via `InsertText`.
     fn has_inline_text_descendant(&self, key: NodeKey) -> bool {
