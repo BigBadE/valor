@@ -27,7 +27,7 @@ pub struct BoxSides {
 /// Padding and border widths are clamped to be non-negative. Margins can be negative.
 /// Spec: CSS 2.2 §8.1 (box model) and CSS Box Sizing L3.
 #[inline]
-pub fn compute_box_sides(style: &ComputedStyle) -> BoxSides {
+pub const fn compute_box_sides(style: &ComputedStyle) -> BoxSides {
     BoxSides {
         margin_top: style.margin.top as i32,
         margin_right: style.margin.right as i32,

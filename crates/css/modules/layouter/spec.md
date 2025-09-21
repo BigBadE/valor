@@ -45,7 +45,7 @@ Out of scope for this phase:
   - Compute container content width (ICB width minus container padding/border; margins are outside and do not reduce the containing block) and emit a root rect.
   - Stack direct element children vertically.
   - X = container content start + margin-left; Y accumulates with collapsed vertical margins (pairwise logic for previous-bottom vs current-top). For the root, apply parent–first-child top-margin collapse by offsetting Y and excluding that amount from the root’s used height.
-  - Width = container content width minus horizontal margins (with min/max).
+  - Width = container content width minus horizontal margins (with min/max). For `width: auto` blocks, resolve to fill-available content width per §10.3.3. Transparent empty boxes preserve this width even when their height collapses to 0.
   - Height = used border-box height per Sizing rules below (auto height clamps with min/max in MVP).
   - Spec references (CSS 2.2):
     - Block width computation: §10.3.3 (over-constrained resolution), §10.3.1 (non-replaced block elements in normal flow)
@@ -94,8 +94,8 @@ Implementation highlights (see `crates/css/modules/layouter/src/lib.rs`):
 - Steps:
   1. Convert specified height to border-box space (as above).
   2. Convert min/max similarly.
-  3. Start from specified border-box height, or 0 if `auto` (MVP simplification).
-  4. Clamp with min/max (in border-box space) and >= 0.
+  3. If specified height is present: use it (clamped by min/max in border-box space).
+  4. If `auto`: compute content-based height + padding + border; if empty but has visible inline content, use a default line-height baseline; then clamp with min/max in border-box space, and >= 0.
 
 Notes:
 - Correctness depends on `ComputedStyle.box_sizing` reflecting author styles (from CSS core). Inline `box-sizing` is respected via overrides; author/UA styles require core support.

@@ -180,11 +180,11 @@ fn run_chromium_layouts() -> Result<(), Error> {
         eprintln!(
             "[LAYOUT][DIAG] external layouter after replay: updates_applied={updates_applied}, blocks_in_snapshot={blocks_count}"
         );
-        // Use the page's authoritative geometry from its internal layouter
-        let rects = page.layouter_geometry_mut();
+        // Use the external Layouter geometry computed above for comparison
+        let rects_external = layouter.compute_layout_geometry();
 
         // Build our full layout JSON starting from the first element child under #document (typically <html>)
-        let our_json = our_layout_json(layouter, &rects, &computed_for_serialization);
+        let our_json = our_layout_json(layouter, &rects_external, &computed_for_serialization);
 
         // Build or load Chromium's full layout JSON by evaluating JS in the page using the shared tab
         let harness_src = include_str!("layouter_chromium_compare.rs");
