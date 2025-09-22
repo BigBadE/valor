@@ -62,9 +62,20 @@ fn run_chromium_layouts() -> Result<(), Error> {
     let rt = Runtime::new()?;
     // Iterate over filtered fixtures and compare against each expected file content.
     let all = common::fixture_html_files()?;
+    // Optional: focus a single fixture via substring match
+    let focus = std::env::var("LAYOUT_FIXTURE_FILTER").ok();
+    if let Some(ref f) = focus {
+        info!("[LAYOUT] focusing fixtures containing: {}", f);
+    }
     info!("[LAYOUT] discovered {} fixtures", all.len());
     let mut ran = 0;
     for input_path in all {
+        if let Some(ref f) = focus {
+            let display_name = input_path.display().to_string();
+            if !display_name.contains(f) {
+                continue;
+            }
+        }
         let display_name = input_path.display().to_string();
         // XFAIL mechanism: skip any fixture that contains the marker
         if let Ok(text) = fs::read_to_string(&input_path)
