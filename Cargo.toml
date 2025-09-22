@@ -1,3 +1,5 @@
+cargo-features = ["codegen-backend"]
+
 [workspace]
 resolver = "3"
 members = [
@@ -101,6 +103,7 @@ lto = false
 
 [profile.dev.package."*"]
 opt-level = 3
+codegen-backend = "cranelift"
 
 [workspace.lints.rust]
 warnings = "deny"

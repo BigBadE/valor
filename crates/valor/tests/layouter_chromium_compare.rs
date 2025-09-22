@@ -27,7 +27,7 @@ mod common;
 fn run_chromium_layouts() -> Result<(), Error> {
     // Initialize logger to show logs during tests (including JS console.* forwarded via log)
     let _ = env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(log::LevelFilter::Debug)
         .is_test(false)
         .try_init();
 

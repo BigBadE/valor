@@ -10,11 +10,12 @@ use anyhow::Error;
 use core::mem::take;
 use core::sync::atomic::{Ordering, compiler_fence};
 use css::types as css_types;
-use css_box::compute_box_sides;
+use css_box::{BoxSides, compute_box_sides};
 use css_text::default_line_height_px;
 use js::{DOMSubscriber, DOMUpdate, NodeKey};
+use log::debug;
 use std::collections::HashMap;
-use style_engine::{ComputedStyle, Position};
+use style_engine::{BoxSizing, ComputedStyle, Position};
 
 /// Metrics for the container box edges and available content width.
 #[derive(Clone, Copy, Debug)]
@@ -33,6 +34,117 @@ struct ContainerMetrics {
     margin_left: i32,
     /// Container margin-top in pixels (may be negative).
     margin_top: i32,
+}
+
+/// Context to finalize vertical position and emit a log entry.
+#[derive(Clone, Copy)]
+struct FinalizeVertCtx {
+    parent_origin_y: i32,
+    y_cursor: i32,
+    collapsed_top: i32,
+    is_empty: bool,
+    computed_height: i32,
+    prev_mb: i32,
+    margin_top_raw: i32,
+    margin_top_eff: i32,
+    eff_bottom: i32,
+    index: usize,
+}
+
+/// Context for computing a child's content height by laying out its descendants.
+#[derive(Clone, Copy)]
+struct ChildContentCtx {
+    /// The child node key whose descendants will be laid out.
+    key: NodeKey,
+    /// Child used border-box width.
+    used_border_box_width: i32,
+    /// Box sides (padding/border/margins) snapshot for the child.
+    sides: BoxSides,
+    /// Child x position (margin edge).
+    x: i32,
+    /// Child y position (margin edge).
+    y: i32,
+}
+
+/// Inputs captured for vertical layout logs.
+#[derive(Clone, Copy)]
+struct VertLog {
+    /// Index of the child within the parent block children.
+    index: usize,
+    /// Previous sibling's bottom margin (pre-collapsed).
+    prev_mb: i32,
+    /// Child raw top margin from computed sides.
+    margin_top_raw: i32,
+    /// Child effective top margin used for collapse with parent/previous.
+    margin_top_eff: i32,
+    /// Child effective bottom margin (post internal propagation through empties).
+    eff_bottom: i32,
+    /// Whether the child is considered empty for vertical collapsing.
+    is_empty: bool,
+    /// Result of top margin collapsing applied at this edge.
+    collapsed_top: i32,
+    /// Parent content origin y.
+    parent_origin_y: i32,
+    /// Final chosen y position for the child.
+    y_position: i32,
+    /// Incoming y cursor in the parent content space.
+    y_cursor_in: i32,
+}
+
+/// Tuple of optional width constraints (specified, min, max) in border-box space.
+type WidthConstraints = (Option<i32>, Option<i32>, Option<i32>);
+
+/// Inputs captured for horizontal solving logs.
+#[derive(Clone, Copy)]
+struct HorizInputs {
+    /// Container content width.
+    container_w: i32,
+    /// Box sides used (padding/border) for diagnostics.
+    sides: BoxSides,
+    /// Original author-specified margin-left value (may be negative).
+    in_margin_left: i32,
+    /// Original author-specified margin-right value (may be negative).
+    in_margin_right: i32,
+    /// Whether margin-left was 'auto'.
+    left_auto: bool,
+    /// Whether margin-right was 'auto'.
+    right_auto: bool,
+}
+
+/// Resolution context for the specified-width horizontal solving path.
+#[derive(Clone, Copy)]
+struct ConstrainedHorizCtx {
+    /// Final constrained border-box width.
+    constrained_bb: i32,
+    /// Whether margin-left is auto.
+    left_auto: bool,
+    /// Whether margin-right is auto.
+    right_auto: bool,
+    /// Container content width.
+    container_content_width: i32,
+    /// Current margin-left value.
+    margin_left_resolved: i32,
+    /// Current margin-right value.
+    margin_right_resolved: i32,
+}
+
+/// Context for the width:auto horizontal solving path.
+#[derive(Clone, Copy)]
+struct AutoHorizCtx {
+    /// Whether margin-left is auto.
+    left_auto: bool,
+    /// Whether margin-right is auto.
+    right_auto: bool,
+    /// Container content width.
+    container_content_width: i32,
+    /// Current margin-left value.
+    margin_left_resolved: i32,
+    /// Current margin-right value.
+    margin_right_resolved: i32,
+    /// Minimum border-box width constraint (if any).
+    min_bb_opt: Option<i32>,
+    /// Maximum border-box width constraint (if any).
+    max_bb_opt: Option<i32>,
 }
 
 /// Context for computing content and border-box heights for the root element.
@@ -70,6 +182,19 @@ struct TopEdges {
     padding_top: i32,
     /// Child border-top in pixels.
     border_top: i32,
+}
+
+/// Vertical padding and border widths for height calculations.
+#[derive(Clone, Copy)]
+struct HeightExtras {
+    /// Child padding-top in pixels.
+    padding_top: i32,
+    /// Child padding-bottom in pixels.
+    padding_bottom: i32,
+    /// Child border-top in pixels.
+    border_top: i32,
+    /// Child border-bottom in pixels.
+    border_bottom: i32,
 }
 
 /// Context for laying out a single block child.
@@ -182,37 +307,226 @@ impl Layouter {
     }
 
     #[inline]
-    /// Resolve margin-left/right when specified as 'auto' in the shim.
-    ///
-    /// Rules (simplified shim consistent with §10.3.3 and our available inputs):
-    /// - Both auto: resolve both to 0.
-    /// - One auto: resolve it so that `margin_left` + `border_box_width` + `margin_right` == `container_content_width`,
-    ///   clamped to >= 0. The non-auto side keeps its specified (possibly negative) margin.
-    fn resolve_horizontal_auto_margins(
+    /// Solve used border-box width and horizontal margins together for a non-replaced block in normal flow.
+    /// Implements CSS 2.2 §10.3.3 for horizontal dimensions.
+    fn solve_block_horizontal(
         style: &ComputedStyle,
+        sides: &BoxSides,
         container_content_width: i32,
-        used_border_box_width: i32,
-        margin_left: i32,
-        margin_right: i32,
-    ) -> (i32, i32) {
+        margin_left_in: i32,
+        margin_right_in: i32,
+    ) -> (i32, i32, i32) {
+        let (specified_bb_opt, min_bb_opt, max_bb_opt) =
+            Self::compute_width_constraints(style, sides);
         let left_auto = style.margin_left_auto;
         let right_auto = style.margin_right_auto;
-        if left_auto && right_auto {
-            return (0i32, 0i32);
+        let margin_left_resolved = margin_left_in;
+        let margin_right_resolved = margin_right_in;
+
+        if specified_bb_opt.is_some() {
+            let constrained = used_border_box_width(style, container_content_width);
+            let ctx = ConstrainedHorizCtx {
+                constrained_bb: constrained,
+                left_auto,
+                right_auto,
+                container_content_width,
+                margin_left_resolved,
+                margin_right_resolved,
+            };
+            let out = Self::resolve_with_constrained_width(ctx);
+            let inputs = HorizInputs {
+                container_w: container_content_width,
+                sides: *sides,
+                in_margin_left: margin_left_in,
+                in_margin_right: margin_right_in,
+                left_auto,
+                right_auto,
+            };
+            Self::log_horiz("specified", &inputs, constrained, out);
+            return out;
         }
-        if left_auto ^ right_auto {
-            let other = if left_auto { margin_right } else { margin_left };
-            let remaining = container_content_width
-                .saturating_sub(used_border_box_width)
-                .saturating_sub(other);
-            let resolved = remaining.max(0i32);
-            if left_auto {
-                return (resolved, margin_right);
-            }
-            return (margin_left, resolved);
-        }
-        (margin_left, margin_right)
+
+        let ctx = AutoHorizCtx {
+            left_auto,
+            right_auto,
+            container_content_width,
+            margin_left_resolved,
+            margin_right_resolved,
+            min_bb_opt,
+            max_bb_opt,
+        };
+        let out = Self::resolve_auto_width(ctx);
+        let inputs = HorizInputs {
+            container_w: container_content_width,
+            sides: *sides,
+            in_margin_left: margin_left_in,
+            in_margin_right: margin_right_in,
+            left_auto,
+            right_auto,
+        };
+        Self::log_horiz("auto", &inputs, out.0, out);
+        out
     }
+
+    #[inline]
+    /// Clamp a width value in border-box space using optional min/max constraints.
+    fn clamp_width_to_min_max(
+        width_value: i32,
+        min_bb_opt: Option<i32>,
+        max_bb_opt: Option<i32>,
+    ) -> i32 {
+        let mut out = width_value;
+        if let Some(min_b) = min_bb_opt {
+            out = out.max(min_b);
+        }
+        if let Some(max_b) = max_bb_opt {
+            out = out.min(max_b);
+        }
+        out
+    }
+
+    #[inline]
+    /// Compute width constraints converted to border-box space based on the element's box-sizing.
+    fn compute_width_constraints(style: &ComputedStyle, sides: &BoxSides) -> WidthConstraints {
+        let extras = sides
+            .padding_left
+            .saturating_add(sides.padding_right)
+            .saturating_add(sides.border_left)
+            .saturating_add(sides.border_right);
+        let specified_bb_opt: Option<i32> = match style.box_sizing {
+            BoxSizing::ContentBox => style
+                .width
+                .map(|width_val| (width_val as i32).saturating_add(extras)),
+            BoxSizing::BorderBox => style.width.map(|width_val| width_val as i32),
+        };
+        let min_bb_opt: Option<i32> = match style.box_sizing {
+            BoxSizing::ContentBox => style
+                .min_width
+                .map(|min_val| (min_val as i32).saturating_add(extras)),
+            BoxSizing::BorderBox => style.min_width.map(|min_val| min_val as i32),
+        };
+        let max_bb_opt: Option<i32> = match style.box_sizing {
+            BoxSizing::ContentBox => style
+                .max_width
+                .map(|max_val| (max_val as i32).saturating_add(extras)),
+            BoxSizing::BorderBox => style.max_width.map(|max_val| max_val as i32),
+        };
+        (specified_bb_opt, min_bb_opt, max_bb_opt)
+    }
+
+    #[inline]
+    /// Compute `lhs - rhs` allowing negative results using saturating ops.
+    const fn diff_i32(lhs: i32, rhs: i32) -> i32 {
+        if lhs >= rhs {
+            lhs.saturating_sub(rhs)
+        } else {
+            let delta = rhs.saturating_sub(lhs);
+            0i32.saturating_sub(delta)
+        }
+    }
+
+    #[inline]
+    /// Log a single horizontal solve step.
+    fn log_horiz(path: &str, inputs: &HorizInputs, width_in: i32, out: (i32, i32, i32)) {
+        debug!(
+            "[HORIZ {path}] cont_w={} extras(pl,pr,bl,br)=({},{},{},{}) in(ml={},mr={}) auto(l={},r={}) width_in={} -> out(width={}, ml={}, mr={})",
+            inputs.container_w,
+            inputs.sides.padding_left,
+            inputs.sides.padding_right,
+            inputs.sides.border_left,
+            inputs.sides.border_right,
+            inputs.in_margin_left,
+            inputs.in_margin_right,
+            inputs.left_auto,
+            inputs.right_auto,
+            width_in,
+            out.0,
+            out.1,
+            out.2,
+        );
+    }
+
+    /// Resolve margins given a constrained border-box width (specified width path).
+    fn resolve_with_constrained_width(mut ctx: ConstrainedHorizCtx) -> (i32, i32, i32) {
+        let constrained = ctx.constrained_bb.max(0i32);
+        if ctx.left_auto && ctx.right_auto {
+            let remaining = Self::diff_i32(ctx.container_content_width, constrained);
+            let abs_remaining = if remaining >= 0i32 {
+                remaining
+            } else {
+                0i32.saturating_sub(remaining)
+            };
+            let half = abs_remaining >> 1i32;
+            if remaining >= 0i32 {
+                ctx.margin_left_resolved = half;
+                ctx.margin_right_resolved = abs_remaining.saturating_sub(half);
+            } else {
+                ctx.margin_left_resolved = 0i32.saturating_sub(half);
+                ctx.margin_right_resolved = 0i32.saturating_sub(abs_remaining.saturating_sub(half));
+            }
+            return (
+                constrained,
+                ctx.margin_left_resolved,
+                ctx.margin_right_resolved,
+            );
+        }
+        if ctx.left_auto ^ ctx.right_auto {
+            if ctx.left_auto {
+                ctx.margin_left_resolved = Self::diff_i32(
+                    Self::diff_i32(ctx.container_content_width, constrained),
+                    ctx.margin_right_resolved,
+                );
+            } else {
+                ctx.margin_right_resolved = Self::diff_i32(
+                    Self::diff_i32(ctx.container_content_width, constrained),
+                    ctx.margin_left_resolved,
+                );
+            }
+            return (
+                constrained,
+                ctx.margin_left_resolved,
+                ctx.margin_right_resolved,
+            );
+        }
+        // Over-constrained: adjust margin-right (assuming LTR; no direction support in shim yet).
+        ctx.margin_right_resolved = Self::diff_i32(
+            Self::diff_i32(ctx.container_content_width, constrained),
+            ctx.margin_left_resolved,
+        );
+        (
+            constrained,
+            ctx.margin_left_resolved,
+            ctx.margin_right_resolved,
+        )
+    }
+
+    /// Resolve margins and compute border-box width for the width:auto path.
+    fn resolve_auto_width(mut ctx: AutoHorizCtx) -> (i32, i32, i32) {
+        let mut border_box_auto = if ctx.left_auto && ctx.right_auto {
+            ctx.margin_left_resolved = 0i32;
+            ctx.margin_right_resolved = 0i32;
+            ctx.container_content_width
+        } else if ctx.left_auto ^ ctx.right_auto {
+            if ctx.left_auto {
+                ctx.margin_left_resolved = 0i32;
+                Self::diff_i32(ctx.container_content_width, ctx.margin_right_resolved)
+            } else {
+                ctx.margin_right_resolved = 0i32;
+                Self::diff_i32(ctx.container_content_width, ctx.margin_left_resolved)
+            }
+        } else {
+            let tmp = Self::diff_i32(ctx.container_content_width, ctx.margin_left_resolved);
+            Self::diff_i32(tmp, ctx.margin_right_resolved)
+        };
+        border_box_auto =
+            Self::clamp_width_to_min_max(border_box_auto, ctx.min_bb_opt, ctx.max_bb_opt);
+        (
+            border_box_auto.max(0i32),
+            ctx.margin_left_resolved,
+            ctx.margin_right_resolved,
+        )
+    }
+
     #[inline]
     /// Find the first block-level node under `start` using a depth-first search.
     ///
@@ -229,6 +543,28 @@ impl Layouter {
             }
         }
         None
+    }
+
+    #[inline]
+    /// Find the last block-level node in depth-first order under `start`.
+    fn find_last_block_under(&self, start: NodeKey) -> Option<NodeKey> {
+        let mut last: Option<NodeKey> = None;
+        if let Some(child_list) = self.children.get(&start) {
+            for child_key in child_list {
+                if let Some(found) = self.find_last_block_under(*child_key) {
+                    last = Some(found);
+                } else if matches!(
+                    self.nodes.get(child_key),
+                    Some(&LayoutNodeKind::Block { .. })
+                ) {
+                    last = Some(*child_key);
+                }
+            }
+        }
+        if last.is_none() && matches!(self.nodes.get(&start), Some(&LayoutNodeKind::Block { .. })) {
+            last = Some(start);
+        }
+        last
     }
 
     #[inline]
@@ -375,15 +711,9 @@ impl Layouter {
         let root_y = Self::compute_root_y_after_top_collapse(self, root, &metrics);
 
         // Compute content extents from child rects and derive content height.
-        let (content_top, content_bottom) = self.aggregate_content_extents(root);
-        let root_y_aligned = if metrics.padding_top == 0i32
-            && metrics.border_top == 0i32
-            && let Some(top_value) = content_top
-        {
-            top_value.max(0i32)
-        } else {
-            root_y
-        };
+        let (_content_top, content_bottom) = self.aggregate_content_extents(root);
+        // Keep the parent's y derived from top-margin collapse; do not override with child top.
+        let root_y_aligned = root_y;
         let (content_height, root_height_border_box) = self.compute_root_heights(RootHeightsCtx {
             root,
             metrics,
@@ -415,8 +745,9 @@ impl Layouter {
                 .get(&first_child)
                 .cloned()
                 .unwrap_or_else(ComputedStyle::default);
-            let collapsed =
-                Self::collapse_margins_pair(metrics.margin_top, first_style.margin.top as i32);
+            let first_sides = compute_box_sides(&first_style);
+            let first_effective_top = self.effective_child_top_margin(first_child, &first_sides);
+            let collapsed = Self::collapse_margins_pair(metrics.margin_top, first_effective_top);
             return collapsed.max(0i32);
         }
         metrics.margin_top
@@ -594,84 +925,79 @@ impl Layouter {
         let sides = compute_box_sides(&style);
         let margin_left = sides.margin_left;
         let margin_right = sides.margin_right;
-        let margin_top = sides.margin_top;
-        let margin_bottom = sides.margin_bottom;
+        // Capture raw and effective top margins (effective may collapse through empty chains).
+        let margin_top_raw = sides.margin_top;
+        let margin_top = self.effective_child_top_margin(child_key, &sides);
 
-        let collapsed_vertical_margin = if ctx.index == 0
-            && ctx.metrics.padding_top == 0i32
-            && ctx.metrics.border_top == 0i32
-        {
-            // Parent's margin_top is not available here (metrics.margin_top carries absolute baseline),
-            // so collapse child's top margin with zero per container-level handling.
-            Self::collapse_margins_pair(0, margin_top)
-        } else {
-            Self::collapse_margins_pair(ctx.previous_bottom_margin, margin_top)
-        };
+        let collapsed_vertical_margin = Self::compute_collapsed_vertical_margin(&ctx, margin_top);
 
         let (parent_content_origin_x, parent_content_origin_y) =
             Self::parent_content_origin(&ctx.metrics);
 
-        // Resolve auto margins per CSS 2.2 §10.3.3 (shim rules):
-        // - If both left/right are auto, resolve both to 0 and let width consume available.
-        // - If exactly one is auto, resolve it so the sum fits the containing block width; clamp to >= 0.
-        let fill_available_width =
-            Self::compute_fill_available_width(&ctx.metrics, margin_left, margin_right);
-        let used_border_box_width = used_border_box_width(&style, fill_available_width);
-        let (resolved_margin_left, _resolved_margin_right) = Self::resolve_horizontal_auto_margins(
-            &style,
-            ctx.metrics.container_width,
-            used_border_box_width,
-            margin_left,
-            margin_right,
-        );
+        // Resolve width(auto) and margins per CSS 2.2 §10.3.3 using container content width.
+        let (used_border_box_width, resolved_margin_left, _resolved_margin_right) =
+            Self::solve_block_horizontal(
+                &style,
+                &sides,
+                ctx.metrics.container_width,
+                margin_left,
+                margin_right,
+            );
 
         let x_position = parent_content_origin_x.saturating_add(resolved_margin_left);
-        let y_position = Self::compute_y_position(
-            parent_content_origin_y,
-            ctx.y_cursor,
-            collapsed_vertical_margin,
-        );
-
-        // used_border_box_width computed above
-
+        let y_for_metrics = parent_content_origin_y.saturating_add(ctx.y_cursor);
         let (x_adjust, y_adjust) = Self::apply_relative_offsets(&style);
 
-        // Recurse into block children with the child's content metrics (relative offsets do not affect descendants).
-        let child_metrics = Self::build_child_metrics(
-            used_border_box_width,
-            HorizontalEdges {
-                padding_left: sides.padding_left,
-                padding_right: sides.padding_right,
-                border_left: sides.border_left,
-                border_right: sides.border_right,
-            },
-            TopEdges {
-                padding_top: sides.padding_top,
-                border_top: sides.border_top,
-            },
-            x_position,
-            y_position,
-        );
-        let (_, mut child_content_height, child_last_pos_mb) =
-            self.layout_block_children(child_key, &child_metrics);
-        // If this container has bottom padding or border, the last child's positive bottom margin
-        // is inside the content area (no bottom collapsing with parent). Include it in content height.
+        // Recurse into descendants and obtain the child's content height and last positive bottom margin.
+        let (mut child_content_height, child_last_pos_mb) =
+            self.compute_child_content_height(ChildContentCtx {
+                key: child_key,
+                used_border_box_width,
+                sides,
+                x: x_position,
+                y: y_for_metrics,
+            });
         if (sides.padding_bottom > 0i32 || sides.border_bottom > 0i32) && child_last_pos_mb > 0i32 {
             child_content_height = child_content_height.saturating_add(child_last_pos_mb);
         }
 
         // Compute used height; if unspecified (auto), derive from children or minimal text support.
-        let mut computed_height = used_border_box_height(&style);
-        if style.height.is_none() {
-            computed_height = child_content_height
-                .saturating_add(sides.padding_top)
-                .saturating_add(sides.padding_bottom)
-                .saturating_add(sides.border_top)
-                .saturating_add(sides.border_bottom);
-            if computed_height == 0i32 && self.has_inline_text_descendant(child_key) {
-                computed_height = default_line_height_px(&style);
-            }
-        }
+        let height_extras = HeightExtras {
+            padding_top: sides.padding_top,
+            padding_bottom: sides.padding_bottom,
+            border_top: sides.border_top,
+            border_bottom: sides.border_bottom,
+        };
+        let computed_height =             Self::compute_used_height(self, &style, child_key, height_extras, child_content_height);
+
+        // Determine effective bottom margin (may collapse within an empty container).
+        let effective_bottom = self.effective_child_bottom_margin(child_key, &sides);
+        let is_empty = self.is_effectively_empty_box(&style, &sides, computed_height, child_key);
+        let margin_bottom_out =
+            Self::compute_margin_bottom_out(margin_top, effective_bottom, is_empty);
+
+        // Compute final y-position. For effectively empty zero-height boxes, do not apply collapsed_top here —
+        // let margins pass through to adjacent content. This avoids stacking with previous y_cursor advances.
+        let applied_collapsed_top = if is_empty && computed_height == 0 {
+            0
+        } else {
+            collapsed_vertical_margin
+        };
+        let y_position =
+            Self::compute_y_position(parent_content_origin_y, ctx.y_cursor, applied_collapsed_top);
+
+        Self::log_vert(VertLog {
+            index: ctx.index,
+            prev_mb: ctx.previous_bottom_margin,
+            margin_top_raw,
+            margin_top_eff: margin_top,
+            eff_bottom: effective_bottom,
+            is_empty,
+            collapsed_top: applied_collapsed_top,
+            parent_origin_y: parent_content_origin_y,
+            y_position,
+            y_cursor_in: ctx.y_cursor,
+        });
 
         // Insert or update the child's border-box rect now that height is known.
         let rect_y = y_position.saturating_add(y_adjust);
@@ -685,14 +1011,242 @@ impl Layouter {
                 height: computed_height,
             },
         );
-        (computed_height, y_position, margin_bottom)
+        (computed_height, y_position, margin_bottom_out)
     }
 
     #[inline]
+    /// Build child container metrics and compute raw content height by laying out descendants.
+    /// Returns `(content_height, last_positive_bottom_margin)`.
+    fn compute_child_content_height(&mut self, cctx: ChildContentCtx) -> (i32, i32) {
+        let child_metrics = Self::build_child_metrics(
+            cctx.used_border_box_width,
+            HorizontalEdges {
+                padding_left: cctx.sides.padding_left,
+                padding_right: cctx.sides.padding_right,
+                border_left: cctx.sides.border_left,
+                border_right: cctx.sides.border_right,
+            },
+            TopEdges {
+                padding_top: cctx.sides.padding_top,
+                border_top: cctx.sides.border_top,
+            },
+            cctx.x,
+            cctx.y,
+        );
+        let (_reflowed, content_height, last_pos_mb) =
+            self.layout_block_children(cctx.key, &child_metrics);
+        (content_height, last_pos_mb)
+    }
+
+    #[inline]
+    /// Log a vertical layout step with margin collapsing inputs and results.
+    fn log_vert(entry: VertLog) {
+        debug!(
+            "[VERT child idx={}] pm_prev_bottom={} child(mt_raw={}, mt_eff={}, mb(eff={}), empty={}) collapsed_top={} parent_origin_y={} -> y={} cursor_in={}",
+            entry.index,
+            entry.prev_mb,
+            entry.margin_top_raw,
+            entry.margin_top_eff,
+            entry.eff_bottom,
+            entry.is_empty,
+            entry.collapsed_top,
+            entry.parent_origin_y,
+            entry.y_position,
+            entry.y_cursor_in,
+        );
+    }
+
+    #[inline]
+    /// Compute final outgoing bottom margin for a child, allowing internal top/bottom collapse when the child is empty.
+    fn compute_margin_bottom_out(margin_top: i32, effective_bottom: i32, is_empty: bool) -> i32 {
+        if is_empty {
+            Self::collapse_margins_pair(margin_top, effective_bottom)
+        } else {
+            effective_bottom
+        }
+    }
+
+    #[inline]
+    /// Collapse a list of vertical margins per CSS 2.2 §8.3.1.
+    /// - If all are positive, result is the largest positive.
+    /// - If all are negative, result is the most negative.
+    /// - Otherwise, result is (largest positive) + (most negative) (algebraic sum of extremes).
+    fn collapse_margins_list(margins: &[i32]) -> i32 {
+        if margins.is_empty() {
+            return 0;
+        }
+        let mut max_pos: i32 = i32::MIN;
+        let mut min_neg: i32 = i32::MAX;
+        let mut any_pos = false;
+        let mut any_neg = false;
+        for &m in margins {
+            if m >= 0 {
+                any_pos = true;
+                if m > max_pos {
+                    max_pos = m;
+                }
+            } else {
+                any_neg = true;
+                if m < min_neg {
+                    min_neg = m;
+                }
+            }
+        }
+        match (any_pos, any_neg) {
+            (true, false) => max_pos,
+            (false, true) => min_neg,
+            (true, true) => max_pos.saturating_add(min_neg),
+            (false, false) => 0,
+        }
+    }
+
+    #[inline]
+    /// Compute an effective top margin for a child, collapsing with its first block child's top margin
+    /// when the child has no top padding/border and contains no inline text (approximation of CSS 2.2 §8.3.1).
+    fn effective_child_top_margin(&self, child_key: NodeKey, child_sides: &BoxSides) -> i32 {
+        // Only propagate through empty containers; otherwise return the child's own top margin.
+        if !self.is_effectively_empty_box(
+            self.computed_styles
+                .get(&child_key)
+                .unwrap_or(&ComputedStyle::default()),
+            child_sides,
+            0,
+            child_key,
+        ) {
+            return child_sides.margin_top;
+        }
+        let mut margins: Vec<i32> = vec![child_sides.margin_top];
+        // Walk down first-block descendants while current box is eligible to pass-through top margin.
+        let mut current = child_key;
+        let mut current_sides = *child_sides;
+        while current_sides.padding_top == 0i32
+            && current_sides.border_top == 0i32
+            && !self.has_inline_text_descendant(current)
+            && let Some(first_desc) = self.find_first_block_under(current)
+            && first_desc != current
+        {
+            let first_style = self
+                .computed_styles
+                .get(&first_desc)
+                .cloned()
+                .unwrap_or_else(ComputedStyle::default);
+            let first_sides = compute_box_sides(&first_style);
+            margins.push(first_sides.margin_top);
+            current = first_desc;
+            current_sides = first_sides;
+            if !self.is_effectively_empty_box(&first_style, &first_sides, 0, first_desc) {
+                break;
+            }
+        }
+        Self::collapse_margins_list(&margins)
+    }
+
+    #[inline]
+    /// Compute an effective bottom margin for a child, collapsing with its last block child's bottom margin
+    /// when the child has no bottom padding/border and contains no inline text (approximation of CSS 2.2 §8.3.1).
+    fn effective_child_bottom_margin(&self, child_key: NodeKey, child_sides: &BoxSides) -> i32 {
+        // Only propagate through empty containers.
+        if !self.is_effectively_empty_box(
+            self.computed_styles
+                .get(&child_key)
+                .unwrap_or(&ComputedStyle::default()),
+            child_sides,
+            0,
+            child_key,
+        ) {
+            return child_sides.margin_bottom;
+        }
+
+        let mut margins: Vec<i32> = vec![child_sides.margin_bottom];
+        // Walk down last-block descendants while current box is eligible to pass-through bottom margin.
+        let mut current = child_key;
+        let mut current_sides = *child_sides;
+        while current_sides.padding_bottom == 0i32
+            && current_sides.border_bottom == 0i32
+            && !self.has_inline_text_descendant(current)
+            && let Some(last_desc) = self.find_last_block_under(current)
+            && last_desc != current
+        {
+            let last_style = self
+                .computed_styles
+                .get(&last_desc)
+                .cloned()
+                .unwrap_or_else(ComputedStyle::default);
+            let last_sides = compute_box_sides(&last_style);
+            margins.push(last_sides.margin_bottom);
+            current = last_desc;
+            current_sides = last_sides;
+            if !self.is_effectively_empty_box(&last_style, &last_sides, 0, last_desc) {
+                break;
+            }
+        }
+        Self::collapse_margins_list(&margins)
+    }
+
+    #[inline]
+    /// Determine if a box is effectively empty for margin-collapsing purposes (approximation of §8.3.1).
+    fn is_effectively_empty_box(
+        &self,
+        style: &ComputedStyle,
+        sides: &BoxSides,
+        used_height: i32,
+        key: NodeKey,
+    ) -> bool {
+        sides.padding_top == 0i32
+            && sides.padding_bottom == 0i32
+            && sides.border_top == 0i32
+            && sides.border_bottom == 0i32
+            && used_height == 0i32
+            && !self.has_inline_text_descendant(key)
+            && style.min_height.unwrap_or(0.0) as i32 == 0i32
+    }
+
+    #[inline]
+    /// Compute the y position for a child box by adding the vertical cursor and any collapsed top margin.
     fn compute_y_position(origin_y: i32, cursor: i32, collapsed_vertical_margin: i32) -> i32 {
         origin_y
             .saturating_add(cursor)
             .saturating_add(collapsed_vertical_margin.max(0i32))
+    }
+
+    #[inline]
+    /// Compute the vertical offset from collapsed margins above a block child.
+    /// If this is the first block and the parent has no padding/border-top, the collapse is absorbed at the parent edge,
+    /// so return 0 here to avoid double-applying. Otherwise, collapse with the previous sibling's bottom margin.
+    fn compute_collapsed_vertical_margin(ctx: &ChildLayoutCtx, child_margin_top: i32) -> i32 {
+        if ctx.index == 0 && ctx.metrics.padding_top == 0i32 && ctx.metrics.border_top == 0i32 {
+            // If the parent has a nonzero top margin, the collapse with the child's top margin
+            // is applied at the parent's top edge. Do not add an offset again for the child.
+            if ctx.metrics.margin_top != 0 {
+                return 0i32;
+            }
+            return Self::collapse_margins_pair(0, child_margin_top);
+        }
+        Self::collapse_margins_pair(ctx.previous_bottom_margin, child_margin_top)
+    }
+
+    #[inline]
+    /// Compute used height for a block child, applying box extras when height is auto
+    /// and falling back to a single line height if there is inline text and overall height is 0.
+    fn compute_used_height(
+        &self,
+        style: &ComputedStyle,
+        child_key: NodeKey,
+        extras: HeightExtras,
+        child_content_height: i32,
+    ) -> i32 {
+        let mut computed_height = used_border_box_height(style);
+        if style.height.is_none() {
+            computed_height = child_content_height
+                .saturating_add(extras.padding_top)
+                .saturating_add(extras.padding_bottom)
+                .saturating_add(extras.border_top)
+                .saturating_add(extras.border_bottom);
+            if computed_height == 0i32 && self.has_inline_text_descendant(child_key) {
+                computed_height = default_line_height_px(style);
+            }
+        }
+        computed_height
     }
 
     /// Compute the parent's content origin from its margins, borders, and padding.
@@ -708,18 +1262,7 @@ impl Layouter {
         (x, y)
     }
 
-    /// Compute the fill-available width for a child by subtracting positive horizontal margins.
-    fn compute_fill_available_width(
-        metrics: &ContainerMetrics,
-        margin_left: i32,
-        margin_right: i32,
-    ) -> i32 {
-        let horizontal_margins = margin_left.max(0i32).saturating_add(margin_right.max(0i32));
-        metrics
-            .container_width
-            .saturating_sub(horizontal_margins)
-            .max(0i32)
-    }
+    // compute_fill_available_width removed; horizontal solving is handled by solve_block_horizontal
 
     /// Build `ContainerMetrics` for a child from its used width and edge aggregates.
     fn build_child_metrics(
