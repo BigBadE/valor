@@ -39,17 +39,29 @@ struct ContainerMetrics {
 /// Bundle for committing vertical results and rectangle for a child.
 #[derive(Clone, Copy)]
 struct VertCommit {
+    /// Child index within parent's block children.
     index: usize,
+    /// Previous sibling bottom margin (pre-collapsed).
     prev_mb: i32,
+    /// Raw top margin from computed sides.
     margin_top_raw: i32,
+    /// Effective top margin after collapsing through empties.
     margin_top_eff: i32,
+    /// Effective bottom margin after collapsing through empties.
     eff_bottom: i32,
+    /// Whether the child is effectively empty for collapsing.
     is_empty: bool,
+    /// Collapsed top offset applied at this edge.
     collapsed_top: i32,
+    /// Parent content origin y.
     parent_origin_y: i32,
+    /// Final y position for the child.
     y_position: i32,
+    /// Incoming y cursor in parent content space.
     y_cursor_in: i32,
+    /// The child node key.
     child_key: NodeKey,
+    /// Final border-box rectangle for the child.
     rect: LayoutRect,
 }
 
@@ -223,7 +235,7 @@ fn apply_leading_top_collapse(
     layouter: &Layouter,
     root: NodeKey,
     metrics: &ContainerMetrics,
-    block_children: &mut Vec<NodeKey>,
+    block_children: &[NodeKey],
 ) -> (i32, i32, i32, usize) {
     if block_children.is_empty() || metrics.padding_top != 0i32 || metrics.border_top != 0i32 {
         return (0i32, 0i32, 0i32, 0usize);
@@ -272,9 +284,6 @@ fn apply_leading_top_collapse(
     debug!(
         "[VERT-GROUP root={root:?}] leading_skip={skip_count} margins={leading_margins:?} -> leading_top={leading_top}"
     );
-    if skip_count > 0 {
-        block_children.drain(0..skip_count);
-    }
     (leading_top.max(0i32), 0i32, leading_top, skip_count)
 }
 
@@ -937,7 +946,7 @@ impl Layouter {
                 }
             }
             let (y_start, prev_bottom_after, leading_applied, _skipped) =
-                apply_leading_top_collapse(self, root, metrics, &mut block_children);
+                apply_leading_top_collapse(self, root, metrics, &block_children);
             y_cursor = y_start;
             let mut previous_bottom_margin: i32 = prev_bottom_after;
             for (index, child_key) in block_children.into_iter().enumerate() {
@@ -994,47 +1003,31 @@ impl Layouter {
             .get(&child_key)
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
-
         let sides = compute_box_sides(&style);
-        let margin_top_raw = sides.margin_top;
-        let margin_top = self.effective_child_top_margin(child_key, &sides);
-
-        let collapsed_vertical_margin = Self::compute_collapsed_vertical_margin(&ctx, margin_top);
-
-        let (parent_content_origin_x, parent_content_origin_y) =
-            Self::parent_content_origin(&ctx.metrics);
-
-        let (used_border_box_width, resolved_margin_left, _resolved_margin_right) =
-            Self::solve_block_horizontal(
-                &style,
-                &sides,
-                ctx.metrics.container_width,
-                sides.margin_left,
-                sides.margin_right,
-            );
-
-        let x_position = parent_content_origin_x.saturating_add(resolved_margin_left);
-        let (x_adjust, y_adjust) = Self::apply_relative_offsets(&style);
-
-        let y_position = Self::compute_y_position(
-            parent_content_origin_y,
-            ctx.y_cursor,
-            collapsed_vertical_margin,
+        let margin_top_eff = self.effective_child_top_margin(child_key, &sides);
+        let collapsed_top = Self::compute_collapsed_vertical_margin(&ctx, margin_top_eff);
+        let (parent_x, parent_y) = Self::parent_content_origin(&ctx.metrics);
+        let (used_bb_w, resolved_ml, _resolved_mr) = Self::solve_block_horizontal(
+            &style,
+            &sides,
+            ctx.metrics.container_width,
+            sides.margin_left,
+            sides.margin_right,
         );
-
-        let (mut child_content_height, child_last_pos_mb) =
-            self.compute_child_content_height(ChildContentCtx {
-                key: child_key,
-                used_border_box_width,
-                sides,
-                x: x_position,
-                y: y_position,
-            });
-        if (sides.padding_bottom > 0i32 || sides.border_bottom > 0i32) && child_last_pos_mb > 0i32 {
-            child_content_height = child_content_height.saturating_add(child_last_pos_mb);
+        let (x_adjust, y_adjust) = Self::apply_relative_offsets(&style);
+        let child_x = parent_x.saturating_add(resolved_ml);
+        let child_y = Self::compute_y_position(parent_y, ctx.y_cursor, collapsed_top);
+        let (mut content_h, last_pos_mb) = self.compute_child_content_height(ChildContentCtx {
+            key: child_key,
+            used_border_box_width: used_bb_w,
+            sides,
+            x: child_x,
+            y: child_y,
+        });
+        if (sides.padding_bottom > 0i32 || sides.border_bottom > 0i32) && last_pos_mb > 0i32 {
+            content_h = content_h.saturating_add(last_pos_mb);
         }
-
-        let computed_height = Self::compute_used_height(
+        let computed_h = Self::compute_used_height(
             self,
             &style,
             child_key,
@@ -1044,38 +1037,36 @@ impl Layouter {
                 border_top: sides.border_top,
                 border_bottom: sides.border_bottom,
             },
-            child_content_height,
+            content_h,
         );
-
-        let effective_bottom = self.effective_child_bottom_margin(child_key, &sides);
-        let is_empty = self.is_effectively_empty_box(&style, &sides, computed_height, child_key);
+        let eff_bottom = self.effective_child_bottom_margin(child_key, &sides);
+        let is_empty = self.is_effectively_empty_box(&style, &sides, computed_h, child_key);
         let margin_bottom_out = if is_empty && ctx.index == 0 {
-            let list = [ctx.parent_self_top_margin, margin_top, effective_bottom];
+            let list = [ctx.parent_self_top_margin, margin_top_eff, eff_bottom];
             Self::collapse_margins_list(&list)
         } else {
-            Self::compute_margin_bottom_out(margin_top, effective_bottom, is_empty)
+            Self::compute_margin_bottom_out(margin_top_eff, eff_bottom, is_empty)
         };
-
         self.commit_vert(VertCommit {
             index: ctx.index,
             prev_mb: ctx.previous_bottom_margin,
-            margin_top_raw,
-            margin_top_eff: margin_top,
-            eff_bottom: effective_bottom,
+            margin_top_raw: sides.margin_top,
+            margin_top_eff,
+            eff_bottom,
             is_empty,
-            collapsed_top: collapsed_vertical_margin,
-            parent_origin_y: parent_content_origin_y,
-            y_position,
+            collapsed_top,
+            parent_origin_y: parent_y,
+            y_position: child_y,
             y_cursor_in: ctx.y_cursor,
             child_key,
             rect: LayoutRect {
-                x: x_position.saturating_add(x_adjust),
-                y: y_position.saturating_add(y_adjust),
-                width: used_border_box_width,
-                height: computed_height,
+                x: child_x.saturating_add(x_adjust),
+                y: child_y.saturating_add(y_adjust),
+                width: used_bb_w,
+                height: computed_h,
             },
         });
-        (computed_height, y_position, margin_bottom_out)
+        (computed_h, child_y, margin_bottom_out)
     }
 
     #[inline]
@@ -1100,6 +1091,24 @@ impl Layouter {
         let (_reflowed, content_height, last_pos_mb) =
             self.layout_block_children(cctx.key, &child_metrics);
         (content_height, last_pos_mb)
+    }
+
+    #[inline]
+    /// Emit a vertical log and insert the child's rect.
+    fn commit_vert(&mut self, vert_commit: VertCommit) {
+        Self::log_vert(VertLog {
+            index: vert_commit.index,
+            prev_mb: vert_commit.prev_mb,
+            margin_top_raw: vert_commit.margin_top_raw,
+            margin_top_eff: vert_commit.margin_top_eff,
+            eff_bottom: vert_commit.eff_bottom,
+            is_empty: vert_commit.is_empty,
+            collapsed_top: vert_commit.collapsed_top,
+            parent_origin_y: vert_commit.parent_origin_y,
+            y_position: vert_commit.y_position,
+            y_cursor_in: vert_commit.y_cursor_in,
+        });
+        Self::insert_child_rect(&mut self.rects, vert_commit.child_key, vert_commit.rect);
     }
 
     #[inline]
