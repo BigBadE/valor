@@ -665,9 +665,22 @@ impl Layouter {
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
         let sides = compute_box_sides(&style);
+        // Heuristic: determine if this child is structurally empty for leading-group purposes.
+        let is_structurally_empty =
+            visual_formatting::vertical::is_structurally_empty_chain(self, child_key);
         let margin_top_eff =
             visual_formatting::vertical::effective_child_top_margin(self, child_key, &sides);
-        let collapsed_top = Self::compute_collapsed_vertical_margin(&ctx, margin_top_eff);
+        // If an ancestor already applied at an outer edge, do not re-apply the leading group to
+        // structurally empty leading children (CSS 2.2 §8.3.1). Zero the placement offset here.
+        let collapsed_top = if ctx.ancestor_applied_at_edge_for_children && is_structurally_empty {
+            debug!(
+                "[VERT-COLLAPSE leading-empty suppressed] ancestor_applied_at_edge_for_children; idx={} mt_eff={} -> collapsed_top=0",
+                ctx.index, margin_top_eff
+            );
+            0
+        } else {
+            Self::compute_collapsed_vertical_margin(&ctx, margin_top_eff)
+        };
         let (used_bb_w, child_x, child_y, x_adjust, y_adjust) =
             Self::prepare_child_position(&style, &sides, &ctx, collapsed_top);
         // Lay out descendants to compute content height.
