@@ -59,6 +59,8 @@ struct VertCommit {
     y_position: i32,
     /// Incoming y cursor in parent content space.
     y_cursor_in: i32,
+    /// Leading-top collapse applied at parent edge for the first child, if any.
+    leading_top_applied: i32,
     /// The child node key.
     child_key: NodeKey,
     /// Final border-box rectangle for the child.
@@ -103,6 +105,8 @@ struct VertLog {
     y_position: i32,
     /// Incoming y cursor in the parent content space.
     y_cursor_in: i32,
+    /// Leading-top collapse applied at parent edge (if any) for first child.
+    leading_top_applied: i32,
 }
 
 /// Tuple of optional width constraints (specified, min, max) in border-box space.
@@ -237,7 +241,8 @@ fn apply_leading_top_collapse(
     metrics: &ContainerMetrics,
     block_children: &[NodeKey],
 ) -> (i32, i32, i32, usize) {
-    if block_children.is_empty() || metrics.padding_top != 0i32 || metrics.border_top != 0i32 {
+    if block_children.is_empty() {
+        debug!("[VERT-GROUP root={root:?}] skip pre-scan: empty children");
         return (0i32, 0i32, 0i32, 0usize);
     }
 
@@ -247,7 +252,14 @@ fn apply_leading_top_collapse(
         .cloned()
         .unwrap_or_else(ComputedStyle::default);
     let parent_sides = compute_box_sides(&parent_style);
-    let mut leading_margins: Vec<i32> = vec![parent_sides.margin_top];
+    let include_parent_edge = metrics.padding_top == 0i32 && metrics.border_top == 0i32;
+    // If the parent's top edge is collapsible, include the parent's own top margin.
+    // Otherwise, compute an internal leading collapse (without the parent's top margin).
+    let mut leading_margins: Vec<i32> = if include_parent_edge {
+        vec![parent_sides.margin_top]
+    } else {
+        Vec::new()
+    };
     let mut skip_count: usize = 0;
     let mut idx: usize = 0;
     while let Some(child_key) = block_children.get(idx).copied() {
@@ -258,14 +270,16 @@ fn apply_leading_top_collapse(
             .unwrap_or_else(ComputedStyle::default);
         let child_sides = compute_box_sides(&child_style);
         let eff_top = layouter.effective_child_top_margin(child_key, &child_sides);
-        let is_leading_empty = child_sides.padding_top == 0i32
-            && child_sides.border_top == 0i32
-            && child_sides.padding_bottom == 0i32
-            && child_sides.border_bottom == 0i32
-            && !layouter.has_inline_text_descendant(child_key)
-            && child_style
-                .height
-                .is_some_and(|height_px| (height_px as i32) == 0i32);
+        let is_leading_empty = layouter.is_structurally_empty_chain(child_key);
+        debug!(
+            "[VERT-GROUP scan root={root:?}] child={child_key:?} eff_top={eff_top} paddings(top={},bottom={}) borders(top={},bottom={}) height={:?} structurally_empty_chain={}",
+            child_sides.padding_top,
+            child_sides.padding_bottom,
+            child_sides.border_top,
+            child_sides.border_bottom,
+            child_style.height,
+            is_leading_empty
+        );
         if is_leading_empty {
             let eff_bottom = layouter.effective_child_bottom_margin(child_key, &child_sides);
             leading_margins.push(eff_top);
@@ -277,14 +291,21 @@ fn apply_leading_top_collapse(
         leading_margins.push(eff_top);
         break;
     }
-    if skip_count == 0 && leading_margins.len() <= 1 {
+    if skip_count == 0 && leading_margins.is_empty() {
         return (0i32, 0i32, 0i32, 0usize);
     }
     let leading_top = Layouter::collapse_margins_list(&leading_margins);
     debug!(
-        "[VERT-GROUP root={root:?}] leading_skip={skip_count} margins={leading_margins:?} -> leading_top={leading_top}"
+        "[VERT-GROUP root={root:?}] include_parent_edge={include_parent_edge} leading_skip={skip_count} margins={leading_margins:?} -> leading_top={leading_top}"
     );
-    (leading_top.max(0i32), 0i32, leading_top, skip_count)
+    if include_parent_edge {
+        // Apply at the parent's top edge; do not pass it down as previous_bottom_margin.
+        (leading_top.max(0i32), 0i32, leading_top, skip_count)
+    } else {
+        // Parent top edge is blocked by padding/border. Keep y at 0 and pass the internal
+        // collapsed leading as previous_bottom_margin to the first child. Do not mark as applied.
+        (0i32, leading_top, 0i32, skip_count)
+    }
 }
 
 /// A rectangle in device-independent pixels.
@@ -945,19 +966,41 @@ impl Layouter {
                     block_children.push(key);
                 }
             }
-            let (y_start, prev_bottom_after, leading_applied, _skipped) =
+            let (y_start, prev_bottom_after, leading_applied, skipped) =
                 apply_leading_top_collapse(self, root, metrics, &block_children);
+            debug!(
+                "[VERT-GROUP apply root={root:?}] y_start={y_start} prev_bottom_after={prev_bottom_after} leading_applied={leading_applied}"
+            );
             y_cursor = y_start;
             let mut previous_bottom_margin: i32 = prev_bottom_after;
+            // Parent's own top margin is needed for first-child 'first edge' incremental calculation
+            let parent_style = self
+                .computed_styles
+                .get(&root)
+                .cloned()
+                .unwrap_or_else(ComputedStyle::default);
+            let parent_sides = compute_box_sides(&parent_style);
+            let parent_edge_collapsible = metrics.padding_top == 0i32 && metrics.border_top == 0i32;
             for (index, child_key) in block_children.into_iter().enumerate() {
                 let ctx = ChildLayoutCtx {
                     index,
                     metrics: *metrics,
                     y_cursor,
                     previous_bottom_margin,
-                    parent_self_top_margin: 0i32,
-                    leading_top_applied: if index == 0 { leading_applied } else { 0i32 },
+                    parent_self_top_margin: if parent_edge_collapsible {
+                        parent_sides.margin_top
+                    } else {
+                        0
+                    },
+                    leading_top_applied: if index == skipped {
+                        leading_applied
+                    } else {
+                        0i32
+                    },
                 };
+                if index == 0 {
+                    Self::log_first_child_context(root, &ctx);
+                }
                 let (computed_height, y_position, margin_bottom) =
                     self.layout_one_block_child(child_key, ctx);
                 reflowed_count = reflowed_count.saturating_add(1);
@@ -1047,6 +1090,22 @@ impl Layouter {
         } else {
             Self::compute_margin_bottom_out(margin_top_eff, eff_bottom, is_empty)
         };
+
+        if ctx.index == 0 {
+            let edge_blocked = ctx.metrics.padding_top != 0 || ctx.metrics.border_top != 0;
+            debug!(
+                "[VERT-COLLAPSE summary child={:?} idx=0] edge_blocked={} lt_applied={} prev_mb={} parent_top={} child_top_eff={} collapsed_top={} -> y={}",
+                child_key,
+                edge_blocked,
+                ctx.leading_top_applied,
+                ctx.previous_bottom_margin,
+                ctx.parent_self_top_margin,
+                margin_top_eff,
+                collapsed_top,
+                child_y
+            );
+        }
+
         self.commit_vert(VertCommit {
             index: ctx.index,
             prev_mb: ctx.previous_bottom_margin,
@@ -1058,6 +1117,11 @@ impl Layouter {
             parent_origin_y: parent_y,
             y_position: child_y,
             y_cursor_in: ctx.y_cursor,
+            leading_top_applied: if ctx.index == 0 {
+                ctx.leading_top_applied
+            } else {
+                0
+            },
             child_key,
             rect: LayoutRect {
                 x: child_x.saturating_add(x_adjust),
@@ -1107,6 +1171,7 @@ impl Layouter {
             parent_origin_y: vert_commit.parent_origin_y,
             y_position: vert_commit.y_position,
             y_cursor_in: vert_commit.y_cursor_in,
+            leading_top_applied: vert_commit.leading_top_applied,
         });
         Self::insert_child_rect(&mut self.rects, vert_commit.child_key, vert_commit.rect);
     }
@@ -1115,7 +1180,7 @@ impl Layouter {
     /// Log a vertical layout step with margin collapsing inputs and results.
     fn log_vert(entry: VertLog) {
         debug!(
-            "[VERT child idx={}] pm_prev_bottom={} child(mt_raw={}, mt_eff={}, mb(eff={}), empty={}) collapsed_top={} parent_origin_y={} -> y={} cursor_in={}",
+            "[VERT child idx={}] pm_prev_bottom={} child(mt_raw={}, mt_eff={}, mb(eff={}), empty={}) collapsed_top={} parent_origin_y={} -> y={} cursor_in={} lt_applied={}",
             entry.index,
             entry.prev_mb,
             entry.margin_top_raw,
@@ -1126,6 +1191,7 @@ impl Layouter {
             entry.parent_origin_y,
             entry.y_position,
             entry.y_cursor_in,
+            entry.leading_top_applied,
         );
     }
 
@@ -1254,20 +1320,87 @@ impl Layouter {
     }
 
     #[inline]
+    fn log_first_child_context(root: NodeKey, ctx: &ChildLayoutCtx) {
+        debug!(
+            "[VERT-CONTEXT first root={root:?}] pad_top={} border_top={} parent_self_top={} prev_bottom={} y_cursor={} lt_applied={}",
+            ctx.metrics.padding_top,
+            ctx.metrics.border_top,
+            ctx.parent_self_top_margin,
+            ctx.previous_bottom_margin,
+            ctx.y_cursor,
+            ctx.leading_top_applied
+        );
+    }
+
+    #[inline]
+    /// Return the first block child of `key`, if any.
+    fn first_block_child(&self, key: NodeKey) -> Option<NodeKey> {
+        let kids = self.children.get(&key)?;
+        kids.iter()
+            .copied()
+            .find(|node_key| matches!(self.nodes.get(node_key), Some(LayoutNodeKind::Block { .. })))
+    }
+
+    #[inline]
+    /// Heuristic structural emptiness used during leading group pre-scan (CSS §8.3.1).
+    /// Walks a chain of first block children while each box has zero top/bottom padding and border.
+    /// If the chain terminates without another block child under those constraints, treat as empty.
+    fn is_structurally_empty_chain(&self, start: NodeKey) -> bool {
+        let mut current = start;
+        loop {
+            let style = self
+                .computed_styles
+                .get(&current)
+                .cloned()
+                .unwrap_or_else(ComputedStyle::default);
+            let sides = compute_box_sides(&style);
+            if sides.padding_top != 0
+                || sides.border_top != 0
+                || sides.padding_bottom != 0
+                || sides.border_bottom != 0
+            {
+                return false;
+            }
+            match self.first_block_child(current) {
+                None => return true,
+                Some(next) => {
+                    current = next;
+                }
+            }
+        }
+    }
+
+    #[inline]
     /// Compute the vertical offset from collapsed margins above a block child.
     fn compute_collapsed_vertical_margin(ctx: &ChildLayoutCtx, child_margin_top: i32) -> i32 {
-        if ctx.index == 0 && ctx.metrics.padding_top == 0i32 && ctx.metrics.border_top == 0i32 {
+        if ctx.index == 0 {
             if ctx.leading_top_applied != 0i32 {
                 // The leading-top collapse was already applied at the parent edge.
+                debug!(
+                    "[VERT-COLLAPSE first] lt_applied={} -> collapsed_top=0",
+                    ctx.leading_top_applied
+                );
                 return 0i32;
             }
-            // Collapse parent's own top margin with child's top margin and apply only the
-            // incremental amount beyond the parent's own top margin at the parent's top edge.
-            let combined =
-                Self::collapse_margins_pair(ctx.parent_self_top_margin, child_margin_top);
-            return combined.saturating_sub(ctx.parent_self_top_margin);
+            if ctx.metrics.padding_top == 0i32 && ctx.metrics.border_top == 0i32 {
+                // Collapse parent's own top margin with child's top margin and apply only the
+                // incremental amount beyond the parent's own top margin at the parent's top edge.
+                let combined =
+                    Self::collapse_margins_pair(ctx.parent_self_top_margin, child_margin_top);
+                let inc = combined.saturating_sub(ctx.parent_self_top_margin);
+                debug!(
+                    "[VERT-COLLAPSE first edge] parent_top={} child_top={} -> combined={} inc={}",
+                    ctx.parent_self_top_margin, child_margin_top, combined, inc
+                );
+                return inc;
+            }
         }
-        Self::collapse_margins_pair(ctx.previous_bottom_margin, child_margin_top)
+        let pair = Self::collapse_margins_pair(ctx.previous_bottom_margin, child_margin_top);
+        debug!(
+            "[VERT-COLLAPSE sibling] prev_mb={} child_top={} -> collapsed_top={}",
+            ctx.previous_bottom_margin, child_margin_top, pair
+        );
+        pair
     }
 
     #[inline]
