@@ -1,0 +1,22 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Auto Width</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #container { width: 400px; background: #f9f9f9; }
+    .child { display: block; height: 20px; background: #cfe; margin: 0; padding: 0; }
+    #a { width: auto; }
+    #b { width: 200px; }
+  </style>
+</head>
+
+  <!-- : awaiting layout parity -->
+  <div id="container">
+    <div id="a" class="child"></div>
+    <div id="b" class="child"></div>
+  </div>
+</body>
+</html>
+

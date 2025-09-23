@@ -1,0 +1,24 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Sizing Grow/Shrink</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #container { display: flex; width: 500px; height: 100px; background: #fafafa; }
+    .item { height: 40px; background: #cde; margin: 0 5px; }
+    #a { flex: 1 1 100px; }
+    #b { flex: 2 1 100px; }
+    #c { flex: 1 1 50px; }
+  </style>
+</head>
+
+  <!-- : awaiting layout parity -->
+  <div id="container">
+    <div id="a" class="item"></div>
+    <div id="b" class="item"></div>
+    <div id="c" class="item"></div>
+  </div>
+</body>
+</html>
+

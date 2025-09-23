@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use anyhow::{Result, anyhow};
 use image::ImageEncoder;
+use log::info;
 use page_handler::config::ValorConfig;
 use page_handler::state::HtmlPage;
 use serde_json::Value;
@@ -128,7 +129,7 @@ pub fn write_cached_json_for_fixture(
     }
     let s = serde_json::to_string(v).unwrap_or_else(|_| String::from("{}"));
     fs::write(file, s)?;
-    eprintln!(
+    info!(
         "[CACHE] wrote chromium JSON for {} to target/valor_layout_cache",
         canon.display()
     );
@@ -157,7 +158,7 @@ pub fn write_named_json_for_fixture(
     }
     let s = serde_json::to_string(v).unwrap_or_else(|_| String::from("{}"));
     fs::write(file, s)?;
-    eprintln!(
+    info!(
         "[CACHE] wrote {} JSON for {} to target/valor_layout_cache",
         name,
         canon.display()
@@ -313,7 +314,16 @@ pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
         has_fixtures_ancestor && parent_not_fixtures
     });
     files.sort();
-    Ok(files)
+    // Deduplicate by canonical path to avoid duplicates from overlapping roots
+    let mut seen = std::collections::HashSet::new();
+    let mut unique = Vec::with_capacity(files.len());
+    for p in files {
+        let canon = p.canonicalize().unwrap_or(p.clone());
+        if seen.insert(canon) {
+            unique.push(p);
+        }
+    }
+    Ok(unique)
 }
 
 /// Discover all .html files under each crate's tests/fixtures/graphics directory recursively.

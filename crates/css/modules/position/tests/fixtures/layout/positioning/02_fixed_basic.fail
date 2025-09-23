@@ -1,0 +1,17 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Fixed Positioning Basic</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body { width: 800px; height: 600px; }
+    #fixed { position: fixed; left: 120px; top: 40px; width: 160px; height: 50px; background: #fed; }
+  </style>
+</head>
+
+  <!-- : awaiting layout parity -->
+  <div id="fixed"></div>
+</body>
+</html>
+

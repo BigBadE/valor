@@ -10,11 +10,10 @@ use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
 use js::NodeKey;
 use layouter::LayoutRect;
 use layouter::{LayoutNodeKind, Layouter};
-use log::info;
+use log::{debug, error, info};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fs;
 use std::path::Path;
 use style_engine::{
     AlignItems, BoxSizing, ComputedStyle, Display, Edges, LengthOrAuto, Overflow, SizeSpecified,
@@ -25,9 +24,8 @@ mod common;
 
 #[test]
 fn run_chromium_layouts() -> Result<(), Error> {
-    // Initialize logger to show logs during tests (including JS console.* forwarded via log)
-    let _ = env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
+    // Initialize logger honoring RUST_LOG; default to WARN if not set
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().filter_or("RUST_LOG", "warn"))
         .is_test(false)
         .try_init();
 
@@ -62,10 +60,51 @@ fn run_chromium_layouts() -> Result<(), Error> {
     let rt = Runtime::new()?;
     // Iterate over filtered fixtures and compare against each expected file content.
     let all = common::fixture_html_files()?;
-    // Optional: focus a single fixture via substring match
-    let focus = std::env::var("LAYOUT_FIXTURE_FILTER").ok();
+    // Optional: focus fixtures via substring match
+    // Accepted forms (pass after `--` so cargo forwards to the test binary):
+    // - run_chromium_layouts::<substr>  (leverages libtest name filtering without introducing unknown flags)
+    // - --layout-filter=<substr>        (if not treated as an unknown flag by your invocation)
+    // - --fixture=<substr>
+    fn cli_layout_filter() -> Option<String> {
+        let mut args = std::env::args();
+        // Skip program name
+        let _ = args.next();
+        let mut pending_value_for: Option<String> = None;
+        for arg in args {
+            // Piggyback on libtest name filter: run_chromium_layouts::<substr>
+            if let Some(rest) = arg.strip_prefix("run_chromium_layouts::")
+                && !rest.is_empty()
+            {
+                return Some(rest.to_string());
+            }
+            // Accept positional key=value (no leading dashes) to avoid test harness flag errors
+            if let Some(rest) = arg.strip_prefix("layout-filter=") {
+                return Some(rest.to_string());
+            }
+            if let Some(rest) = arg.strip_prefix("fixture=") {
+                return Some(rest.to_string());
+            }
+            // Support `--layout-filter=value` form
+            if let Some(rest) = arg.strip_prefix("--layout-filter=") {
+                return Some(rest.to_string());
+            }
+            if let Some(rest) = arg.strip_prefix("--fixture=") {
+                return Some(rest.to_string());
+            }
+            // Support `--layout-filter value` form
+            if arg == "--layout-filter" || arg == "--fixture" {
+                pending_value_for = Some(arg);
+                continue;
+            }
+            if pending_value_for.is_some() {
+                return Some(arg);
+            }
+        }
+        None
+    }
+    let focus = cli_layout_filter();
     if let Some(ref f) = focus {
-        info!("[LAYOUT] focusing fixtures containing: {f}");
+        info!("[LAYOUT] focusing fixtures containing (CLI): {f}");
     }
     info!("[LAYOUT] discovered {} fixtures", all.len());
     let mut ran = 0;
@@ -77,13 +116,6 @@ fn run_chromium_layouts() -> Result<(), Error> {
             }
         }
         let display_name = input_path.display().to_string();
-        // XFAIL mechanism: skip any fixture that contains the marker
-        if let Ok(text) = fs::read_to_string(&input_path)
-            && (text.contains("VALOR_XFAIL") || text.contains("valor-xfail"))
-        {
-            info!("[LAYOUT] {display_name} ... XFAIL (skipped)");
-            continue;
-        }
         // Build page and parse via HtmlPage
         let url = common::to_file_url(&input_path)?;
         let mut page = common::create_page(&rt, url)?;
@@ -100,7 +132,7 @@ fn run_chromium_layouts() -> Result<(), Error> {
         })?;
         if !finished {
             let msg = "Parsing did not finish".to_string();
-            eprintln!("[LAYOUT] {display_name} ... FAILED: {msg}");
+            error!("[LAYOUT] {display_name} ... FAILED: {msg}");
             failed.push((display_name.clone(), msg));
             continue;
         }
@@ -166,7 +198,7 @@ fn run_chromium_layouts() -> Result<(), Error> {
                 .iter()
                 .filter(|(_, kind, _)| matches!(kind, LayoutNodeKind::Block { .. }))
                 .count();
-            eprintln!(
+            debug!(
                 "[LAYOUT][DIAG] external layouter after replay: updates_applied={updates_applied}, blocks_in_snapshot={blocks_count}"
             );
         }
@@ -188,7 +220,7 @@ fn run_chromium_layouts() -> Result<(), Error> {
             .iter()
             .filter(|(_, kind, _)| matches!(kind, LayoutNodeKind::Block { .. }))
             .count();
-        eprintln!(
+        debug!(
             "[LAYOUT][DIAG] external layouter after replay: updates_applied={updates_applied}, blocks_in_snapshot={blocks_count}"
         );
         // Use the external Layouter geometry computed above for comparison
@@ -231,7 +263,7 @@ fn run_chromium_layouts() -> Result<(), Error> {
                 let details = entry.get("details").and_then(|v| v.as_str()).unwrap_or("");
                 if !ok {
                     let msg = format!("JS assertion failed: {name} - {details}");
-                    eprintln!("[LAYOUT] {display_name} ... FAILED: {msg}");
+                    error!("[LAYOUT] {display_name} ... FAILED: {msg}");
                     failed.push((display_name.clone(), msg));
                     continue;
                 }
@@ -241,7 +273,7 @@ fn run_chromium_layouts() -> Result<(), Error> {
         let eps = f32::EPSILON as f64 * 3.0;
         match common::compare_json_with_epsilon(&our_json, &ch_layout_json, eps) {
             Ok(_) => {
-                println!("[LAYOUT] {display_name} ... ok");
+                info!("[LAYOUT] {display_name} ... ok");
                 ran += 1;
             }
             Err(msg) => {
@@ -259,7 +291,7 @@ fn run_chromium_layouts() -> Result<(), Error> {
                         root_children = children;
                     }
                 }
-                eprintln!(
+                debug!(
                     "[LAYOUT][DIAG] blocks={}, root_children_count={}, attrs_nodes={}",
                     blocks,
                     root_children.len(),
@@ -283,20 +315,20 @@ fn run_chromium_layouts() -> Result<(), Error> {
                             break;
                         }
                     }
-                    eprintln!(
+                    debug!(
                         "[LAYOUT][DIAG] first element child under ROOT has {child_count} children"
                     );
                 }
                 // The comparison message already contains the precise path and the element snippets for both sides.
-                eprintln!("[LAYOUT] {display_name} ... FAILED: {msg}");
+                error!("[LAYOUT] {display_name} ... FAILED: {msg}");
                 failed.push((display_name.clone(), msg));
             }
         }
     }
     if !failed.is_empty() {
-        eprintln!("\n==== LAYOUT FAILURES ({} total) ====", failed.len());
+        error!("==== LAYOUT FAILURES ({} total) ====", failed.len());
         for (name, msg) in &failed {
-            eprintln!("- {name}\n  {msg}\n");
+            error!("- {name}\n  {msg}\n");
         }
         panic!("{} layout fixture(s) failed; see log above.", failed.len());
     }

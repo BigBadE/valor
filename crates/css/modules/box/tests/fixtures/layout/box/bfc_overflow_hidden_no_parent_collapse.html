@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<!-- Parent with overflow hidden (BFC). Child top margin must NOT collapse with parent top. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>BFC via overflow hidden prevents parent/first-child collapse</title>
+    <style>
+      #container {
+        width: 400px;
+        overflow: hidden; /* establishes BFC */
+        padding-top: 0;
+        border-top: 0;
+        background: #eef;
+      }
+      #child {
+        margin-top: 20px;
+        height: 10px;
+        background: #88f;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="child"></div>
+    </div>
+  </body>
+</html>

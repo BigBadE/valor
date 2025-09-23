@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<!-- flex container establishes BFC: child's top margin should not collapse with parent top -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Flex container BFC prevents parent/first-child collapse</title>
+    <style>
+      #container {
+        width: 400px;
+        display: flex; /* BFC */
+        padding-top: 0;
+        border-top: 0;
+        background: #efe;
+      }
+      #child {
+        margin-top: 24px;
+        height: 12px;
+        background: #4c4;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="child"></div>
+    </div>
+  </body>
+</html>

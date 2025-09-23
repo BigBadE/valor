@@ -143,6 +143,7 @@ float_arithmetic = { level = "allow", priority = 1 }
 pub_use = { level = "allow", priority = 1 }
 must_use_candidate = { level = "allow", priority = 1 }
 exhaustive_enums = { level = "allow", priority = 1 }
+too-long-first-doc-paragraph = { level = "allow", priority = 1 }
 implicit_return = { level = "allow", priority = 1 }
 single_call_fn = { level = "allow", priority = 1 }
 question_mark_used = { level = "allow", priority = 1 }

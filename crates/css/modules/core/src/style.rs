@@ -721,15 +721,31 @@ fn apply_edges_and_borders(
 ) {
     computed.margin = parse_edges("margin", decls);
     computed.padding = parse_edges("padding", decls);
-
-    // 1) Numeric-only shorthand widths for border
-    let border_widths_tmp = parse_edges("border", decls);
-    computed.border_width = style_model::BorderWidths {
-        top: border_widths_tmp.top,
-        right: border_widths_tmp.right,
-        bottom: border_widths_tmp.bottom,
-        left: border_widths_tmp.left,
-    };
+    // 1) Border widths
+    // Prefer explicit 'border-width' (and per-side longhands) when present.
+    let border_widths_from_bw = parse_edges("border-width", decls);
+    let has_bw_longhands = decls.contains_key("border-width")
+        || decls.contains_key("border-top-width")
+        || decls.contains_key("border-right-width")
+        || decls.contains_key("border-bottom-width")
+        || decls.contains_key("border-left-width");
+    if has_bw_longhands {
+        computed.border_width = style_model::BorderWidths {
+            top: border_widths_from_bw.top,
+            right: border_widths_from_bw.right,
+            bottom: border_widths_from_bw.bottom,
+            left: border_widths_from_bw.left,
+        };
+    } else {
+        // Fallback: numeric-only shorthand widths for 'border' when author uses 'border: 1px 2px ...'
+        let border_widths_tmp = parse_edges("border", decls);
+        computed.border_width = style_model::BorderWidths {
+            top: border_widths_tmp.top,
+            right: border_widths_tmp.right,
+            bottom: border_widths_tmp.bottom,
+            left: border_widths_tmp.left,
+        };
+    }
 
     // 2) Full border shorthand tokens
     if let Some(value) = decls.get("border") {

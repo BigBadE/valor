@@ -1,13 +1,12 @@
 //! Orchestrator: entry points and root aggregation for layout.
 
-use core::sync::atomic::{Ordering, compiler_fence};
 use css_box::compute_box_sides;
 use style_engine::ComputedStyle;
 
-use super::{INITIAL_CONTAINING_BLOCK_WIDTH, LayoutRect};
-use crate::dimensions;
-use crate::visual_formatting;
+use crate::visual_formatting::dimensions;
 use crate::{ContainerMetrics, LayoutNodeKind, Layouter, RootHeightsCtx};
+use crate::{INITIAL_CONTAINING_BLOCK_WIDTH, LayoutRect};
+use crate::{SCROLLBAR_GUTTER_PX, visual_formatting};
 use js::NodeKey;
 
 #[inline]
@@ -18,7 +17,6 @@ pub fn compute_layout_impl(layouter: &mut Layouter) -> usize {
     layouter.perf_nodes_reflowed_last = 0;
     layouter.perf_dirty_subtrees_last = 0;
     layouter.perf_layout_time_last_ms = 0;
-    compiler_fence(Ordering::SeqCst);
     layout_root_impl(layouter)
 }
 
@@ -44,14 +42,21 @@ pub fn compute_container_metrics_impl(
     let border_top = sides.border_top;
     let margin_left = 0i32;
     let margin_top = 0i32;
+    // Apply a fixed scrollbar gutter for the viewport to approximate Chromium's reserved space.
+    // This brings our initial containing block into alignment with Chrome's layout width on Windows.
+    let scrollbar_gutter = SCROLLBAR_GUTTER_PX;
+    let total_border_box_width = icb_width.saturating_sub(scrollbar_gutter).max(0i32);
     let horizontal_non_content = padding_left
         .saturating_add(padding_right)
         .saturating_add(border_left)
         .saturating_add(border_right);
-    let container_width = icb_width.saturating_sub(horizontal_non_content).max(0i32);
+    let container_width = total_border_box_width
+        .saturating_sub(horizontal_non_content)
+        .max(0i32);
 
     ContainerMetrics {
         container_width,
+        total_border_box_width,
         padding_left,
         padding_top,
         border_left,
@@ -67,7 +72,6 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
 
     let Some(root) = layouter.choose_layout_root() else {
         layouter.rects.clear();
-        compiler_fence(Ordering::SeqCst);
         return 0;
     };
 
@@ -78,7 +82,8 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
         LayoutRect {
             x: 0,
             y: 0,
-            width: metrics.container_width,
+            // Root rect is the viewport/root element border-box width.
+            width: metrics.total_border_box_width,
             height: 0,
         },
     );
@@ -116,7 +121,6 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
         content_height,
         reflowed_count,
     );
-    compiler_fence(Ordering::SeqCst);
     reflowed_count
 }
 

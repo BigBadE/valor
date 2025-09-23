@@ -1,0 +1,35 @@
+﻿<!DOCTYPE html>
+<!-- : clearance behavior approximated; breaks sibling collapse even without floats -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Clearance breaks sibling margin collapsing (approx)</title>
+    <style>
+      #container {
+        width: 400px;
+        border-top: 0;
+        padding-top: 0;
+      }
+      .box {
+        height: 20px;
+        background: #ddd;
+      }
+      #a {
+        margin-bottom: 30px;
+        background: #aaf;
+      }
+      #b {
+        margin-top: 20px;
+        clear: both; /* our layouter treats clear as collapse breaker */
+        background: #faa;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="a" class="box"></div>
+      <div id="b" class="box"></div>
+    </div>
+  </body>
+</html>
+

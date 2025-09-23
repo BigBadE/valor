@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<!-- Float left sets a clearance floor; following block with clear:left must start below float's bottom + positive bottom margin. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>clear:left honors float left clearance</title>
+    <style>
+      #container {
+        width: 400px;
+        padding-top: 0;
+        border-top: 0;
+        background: #f8f8f8;
+      }
+      #floatL {
+        float: left;
+        width: 80px;
+        height: 30px;
+        margin-bottom: 10px; /* contributes to floor */
+        background: #88c;
+      }
+      #after {
+        clear: left;
+        margin-top: 6px; /* does not collapse with float; position should be at floor, ignoring collapsed with prev */
+        height: 12px;
+        background: #c88;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="floatL"></div>
+      <div id="after"></div>
+    </div>
+  </body>
+</html>

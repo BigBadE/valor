@@ -1,0 +1,12 @@
+﻿<!doctype html>
+<meta charset="utf-8" />
+<title>flex basis/grow/shrink and align-items</title>
+<body>
+  <!-- : enable when flex layout and align-items normalization are wired end-to-end -->
+  <div id="container" style="display: flex; width: 300px; height: 60px; align-items: center; justify-content: flex-start;">
+    <div id="item1" style="flex-grow: 1; flex-shrink: 1; flex-basis: 50px; height: 20px; background: #ddd;"></div>
+    <div id="item2" style="flex-grow: 2; flex-shrink: 0; flex-basis: 80px; height: 20px; background: #ccc;"></div>
+    <div id="item3" style="flex-grow: 0; flex-shrink: 3; flex-basis: 30px; height: 20px; background: #bbb;"></div>
+  </div>
+</body>
+

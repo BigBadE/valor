@@ -3,6 +3,7 @@
 //! - vertical:   §8.3.1
 //! - height:     §10.6
 //! - root:       root-level helpers for parent–first-child collapse
+pub mod dimensions;
 
 pub mod height;
 pub mod horizontal;

@@ -88,4 +88,4 @@ G  - [x] Module specs created per MODULE_SPEC_FORMAT (`crates/css/modules/displa
 - Introduced `FinalizeRootArgs` and simplified `insert_child_rect()` signature to satisfy clippy argument-count constraints.
 - Display flattening (`display:none` skip, `display:contents` lift) remains as the MVP input to block layout.
 - Inline-run partitioning exists; whitespace collapsing and full inline flow boxes remain TODO.
-- Graphics smoke compare passes; a few layout fixtures are temporarily marked `VALOR_XFAIL` while the refactor settles (box-sizing/min-max/margin-collapsing edge cases). Heavy JSON compare test is temporarily `#[ignore]` with a reason.
+- Graphics smoke compare passes; a few layout fixtures are temporarily marked by renaming them with the `.fail` extension while the refactor settles (box-sizing/min-max/margin-collapsing edge cases). Heavy JSON compare test is temporarily `#[ignore]` with a reason.

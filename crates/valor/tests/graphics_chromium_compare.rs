@@ -3,6 +3,7 @@ use anyhow::{Result, anyhow};
 use headless_chrome::{
     Browser, LaunchOptionsBuilder, protocol::cdp::Page::CaptureScreenshotFormatOption,
 };
+use log::{debug, error, info};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -237,7 +238,7 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
     // Use the same fixtures as the layout comparer so this test always has inputs
     let fixtures = common::fixture_html_files()?;
     if fixtures.is_empty() {
-        eprintln!(
+        info!(
             "[GRAPHICS] No fixtures found — add files under any crate's tests/fixtures/graphics/ subfolders"
         );
         return Ok(());
@@ -261,13 +262,6 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
     let mut any_failed = false;
 
     for fixture in fixtures {
-        // Skip fixtures explicitly marked as expected failures
-        if let Ok(text) = std::fs::read_to_string(&fixture)
-            && (text.contains("VALOR_XFAIL") || text.contains("valor-xfail"))
-        {
-            eprintln!("[GRAPHICS] {} ... XFAIL (skipped)", fixture.display());
-            continue;
-        }
         let name = safe_stem(&fixture);
         let chrome_png = capture_chrome_png(&browser, &fixture, 800, 600)?;
         // Always update a stable Chrome artifact only if contents changed
@@ -278,7 +272,7 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
         let (w, h) = chrome_img.dimensions();
         // Build Valor display list (with viewport background) and rasterize to RGBA
         let dl = build_valor_display_list_for(&fixture, w, h)?;
-        eprintln!(
+        debug!(
             "[GRAPHICS][DEBUG] {}: DL items={} (first 5: {:?})",
             name,
             dl.items.len(),
@@ -286,7 +280,7 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
         );
         let dbg_batches = batch_display_list(&dl, w, h);
         let dbg_quads: usize = dbg_batches.iter().map(|b| b.quads.len()).sum();
-        eprintln!(
+        debug!(
             "[GRAPHICS][DEBUG] {}: batches={} total_quads={}",
             name,
             dbg_batches.len(),
@@ -320,7 +314,7 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
             common::write_png_rgba_if_changed(&valor_path, &valor_img, w, h)?;
             let diff_img = make_diff_image_masked(chrome_img.as_raw(), &valor_img, &ctx);
             common::write_png_rgba_if_changed(&diff_path, &diff_img, w, h)?;
-            eprintln!(
+            error!(
                 "[GRAPHICS] {} — pixel diffs found ({} over {}, {:.4}%); wrote\n  {}\n  {}\n  {}",
                 name,
                 over,
@@ -332,7 +326,7 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
             );
             any_failed = true;
         } else if over > 0 {
-            eprintln!(
+            info!(
                 "[GRAPHICS] {} — pixel diffs under tolerance ({} over {}, {:.4}% <= {:.2}%); accepting",
                 name,
                 over,

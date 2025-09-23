@@ -1,0 +1,21 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Row Basic</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #container { display: flex; width: 500px; height: 100px; background: #fafafa; }
+    .item { width: 100px; height: 40px; background: #cde; margin: 0 5px; }
+  </style>
+</head>
+
+  <!-- : awaiting layout parity -->
+  <div id="container">
+    <div id="a" class="item"></div>
+    <div id="b" class="item"></div>
+    <div id="c" class="item"></div>
+  </div>
+</body>
+</html>
+

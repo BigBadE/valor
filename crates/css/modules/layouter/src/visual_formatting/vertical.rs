@@ -7,15 +7,19 @@
 
 use css_box::{BoxSides, compute_box_sides};
 use log::debug;
-use style_engine::{Clear, ComputedStyle, Float, Overflow, Position};
+use style_engine::{Clear, ComputedStyle, Display, Float, Overflow, Position};
 
 use crate::{ContainerMetrics, LayoutNodeKind, Layouter, box_tree};
 use js::NodeKey;
 
-/// Heuristic structural emptiness used during leading group pre-scan (CSS §8.3.1).
+/// Heuristic structural emptiness used during leading group pre-scan.
 ///
-/// Walks a chain of first block children while each box has zero top/bottom padding and border.
-/// If the chain terminates without another block child under those constraints, treat as empty.
+/// Spec: CSS 2.2 §8.3.1 Collapsing margins — empty box internal collapse and propagation
+///   <https://www.w3.org/TR/CSS22/box.html#collapsing-margins>
+///
+/// [Approximation] Walk a chain of first block children while each box has zero top/bottom
+/// padding and border, no explicit height/min-height, and no inline text descendant. If the
+/// chain terminates without another block child under those constraints, treat as empty.
 #[inline]
 pub fn is_structurally_empty_chain(layouter: &Layouter, start: NodeKey) -> bool {
     let mut current = start;
@@ -25,6 +29,12 @@ pub fn is_structurally_empty_chain(layouter: &Layouter, start: NodeKey) -> bool 
             .get(&current)
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
+        // A box that establishes a BFC is not considered structurally empty for the
+        // purposes of margin propagation across an empty chain (CSS 2.2 §8.3.1).
+        if establishes_bfc(&style) {
+            debug!("[VERT-EMPTY diag node={current:?}] break: establishes BFC");
+            return false;
+        }
         let sides = compute_box_sides(&style);
         if style.height.unwrap_or(0.0) as i32 > 0 {
             debug!("[VERT-EMPTY diag node={current:?}] break: explicit height>0");
@@ -64,7 +74,10 @@ pub fn is_structurally_empty_chain(layouter: &Layouter, start: NodeKey) -> bool 
 
 /// Compute an effective top margin for a child, collapsing with its first block child's top margin.
 ///
-/// Applies when the child has no top padding/border and contains no inline text (CSS 2.2 §8.3.1 approximation).
+/// Spec: CSS 2.2 §8.3.1 Collapsing margins — parent/first-child propagation across empty chains
+///   <https://www.w3.org/TR/CSS22/box.html#collapsing-margins>
+///
+/// [Approximation] Applies when the child has no top padding/border and contains no inline text.
 #[inline]
 pub fn effective_child_top_margin(
     layouter: &Layouter,
@@ -115,7 +128,10 @@ pub fn effective_child_top_margin(
 
 /// Compute an effective bottom margin for a child, collapsing with its last block child's bottom margin.
 ///
-/// Applies when the child has no bottom padding/border and contains no inline text (CSS 2.2 §8.3.1 approximation).
+/// Spec: CSS 2.2 §8.3.1 Collapsing margins — empty chain propagation on the bottom edge
+///   <https://www.w3.org/TR/CSS22/box.html#collapsing-margins>
+///
+/// [Approximation] Applies when the child has no bottom padding/border and contains no inline text.
 #[inline]
 pub fn effective_child_bottom_margin(
     layouter: &Layouter,
@@ -159,11 +175,17 @@ pub fn effective_child_bottom_margin(
 
 #[inline]
 /// Minimal BFC heuristic used by margin-collapsing traversal.
-const fn establishes_bfc(style: &ComputedStyle) -> bool {
+///
+/// Spec: CSS 2.2 BFC creation (combined from §9.4.* and related)
+///   <https://www.w3.org/TR/CSS22/visuren.html#block-formatting>
+///
+/// [Approximation] Treat overflow != visible, float != none, position != static, or flex container as BFC.
+pub const fn establishes_bfc(style: &ComputedStyle) -> bool {
     // Establish a BFC if any of the following are true:
     // - overflow is not Visible
     // - float is not None
-    // - position is not Static (absolute/fixed/sticky)
+    // - position is not Static (absolute/fixed)
+    // - display is Flex or InlineFlex
     if !matches!(style.overflow, Overflow::Visible) {
         return true;
     }
@@ -171,6 +193,9 @@ const fn establishes_bfc(style: &ComputedStyle) -> bool {
         return true;
     }
     if !matches!(style.position, Position::Static) {
+        return true;
+    }
+    if matches!(style.display, Display::Flex | Display::InlineFlex) {
         return true;
     }
     false
@@ -245,6 +270,8 @@ fn has_inline_text_descendant(layouter: &Layouter, key: NodeKey) -> bool {
 
 #[inline]
 /// Scan the leading collapsible group and collect margins.
+///
+/// Spec: CSS 2.2 §8.3.1 — parent edge + leading empty chain group
 /// Returns `(margins, skip_count, include_parent_edge, parent_edge_collapsible)`.
 fn scan_leading_group(
     layouter: &Layouter,
@@ -320,8 +347,10 @@ fn scan_leading_group(
 }
 
 #[inline]
-/// Decide where the leading group applies and return
-/// `(y_cursor_start, previous_bottom_after, leading_top_applied)`.
+/// Decide where the leading group applies.
+///
+/// Spec: CSS 2.2 §8.3.1 — apply at parent edge if collapsible and no ancestor already applied.
+/// Returns `(y_cursor_start, previous_bottom_after, leading_top_applied)`.
 fn apply_or_forward_group(
     include_parent_edge: bool,
     parent_edge_collapsible: bool,
@@ -342,7 +371,7 @@ fn apply_or_forward_group(
     out
 }
 
-/// Compute and apply the leading-empty-chain collapse per CSS §8.3.1.
+/// Compute and apply the leading-empty-chain collapse per CSS 2.2 §8.3.1.
 ///
 /// Returns (`y_cursor_start`, `previous_bottom_margin`, `leading_top_applied`, `skip_count`).
 #[inline]

@@ -14,10 +14,6 @@ fn sum_horizontal(style: &ComputedStyle) -> i32 {
     (pad + border) as i32
 }
 
-/* tests are defined at the end of this file */
-
-/* tests moved to end of file */
-
 /// Sum vertical padding and border widths in pixels (clamped to >= 0).
 #[inline]
 fn sum_vertical(style: &ComputedStyle) -> i32 {

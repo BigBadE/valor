@@ -16,7 +16,7 @@ page_handler.workspace = true
 wgpu_renderer.workspace = true
 js.workspace = true
 
-[dev-dependencies]
+# Needed by layout compare bin/core
 html.workspace = true
 layouter.workspace = true
 headless_chrome.workspace = true
@@ -26,5 +26,7 @@ urlencoding.workspace = true
 once_cell.workspace = true
 style_engine.workspace = true
 js_engine_v8.workspace = true
-js.workspace = true
 image.workspace = true
+
+[dev-dependencies]
+js.workspace = true

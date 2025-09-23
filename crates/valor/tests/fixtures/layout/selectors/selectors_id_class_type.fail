@@ -1,0 +1,32 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Selectors: id, class, type</title>
+  <!-- : flex layout not yet implemented in layouter; Chromium geometry will differ -->
+  <style>
+    /* Type selector applies display */
+    section { display: block; }
+
+    /* Class selector sets flex container */
+    .row { display: flex; }
+
+    /* Type + class descendant applies margin */
+    .row div { margin: 8px; }
+
+    /* ID selector overrides one child's margin */
+    #special { margin: 16px; }
+
+    /* Ensure boxes have predictable size */
+    .box { width: 40px; height: 40px; }
+  </style>
+</head>
+<body>
+  <section class="row">
+    <div class="box" id="a"></div>
+    <div class="box" id="special"></div>
+    <div class="box" id="c"></div>
+  </section>
+</body>
+</html>
+
