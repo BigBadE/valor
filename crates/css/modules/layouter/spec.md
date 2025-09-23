@@ -1,33 +1,85 @@
-# Layouter — Spec-Oriented Module Overview
+# Layouter — Spec Coverage Map (CSS 2.2)
 
-Spec: <https://www.w3.org/TR/CSS22/visuren.html#block-formatting>
+Primary spec: https://www.w3.org/TR/CSS22/
 
-## Modules (by CSS 2.2 section)
-- `horizontal.rs` — §10.3.3. Width and horizontal margin resolution for non-replaced blocks.
-- `vertical.rs` — §8.3.1. Vertical margin collapsing (leading group, parent–first-child/sibling behavior).
-- `height.rs` — §10.6. Used height wrapper that delegates to the layouter’s implementation.
-- `root.rs` — Root-level helpers (parent–first-child top-margin collapse placement).
-- `box_tree.rs` — Display tree flattening and block child enumeration used by layout.
-- `sizing.rs` — Used-size helpers consumed by width/height computations.
+This document maps spec sections to implementation entry points in this crate. If a topic is not implemented, it is marked as TODO with a brief note.
 
-## Implemented
-- §9.4.1 helpers (first/last block under a node, shallow navigation) are in `lib.rs` with spec notes.
-- §10.3.3 width: specified/auto width paths, auto margin resolution, min/max in border-box space.
-- §10.6 height: content-based height + padding/border with a default line-height fallback when empty.
-- §8.3.1 vertical collapsing: leading group pre-scan, ancestor-aware application at parent edge vs forwarding.
-- Relative positioning (basic): `top/left/right/bottom` offsets applied to final rects.
+## 8 Visual formatting model
 
-## Planned
-- Inline formatting contexts and line boxes.
-- Floats/positioned layout and BFC creation rules.
-- Percentage resolution and replaced elements.
-- Performance passes and caching.
+- 8.1 Box model
+  - Implemented: Box sides computation used throughout.
+  - Code: `crates/css/modules/layouter/src/visual_formatting/horizontal.rs` (consumes sizes), `crates/css/modules/layouter/src/sizing.rs`.
+- 8.3.1 Collapsing margins
+  - Implemented (block context leading/top/between/sibling basics):
+    - Leading group scan and application: `visual_formatting/vertical.rs::apply_leading_top_collapse()` and helpers.
+    - Effective margins through structurally-empty chains: `vertical.rs::effective_child_top_margin()`, `vertical.rs::effective_child_bottom_margin()`.
+    - Parent–first-child at root: `visual_formatting/root.rs::compute_root_y_after_top_collapse()`.
+  - TODO:
+    - Full BFC boundary handling (overflow, floats, positioned): TODO in `vertical.rs`.
+    - Clearance interactions: TODO in `vertical.rs`.
+    - Negative-leading behavior audit and test coverage: TODO in `vertical.rs` and tests.
+- 8.3.2 Horizontal margins/padding/border (block-level)
+  - Implemented (non-replaced blocks): auto margin resolution, min/max.
+  - Code: `visual_formatting/horizontal.rs::solve_block_horizontal()`.
+  - TODO: Replaced elements, percentage resolution nuances.
 
-## Testing and comparisons
-- Fixtures under `crates/valor/tests/fixtures/layout/**` are auto-discovered.
-- To XFAIL a fixture, include the substring `VALOR_XFAIL` (case-insensitive).
-- Chromium comparer runs with one Tokio runtime/tab for speed; it compares border-box rects and a subset of computed styles.
+## 9 Visual formatting: block formatting contexts
 
-## Notes
-- Box sizing: conversions are in border-box space; see `sizing.rs` and spec §8.1/§10.1.
-- `LayoutRect` is border-box; comparisons align with Chromium’s `getBoundingClientRect()`.
+- 9.4.1 Block formatting context basics
+  - Implemented (simplified BFC, block children layout loop):
+    - Entry: `lib.rs::layout_root()`, `lib.rs::layout_block_children()`.
+    - Placement loop: `lib.rs::place_block_children_loop()`.
+  - TODO: Proper BFC creation rules (overflow, floats, positioned) — tracked in `vertical.rs`.
+
+## 10 Visual formatting: widths, heights, and positioning
+
+- 10.3.3 Block-level, non-replaced elements in normal flow
+  - Implemented: `visual_formatting/horizontal.rs::solve_block_horizontal()`.
+- 10.6 Calculating heights and margins
+  - Implemented (simplified):
+    - Used height: `visual_formatting/height.rs::compute_used_height()` delegates to `Layouter::compute_used_height()`.
+    - Content height aggregation for roots and blocks: `lib.rs::compute_root_heights()`, `lib.rs::compute_child_content_height()`.
+  - TODO: Negative bottom margin combination and BFC boundary cases.
+- 9.4.3 Relative positioning
+  - Implemented (basic): `lib.rs::apply_relative_offsets()`, applied in `lib.rs::prepare_child_position()`.
+  - TODO: Static/absolute/fixed positioning and stacking contexts.
+
+## Display tree normalization
+
+- Display: contents flattening
+  - Implemented: `box_tree.rs::flatten_display_children()`.
+  - Used by: `vertical.rs` margin-collapsing traversal, child enumeration.
+  - TODO: Ensure root helpers always use flattened children (see Root: below).
+
+## Root handling
+
+- Parent–first-child top margin collapse at the root
+  - Implemented: `visual_formatting/root.rs::compute_root_y_after_top_collapse()`.
+  - TODO: Use flattened children consistently (pending update) and incorporate BFC checks.
+
+## Core layouter entry points (orchestration)
+
+- `lib.rs::compute_layout()` — top-level driver used by tests.
+- `lib.rs::layout_root()` — picks layout root and runs child layout.
+- `lib.rs::layout_block_children()` — runs leading-group handling and child placement loop.
+- `lib.rs::layout_one_block_child()` — per-child layout (width/height/margins/rect commit).
+
+## Data types and utilities
+
+- Rectangles and metrics: `lib.rs` (will be factored into `types.rs`).
+- Box sides: `css_box::compute_box_sides()`.
+- Styles: `style_engine::ComputedStyle`.
+
+## Testing and harness
+
+- Auto-discovered fixtures: `crates/valor/tests/fixtures/layout/**`.
+- XFAIL mechanism: add `VALOR_XFAIL` (case-insensitive) to skip comparison.
+- Chromium comparer: Reuses a single Tokio runtime and tab; compares rect geometry and a subset of computed styles.
+
+## Refactors and TODO map
+
+- Break down large files (>500 lines):
+  - TODO: Split `lib.rs` into `types.rs` (types), `layouter/` submodules (placement, heights, introspection).
+- Full structurally-empty chain fidelity:
+  - TODO: Implement BFC boundary checks and `clear` handling in `vertical.rs`.
+  - TODO: Add unit tests for negative-leading collapse and `display: contents` at root.

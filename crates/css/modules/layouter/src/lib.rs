@@ -2,9 +2,12 @@
 //! Spec reference: <https://www.w3.org/TR/CSS22/visuren.html#block-formatting>
 mod box_tree; // display tree flattening
 mod sizing;
-mod visual_formatting; // grouped visual formatting modules: vertical/horizontal/height/root // box sizing helpers
+/// Shared types (e.g., `LayoutRect`).
+mod types;
+mod visual_formatting; // grouped visual formatting modules: vertical/horizontal/height/root // box sizing helpers // shared types split out from lib.rs
 
 use crate::sizing::used_border_box_height;
+pub use crate::types::LayoutRect;
 use anyhow::Error;
 use core::mem::take;
 use core::sync::atomic::{Ordering, compiler_fence};
@@ -261,20 +264,7 @@ struct ChildLayoutCtx {
     ancestor_applied_at_edge_for_children: bool,
 }
 
-/// A rectangle in device-independent pixels.
-///
-/// All coordinates are integral for now to keep the shim simple.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LayoutRect {
-    /// The x-coordinate of the rectangle origin.
-    pub x: i32,
-    /// The y-coordinate of the rectangle origin.
-    pub y: i32,
-    /// The width of the rectangle.
-    pub width: i32,
-    /// The height of the rectangle.
-    pub height: i32,
-}
+// LayoutRect moved to `types.rs`.
 
 /// Width of the initial containing block used by tests.
 /// Chrome headless with an 800px window reports body client width ~784px.
@@ -663,12 +653,17 @@ impl Layouter {
                 "[VERT-GROUP apply root={root:?}] y_start={y_start} prev_bottom_after={prev_bottom_after} leading_applied={leading_applied} skip_count={skipped}"
             );
             y_cursor = y_start;
-            // Ensure the parent's own rect reflects the applied leading offset (matches Chromium output)
-            if let Some(parent_rect) = self.rects.get_mut(&root) {
-                parent_rect.y = y_cursor;
-            }
             let (parent_sides, parent_edge_collapsible) =
                 self.build_parent_edge_context(root, metrics);
+            // Reflect the applied leading offset on the parent's rect only when it was
+            // actually applied at the parent edge (not forwarded internally), and only
+            // if the parent edge is collapsible.
+            if leading_applied != 0i32
+                && parent_edge_collapsible
+                && let Some(parent_rect) = self.rects.get_mut(&root)
+            {
+                parent_rect.y = y_cursor;
+            }
             let loop_ctx = PlaceLoopCtx {
                 root,
                 metrics: *metrics,

@@ -74,9 +74,18 @@ pub fn effective_child_top_margin(
     let mut margins: Vec<i32> = vec![child_sides.margin_top];
     let mut current = child_key;
     let mut current_sides = *child_sides;
+    // Do not propagate through a BFC boundary (e.g., overflow other than visible).
+    if establishes_bfc(
+        layouter
+            .computed_styles
+            .get(&current)
+            .cloned()
+            .unwrap_or_else(ComputedStyle::default),
+    ) {
+        return Layouter::collapse_margins_list(&margins);
+    }
     while current_sides.padding_top == 0i32
         && current_sides.border_top == 0i32
-        && !has_inline_text_descendant(layouter, current)
         && let Some(first_desc) = first_block_child(layouter, current)
         && first_desc != current
     {
@@ -85,6 +94,18 @@ pub fn effective_child_top_margin(
             .get(&first_desc)
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
+        if establishes_bfc(first_style.clone()) {
+            // Stop propagation at BFC boundary.
+            break;
+        }
+        // If the current box is structurally empty, its top and bottom margins
+        // collapse together and propagate to its first block descendant per §8.3.1.
+        // Include the current box's effective bottom margin before descending so the
+        // accumulated list reflects the empty chain correctly (e.g., 0 + 12 -> 12).
+        if is_structurally_empty_chain(layouter, current) {
+            let eff_bottom = effective_child_bottom_margin(layouter, current, &current_sides);
+            margins.push(eff_bottom);
+        }
         let first_sides = compute_box_sides(&first_style);
         margins.push(first_sides.margin_top);
         current = first_desc;
@@ -105,6 +126,16 @@ pub fn effective_child_bottom_margin(
     let mut margins: Vec<i32> = vec![child_sides.margin_bottom];
     let mut current = child_key;
     let mut current_sides = *child_sides;
+    // Do not propagate through a BFC boundary at the descendant edge.
+    if establishes_bfc(
+        layouter
+            .computed_styles
+            .get(&current)
+            .cloned()
+            .unwrap_or_else(ComputedStyle::default),
+    ) {
+        return Layouter::collapse_margins_list(&margins);
+    }
     while current_sides.padding_bottom == 0i32
         && current_sides.border_bottom == 0i32
         && !has_inline_text_descendant(layouter, current)
@@ -116,12 +147,23 @@ pub fn effective_child_bottom_margin(
             .get(&last_desc)
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
+        if establishes_bfc(last_style.clone()) {
+            break;
+        }
         let last_sides = compute_box_sides(&last_style);
         margins.push(last_sides.margin_bottom);
         current = last_desc;
         current_sides = last_sides;
     }
     Layouter::collapse_margins_list(&margins)
+}
+
+#[inline]
+fn establishes_bfc(style: ComputedStyle) -> bool {
+    // Minimal BFC heuristic: overflow other than visible establishes a BFC.
+    // TODO: extend with floats, positioned, display flow-root/inline-block, table-caption/cell, etc.
+    let overflow = style.overflow.unwrap_or_default();
+    !matches!(overflow.as_str(), "visible" | "clip")
 }
 
 #[inline]
@@ -271,7 +313,7 @@ fn apply_or_forward_group(
     leading_top: i32,
 ) -> (i32, i32, i32) {
     if include_parent_edge {
-        let out = (leading_top.max(0i32), 0i32, leading_top);
+        let out = (leading_top, 0i32, leading_top);
         debug!("[VERT-GROUP apply-at-parent] out={out:?}");
         return out;
     }
