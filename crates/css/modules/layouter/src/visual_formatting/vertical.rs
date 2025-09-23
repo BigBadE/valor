@@ -7,7 +7,7 @@
 
 use css_box::{BoxSides, compute_box_sides};
 use log::debug;
-use style_engine::ComputedStyle;
+use style_engine::{Clear, ComputedStyle, Float, Overflow, Position};
 
 use crate::{ContainerMetrics, LayoutNodeKind, Layouter, box_tree};
 use js::NodeKey;
@@ -75,13 +75,12 @@ pub fn effective_child_top_margin(
     let mut current = child_key;
     let mut current_sides = *child_sides;
     // Do not propagate through a BFC boundary (e.g., overflow other than visible).
-    if establishes_bfc(
-        layouter
-            .computed_styles
-            .get(&current)
-            .cloned()
-            .unwrap_or_else(ComputedStyle::default),
-    ) {
+    let cur_style = layouter
+        .computed_styles
+        .get(&current)
+        .cloned()
+        .unwrap_or_else(ComputedStyle::default);
+    if establishes_bfc(&cur_style) {
         return Layouter::collapse_margins_list(&margins);
     }
     while current_sides.padding_top == 0i32
@@ -94,7 +93,7 @@ pub fn effective_child_top_margin(
             .get(&first_desc)
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
-        if establishes_bfc(first_style.clone()) {
+        if establishes_bfc(&first_style) {
             // Stop propagation at BFC boundary.
             break;
         }
@@ -128,7 +127,7 @@ pub fn effective_child_bottom_margin(
     let mut current_sides = *child_sides;
     // Do not propagate through a BFC boundary at the descendant edge.
     if establishes_bfc(
-        layouter
+        &layouter
             .computed_styles
             .get(&current)
             .cloned()
@@ -147,7 +146,7 @@ pub fn effective_child_bottom_margin(
             .get(&last_desc)
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
-        if establishes_bfc(last_style.clone()) {
+        if establishes_bfc(&last_style) {
             break;
         }
         let last_sides = compute_box_sides(&last_style);
@@ -159,11 +158,22 @@ pub fn effective_child_bottom_margin(
 }
 
 #[inline]
-fn establishes_bfc(style: ComputedStyle) -> bool {
-    // Minimal BFC heuristic: overflow other than visible establishes a BFC.
-    // TODO: extend with floats, positioned, display flow-root/inline-block, table-caption/cell, etc.
-    let overflow = style.overflow.unwrap_or_default();
-    !matches!(overflow.as_str(), "visible" | "clip")
+/// Minimal BFC heuristic used by margin-collapsing traversal.
+const fn establishes_bfc(style: &ComputedStyle) -> bool {
+    // Establish a BFC if any of the following are true:
+    // - overflow is not Visible
+    // - float is not None
+    // - position is not Static (absolute/fixed/sticky)
+    if !matches!(style.overflow, Overflow::Visible) {
+        return true;
+    }
+    if !matches!(style.float, Float::None) {
+        return true;
+    }
+    if !matches!(style.position, Position::Static) {
+        return true;
+    }
+    false
 }
 
 #[inline]
@@ -290,10 +300,15 @@ fn scan_leading_group(
             idx = idx.saturating_add(1);
             continue;
         }
+        // If the first non-empty child has clear, its top margin does not collapse with the
+        // previous sibling and should not be absorbed at the parent edge.
+        let has_clear = matches!(child_style.clear, Clear::Left | Clear::Right | Clear::Both);
         debug!(
-            "[VERT-GROUP scan-stop root={root:?}] child={child_key:?} non-empty push(eff_top={eff_top})"
+            "[VERT-GROUP scan-stop root={root:?}] child={child_key:?} non-empty eff_top={eff_top} clear={has_clear}"
         );
-        leading_margins.push(eff_top);
+        if !has_clear {
+            leading_margins.push(eff_top);
+        }
         break;
     }
     (
