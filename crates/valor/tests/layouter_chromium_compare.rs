@@ -65,7 +65,7 @@ fn run_chromium_layouts() -> Result<(), Error> {
     // Optional: focus a single fixture via substring match
     let focus = std::env::var("LAYOUT_FIXTURE_FILTER").ok();
     if let Some(ref f) = focus {
-        info!("[LAYOUT] focusing fixtures containing: {}", f);
+        info!("[LAYOUT] focusing fixtures containing: {f}");
     }
     info!("[LAYOUT] discovered {} fixtures", all.len());
     let mut ran = 0;
@@ -320,31 +320,41 @@ fn our_layout_json(
     }
     // Also build attributes lookup to access element ids
     let attrs_by_key = layouter.attrs_map();
-    // Find first element child of ROOT (typically <html>). If none, pick the first block anywhere.
-    let mut root_elem: Option<NodeKey> = None;
-    if let Some(children) = children_by_key.get(&NodeKey::ROOT) {
-        for child in children {
-            if matches!(kind_by_key.get(child), Some(LayoutNodeKind::Block { .. })) {
-                root_elem = Some(*child);
+    // Choose the same outer root Chromium serializes: prefer <body>, else <html>, else first block.
+    let mut body_key: Option<NodeKey> = None;
+    let mut html_key: Option<NodeKey> = None;
+    for (k, kind) in kind_by_key.iter() {
+        if let LayoutNodeKind::Block { tag } = kind {
+            if tag.eq_ignore_ascii_case("body") {
+                body_key = Some(*k);
                 break;
+            }
+            if tag.eq_ignore_ascii_case("html") && html_key.is_none() {
+                html_key = Some(*k);
             }
         }
     }
+    let mut root_elem: Option<NodeKey> = body_key.or(html_key);
     if root_elem.is_none() {
-        for (k, kind) in kind_by_key.iter() {
-            if matches!(kind, LayoutNodeKind::Block { .. }) {
-                root_elem = Some(*k);
-                break;
+        // Fallback: first block under ROOT, then any block anywhere
+        if let Some(children) = children_by_key.get(&NodeKey::ROOT) {
+            for child in children {
+                if matches!(kind_by_key.get(child), Some(LayoutNodeKind::Block { .. })) {
+                    root_elem = Some(*child);
+                    break;
+                }
+            }
+        }
+        if root_elem.is_none() {
+            for (k, kind) in kind_by_key.iter() {
+                if matches!(kind, LayoutNodeKind::Block { .. }) {
+                    root_elem = Some(*k);
+                    break;
+                }
             }
         }
     }
-    // If the root is <html>, prefer serializing from its <body> child to avoid Chromium's root-margin quirks
-    let mut root_key = root_elem.unwrap_or(NodeKey::ROOT);
-    if let Some(LayoutNodeKind::Block { tag }) = kind_by_key.get(&root_key)
-        && tag.eq_ignore_ascii_case("html")
-        && let Some(children) = children_by_key.get(&root_key)
-        && let Some(body_child) = children.iter().find(|c| matches!(kind_by_key.get(*c), Some(LayoutNodeKind::Block { tag }) if tag.eq_ignore_ascii_case("body")))
-    { root_key = *body_child; }
+    let root_key = root_elem.unwrap_or(NodeKey::ROOT);
     {
         let ctx = LayoutCtx {
             kind_by_key: &kind_by_key,

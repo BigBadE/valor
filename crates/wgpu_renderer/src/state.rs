@@ -657,21 +657,18 @@ impl RenderState {
         );
         if cfg!(debug_assertions) {
             eprintln!(
-                "glyphon_prepare: areas={} viewport={}x{} result={:?}",
-                areas_count, framebuffer_width, framebuffer_height, prep_res
+                "glyphon_prepare: areas={areas_count} viewport={framebuffer_width}x{framebuffer_height} result={prep_res:?}"
             );
         }
         let elapsed_ms = start.elapsed().as_millis() as u64;
         if cfg!(debug_assertions) {
             eprintln!(
-                "glyphon_prepare: text_items={} time_ms={}",
-                self.text_list.len(),
-                elapsed_ms
+                "glyphon_prepare: text_items={} time_ms={elapsed_ms}",
+                self.text_list.len()
             );
         }
     }
 
-    /// Prepare glyphon for an arbitrary list of text items (used for per-layer text rendering).
     fn glyphon_prepare_for(&mut self, items: &[DrawText]) {
         let framebuffer_width = self.size.width;
         let framebuffer_height = self.size.height;

@@ -35,6 +35,84 @@ struct ContainerMetrics {
     margin_top: i32,
 }
 
+/// Context for placing block children under a root.
+#[derive(Clone, Copy)]
+struct PlaceLoopCtx<'pl> {
+    /// The root node whose children are being placed.
+    root: NodeKey,
+    /// Container metrics for the root's content box.
+    metrics: ContainerMetrics,
+    /// The ordered list of block children to place.
+    block_children: &'pl [NodeKey],
+    /// Incoming y cursor for placement.
+    y_cursor: i32,
+    /// Previous bottom margin after leading-group propagation for the first placed child.
+    prev_bottom_after: i32,
+    /// Leading-top value applied at the parent edge (if any).
+    leading_applied: i32,
+    /// Number of leading structurally-empty children to suppress.
+    skipped: usize,
+    /// Parent sides for first-child incremental calculations.
+    parent_sides: BoxSides,
+    /// Whether the parent's top edge is collapsible.
+    parent_edge_collapsible: bool,
+    /// Whether an ancestor already applied the leading collapse at an outer edge.
+    ancestor_applied_at_edge: bool,
+}
+
+/// Aggregated results for collapsed margins and initial child position.
+#[derive(Clone, Copy)]
+struct CollapsedPos {
+    /// Effective top margin after internal propagation through empties.
+    margin_top_eff: i32,
+    /// Collapsed top offset applied at this edge.
+    collapsed_top: i32,
+    /// Used border-box width for the child.
+    used_bb_w: i32,
+    /// Child x-position (margin edge).
+    child_x: i32,
+    /// Child y-position (margin edge).
+    child_y: i32,
+    /// Relative x adjustment from position:relative.
+    x_adjust: i32,
+    /// Relative y adjustment from position:relative.
+    y_adjust: i32,
+}
+
+/// Inputs for computing a child's heights and outgoing bottom margin.
+#[derive(Clone, Copy)]
+struct HeightsCtx<'heights> {
+    /// The child node key whose heights are being computed.
+    child_key: NodeKey,
+    /// The computed style of the child.
+    style: &'heights ComputedStyle,
+    /// Box sides (padding/border/margins) snapshot for the child.
+    sides: BoxSides,
+    /// Child x position (margin edge).
+    child_x: i32,
+    /// Child y position (margin edge).
+    child_y: i32,
+    /// Used border-box width for the child.
+    used_bb_w: i32,
+    /// Parent context for the child layout.
+    ctx: &'heights ChildLayoutCtx,
+    /// Effective top margin used in outgoing bottom margin calculation.
+    margin_top_eff: i32,
+}
+
+/// Aggregated results for a child's computed height and margins.
+#[derive(Clone, Copy)]
+struct HeightsAndMargins {
+    /// Final computed border-box height for the child.
+    computed_h: i32,
+    /// Effective bottom margin after internal propagation.
+    eff_bottom: i32,
+    /// Whether the child is considered empty for collapsing.
+    is_empty: bool,
+    /// Outgoing bottom margin from the child to the next sibling.
+    margin_bottom_out: i32,
+}
+
 /// Bundle for committing vertical results and rectangle for a child.
 #[derive(Clone, Copy)]
 struct VertCommit {
@@ -475,7 +553,7 @@ impl Layouter {
             for child_key in children {
                 if matches!(
                     self.nodes.get(child_key),
-                    Some(LayoutNodeKind::Block { .. })
+                    Some(&LayoutNodeKind::Block { .. })
                 ) && let Some(rect) = self.rects.get(child_key)
                 {
                     content_top =
@@ -567,22 +645,12 @@ impl Layouter {
         metrics: &ContainerMetrics,
         ancestor_applied_at_edge: bool,
     ) -> (usize, i32, i32) {
-        let mut reflowed_count = 0usize;
         let mut y_cursor: i32 = 0;
         let mut first_collapsed_top_positive: i32 = 0;
+        let block_children = self.collect_block_children(root);
         let mut last_positive_bottom_margin: i32 = 0;
-        // Select children while honoring display generation: skip `display:none`,
-        // and treat `display:contents` as passthrough by lifting its children.
-        let child_list =
-            box_tree::flatten_display_children(&self.children, &self.computed_styles, root);
-        if !child_list.is_empty() {
-            // Consider only element (block) children for block layout ordering.
-            let mut block_children: Vec<NodeKey> = Vec::new();
-            for key in child_list {
-                if matches!(self.nodes.get(&key), Some(LayoutNodeKind::Block { .. })) {
-                    block_children.push(key);
-                }
-            }
+        let mut reflowed_count = 0usize;
+        if !block_children.is_empty() {
             let (y_start, prev_bottom_after, leading_applied, skipped) =
                 visual_formatting::vertical::apply_leading_top_collapse(
                     self,
@@ -595,52 +663,30 @@ impl Layouter {
                 "[VERT-GROUP apply root={root:?}] y_start={y_start} prev_bottom_after={prev_bottom_after} leading_applied={leading_applied} skip_count={skipped}"
             );
             y_cursor = y_start;
-            // Defer applying the internal leading-group (prev_bottom_after) until the first placed child.
-            // Leading empty children should not shift y when an ancestor already applied at an outer edge.
-            let mut previous_bottom_margin: i32 = 0;
-            // Parent's own top margin is needed for first-child 'first edge' incremental calculation
+            // Ensure the parent's own rect reflects the applied leading offset (matches Chromium output)
+            if let Some(parent_rect) = self.rects.get_mut(&root) {
+                parent_rect.y = y_cursor;
+            }
             let (parent_sides, parent_edge_collapsible) =
                 self.build_parent_edge_context(root, metrics);
-            for (index, child_key) in block_children.into_iter().enumerate() {
-                let ctx = ChildLayoutCtx {
-                    index,
-                    is_first_placed: index == skipped,
-                    metrics: *metrics,
-                    y_cursor,
-                    previous_bottom_margin: if index == skipped {
-                        prev_bottom_after
-                    } else {
-                        0
-                    },
-                    parent_self_top_margin: if parent_edge_collapsible
-                        && index == skipped
-                        && leading_applied != 0i32
-                    {
-                        parent_sides.margin_top
-                    } else {
-                        0
-                    },
-                    leading_top_applied: if index == skipped {
-                        leading_applied
-                    } else {
-                        0i32
-                    },
-                    ancestor_applied_at_edge_for_children: ancestor_applied_at_edge
-                        || (leading_applied != 0i32),
-                };
-                let (y_next, mb_next) = self.layout_child_and_advance(
-                    root,
-                    child_key,
-                    ctx,
-                    &mut first_collapsed_top_positive,
-                );
-                reflowed_count = reflowed_count.saturating_add(1);
-                y_cursor = y_next;
-                previous_bottom_margin = if index < skipped { 0i32 } else { mb_next };
-            }
-            last_positive_bottom_margin = previous_bottom_margin.max(0i32);
+            let loop_ctx = PlaceLoopCtx {
+                root,
+                metrics: *metrics,
+                block_children: &block_children,
+                y_cursor,
+                prev_bottom_after,
+                leading_applied,
+                skipped,
+                parent_sides,
+                parent_edge_collapsible,
+                ancestor_applied_at_edge,
+            };
+            let (placed, y_end, last_mb) =
+                self.place_block_children_loop(loop_ctx, &mut first_collapsed_top_positive);
+            reflowed_count = placed;
+            y_cursor = y_end;
+            last_positive_bottom_margin = last_mb.max(0i32);
         }
-        // Exclude the positive collapsed top margin from the parent's content height (§8.3.1)
         let adjusted_content_height = y_cursor
             .saturating_sub(first_collapsed_top_positive)
             .max(0i32);
@@ -651,9 +697,129 @@ impl Layouter {
         )
     }
 
+    /// Build the ordered list of block-level children under `root`, honoring display flattening.
     #[inline]
+    fn collect_block_children(&self, root: NodeKey) -> Vec<NodeKey> {
+        let child_list =
+            box_tree::flatten_display_children(&self.children, &self.computed_styles, root);
+        let mut block_children: Vec<NodeKey> = Vec::new();
+        for key in child_list {
+            if matches!(self.nodes.get(&key), Some(&LayoutNodeKind::Block { .. })) {
+                block_children.push(key);
+            }
+        }
+        block_children
+    }
+
+    /// Place block children, skipping leading structurally-empty boxes per `skipped`.
+    #[inline]
+    fn place_block_children_loop(
+        &mut self,
+        loop_ctx: PlaceLoopCtx<'_>,
+        first_collapsed_top_positive: &mut i32,
+    ) -> (usize, i32, i32) {
+        let mut reflowed_count = 0usize;
+        let mut previous_bottom_margin: i32 = 0;
+        let mut y_cursor = loop_ctx.y_cursor;
+        for (index, child_key) in loop_ctx.block_children.iter().copied().enumerate() {
+            // Deterministically suppress placement and margin application for leading structurally-empty boxes.
+            if index < loop_ctx.skipped {
+                self.commit_zero_height_leading(index, child_key, &loop_ctx, y_cursor);
+                reflowed_count = reflowed_count.saturating_add(1);
+                continue;
+            }
+            let ctx = ChildLayoutCtx {
+                index,
+                is_first_placed: index == loop_ctx.skipped,
+                metrics: loop_ctx.metrics,
+                y_cursor,
+                previous_bottom_margin: if index == loop_ctx.skipped {
+                    loop_ctx.prev_bottom_after
+                } else {
+                    0
+                },
+                parent_self_top_margin: if loop_ctx.parent_edge_collapsible
+                    && index == loop_ctx.skipped
+                    && loop_ctx.leading_applied != 0i32
+                {
+                    loop_ctx.parent_sides.margin_top
+                } else {
+                    0
+                },
+                leading_top_applied: if index == loop_ctx.skipped {
+                    loop_ctx.leading_applied
+                } else {
+                    0i32
+                },
+                ancestor_applied_at_edge_for_children: loop_ctx.ancestor_applied_at_edge
+                    || (loop_ctx.leading_applied != 0i32),
+            };
+            let (y_next, mb_next) = self.layout_child_and_advance(
+                loop_ctx.root,
+                child_key,
+                ctx,
+                first_collapsed_top_positive,
+            );
+            reflowed_count = reflowed_count.saturating_add(1);
+            y_cursor = y_next;
+            previous_bottom_margin = mb_next;
+        }
+        (reflowed_count, y_cursor, previous_bottom_margin)
+    }
+
+    /// Commit a zero-height rectangle for a leading structurally-empty child to preserve width without affecting flow.
+    #[inline]
+    fn commit_zero_height_leading(
+        &mut self,
+        index: usize,
+        child_key: NodeKey,
+        loop_ctx: &PlaceLoopCtx<'_>,
+        y_cursor: i32,
+    ) {
+        let style = self
+            .computed_styles
+            .get(&child_key)
+            .cloned()
+            .unwrap_or_else(ComputedStyle::default);
+        let sides = compute_box_sides(&style);
+        let (used_bb_w, child_x, child_y, x_adjust, y_adjust) = Self::prepare_child_position(
+            &style,
+            &sides,
+            &ChildLayoutCtx {
+                index,
+                is_first_placed: false,
+                metrics: loop_ctx.metrics,
+                y_cursor,
+                previous_bottom_margin: 0,
+                parent_self_top_margin: 0,
+                leading_top_applied: 0,
+                ancestor_applied_at_edge_for_children: true,
+            },
+            0,
+        );
+        self.commit_vert(VertCommit {
+            index,
+            prev_mb: 0,
+            margin_top_raw: sides.margin_top,
+            margin_top_eff: 0,
+            eff_bottom: 0,
+            is_empty: true,
+            collapsed_top: 0,
+            parent_origin_y: Self::parent_content_origin(&loop_ctx.metrics).1,
+            y_position: child_y,
+            y_cursor_in: y_cursor,
+            leading_top_applied: 0,
+            child_key,
+            rect: LayoutRect {
+                x: child_x.saturating_add(x_adjust),
+                y: child_y.saturating_add(y_adjust),
+                width: used_bb_w,
+                height: 0,
+            },
+        });
+    }
+
     /// Lay out a single block-level child and return `(height, y_position, margin_bottom)`.
-    /// Helper methods below keep this function concise for clippy.
     fn layout_one_block_child(
         &mut self,
         child_key: NodeKey,
@@ -665,61 +831,30 @@ impl Layouter {
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
         let sides = compute_box_sides(&style);
-        // Heuristic: determine if this child is structurally empty for leading-group purposes.
-        let is_structurally_empty =
-            visual_formatting::vertical::is_structurally_empty_chain(self, child_key);
-        let margin_top_eff =
-            visual_formatting::vertical::effective_child_top_margin(self, child_key, &sides);
-        // If an ancestor already applied at an outer edge, do not re-apply the leading group to
-        // structurally empty leading children (CSS 2.2 §8.3.1). Zero the placement offset here.
-        let collapsed_top = if ctx.ancestor_applied_at_edge_for_children && is_structurally_empty {
-            debug!(
-                "[VERT-COLLAPSE leading-empty suppressed] ancestor_applied_at_edge_for_children; idx={} mt_eff={} -> collapsed_top=0",
-                ctx.index, margin_top_eff
-            );
-            0
-        } else {
-            Self::compute_collapsed_vertical_margin(&ctx, margin_top_eff)
-        };
-        let (used_bb_w, child_x, child_y, x_adjust, y_adjust) =
-            Self::prepare_child_position(&style, &sides, &ctx, collapsed_top);
-        // Lay out descendants to compute content height.
-        let (mut content_h, last_pos_mb) = self.compute_child_content_height(ChildContentCtx {
-            key: child_key,
-            used_border_box_width: used_bb_w,
-            sides,
-            x: child_x,
-            y: child_y,
-            ancestor_applied_at_edge: ctx.ancestor_applied_at_edge_for_children,
-        });
-        if (sides.padding_bottom > 0i32 || sides.border_bottom > 0i32) && last_pos_mb > 0i32 {
-            content_h = content_h.saturating_add(last_pos_mb);
-        }
-        let computed_h = visual_formatting::height::compute_used_height(
-            self,
-            &style,
+        let CollapsedPos {
+            margin_top_eff,
+            collapsed_top,
+            used_bb_w,
+            child_x,
+            child_y,
+            x_adjust,
+            y_adjust,
+        } = self.compute_collapsed_and_position(child_key, &ctx, &style, &sides);
+        let HeightsAndMargins {
+            computed_h,
+            eff_bottom,
+            is_empty,
+            margin_bottom_out,
+        } = self.compute_heights_and_margins(HeightsCtx {
             child_key,
-            HeightExtras {
-                padding_top: sides.padding_top,
-                padding_bottom: sides.padding_bottom,
-                border_top: sides.border_top,
-                border_bottom: sides.border_bottom,
-            },
-            content_h,
-        );
-        let eff_bottom =
-            visual_formatting::vertical::effective_child_bottom_margin(self, child_key, &sides);
-        let is_empty = self.is_effectively_empty_box(&style, &sides, computed_h, child_key);
-        let margin_bottom_out = if is_empty && ctx.is_first_placed {
-            Self::compute_first_placed_empty_margin_bottom(
-                ctx.previous_bottom_margin,
-                ctx.parent_self_top_margin,
-                margin_top_eff,
-                eff_bottom,
-            )
-        } else {
-            Self::compute_margin_bottom_out(margin_top_eff, eff_bottom, is_empty)
-        };
+            style: &style,
+            sides,
+            child_x,
+            child_y,
+            used_bb_w,
+            ctx: &ctx,
+            margin_top_eff,
+        });
         debug!(
             "[VERT child place idx={}] first={} ancestor_applied_at_edge_for_children={} mt_raw={} mt_eff={} collapsed_top={} is_empty={} parent_origin_y={} y_cursor_in={} -> y={} mb_out={} lt_applied={}",
             ctx.index,
@@ -760,6 +895,84 @@ impl Layouter {
             },
         });
         (computed_h, child_y, margin_bottom_out)
+    }
+
+    #[inline]
+    /// Compute collapsed top offset and initial position info for a child.
+    fn compute_collapsed_and_position(
+        &self,
+        child_key: NodeKey,
+        ctx: &ChildLayoutCtx,
+        style: &ComputedStyle,
+        sides: &BoxSides,
+    ) -> CollapsedPos {
+        let margin_top_eff =
+            visual_formatting::vertical::effective_child_top_margin(self, child_key, sides);
+        let collapsed_top = Self::compute_collapsed_vertical_margin(ctx, margin_top_eff);
+        let (used_bb_w, child_x, child_y, x_adjust, y_adjust) =
+            Self::prepare_child_position(style, sides, ctx, collapsed_top);
+        CollapsedPos {
+            margin_top_eff,
+            collapsed_top,
+            used_bb_w,
+            child_x,
+            child_y,
+            x_adjust,
+            y_adjust,
+        }
+    }
+
+    #[inline]
+    /// Compute heights and outgoing margin values for a child.
+    fn compute_heights_and_margins(&mut self, hctx: HeightsCtx<'_>) -> HeightsAndMargins {
+        let (mut content_h, last_pos_mb) = self.compute_child_content_height(ChildContentCtx {
+            key: hctx.child_key,
+            used_border_box_width: hctx.used_bb_w,
+            sides: hctx.sides,
+            x: hctx.child_x,
+            y: hctx.child_y,
+            ancestor_applied_at_edge: hctx.ctx.ancestor_applied_at_edge_for_children,
+        });
+        if (hctx.sides.padding_bottom > 0i32 || hctx.sides.border_bottom > 0i32)
+            && last_pos_mb > 0i32
+        {
+            content_h = content_h.saturating_add(last_pos_mb);
+        }
+        let computed_h = visual_formatting::height::compute_used_height(
+            self,
+            hctx.style,
+            hctx.child_key,
+            HeightExtras {
+                padding_top: hctx.sides.padding_top,
+                padding_bottom: hctx.sides.padding_bottom,
+                border_top: hctx.sides.border_top,
+                border_bottom: hctx.sides.border_bottom,
+            },
+            content_h,
+        );
+        let eff_bottom = visual_formatting::vertical::effective_child_bottom_margin(
+            self,
+            hctx.child_key,
+            &hctx.sides,
+        );
+        let is_empty =
+            self.is_effectively_empty_box(hctx.style, &hctx.sides, computed_h, hctx.child_key);
+        let margin_bottom_out = if is_empty && hctx.ctx.is_first_placed {
+            Self::compute_first_placed_empty_margin_bottom(
+                hctx.ctx.previous_bottom_margin,
+                hctx.ctx.parent_self_top_margin,
+                hctx.margin_top_eff,
+                eff_bottom,
+            )
+        } else {
+            Self::compute_margin_bottom_out(hctx.margin_top_eff, eff_bottom, is_empty)
+        };
+        HeightsAndMargins {
+            computed_h,
+            eff_bottom,
+            is_empty,
+            margin_bottom_out,
+        }
     }
 
     #[inline]

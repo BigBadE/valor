@@ -9,7 +9,7 @@ use css_box::{BoxSides, compute_box_sides};
 use log::debug;
 use style_engine::ComputedStyle;
 
-use crate::{ContainerMetrics, LayoutNodeKind, Layouter};
+use crate::{ContainerMetrics, LayoutNodeKind, Layouter, box_tree};
 use js::NodeKey;
 
 /// Heuristic structural emptiness used during leading group pre-scan (CSS §8.3.1).
@@ -127,11 +127,13 @@ pub fn effective_child_bottom_margin(
 #[inline]
 /// Return the first block child of `key`, if any.
 fn first_block_child(layouter: &Layouter, key: NodeKey) -> Option<NodeKey> {
-    let kids = layouter.children.get(&key)?;
-    kids.iter().copied().find(|node_key| {
+    // Walk the flattened display children to honor display:contents passthrough.
+    let flattened =
+        box_tree::flatten_display_children(&layouter.children, &layouter.computed_styles, key);
+    flattened.into_iter().find(|node_key| {
         matches!(
             layouter.nodes.get(node_key),
-            Some(LayoutNodeKind::Block { .. })
+            Some(&LayoutNodeKind::Block { .. })
         )
     })
 }
@@ -140,22 +142,22 @@ fn first_block_child(layouter: &Layouter, key: NodeKey) -> Option<NodeKey> {
 /// Depth-first search for the last block-level descendant under `start`.
 fn find_last_block_under(layouter: &Layouter, start: NodeKey) -> Option<NodeKey> {
     let mut last: Option<NodeKey> = None;
-    if let Some(child_list) = layouter.children.get(&start) {
-        for child_key in child_list {
-            if let Some(found) = find_last_block_under(layouter, *child_key) {
-                last = Some(found);
-            } else if matches!(
-                layouter.nodes.get(child_key),
-                Some(LayoutNodeKind::Block { .. })
-            ) {
-                last = Some(*child_key);
-            }
+    let flattened =
+        box_tree::flatten_display_children(&layouter.children, &layouter.computed_styles, start);
+    for child_key in flattened {
+        if let Some(found) = find_last_block_under(layouter, child_key) {
+            last = Some(found);
+        } else if matches!(
+            layouter.nodes.get(&child_key),
+            Some(&LayoutNodeKind::Block { .. })
+        ) {
+            last = Some(child_key);
         }
     }
     if last.is_none()
         && matches!(
             layouter.nodes.get(&start),
-            Some(LayoutNodeKind::Block { .. })
+            Some(&LayoutNodeKind::Block { .. })
         )
     {
         last = Some(start);
@@ -166,10 +168,9 @@ fn find_last_block_under(layouter: &Layouter, start: NodeKey) -> Option<NodeKey>
 #[inline]
 /// Returns true if any inline text descendant exists beneath `key`.
 fn has_inline_text_descendant(layouter: &Layouter, key: NodeKey) -> bool {
-    let mut stack: Vec<NodeKey> = match layouter.children.get(&key) {
-        Some(kids) => kids.clone(),
-        None => return false,
-    };
+    // Use flattened display traversal so display:contents does not falsely separate chains.
+    let mut stack: Vec<NodeKey> =
+        box_tree::flatten_display_children(&layouter.children, &layouter.computed_styles, key);
     while let Some(current) = stack.pop() {
         let node_kind = layouter.nodes.get(&current).cloned();
         if matches!(node_kind, Some(LayoutNodeKind::InlineText { .. })) {
@@ -178,9 +179,13 @@ fn has_inline_text_descendant(layouter: &Layouter, key: NodeKey) -> bool {
         if matches!(
             node_kind,
             Some(LayoutNodeKind::Block { .. } | LayoutNodeKind::Document)
-        ) && let Some(children) = layouter.children.get(&current)
-        {
-            stack.extend(children.iter().copied());
+        ) {
+            let mut flattened = box_tree::flatten_display_children(
+                &layouter.children,
+                &layouter.computed_styles,
+                current,
+            );
+            stack.append(&mut flattened);
         }
     }
     false
@@ -235,8 +240,7 @@ fn scan_leading_group(
         if is_leading_empty {
             let eff_bottom = effective_child_bottom_margin(layouter, child_key, &child_sides);
             debug!(
-                "[VERT-GROUP scan-empty root={root:?}] child={child_key:?} push(eff_top={}, eff_bottom={})",
-                eff_top, eff_bottom
+                "[VERT-GROUP scan-empty root={root:?}] child={child_key:?} push(eff_top={eff_top}, eff_bottom={eff_bottom})"
             );
             leading_margins.push(eff_top);
             leading_margins.push(eff_bottom);
@@ -245,8 +249,7 @@ fn scan_leading_group(
             continue;
         }
         debug!(
-            "[VERT-GROUP scan-stop root={root:?}] child={child_key:?} non-empty push(eff_top={})",
-            eff_top
+            "[VERT-GROUP scan-stop root={root:?}] child={child_key:?} non-empty push(eff_top={eff_top})"
         );
         leading_margins.push(eff_top);
         break;

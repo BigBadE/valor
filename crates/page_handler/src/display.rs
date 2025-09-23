@@ -58,8 +58,7 @@ fn derive_line_metrics_from_content(
         Some(r) => r,
         None => {
             warn!(
-                "glyph metrics fallback: no runs; using heuristic; content='{}' size={}",
-                line_text, font_size
+                "glyph metrics fallback: no runs; using heuristic; content='{line_text}' size={font_size}"
             );
             return (font_size * 0.8, font_size * 0.2, 0.0, None);
         }
@@ -68,8 +67,7 @@ fn derive_line_metrics_from_content(
         Some(g) => g,
         None => {
             warn!(
-                "glyph metrics fallback: no glyphs; using heuristic; content='{}' size={}",
-                line_text, font_size
+                "glyph metrics fallback: no glyphs; using heuristic; content='{line_text}' size={font_size}"
             );
             return (font_size * 0.8, font_size * 0.2, 0.0, None);
         }
@@ -82,8 +80,7 @@ fn derive_line_metrics_from_content(
     let descent_px = font_size * 0.2;
     if used_line_height_opt.is_none() {
         warn!(
-            "glyph metrics fallback: no glyph line_height; using heuristic; content='{}' size={}",
-            line_text, font_size
+            "glyph metrics fallback: no glyph line_height; using heuristic; content='{line_text}' size={font_size}"
         );
     }
     let leading_px = used_line_height_opt
