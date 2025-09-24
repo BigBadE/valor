@@ -79,7 +79,7 @@ css_syntax = { path = "crates/css/modules/syntax" }
 #css_cascade = { path = "crates/css/modules/cascade" }
 #css_values_units = { path = "crates/css/modules/values_units" }
 #css_variables = { path = "crates/css/modules/variables" }
-#css_display = { path = "crates/css/modules/display" }
+css_display = { path = "crates/css/modules/display" }
 css_box = { path = "crates/css/modules/box" }
 #css_color = { path = "crates/css/modules/color" }
 #css_backgrounds_borders = { path = "crates/css/modules/backgrounds_borders" }

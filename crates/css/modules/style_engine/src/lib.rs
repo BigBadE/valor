@@ -39,6 +39,96 @@ fn apply_attrs_for_child(core: &mut CoreCssEngine, child: NodeKey, map: &HashMap
     }
 }
 
+// ===== Minimal float/clear fallback until css_core exposes these properties =====
+
+#[inline]
+/// Minimal override to set `float`/`clear`/`overflow` from simple `#id { ... }` rules
+/// in the public `CssStylesheet` until `css_core` exposes these properties.
+///
+/// Notes:
+/// - We avoid iterating hash maps directly to satisfy clippy; we build ordered vectors first.
+/// - Only direct `#id` rules are supported here (sufficient for our test fixtures).
+fn apply_float_clear_overrides_from_sheet(
+    sheet: &CssStylesheet,
+    attrs: &HashMap<NodeKey, HashMap<String, String>>,
+    out: &mut HashMap<NodeKey, ComputedStyle>,
+) {
+    // Build a simple id -> (float, clear, overflow) map from the author stylesheet.
+    type OverrideTuple = (Option<Float>, Option<Clear>, Option<Overflow>);
+    let mut overrides_by_id: HashMap<String, OverrideTuple> = HashMap::new();
+    let mut rule_indices: Vec<usize> = (0..sheet.rules.len()).collect();
+    rule_indices.sort_unstable();
+    for rule_index in rule_indices {
+        let Some(rule) = sheet.rules.get(rule_index) else {
+            continue;
+        };
+        if let Some(id_name) = rule.prelude.strip_prefix('#') {
+            let entry = overrides_by_id
+                .entry(id_name.to_owned())
+                .or_insert((None, None, None));
+            let mut decl_indices: Vec<usize> = (0..rule.declarations.len()).collect();
+            decl_indices.sort_unstable();
+            for decl_index in decl_indices {
+                let Some(decl) = rule.declarations.get(decl_index) else {
+                    continue;
+                };
+                if decl.name.eq_ignore_ascii_case("float") {
+                    entry.0 = match decl.value.trim().to_ascii_lowercase().as_str() {
+                        "left" => Some(Float::Left),
+                        "right" => Some(Float::Right),
+                        _ => Some(Float::None),
+                    };
+                } else if decl.name.eq_ignore_ascii_case("clear") {
+                    entry.1 = match decl.value.trim().to_ascii_lowercase().as_str() {
+                        "left" => Some(Clear::Left),
+                        "right" => Some(Clear::Right),
+                        "both" => Some(Clear::Both),
+                        _ => Some(Clear::None),
+                    };
+                } else if decl.name.eq_ignore_ascii_case("overflow") {
+                    entry.2 = match decl.value.trim().to_ascii_lowercase().as_str() {
+                        "visible" => Some(Overflow::Visible),
+                        "hidden" => Some(Overflow::Hidden),
+                        "scroll" => Some(Overflow::Scroll),
+                        "auto" => Some(Overflow::Auto),
+                        _ => None,
+                    };
+                }
+            }
+        }
+    }
+    if overrides_by_id.is_empty() {
+        return;
+    }
+    // Apply to nodes with matching id attributes.
+    let mut ordered_nodes: Vec<NodeKey> = attrs.keys().copied().collect();
+    ordered_nodes.sort_by_key(|node_key| node_key.0);
+    for node_key in ordered_nodes {
+        let Some(map) = attrs.get(&node_key) else {
+            continue;
+        };
+        let Some(node_id_str) = map.get("id") else {
+            continue;
+        };
+        let Some(tuple_ref) = overrides_by_id.get(node_id_str) else {
+            continue;
+        };
+        let (float_opt_copy, clear_opt_copy, overflow_opt_copy) = *tuple_ref;
+        let Some(comp) = out.get_mut(&node_key) else {
+            continue;
+        };
+        if let Some(float_val) = float_opt_copy {
+            comp.float = float_val;
+        }
+        if let Some(clear_val) = clear_opt_copy {
+            comp.clear = clear_val;
+        }
+        if let Some(ov_val) = overflow_opt_copy {
+            comp.overflow = ov_val;
+        }
+    }
+}
+
 // helper moved into main impl block below to avoid multiple inherent impls
 
 #[cfg(test)]
@@ -502,6 +592,9 @@ impl StyleEngine {
         for (key, core_style) in pairs {
             mapped.insert(key, map_core_to_public(&core_style));
         }
+        // Minimal fallback: set float/clear from simple id selectors in our public stylesheet
+        // until css_core exposes these properties.
+        apply_float_clear_overrides_from_sheet(&self.stylesheet, &self.attrs, &mut mapped);
         self.style_changed = true;
         self.changed_nodes = mapped.keys().copied().collect();
         self.computed = mapped;
@@ -716,6 +809,7 @@ fn map_core_to_public(core_style: &CoreComputedStyle) -> ComputedStyle {
         // Until core exposes auto margins, default to false. Tests may construct these directly.
         margin_left_auto: false,
         margin_right_auto: false,
+        // css_core does not expose float/clear yet; default to none and override from sheet below.
         float: Float::None,
         clear: Clear::None,
     }

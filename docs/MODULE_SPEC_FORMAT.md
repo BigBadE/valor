@@ -1,6 +1,6 @@
 # Module Spec Format (Production-Level)
 
-This template defines the required structure and standards for each CSS/HTML module’s `spec.md`. It mirrors the layouter’s spec format and adds explicit coding/documentation standards for one-to-one spec mapping and implementation maturity (MVP/approximations vs production).
+This template defines the required structure and standards for each CSS/HTML module’s `spec.md`. It mirrors the layouter’s spec format and adds explicit coding/documentation standards for one-to-one spec mapping and implementation maturity (MVP/approximations vs production). In addition, it standardizes how the verbatim normative specification text may be embedded (see §11).
 
 ## 0. Location and naming
 
@@ -25,31 +25,17 @@ This template defines the required structure and standards for each CSS/HTML mod
   - Use these tags inline wherever applicable:
     - `[MVP]`, `[Approximation]`, `[Heuristic]`, `[Fallback]`, `[Non-normative]`, `[TODO]`, `[Production]`.
 
-## 3. One-to-one spec mapping (checklist)
+## 3. Verbatim spec (REQUIRED) with per-section status
 
-- For each relevant spec chapter/section, include a checklist mapping to code symbols. For each item:
-  - Mark status with `[x]` implemented or `[ ]` planned.
-  - Provide a short description and rationale if partial.
-  - Map to concrete code symbols with file paths, using backticks, e.g. ``lib.rs::function_name()``.
-  - Reference the exact spec section with an anchor URL.
-  - Include a `Fixtures` subsection listing the concrete test fixtures that cover this chapter/section (full relative paths under `crates/**/tests/fixtures/**`).
-  - Chapters MUST be sorted in ascending spec order (e.g., 8.1, 8.3.1, 9.4.1, 9.4.3, 10.3.3, 10.6).
-
-Example entry:
-
-- 8.3.1 Collapsing margins — CSS 2.2
-  - Status: `[Production]` or `[MVP]`
-  - Spec: https://www.w3.org/TR/CSS22/box.html#collapsing-margins
-  - Code:
-    - `visual_formatting/vertical.rs::apply_leading_top_collapse()` — leading group computation.
-    - `layouter/lib.rs::compute_collapsed_vertical_margin()` — first-child and sibling collapsing.
-    - `layouter/lib.rs::collapse_margins_list()` — algebra of extremes.
-  - Notes:
-    - `[Approximation]` Minimal BFC detection; see TODO.
-  - Fixtures:
-    - `crates/css/modules/box/tests/fixtures/layout/basics/03_margin_collapsing.html`
-    - `crates/css/modules/box/tests/fixtures/layout/box/margin_collapse_basic.html`
-    - `crates/css/modules/box/tests/fixtures/layout/box/margin_collapse_border_top.html`
+- Each module `spec.md` MUST embed the complete relevant normative specification text (excluding non-spec front matter like Abstract, Status, and general Introductions) in a dedicated section.
+- Precede the embedded text with the W3C legal notice (see §11 for template). Update `$name_of_software`, `$distribution_URI`, and `$year-of-software`.
+- The embedded spec MUST be organized in the same order as the original and MUST include every section relevant to the module.
+- At the start of each embedded section, add a status line in brackets indicating implementation maturity for that section, e.g.: `[Status: Production]`, `[Status: MVP]`, `[Status: Approximation]`.
+- Immediately following each embedded section, add a concise mapping block with:
+  - `Code:` exact symbols and file paths implementing the section.
+  - `Notes:` deviations/approximations/heuristics/fallbacks.
+  - `Fixtures:` concrete test fixtures (full relative paths).
+- This replaces the old checklist; the verbatim text is now the source of truth and is annotated with status and mappings.
 
 ## 4. Algorithms and data flow
 
@@ -88,7 +74,8 @@ Example entry:
   - Prefer short, clear summaries; use links instead of copying spec text.
 - File and module structure:
   - Mirror spec chapters where practical (`vertical.rs`, `horizontal.rs`, `height.rs`, etc.).
-  - Keep files under ~500 lines. Split large modules.
+  - Keep code files under ~500 lines. Split large modules.
+  - The ~500-line limit applies to source code files only; it does NOT apply to documentation like `spec.md`.
 - Imports and style (Rust):
   - Add `use` imports at the top; avoid fully qualified paths in code.
   - If a name collision occurs, import with an alias.
@@ -102,6 +89,23 @@ Example entry:
 ## 10. Future work
 
 - Track planned steps to reach production conformance, using the same tags and explicit code pointers.
+
+---
+
+## 11. Verbatim spec embedding (optional but encouraged)
+
+- You MAY embed the entire relevant normative text of the specification directly into the module’s `spec.md`, to facilitate one-to-one mapping and cross-referencing.
+  - Exclude non-spec front matter such as Abstract, Status, and general Introduction sections.
+  - Keep chapters/sections in spec order and clearly mark the beginning of the verbatim appendix.
+  - Include the following W3C legal notice ahead of the embedded text, replacing placeholders as indicated (keep the license URL intact):
+
+```
+$name_of_software: $distribution_URI
+Copyright © [$year-of-software] World Wide Web Consortium. All Rights Reserved. This work is distributed under the W3C® Software and Document License [1] in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+[1] https://www.w3.org/Consortium/Legal/copyright-software
+```
+
+- Keep the embedded verbatim text in a dedicated appendix section (see boilerplate below). The full text can exceed 500 lines; the code-file line limit does not apply to documentation.
 
 ---
 
@@ -163,4 +167,18 @@ Primary spec: https://www.w3.org/TR/<SpecVersion>/
 
 - [ ] Item 1 (link to code + spec)
 - [ ] Item 2 (link to code + spec)
+
+---
+
+## Verbatim Spec Appendix (optional)
+
+Legal notice (required if embedding spec text):
+
+```
+$name_of_software: $distribution_URI
+Copyright © [$year-of-software] World Wide Web Consortium. All Rights Reserved. This work is distributed under the W3C® Software and Document License [1] in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+[1] https://www.w3.org/Consortium/Legal/copyright-software
+```
+
+Begin embedded normative text below (exclude Abstract, Status, general Introduction). Keep chapters in spec order, and clearly indicate the source spec version and URL.
 ```

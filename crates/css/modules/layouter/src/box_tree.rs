@@ -6,7 +6,10 @@
 
 use js::NodeKey;
 use std::collections::HashMap;
-use style_engine::{ComputedStyle, Display};
+use style_engine::ComputedStyle;
+
+// Use the production display normalization from the display module.
+use css_display::normalize_children as display_normalize_children;
 
 /// Flatten children for layout by applying a subset of CSS Display box generation rules.
 /// - Skip display:none subtrees entirely.
@@ -17,29 +20,7 @@ pub fn flatten_display_children(
     styles: &HashMap<NodeKey, ComputedStyle>,
     parent: NodeKey,
 ) -> Vec<NodeKey> {
-    let Some(children) = children_by_parent.get(&parent).cloned() else {
-        return Vec::new();
-    };
-    let mut out = Vec::with_capacity(children.len());
-    for child in children {
-        let display = styles
-            .get(&child)
-            .cloned()
-            .unwrap_or_else(ComputedStyle::default)
-            .display;
-        match display {
-            Display::None => {
-                // Skip entirely
-            }
-            Display::Contents => {
-                // Lift grandchildren
-                let mut lifted = flatten_display_children(children_by_parent, styles, child);
-                out.append(&mut lifted);
-            }
-            _ => out.push(child),
-        }
-    }
-    out
+    display_normalize_children(children_by_parent, styles, parent)
 }
 
 // Inline whitespace collapsing is not used by the current block-only layout path.
