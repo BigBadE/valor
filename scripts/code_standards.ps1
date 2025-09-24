@@ -9,7 +9,19 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 try {
-    # Thin wrapper: delegate to bash script, forwarding optional log spec argument.
+    # Normalize line endings in all shell scripts to avoid /usr/bin/env 'bash\r' errors
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $shFiles = Get-ChildItem -Path (Join-Path $scriptDir '*.sh') -File -ErrorAction SilentlyContinue
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    foreach ($f in $shFiles) {
+        $text = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction SilentlyContinue
+        if ($null -ne $text) {
+            $lf = $text -replace "`r", ""
+            [System.IO.File]::WriteAllText($f.FullName, $lf, $utf8NoBom)
+        }
+    }
+
+    # Delegate to bash script, forwarding optional log spec argument.
     if ([string]::IsNullOrWhiteSpace($LogSpec)) {
         & bash -lc "./scripts/code_standards.sh"
     } else {

@@ -76,16 +76,15 @@ body_md="$(awk '
   # Globals used: g_key, g_rest
   function norm_key(line,    m,label,canon) {
     g_key=""; g_rest=""
-    # Match plain, bold (**), or bracketed/linked keys, anywhere on the line
-    if (match(line, /(\*\*)?\s*(\[)?(Name|Value|Initial|Applies to|Inherited|Percentages|Computed value|Canonical order|Animation type|Media)(:)?(\])?(\*\*)?/, m)) {
+    # Only match when the key label appears at the start of the line (ignoring formatting) and is followed by a colon
+    if (match(line, /^\s*(\*\*)?\s*(\[)?(Name|Value|Initial|Applies to|Inherited|Percentages|Computed value|Canonical order|Animation type|Media):(\])?(\*\*)?\s*(.*)$/, m)) {
       label = m[3]
       canon = label ":"
       g_key = canon
-      # Capture any remainder after the matched token on the same line as inline value
-      rem = substr(line, RSTART + RLENGTH)
-      # Trim leading punctuation/space
-      gsub(/^\s+/, "", rem)
-      g_rest = rem
+      # Remainder after the key+colon
+      g_rest = m[6]
+      # Trim leading spaces
+      gsub(/^\s+/, "", g_rest)
       return canon
     }
     return ""
@@ -98,11 +97,10 @@ body_md="$(awk '
         gsub(/\|/, "\\|", props[k])
       }
       print ""
-      print "| Field | Value |"
-      print "|---|---|"
       if (props["Name:"] != "")        print "| Name | " props["Name:"] " |"
       if (props["Value:"] != "")       print "| Value | " props["Value:"] " |"
-      if (props["Initial:"] != "")     print "| Initial | " props["Initial:"] " |"
+      if (props["Initial:"] != ""
+        )     print "| Initial | " props["Initial:"] " |"
       if (props["Applies to:"] != "")  print "| Applies to | " props["Applies to:"] " |"
       if (props["Inherited:"] != "")   print "| Inherited | " props["Inherited:"] " |"
       if (props["Percentages:"] != "") print "| Percentages | " props["Percentages:"] " |"
@@ -117,17 +115,26 @@ body_md="$(awk '
     in_prop=0; expecting=0; last_key=""; have_any=0; seen_any_key=0
   }
   BEGIN{
-    in_prop=0; expecting=0; last_key=""; have_any=0; seen_any_key=0
+    in_prop=0; expecting=0; last_key=""; have_any=0; seen_any_key=0; in_code=0
   }
   {
     line=$0
+    # Handle code fences: flush any pending table before entering/exiting
+    if (line ~ /^```/) {
+      flush_table(); in_code = !in_code; print line; next
+    }
+    if (in_code) { print line; next }
     # If a new section heading starts, flush any pending table first
     if (line ~ /^## +/ || line ~ /^### +/) {
       flush_table()
       print line
       next
     }
-    # Known property keys (plain or bracketed/linked)
+    # If a table row begins, flush any pending property table to avoid parsing inside tables
+    if (line ~ /^\|/) {
+      flush_table(); print line; next
+    }
+    # Known property keys (plain or bracketed/linked) at start of line only
     k = norm_key(line)
     if (k != "") {
       in_prop=1
@@ -143,10 +150,9 @@ body_md="$(awk '
       next
     }
     if (in_prop) {
-      # If we just saw a key, capture the first meaningful line (skip blanks and stray table pipes)
+      # If we just saw a key, capture the first meaningful line (skip blanks)
       if (expecting) {
         if (line ~ /^\s*$/) { next }
-        if (line ~ /^\s*\|\s*$/) { next }
         props[last_key]=line
         have_any=1
         expecting=0
@@ -176,9 +182,7 @@ body_md="$(awk '
       }
       # Otherwise, append the line to the current key value (including blanks)
       if (last_key != "") {
-        if (line ~ /^\s*\|\s*$/) {
-          next
-        } else if (line ~ /^\s*$/) {
+        if (line ~ /^\s*$/) {
           props[last_key] = props[last_key] "\n"
         } else {
           props[last_key] = props[last_key] "\n" line
@@ -225,25 +229,27 @@ body_md="$(awk '
 ' <<<"${body_md}")"
 # Post-process: merge narrative continuation lines into the preceding table row value
 body_md="$(awk '
-  BEGIN{ in_table=0; have_row=0; field=""; value=""; row_prefix="| " }
+  BEGIN{
+    in_table=0; have_row=0; field=""; value=""; row_prefix="| "; in_code=0
+    # Known field names we format
+    fields["Name"]=1; fields["Value"]=1; fields["Initial"]=1; fields["Applies to"]=1;
+    fields["Inherited"]=1; fields["Percentages"]=1; fields["Computed value"]=1;
+    fields["Canonical order"]=1; fields["Animation type"]=1; fields["Media"]=1;
+  }
   function flush(){ if(have_row){ print row_prefix field " | " value " |"; have_row=0; field=""; value="" } }
   {
     line=$0
-    if (!in_table) {
-      if (line ~ /^\| Field \| Value \|$/) { print line; in_table=1; next }
-      print line; next
-    }
-    # in_table
-    if (line ~ /^\|---\|---\|$/) { print line; next }
+    if (line ~ /^```/) { flush(); in_table=0; in_code=!in_code; print line; next }
+    if (in_code) { print line; next }
     if (match(line, /^\|([^|]+)\|([^|]*)\|\s*$/, m)) {
-      flush()
-      field=m[1]; gsub(/^ *| *$/, "", field)
-      value=m[2]; gsub(/^ *| *$/, "", value)
-      have_row=1
-      next
+      f=m[1]; v=m[2]; gsub(/^ *| *$/, "", f); gsub(/^ *| *$/, "", v)
+      if (!in_table) {
+        if (f in fields) { in_table=1 } else { print line; next }
+      }
+      flush(); field=f; value=v; have_row=1; next
     }
-    if (line ~ /^\|/) { flush(); print line; next }
-    if (line ~ /^## +/ || line ~ /^### +/ || line ~ /^```/) { flush(); in_table=0; print line; next }
+    if (line ~ /^\|/) { flush(); in_table=0; print line; next }
+    if (line ~ /^## +/ || line ~ /^### +/) { flush(); in_table=0; print line; next }
     # Non-table content; accumulate only for known short continuations
     if (have_row) {
       t=line; gsub(/^ *| *$/, "", t)
