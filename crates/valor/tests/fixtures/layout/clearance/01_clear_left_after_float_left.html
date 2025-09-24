@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<!-- Verify clear:left pushes block below preceding left float's bottom + positive margin. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>clear:left honors float left clearance</title>
+    <style>
+      #container {
+        width: 400px;
+        padding: 0;
+        border: 0;
+      }
+      #floatL {
+        float: left;
+        width: 80px;
+        height: 30px;
+        margin-bottom: 10px; /* contributes to floor */
+        background: #88c;
+      }
+      #after {
+        clear: left;
+        margin-top: 6px; /* should not reduce clearance floor */
+        height: 12px;
+        background: #c88;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="floatL"></div>
+      <div id="after"></div>
+    </div>
+  </body>
+</html>

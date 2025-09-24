@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<!-- Verify BFC boundary: a cleared element that establishes a BFC (overflow:auto) ignores external float floors. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>clear:left inside BFC ignores external floats</title>
+    <style>
+      #container { width: 400px; padding: 0; border: 0; }
+      #floatL { float: left; width: 80px; height: 30px; margin-bottom: 18px; background: #88c; }
+      /* The inner block establishes a BFC via overflow:auto; its child should not be raised by the external float floor */
+      #bfc { overflow: auto; background: #eee; }
+      #cleared { clear: left; height: 12px; margin-top: 8px; background: #c88; }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="floatL"></div>
+      <div id="bfc">
+        <div id="cleared"></div>
+      </div>
+    </div>
+  </body>
+</html>

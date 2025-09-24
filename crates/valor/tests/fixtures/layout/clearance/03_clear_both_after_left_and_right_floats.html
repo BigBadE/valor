@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<!-- Verify clear:both pushes block below the lower of left/right float bottoms + positive margins. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>clear:both after left and right floats</title>
+    <style>
+      #container { width: 500px; padding: 0; border: 0; }
+      #floatL { float: left; width: 80px; height: 30px; margin-bottom: 12px; background: #88c; }
+      #floatR { float: right; width: 80px; height: 40px; margin-bottom: 6px; background: #8c8; }
+      #after { clear: both; margin-top: 5px; height: 16px; background: #c88; }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="floatL"></div>
+      <div id="floatR"></div>
+      <div id="after"></div>
+    </div>
+  </body>
+</html>

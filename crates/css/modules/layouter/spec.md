@@ -1,17 +1,24 @@
 ## Clearance (clear) interactions
 
-- Status: [x] [Production]
+- Status: [MVP]
 - Spec: https://www.w3.org/TR/CSS22/visuren.html#clearance
 - Code:
-  - `src/lib.rs::place_block_children_loop()` — tracks a running clearance floor derived from preceding floating boxes’ bottom edges.
-  - `src/lib.rs::prepare_child_position()` — raises a block with `clear` to at least the clearance floor.
-  - `src/lib.rs::compute_collapsed_vertical_margin()` — avoids collapsing the first child with the parent when `clear` applies by virtue of the clearance floor raising the box; sibling collapse logic proceeds after clearance positioning.
-- Algorithm notes:
-  - Any preceding float contributes its border-box bottom plus its positive bottom margin to the clearance floor (simplified single-floor model).
-  - A block with `clear: left | right | both` will be positioned no higher than this floor; its top margin does not collapse across the clearance raise.
+  - `src/lib.rs::place_block_children_loop()` — maintains side-specific float floors: `clearance_floor_left_y`, `clearance_floor_right_y`; seeds child context via computed floor.
+  - `src/lib.rs::compute_clearance_floor_for_child()` — computes per-child clearance floor from `clear: left|right|both`, suppressing floors when the child establishes a BFC.
+  - `src/lib.rs::update_clearance_floors_for_float()` — updates left/right floors from preceding floats using rect bottom plus positive margin-bottom.
+  - `src/lib.rs::prepare_child_position()` — integrates collapsed-top with positioning and applies clearance by raising `child_y` to the computed floor when `clear != none`.
+  - `src/lib.rs::compute_collapsed_vertical_margin()` — ensures margin collapsing logic integrates with raised positions.
+- Notes:
+  - Side-specific clearance floors now implemented. Floors are computed as the bottom edge (border-box bottom + positive `margin-bottom`) of preceding floats on the relevant side(s).
+  - BFC awareness: if the cleared element establishes a new BFC, external float floors are ignored at that boundary (per §9.4.1 interaction with floats).
+  - Remaining work for full production: multi-float avoidance geometry and line box interaction (requires full Floats formatting model), and exhaustive WPT fixture parity.
 - Fixtures:
   - `crates/css/modules/box/tests/fixtures/layout/box/clear_left_after_float_left.html`
-  - `crates/css/modules/box/tests/fixtures/layout/box/clearance_breaks_collapse.fail` (ignored until edge-cases are in scope)
+  - `crates/css/modules/box/tests/fixtures/layout/box/clearance_breaks_collapse.fail` (XFAIL/ignored until floats are complete)
+  - `crates/valor/tests/fixtures/layout/clearance/01_clear_left_after_float_left.html`
+  - `crates/valor/tests/fixtures/layout/clearance/02_clear_right_after_float_right.html`
+  - `crates/valor/tests/fixtures/layout/clearance/03_clear_both_after_left_and_right_floats.html`
+  - `crates/valor/tests/fixtures/layout/clearance/04_clear_left_inside_bfc_ignores_external_floats.html`
 
 # Layouter — Spec Coverage Map (CSS 2.2)
 
@@ -25,7 +32,7 @@ Primary spec: https://www.w3.org/TR/CSS22/
   - [Approximation] Heuristic structural-emptiness checks for internal top/bottom collapse.
   - [MVP] No inline formatting context (no line boxes), no anonymous block synthesis yet.
   - [MVP] Relative positioning only; absolute/fixed/sticky are out of scope.
-  - [TODO] Clearance interactions and full BFC boundary fidelity.
+  - [MVP] Clearance scaffolding present; full floats and precise clearance interactions are pending.
 
 ## One-to-one spec mapping (sorted by spec order)
 
@@ -65,16 +72,19 @@ It's time to finalize the layouter module. I want you to make sure that all of 8
     - `crates/css/modules/box/tests/fixtures/layout/box/margins_padding_borders.html`
 
 - 9.4.1 Block formatting context — CSS 2.2
-  - Status: [x] [MVP]
+  - Status: [x] [Production]
   - Spec: https://www.w3.org/TR/CSS22/visuren.html#block-formatting
   - Code:
     - `src/orchestrator/mod.rs::layout_root_impl()` — entry for BFC layout.
     - `src/lib.rs::layout_block_children()` — leading group + placement loop.
     - `src/lib.rs::place_block_children_loop()` — sibling iteration and propagation.
+    - `src/lib.rs::compute_clearance_floor_for_child()` — clears ignore external float floors when the child establishes a BFC.
+    - `src/lib.rs::bands_for_inputs()` — masks horizontal float-avoidance bands when the parent establishes a BFC.
   - Notes:
-    - [Approximation] Minimal BFC creation checks (see vertical.rs).
+    - BFC boundary nullifies influence of external floats vertically (clearance floors) and horizontally (avoidance bands).
   - Fixtures:
     - All block layout fixtures under `crates/css/modules/box/tests/fixtures/layout/**`.
+    - `crates/valor/tests/fixtures/layout/clearance/04_clear_left_inside_bfc_ignores_external_floats.html`.
 
 - 9.4.3 Relative positioning — CSS 2.2
   - Status: [x] [MVP]
@@ -91,8 +101,25 @@ It's time to finalize the layouter module. I want you to make sure that all of 8
   - Spec: https://www.w3.org/TR/CSS22/visudet.html#blockwidth
   - Code:
     - `src/visual_formatting/horizontal.rs::solve_block_horizontal()` — used width and margins.
+    - `src/lib.rs::prepare_child_position()` — reduces available width by float-avoidance bands and shifts x by left band.
   - Fixtures:
     - `crates/css/modules/box/tests/fixtures/layout/box/margins_padding_borders.html`
+    - `crates/valor/tests/fixtures/layout/clearance/0{1,2,3}_*.html` (width reduction past floats).
+
+- 9.5 Floats (clearance and avoidance) — CSS 2.2
+  - Status: [x] [Production] for clearance floors and block-level horizontal avoidance bands; [ ] [MVP] for full float geometry/line wrapping.
+  - Spec: https://www.w3.org/TR/CSS22/visuren.html#floats
+  - Code:
+    - `src/lib.rs::update_clearance_floors_for_float()` — per-side floors from float bottom + positive `margin-bottom`.
+    - `src/lib.rs::compute_clearance_floor_for_child()` — floor selection for `clear: left|right|both` with BFC suppression.
+    - `src/lib.rs::compute_float_bands_for_y()` — horizontal avoidance bands (left/right) from prior floats overlapping the child’s y.
+    - `src/lib.rs::prepare_child_position()` — applies bands and raises to clearance floor when `clear != none`.
+  - Notes:
+    - [Approximation] Bands are per-y maxima per side; full shape/outside wrap and IFC line interaction are planned.
+  - Fixtures:
+    - `crates/valor/tests/fixtures/layout/clearance/01_clear_left_after_float_left.html`
+    - `crates/valor/tests/fixtures/layout/clearance/02_clear_right_after_float_right.html`
+    - `crates/valor/tests/fixtures/layout/clearance/03_clear_both_after_left_and_right_floats.html`
 
 - 10.6 Calculating heights and margins — CSS 2.2
   - Status: [x] [MVP]
@@ -104,6 +131,89 @@ It's time to finalize the layouter module. I want you to make sure that all of 8
     - Negative bottom margin combinations covered in sibling/empty collapse; BFC boundaries handled in vertical module.
   - Fixtures:
     - Height portions of the block fixtures above (content aggregation and bottom margins).
+
+---
+
+## Additional formatting contexts and models (planned)
+
+The following sections track work beyond the current MVP block layout. Each entry follows the same Status/Spec/Code/Notes/Fixtures format and will be promoted as work lands.
+
+### Inline formatting context (IFC)
+
+- Status: [TODO]
+- Spec: CSS 2.2 §9.4.2 inline formatting context; CSS Text Level 3 (whitespace, line breaking): https://www.w3.org/TR/css-text-3/
+- Code:
+  - Planned: `src/inline/mod.rs`, `src/inline/line_builder.rs`, integration hooks in `src/lib.rs` to produce line boxes and baselines; text shaping via a text subsystem.
+- Notes:
+  - Current layouter performs display flattening and block-only placement. No line boxes, bidi, or baseline alignment yet.
+- Fixtures:
+  - `crates/css/modules/text/tests/fixtures/layout/inline/**` (to be added): whitespace collapsing, soft wraps, bidi reordering, inline-block baseline alignment.
+
+### Floats formatting model
+
+- Status: [TODO]
+- Spec: CSS 2.2 §9.5 Floats, clearance, interaction with normal flow: https://www.w3.org/TR/CSS22/visuren.html#floats
+- Code:
+  - Planned: `src/floats/mod.rs` (float placement, float area), integration with block placement loop (`place_block_children_loop()`), clearance computation.
+- Notes:
+  - Will upgrade the Clearance section to [Production] once float placement and multi-float interactions are implemented and tested.
+- Fixtures:
+  - `crates/css/modules/box/tests/fixtures/layout/float/**` (to be added): left/right floats, stacked floats, negative margins around floats, clearance with nested BFCs.
+
+### Positioning (absolute, fixed, sticky)
+
+- Status: [TODO] (relative is MVP)
+- Spec: CSS 2.2 positioning: https://www.w3.org/TR/CSS22/visuren.html#positioning-scheme; Sticky positioning: https://www.w3.org/TR/css-position-3/
+- Code:
+  - Planned: `src/positioning/mod.rs` (containing block resolution, offset calculations), stacking context interaction.
+- Notes:
+  - Requires scroll/viewport containers and interaction with overflow/clip for fixed/sticky.
+- Fixtures:
+  - `crates/css/modules/position/tests/fixtures/layout/**` (to be added): abs offset resolution, fixed to viewport, sticky constraints in nested scrollers.
+
+### Flexbox formatting context
+
+- Status: [TODO]
+- Spec: CSS Flexible Box Layout Module Level 1: https://www.w3.org/TR/css-flexbox-1/
+- Code:
+  - Planned: `src/flex/mod.rs` with main/cross-axis layout, min-size:auto behavior, percentage resolution, intrinsic sizing; integrated into child collection.
+- Notes:
+  - `style_engine::ComputedStyle` already carries flex properties; layouter currently treats flex containers as blocks.
+- Fixtures:
+  - `crates/css/modules/flexbox/tests/fixtures/layout/**` (to be added): row/column, wrap, min-size:auto, align/justify variants.
+
+### Replaced elements sizing
+
+- Status: [TODO]
+- Spec: CSS 2.2 §10. replaced elements sizing; CSS Images and object-fit/aspect-ratio (subset): https://www.w3.org/TR/css-images-3/, https://www.w3.org/TR/css-sizing-3/#aspect-ratio
+- Code:
+  - Planned: `src/replaced/mod.rs` for intrinsic width/height, aspect-ratio, min/max constraints.
+- Notes:
+  - Needed for images/video and for accurate percentage/min-max interaction.
+- Fixtures:
+  - `crates/css/modules/images/tests/fixtures/layout/replaced/**` (to be added): intrinsic size, aspect-ratio, percentage constraints.
+
+### Overflow, clipping, and scrolling
+
+- Status: [TODO]
+- Spec: CSS Overflow Module Level 3: https://www.w3.org/TR/css-overflow-3/
+- Code:
+  - Planned: clipping rectangles in display list; scroll container metrics and coordinate space; integration with hit testing.
+- Notes:
+  - Current fixtures include `overflow: hidden` basics; no scrollers or scrollbars yet.
+- Fixtures:
+  - `crates/css/modules/display/tests/fixtures/layout/clip/**` (existing basics) and `.../scroll/**` (to be added): nested scrollers, sticky + overflow, clip/contain interactions.
+
+### Stacking contexts and painting order (layout interplay)
+
+- Status: [TODO]
+- Spec: CSS 2.2 painting order; CSS Transforms/Opacity creating stacking contexts: https://www.w3.org/TR/CSS22/zindex.html
+- Code:
+  - Planned: layer/stacking metadata in layout outputs to inform painting/compositing.
+- Notes:
+  - Required for correct z-index ordering with positioned/opacity/transform.
+- Fixtures:
+  - `crates/css/modules/transforms/tests/fixtures/layout/stacking/**` (to be added).
 
  
 
@@ -138,7 +248,7 @@ It's time to finalize the layouter module. I want you to make sure that all of 8
 
 - Margin collapsing through empty chains: relies on structural emptiness heuristic; BFC boundaries stop propagation.
 - Parent-edge non-collapsible cases (padding/border) handled; ensure no double application when forwarding.
-- Clearance and floats are partial [TODO].
+- Clearance and floats are partial [MVP] — production once floats are complete.
 
 ## Testing and fixtures
 

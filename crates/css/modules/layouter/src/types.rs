@@ -266,6 +266,10 @@ pub struct ChildLayoutCtx {
     /// Clearance floor in parent content space: minimum y that content must start at due to
     /// preceding floats on the relevant sides. Simplified: we track a single floor for any clear.
     pub clearance_floor_y: i32,
+    /// Horizontal avoidance band width on the left from active left floats at this y.
+    pub float_band_left: i32,
+    /// Horizontal avoidance band width on the right from active right floats at this y.
+    pub float_band_right: i32,
 }
 
 /// Kinds of layout nodes known to the layouter.

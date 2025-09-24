@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<!-- Verify clear:right pushes block below preceding right float's bottom + positive margin. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>clear:right honors float right clearance</title>
+    <style>
+      #container { width: 400px; padding: 0; border: 0; }
+      #floatR {
+        float: right;
+        width: 80px;
+        height: 30px;
+        margin-bottom: 14px; /* contributes to floor */
+        background: #8c8;
+      }
+      #after {
+        clear: right;
+        margin-top: 4px;
+        height: 12px;
+        background: #c88;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="floatR"></div>
+      <div id="after"></div>
+    </div>
+  </body>
+</html>
