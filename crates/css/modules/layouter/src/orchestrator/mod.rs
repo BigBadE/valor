@@ -41,7 +41,7 @@ fn log_last_placed_child_diag(layouter: &Layouter, root: NodeKey, content_bottom
             .and_then(|map| map.get("id").cloned())
             .unwrap_or_default();
         let bottom_edge = rect.y.saturating_add(rect.height).saturating_add(raw_mb);
-        log::error!(
+        log::debug!(
             "[ROOT-LAST DIAG] last_key={last_key:?} id=#{} rect=({}, {}, {}, {}) mb_raw={} bottom_edge={} content_bottom={:?}",
             id_opt,
             rect.x,

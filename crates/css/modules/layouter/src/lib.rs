@@ -35,28 +35,26 @@ pub(crate) const SCROLLBAR_GUTTER_PX: i32 = 16;
 /// Tuple contents: (child key, rect bottom (y + height), effective outgoing margin-bottom).
 type LastPlacedInfo = Option<(NodeKey, i32, i32)>;
 
+/// Compact result for the block-children placement loop:
+/// (`placed_count`, `y_end`, `last_positive_bottom_margin`, `last_placed_info`)
+type PlaceLoopResult = (usize, i32, i32, LastPlacedInfo);
+
 /// Internal result bundle used by `layout_block_children` to keep the function compact.
 ///
 /// - `placed`: number of children reflowed
 /// - `y_end`: final vertical cursor after placement loop
 /// - `last_mb`: last positive bottom margin (clamped to >= 0) for root usage tracking
 /// - `last_info`: last placed child info (key, rect bottom, effective outgoing bottom margin)
-/// - `y_start_for_parent`: starting y applied to the parent if leading collapse applied at edge
-/// - `leading_applied`: amount applied at the parent top edge from the leading empty-chain group
 /// - `parent_edge_collapsible`: whether the parent's top edge is collapsible
 struct LocalRes {
     /// Number of children reflowed
     placed: usize,
     /// Final vertical cursor after placement
     y_end: i32,
-    /// Last positive bottom margin (>= 0)
+    /// Last outgoing bottom margin (signed)
     last_mb: i32,
     /// Last placed child info (key, rect bottom, outgoing mb)
     last_info: LastPlacedInfo,
-    /// Y applied to parent when leading collapse applies at edge
-    y_start_for_parent: i32,
-    /// Leading-applied amount (for diagnostics)
-    leading_applied: i32,
     /// Whether the parent's top edge is collapsible
     parent_edge_collapsible: bool,
 }
@@ -220,7 +218,7 @@ impl Layouter {
     }
 
     /// Layout direct block children under `root` using the provided container metrics.
-    /// Returns `(reflowed_count, total_content_height, last_positive_bottom_margin, last_placed_info)` where
+    /// Returns `(reflowed_count, total_content_height, last_outgoing_bottom_margin, last_placed_info)` where
     /// `last_placed_info` is `Some((last_key, rect_bottom, margin_bottom_out))` for the last placed in-flow block.
     fn layout_block_children(
         &mut self,
@@ -236,35 +234,46 @@ impl Layouter {
                 y_end: 0,
                 last_mb: 0,
                 last_info: None,
-                y_start_for_parent: 0,
-                leading_applied: 0,
                 parent_edge_collapsible: true,
             }
         } else {
             let (loop_ctx, parent_edge_collapsible) =
                 self.prepare_place_loop(root, metrics, &block_children, ancestor_applied_at_edge);
-            let (placed, y_end, last_mb, last_info) =
+            let (placed, y_end, last_mb, last_info): PlaceLoopResult =
                 self.place_block_children_loop(loop_ctx, &mut first_collapsed_top_positive);
             LocalRes {
                 placed,
                 y_end,
-                last_mb: last_mb.max(0i32),
+                last_mb,
                 last_info,
-                y_start_for_parent: loop_ctx.y_cursor,
-                leading_applied: loop_ctx.leading_applied,
                 parent_edge_collapsible,
             }
         };
 
-        // CSS 2.2 §8.3.1 & §9.4.1: Only subtract the positive collapsed-top absorbed at the
-        // parent's top edge when that edge is actually collapsible (no padding/border) and the
-        // parent does not establish a BFC. Otherwise, the leading offset contributes to content height.
-        let adjusted_content_height = if res.parent_edge_collapsible {
+        // CSS 2.2 §8.3.1 & §9.4.1:
+        // - Subtract the positive collapsed-top absorbed at the parent's top edge when that edge
+        //   is collapsible (no padding/border and no BFC).
+        // Determine if the parent's bottom edge is collapsible (no bottom padding/border and no BFC).
+        let root_style = self
+            .computed_styles
+            .get(&root)
+            .cloned()
+            .unwrap_or_else(ComputedStyle::default);
+        let bottom_edge_collapsible = root_style.padding.bottom.max(0.0) as i32 == 0i32
+            && root_style.border_width.bottom.max(0.0) as i32 == 0i32
+            && !establishes_bfc(&root_style);
+        // Include the last outgoing bottom margin only when the parent's bottom edge is not collapsible.
+        let y_end_to_bottom_margin_edge = if bottom_edge_collapsible {
             res.y_end
+        } else {
+            res.y_end.saturating_add(res.last_mb)
+        };
+        let adjusted_content_height = if res.parent_edge_collapsible {
+            y_end_to_bottom_margin_edge
                 .saturating_sub(first_collapsed_top_positive)
                 .max(0i32)
         } else {
-            res.y_end.max(0i32)
+            y_end_to_bottom_margin_edge.max(0i32)
         };
         (
             res.placed,
@@ -290,13 +299,13 @@ impl Layouter {
 
     #[inline]
     /// Prepare the placement loop context, applying leading top collapse and updating parent rect y when applicable.
-    fn prepare_place_loop(
+    fn prepare_place_loop<'children>(
         &mut self,
         root: NodeKey,
         metrics: &ContainerMetrics,
-        block_children: &Vec<NodeKey>,
+        block_children: &'children [NodeKey],
         ancestor_applied_at_edge: bool,
-    ) -> (PlaceLoopCtx<'_>, bool) {
+    ) -> (PlaceLoopCtx<'children>, bool) {
         let (y_start, prev_bottom_after, leading_applied, skipped) =
             visual_formatting::vertical::apply_leading_top_collapse(
                 self,
@@ -336,7 +345,7 @@ impl Layouter {
         &mut self,
         loop_ctx: PlaceLoopCtx<'_>,
         first_collapsed_top_positive: &mut i32,
-    ) -> (usize, i32, i32, Option<(NodeKey, i32, i32)>) {
+    ) -> PlaceLoopResult {
         let mut reflowed_count = 0usize;
         let mut previous_bottom_margin: i32 = 0;
         let mut y_cursor = loop_ctx.y_cursor;
@@ -394,6 +403,9 @@ impl Layouter {
             // Record last placed child's rect bottom and its effective outgoing bottom margin.
             if let Some(rect) = self.rects.get(&child_key) {
                 let rect_bottom = rect.y.saturating_add(rect.height);
+                log::debug!(
+                    "[PLACE-LOOP] child={child_key:?} rect_bottom={rect_bottom} mb_out={mb_next}"
+                );
                 last_placed_info = Some((child_key, rect_bottom, mb_next));
             }
             // Update clearance floor if this child floats.
@@ -578,7 +590,7 @@ impl Layouter {
     #[inline]
     /// Compute heights and outgoing margin values for a child.
     fn compute_heights_and_margins(&mut self, hctx: HeightsCtx<'_>) -> HeightsAndMargins {
-        let (content_h_inner, last_pos_mb) = self.compute_child_content_height(ChildContentCtx {
+        let (content_h_inner, _last_out_mb) = self.compute_child_content_height(ChildContentCtx {
             key: hctx.child_key,
             used_border_box_width: hctx.used_bb_w,
             sides: hctx.sides,
@@ -586,9 +598,9 @@ impl Layouter {
             y: hctx.child_y,
             ancestor_applied_at_edge: hctx.ctx.ancestor_applied_at_edge_for_children,
         });
-        // Per CSS 2.2 §10.6.3, a block's content height runs to the bottom margin edge
-        // of the bottommost in-flow block. Include the last positive bottom margin here.
-        let content_h = content_h_inner.saturating_add(last_pos_mb.max(0i32));
+        // Child's own used height is computed from its content box; do not include
+        // its outgoing bottom margin here. The parent accounts for the bottom margin edge.
+        let content_h = content_h_inner;
         let computed_h = visual_formatting::height::compute_used_height(
             self,
             hctx.style,

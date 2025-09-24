@@ -22,6 +22,8 @@ fn target_artifacts_dir() -> PathBuf {
     common::artifacts_subdir("graphics_artifacts")
 }
 
+// (no test-side color normalization; renderer returns RGBA)
+
 // Graphics fixtures are discovered across all crates by common::graphics_fixture_html_files()
 
 fn safe_stem(p: &Path) -> String {

@@ -267,6 +267,15 @@ impl RenderState {
         }
     }
     #[inline]
+    fn srgb_to_linear(c: f32) -> f32 {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    #[inline]
     fn push_rect_vertices_ndc(&self, out: &mut Vec<Vertex>, rect_xywh: [f32; 4], color: [f32; 4]) {
         let fw = self.size.width.max(1) as f32;
         let fh = self.size.height.max(1) as f32;
@@ -278,7 +287,15 @@ impl RenderState {
         let x1 = ((x + w) / fw) * 2.0 - 1.0;
         let y0 = 1.0 - (y / fh) * 2.0;
         let y1 = 1.0 - ((y + h) / fh) * 2.0;
-        let c = color;
+        // Colors arriving from layout are in sRGB [0,1]. The render target is sRGB,
+        // and WebGPU expects linear values in the shader, which are converted to sRGB on write.
+        // Convert inputs to linear here to avoid muted/shifted colors.
+        let c = [
+            Self::srgb_to_linear(color[0]),
+            Self::srgb_to_linear(color[1]),
+            Self::srgb_to_linear(color[2]),
+            color[3],
+        ];
         out.extend_from_slice(&[
             Vertex {
                 position: [x0, y0],
@@ -417,41 +434,54 @@ impl RenderState {
         let size = window.inner_size();
 
         // Try to create a surface; if capabilities are empty, fall back to offscreen mode.
-        let (surface_opt, surface_format, render_format) =
-            match instance.create_surface(window.clone()) {
-                Ok(surface) => {
-                    let capabilities = surface.get_capabilities(&adapter);
-                    if capabilities.formats.is_empty() {
-                        // Headless path: no surface formats available
-                        (
-                            None,
-                            TextureFormat::Rgba8Unorm,
-                            TextureFormat::Rgba8UnormSrgb,
-                        )
-                    } else {
-                        let sfmt = capabilities.formats[0];
-                        let rfmt = sfmt.add_srgb_suffix();
-                        // Configure the surface before creating the pipeline
-                        let surface_config = SurfaceConfiguration {
-                            usage: TextureUsages::RENDER_ATTACHMENT,
-                            format: sfmt,
-                            view_formats: vec![rfmt],
-                            alpha_mode: CompositeAlphaMode::Auto,
-                            width: size.width,
-                            height: size.height,
-                            desired_maximum_frame_latency: 2,
-                            present_mode: PresentMode::AutoVsync,
-                        };
-                        surface.configure(&device, &surface_config);
-                        (Some(surface), sfmt, rfmt)
+        let (surface_opt, surface_format, render_format) = match instance
+            .create_surface(window.clone())
+        {
+            Ok(surface) => {
+                let capabilities = surface.get_capabilities(&adapter);
+                if capabilities.formats.is_empty() {
+                    // Headless path: no surface formats available
+                    (
+                        None,
+                        TextureFormat::Rgba8Unorm,
+                        TextureFormat::Rgba8UnormSrgb,
+                    )
+                } else {
+                    // Prefer RGBA8 for consistent channel ordering; fall back to the first available format
+                    let mut sfmt = capabilities.formats[0];
+                    for f in &capabilities.formats {
+                        if *f == TextureFormat::Rgba8Unorm || *f == TextureFormat::Rgba8UnormSrgb {
+                            sfmt = *f;
+                            break;
+                        }
                     }
+                    // Ensure surface format is the unorm (non-sRGB) base; allow sRGB as a view format
+                    let surface_fmt = match sfmt {
+                        TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8Unorm,
+                        other => other,
+                    };
+                    let render_fmt = TextureFormat::Rgba8UnormSrgb;
+                    // Configure the surface before creating the pipeline
+                    let surface_config = SurfaceConfiguration {
+                        usage: TextureUsages::RENDER_ATTACHMENT,
+                        format: surface_fmt,
+                        view_formats: vec![render_fmt],
+                        alpha_mode: CompositeAlphaMode::Auto,
+                        width: size.width,
+                        height: size.height,
+                        desired_maximum_frame_latency: 2,
+                        present_mode: PresentMode::AutoVsync,
+                    };
+                    surface.configure(&device, &surface_config);
+                    (Some(surface), surface_fmt, render_fmt)
                 }
-                Err(_) => (
-                    None,
-                    TextureFormat::Rgba8Unorm,
-                    TextureFormat::Rgba8UnormSrgb,
-                ),
-            };
+            }
+            Err(_) => (
+                None,
+                TextureFormat::Rgba8Unorm,
+                TextureFormat::Rgba8UnormSrgb,
+            ),
+        };
 
         // Build pipeline and buffers now that formats are known
         let (pipeline, vertex_buffer, vertex_count) =
@@ -822,7 +852,7 @@ impl RenderState {
 
         self.queue.submit([encoder.finish()]);
 
-        // Map and repack into tightly packed RGBA
+        // Map and repack into tightly packed bytes (in the texture's native ordering)
         let slice = readback.slice(..);
         let (sender, receiver) = std::sync::mpsc::channel();
         slice.map_async(MapMode::Read, move |res| {
@@ -845,7 +875,18 @@ impl RenderState {
         }
         drop(mapped);
         readback.unmap();
-
+        // If our render target format uses BGRA ordering, convert to RGBA for consumers
+        match self.render_format {
+            TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb => {
+                for px in out.chunks_exact_mut(4) {
+                    let b = px[0];
+                    let r = px[2];
+                    px[0] = r;
+                    px[2] = b;
+                }
+            }
+            _ => {}
+        }
         Ok(out)
     }
 }
