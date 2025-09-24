@@ -1,4 +1,4 @@
-use crate::display_list::{DisplayItem, DisplayList, batch_display_list};
+use crate::display_list::{DisplayItem, DisplayList, Scissor, batch_display_list};
 use crate::renderer::{DrawRect, DrawText};
 use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Cache, Color as GlyphonColor, FontSystem, Metrics, Resolution,
@@ -13,21 +13,173 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 #[inline]
-fn dl_non_empty_texts(dl: &DisplayList) -> Option<Vec<DrawText>> {
-    let texts: Vec<DrawText> = dl.items.iter().filter_map(map_text_item).collect();
-    if texts.is_empty() { None } else { Some(texts) }
+fn batch_texts_with_scissor(
+    dl: &DisplayList,
+    framebuffer_w: u32,
+    framebuffer_h: u32,
+) -> Vec<TextBatch> {
+    use crate::display_list::DisplayItem;
+    let mut out: Vec<TextBatch> = Vec::new();
+    let mut stack: Vec<Scissor> = Vec::new();
+    let mut current_scissor: Option<Scissor> = None;
+    let mut current_texts: Vec<DrawText> = Vec::new();
+    for item in &dl.items {
+        match item {
+            DisplayItem::BeginClip {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                if !current_texts.is_empty() {
+                    out.push((current_scissor, std::mem::take(&mut current_texts)));
+                }
+                let new_sc =
+                    rect_to_scissor((framebuffer_w, framebuffer_h), *x, *y, *width, *height);
+                let effective = match current_scissor {
+                    Some(sc) => intersect_scissor(sc, new_sc),
+                    None => new_sc,
+                };
+                stack.push(new_sc);
+                current_scissor = Some(effective);
+            }
+            DisplayItem::EndClip => {
+                if !current_texts.is_empty() {
+                    out.push((current_scissor, std::mem::take(&mut current_texts)));
+                }
+                let _ = stack.pop();
+                current_scissor = stack.iter().cloned().reduce(intersect_scissor);
+            }
+            DisplayItem::Text {
+                x,
+                y,
+                text,
+                color,
+                font_size,
+                bounds,
+            } => {
+                current_texts.push(DrawText {
+                    x: *x,
+                    y: *y,
+                    text: text.clone(),
+                    color: *color,
+                    font_size: *font_size,
+                    bounds: *bounds,
+                });
+            }
+            _ => {}
+        }
+    }
+    if !current_texts.is_empty() {
+        out.push((current_scissor, current_texts));
+    }
+    out
+}
+
+type TextBatch = (Option<Scissor>, Vec<DrawText>);
+
+#[inline]
+fn rect_to_scissor(framebuffer: (u32, u32), x: f32, y: f32, w: f32, h: f32) -> Scissor {
+    let framebuffer_w = framebuffer.0.max(1);
+    let framebuffer_h = framebuffer.1.max(1);
+    let mut sx = x.max(0.0).floor() as i32;
+    let mut sy = y.max(0.0).floor() as i32;
+    let mut sw = w.max(0.0).ceil() as i32;
+    let mut sh = h.max(0.0).ceil() as i32;
+    if sx < 0 {
+        sw += sx;
+        sx = 0;
+    }
+    if sy < 0 {
+        sh += sy;
+        sy = 0;
+    }
+    let max_w = framebuffer_w as i32 - sx;
+    let max_h = framebuffer_h as i32 - sy;
+    let sw = sw.clamp(0, max_w) as u32;
+    let sh = sh.clamp(0, max_h) as u32;
+    (sx as u32, sy as u32, sw, sh)
 }
 
 #[inline]
-fn collect_layer_texts(layers: &[Layer]) -> Vec<Vec<DrawText>> {
-    let mut out: Vec<Vec<DrawText>> = Vec::new();
+fn intersect_scissor(a: Scissor, b: Scissor) -> Scissor {
+    let (ax, ay, aw, ah) = a;
+    let (bx, by, bw, bh) = b;
+    let x0 = ax.max(bx);
+    let y0 = ay.max(by);
+    let x1 = (ax + aw).min(bx + bw);
+    let y1 = (ay + ah).min(by + bh);
+    let w = x1.saturating_sub(x0);
+    let h = y1.saturating_sub(y0);
+    (x0, y0, w, h)
+}
+
+#[inline]
+fn batch_layer_texts_with_scissor(
+    layers: &[Layer],
+    framebuffer_w: u32,
+    framebuffer_h: u32,
+) -> Vec<TextBatch> {
+    use crate::display_list::DisplayItem;
+    let mut out: Vec<TextBatch> = Vec::new();
     for layer in layers {
         let dl = match layer {
             Layer::Content(dl) | Layer::Chrome(dl) => dl,
             Layer::Background => continue,
         };
-        if let Some(v) = dl_non_empty_texts(dl) {
-            out.push(v);
+        let mut stack: Vec<Scissor> = Vec::new();
+        let mut current_scissor: Option<Scissor> = None;
+        let mut current_texts: Vec<DrawText> = Vec::new();
+        for item in &dl.items {
+            match item {
+                DisplayItem::BeginClip {
+                    x,
+                    y,
+                    width,
+                    height,
+                } => {
+                    if !current_texts.is_empty() {
+                        out.push((current_scissor, std::mem::take(&mut current_texts)));
+                    }
+                    let new_sc =
+                        rect_to_scissor((framebuffer_w, framebuffer_h), *x, *y, *width, *height);
+                    let effective = match current_scissor {
+                        Some(sc) => intersect_scissor(sc, new_sc),
+                        None => new_sc,
+                    };
+                    stack.push(new_sc);
+                    current_scissor = Some(effective);
+                }
+                DisplayItem::EndClip => {
+                    if !current_texts.is_empty() {
+                        out.push((current_scissor, std::mem::take(&mut current_texts)));
+                    }
+                    let _ = stack.pop();
+                    current_scissor = stack.iter().cloned().reduce(intersect_scissor);
+                }
+                DisplayItem::Text {
+                    x,
+                    y,
+                    text,
+                    color,
+                    font_size,
+                    bounds,
+                } => {
+                    // Map to DrawText, keeping bounds and color as-is
+                    current_texts.push(DrawText {
+                        x: *x,
+                        y: *y,
+                        text: text.clone(),
+                        color: *color,
+                        font_size: *font_size,
+                        bounds: *bounds,
+                    });
+                }
+                _ => {}
+            }
+        }
+        if !current_texts.is_empty() {
+            out.push((current_scissor, current_texts));
         }
     }
     out
@@ -107,6 +259,37 @@ pub struct RenderState {
 }
 
 impl RenderState {
+    #[inline]
+    fn draw_text_batch(
+        &mut self,
+        pass: &mut RenderPass<'_>,
+        items: &[DrawText],
+        scissor_opt: Option<Scissor>,
+    ) {
+        self.glyphon_prepare_for(items);
+        pass.set_viewport(
+            0.0,
+            0.0,
+            self.size.width as f32,
+            self.size.height as f32,
+            0.0,
+            1.0,
+        );
+        match scissor_opt {
+            Some((x, y, w, h)) => pass.set_scissor_rect(x, y, w, h),
+            None => pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1)),
+        }
+        let _ = self
+            .text_renderer
+            .render(&self.text_atlas, &self.viewport, pass);
+    }
+
+    #[inline]
+    fn draw_text_batches(&mut self, pass: &mut RenderPass<'_>, batches: Vec<TextBatch>) {
+        for (scissor_opt, items) in batches.into_iter().filter(|(_, it)| !it.is_empty()) {
+            self.draw_text_batch(pass, &items, scissor_opt);
+        }
+    }
     /// Record all render passes (rectangles + text) into the provided texture view.
     /// This uses the exact same code paths as `render()`.
     fn record_draw_passes(&mut self, texture_view: &TextureView, encoder: &mut CommandEncoder) {
@@ -215,39 +398,14 @@ impl RenderState {
             });
 
             if use_layers {
-                let layer_texts = collect_layer_texts(&self.layers);
-                for layer_text in layer_texts.into_iter() {
-                    self.glyphon_prepare_for(&layer_text);
-                    pass.set_viewport(
-                        0.0,
-                        0.0,
-                        self.size.width as f32,
-                        self.size.height as f32,
-                        0.0,
-                        1.0,
-                    );
-                    pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
-                    let _ = self
-                        .text_renderer
-                        .render(&self.text_atlas, &self.viewport, &mut pass);
-                }
+                let batches =
+                    batch_layer_texts_with_scissor(&self.layers, self.size.width, self.size.height);
+                self.draw_text_batches(&mut pass, batches);
             } else if use_retained {
                 if let Some(dl) = &self.retained_display_list {
-                    self.text_list = dl.items.iter().filter_map(map_text_item).collect();
+                    let batches = batch_texts_with_scissor(dl, self.size.width, self.size.height);
+                    self.draw_text_batches(&mut pass, batches);
                 }
-                self.glyphon_prepare();
-                pass.set_viewport(
-                    0.0,
-                    0.0,
-                    self.size.width as f32,
-                    self.size.height as f32,
-                    0.0,
-                    1.0,
-                );
-                pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
-                let _ = self
-                    .text_renderer
-                    .render(&self.text_atlas, &self.viewport, &mut pass);
             } else {
                 // Immediate path: use whatever self.text_list was set to externally
                 self.glyphon_prepare();
@@ -266,14 +424,6 @@ impl RenderState {
             }
         }
     }
-    #[inline]
-    fn srgb_to_linear(c: f32) -> f32 {
-        if c <= 0.04045 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    }
 
     #[inline]
     fn push_rect_vertices_ndc(&self, out: &mut Vec<Vertex>, rect_xywh: [f32; 4], color: [f32; 4]) {
@@ -287,13 +437,23 @@ impl RenderState {
         let x1 = ((x + w) / fw) * 2.0 - 1.0;
         let y0 = 1.0 - (y / fh) * 2.0;
         let y1 = 1.0 - ((y + h) / fh) * 2.0;
-        // Colors arriving from layout are in sRGB [0,1]. The render target is sRGB,
-        // and WebGPU expects linear values in the shader, which are converted to sRGB on write.
-        // Convert inputs to linear here to avoid muted/shifted colors.
+        // Convert sRGB inputs to linear; the sRGB render target will convert back on write.
         let c = [
-            Self::srgb_to_linear(color[0]),
-            Self::srgb_to_linear(color[1]),
-            Self::srgb_to_linear(color[2]),
+            if color[0] <= 0.04045 {
+                color[0] / 12.92
+            } else {
+                ((color[0] + 0.055) / 1.055).powf(2.4)
+            },
+            if color[1] <= 0.04045 {
+                color[1] / 12.92
+            } else {
+                ((color[1] + 0.055) / 1.055).powf(2.4)
+            },
+            if color[2] <= 0.04045 {
+                color[2] / 12.92
+            } else {
+                ((color[2] + 0.055) / 1.055).powf(2.4)
+            },
             color[3],
         ];
         out.extend_from_slice(&[
@@ -448,14 +608,15 @@ impl RenderState {
                     )
                 } else {
                     // Prefer RGBA8 for consistent channel ordering; fall back to the first available format
-                    let mut sfmt = capabilities.formats[0];
-                    for f in &capabilities.formats {
-                        if *f == TextureFormat::Rgba8Unorm || *f == TextureFormat::Rgba8UnormSrgb {
-                            sfmt = *f;
-                            break;
-                        }
-                    }
-                    // Ensure surface format is the unorm (non-sRGB) base; allow sRGB as a view format
+                    let sfmt = capabilities
+                        .formats
+                        .iter()
+                        .copied()
+                        .find(|f| {
+                            matches!(f, TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb)
+                        })
+                        .unwrap_or(capabilities.formats[0]);
+                    // Use the base (non-sRGB) surface format, but render to an sRGB view
                     let surface_fmt = match sfmt {
                         TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8Unorm,
                         other => other,
