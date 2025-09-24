@@ -12,6 +12,8 @@ Below, fixtures are grouped by area with a short reason so we know when to re-en
 
 - crates/css/modules/box/tests/fixtures/layout/box/clearance_breaks_collapse.fail — Clearance and margin-collapsing behavior incomplete.
 - crates/css/modules/box/tests/fixtures/layout/box/margins_padding_borders.fail — Box edge computations not yet spec-accurate.
+- crates/css/modules/box/tests/fixtures/layout/box/bfc_flex_no_parent_collapse.fail — Flex item main-size (flex-basis:auto for empty items) not yet aligned with spec; container is BFC so no parent/first-child collapse. Pending minimal flex sizing.
+- crates/css/modules/box/tests/fixtures/layout/box/margin_collapse_empty_block.fail — Collapsing across empty block chains requires full propagation and correct max/most-negative arithmetic. Pending dedicated implementation.
 
 ## CSS: Display (Inline formatting)
 

@@ -260,6 +260,9 @@ pub struct ChildLayoutCtx {
     /// This must be propagated to all child subtrees, including leading empty ones,
     /// so they do not re-apply at their own top edge.
     pub ancestor_applied_at_edge_for_children: bool,
+    /// Whether the parent top edge is collapsible for parent/first-child margin collapse per CSS 2.2
+    /// §8.3.1, taking into account padding/border and BFC creation per §9.4.1.
+    pub parent_edge_collapsible: bool,
     /// Clearance floor in parent content space: minimum y that content must start at due to
     /// preceding floats on the relevant sides. Simplified: we track a single floor for any clear.
     pub clearance_floor_y: i32,

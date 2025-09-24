@@ -636,29 +636,64 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
         }
     }
 
+    #[allow(clippy::excessive_nesting)]
     fn build_err(
         kind: &str,
         detail: &str,
         path: &[String],
         elem_stack: &[(Value, Value)],
     ) -> String {
+        fn child_summary_lines(children: &[serde_json::Value]) -> Vec<serde_json::Value> {
+            use serde_json::Value::*;
+            let mut lines: Vec<serde_json::Value> = Vec::new();
+            for c in children {
+                if let Object(cm) = c {
+                    let ctag = cm.get("tag").and_then(|x| x.as_str()).unwrap_or("");
+                    let cid = cm.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                    let (cx, cy, cw, ch) = if let Some(Object(r)) = cm.get("rect") {
+                        let cx = r.get("x").and_then(|n| n.as_f64()).unwrap_or(0.0);
+                        let cy = r.get("y").and_then(|n| n.as_f64()).unwrap_or(0.0);
+                        let cw = r.get("width").and_then(|n| n.as_f64()).unwrap_or(0.0);
+                        let ch = r.get("height").and_then(|n| n.as_f64()).unwrap_or(0.0);
+                        (cx, cy, cw, ch)
+                    } else {
+                        (0.0, 0.0, 0.0, 0.0)
+                    };
+                    let s = if !cid.is_empty() {
+                        format!("<{ctag} id=#{cid}> rect=({cx:.0},{cy:.0},{cw:.0},{ch:.0})")
+                    } else {
+                        format!("<{ctag}> rect=({cx:.0},{cy:.0},{cw:.0},{ch:.0})")
+                    };
+                    lines.push(serde_json::Value::String(s));
+                }
+            }
+            lines
+        }
+
+        fn pretty_elem_with_compact_children(v: &Value) -> String {
+            use serde_json::Value::*;
+            if let Object(map) = v {
+                // clone the element and replace children with compact summaries
+                let mut omap = map.clone();
+                if let Some(Array(children)) = map.get("children") {
+                    let lines = child_summary_lines(children);
+                    omap.insert("children".to_string(), Array(lines));
+                }
+                let vv = Object(omap);
+                serde_json::to_string_pretty(&vv).unwrap_or_else(|_| StdString::from("{}"))
+            } else {
+                serde_json::to_string_pretty(v).unwrap_or_else(|_| StdString::from("{}"))
+            }
+        }
+
         let path_str = format_path(path);
         let (our_elem, ch_elem) = if let Some((a, b)) = elem_stack.last() {
             (a, b)
         } else {
-            // Fallback: no element context; use empty objects
             (&Value::Null, &Value::Null)
         };
-        let our_s = if our_elem.is_null() {
-            String::from("null")
-        } else {
-            serde_json::to_string_pretty(our_elem).unwrap_or_else(|_| String::from("{}"))
-        };
-        let ch_s = if ch_elem.is_null() {
-            String::from("null")
-        } else {
-            serde_json::to_string_pretty(ch_elem).unwrap_or_else(|_| String::from("{}"))
-        };
+        let our_s = pretty_elem_with_compact_children(our_elem);
+        let ch_s = pretty_elem_with_compact_children(ch_elem);
         if detail.is_empty() {
             format!("{path_str}: {kind}\nElement (our): {our_s}\nElement (chromium): {ch_s}")
         } else {

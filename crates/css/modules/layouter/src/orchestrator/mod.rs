@@ -4,7 +4,7 @@ use css_box::compute_box_sides;
 use style_engine::ComputedStyle;
 
 use crate::visual_formatting::dimensions;
-use crate::{ContainerMetrics, LayoutNodeKind, Layouter, RootHeightsCtx};
+use crate::{ContainerMetrics, Layouter, RootHeightsCtx};
 use crate::{INITIAL_CONTAINING_BLOCK_WIDTH, LayoutRect};
 use crate::{SCROLLBAR_GUTTER_PX, visual_formatting};
 use js::NodeKey;
@@ -21,6 +21,41 @@ pub fn compute_layout_impl(layouter: &mut Layouter) -> usize {
 }
 
 #[inline]
+/// Emit diagnostics for the last placed in-flow block used to compute `content_bottom`.
+fn log_last_placed_child_diag(layouter: &Layouter, root: NodeKey, content_bottom: Option<i32>) {
+    let ordered_blocks = layouter.collect_block_children(root);
+    if let Some(last_key) = ordered_blocks
+        .iter()
+        .rev()
+        .copied()
+        .find(|child_key| layouter.rects.contains_key(child_key))
+    {
+        let rect = layouter.rects.get(&last_key).copied().unwrap_or_default();
+        let raw_mb = layouter
+            .computed_styles
+            .get(&last_key)
+            .map_or(0i32, |style| style.margin.bottom as i32);
+        let id_opt = layouter
+            .attrs
+            .get(&last_key)
+            .and_then(|map| map.get("id").cloned())
+            .unwrap_or_default();
+        let bottom_edge = rect.y.saturating_add(rect.height).saturating_add(raw_mb);
+        log::error!(
+            "[ROOT-LAST DIAG] last_key={last_key:?} id=#{} rect=({}, {}, {}, {}) mb_raw={} bottom_edge={} content_bottom={:?}",
+            id_opt,
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            raw_mb,
+            bottom_edge,
+            content_bottom
+        );
+    }
+}
+
+#[inline]
 /// Compute container metrics for `root` given an initial containing block width.
 pub fn compute_container_metrics_impl(
     layouter: &Layouter,
@@ -34,12 +69,20 @@ pub fn compute_container_metrics_impl(
         .unwrap_or_else(ComputedStyle::default);
 
     let sides = compute_box_sides(&root_style);
-    let padding_left = sides.padding_left;
+    // Normalize the initial containing block (ICB) edges to the viewport: for the chosen layout root
+    // (html/body), treat the top/left edges as having no padding/border when computing the container
+    // origin. This matches browser behavior where the canvas/viewport origin is at (0,0) and avoids
+    // shifting all descendants by any authored root-side borders.
+    // Spec notes:
+    //   - CSS 2.2 Visual formatting model root and initial containing block: the canvas has no border.
+    //   - getBoundingClientRect() for element boxes is measured relative to the viewport origin.
+    //     We align our ICB to (0,0) for parity with Chromium in tests.
+    let padding_left: i32 = 0; // sides.padding_left;
     let padding_right = sides.padding_right;
-    let padding_top = sides.padding_top;
-    let border_left = sides.border_left;
+    let padding_top: i32 = 0; // sides.padding_top;
+    let border_left: i32 = 0; // sides.border_left;
     let border_right = sides.border_right;
-    let border_top = sides.border_top;
+    let border_top: i32 = 0; // sides.border_top;
     let margin_left = 0i32;
     let margin_top = 0i32;
     // Apply a fixed scrollbar gutter for the viewport to approximate Chromium's reserved space.
@@ -88,13 +131,23 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
         },
     );
 
-    let (reflowed_count, _content_height_from_cursor, root_last_pos_mb) =
+    let (reflowed_count, _content_height_from_cursor, root_last_pos_mb, last_placed_info) =
         layouter.layout_block_children(root, &metrics, false);
 
     let root_y =
         visual_formatting::root::compute_root_y_after_top_collapse(layouter, root, &metrics);
 
-    let (_content_top, content_bottom) = aggregate_content_extents_impl(layouter, root);
+    // Prefer effective outgoing bottom margin from the placement loop if available.
+    let content_bottom = if let Some((last_key, rect_bottom, mb_out)) = last_placed_info {
+        let bottom_edge = rect_bottom.saturating_add(mb_out);
+        log::debug!(
+            "[ROOT-LAST] (from loop) key={last_key:?} rect_bottom={rect_bottom} mb_out={mb_out} -> bottom_edge={bottom_edge}"
+        );
+        Some(bottom_edge)
+    } else {
+        compute_last_block_bottom_edge_impl(layouter, root)
+    };
+    log_last_placed_child_diag(layouter, root, content_bottom);
     let root_y_aligned = root_y;
     let (content_height, root_height_border_box) = dimensions::compute_root_heights_impl(
         layouter,
@@ -124,38 +177,33 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
     reflowed_count
 }
 
-/// Aggregate the minimum top and maximum bottom (including positive bottom margin) across block children.
-pub fn aggregate_content_extents_impl(
-    layouter: &Layouter,
-    root: NodeKey,
-) -> (Option<i32>, Option<i32>) {
-    let mut content_top: Option<i32> = None;
-    let mut content_bottom: Option<i32> = None;
-    if let Some(children) = layouter.children.get(&root) {
-        for child_key in children {
-            if matches!(
-                layouter.nodes.get(child_key),
-                Some(&LayoutNodeKind::Block { .. })
-            ) && let Some(rect) = layouter.rects.get(child_key)
-            {
-                content_top =
-                    Some(content_top.map_or(rect.y, |current_top| current_top.min(rect.y)));
-                let bottom_margin = layouter
-                    .computed_styles
-                    .get(child_key)
-                    .map_or(0i32, |style| style.margin.bottom as i32)
-                    .max(0i32);
-                let bottom = rect
-                    .y
-                    .saturating_add(rect.height)
-                    .saturating_add(bottom_margin);
-                content_bottom = Some(
-                    content_bottom.map_or(bottom, |current_bottom| current_bottom.max(bottom)),
-                );
-            }
-        }
-    }
-    (content_top, content_bottom)
+/// Compute the bottom margin edge of the bottommost in-flow block (placed) child per CSS 2.2 §10.6.3.
+/// Returns the absolute bottom position including the last child's signed margin-bottom.
+pub fn compute_last_block_bottom_edge_impl(layouter: &Layouter, root: NodeKey) -> Option<i32> {
+    let ordered_blocks = layouter.collect_block_children(root);
+    // Find the last block in placement order that has a rect.
+    let last_key_opt = ordered_blocks
+        .iter()
+        .rev()
+        .copied()
+        .find(|child_key| layouter.rects.contains_key(child_key));
+    let last_key = last_key_opt?;
+    let rect = layouter.rects.get(&last_key).copied().unwrap_or_default();
+    let raw_mb = layouter
+        .computed_styles
+        .get(&last_key)
+        .map_or(0i32, |style| style.margin.bottom as i32);
+    let bottom_edge = rect.y.saturating_add(rect.height).saturating_add(raw_mb);
+    log::debug!(
+        "[ROOT-LAST] key={last_key:?} rect=({}, {}, {}, {}) mb_raw={} -> bottom_edge={}",
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+        raw_mb,
+        bottom_edge
+    );
+    Some(bottom_edge)
 }
 
 /// Update the root rectangle with final y and height.

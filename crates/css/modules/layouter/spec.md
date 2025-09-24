@@ -38,6 +38,9 @@ Primary spec: https://www.w3.org/TR/CSS22/
   - Fixtures:
     - Covered indirectly by all block layout fixtures (width/border/padding resolution), e.g., `crates/css/modules/box/tests/fixtures/layout/box/margins_padding_borders.html`.
 
+Prompt:
+It's time to finalize the layouter module. I want you to make sure that all of 8.3.1 is finished and not TODO, and is production browser-ready code. Reference layouter/spec.md, and keep it in sync with your work. Make sure there are extensive tests for every part of the spec.
+
 - 8.3.1 Collapsing margins — CSS 2.2
   - Status: [x] [Production]
   - Spec: https://www.w3.org/TR/CSS22/box.html#collapsing-margins

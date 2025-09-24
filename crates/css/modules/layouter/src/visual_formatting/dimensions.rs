@@ -1,5 +1,6 @@
 //! Dimensions helpers: root height, used height and child content height computations.
 
+use crate::visual_formatting::vertical::establishes_bfc;
 use css_text::default_line_height_px;
 use js::NodeKey;
 use style_engine::ComputedStyle;
@@ -13,13 +14,8 @@ pub fn compute_root_heights_impl(layouter: &Layouter, ctx: RootHeightsCtx) -> (i
         .root_y
         .saturating_add(ctx.metrics.border_top)
         .saturating_add(ctx.metrics.padding_top);
-    let content_bottom_with_parent_mb = ctx
-        .content_bottom
-        .map(|bottom_value| bottom_value.saturating_add(ctx.root_last_pos_mb));
-    let content_height = content_bottom_with_parent_mb.map_or(0i32, |bottom_value| {
-        bottom_value.saturating_sub(content_origin).max(0i32)
-    });
-
+    // Look up the root's computed style to determine bottom-edge collapsibility (we need
+    // padding-bottom and border-bottom which are not in ContainerMetrics).
     let root_style = layouter
         .computed_styles
         .get(&ctx.root)
@@ -27,6 +23,27 @@ pub fn compute_root_heights_impl(layouter: &Layouter, ctx: RootHeightsCtx) -> (i
         .unwrap_or_else(ComputedStyle::default);
     let padding_bottom = root_style.padding.bottom.max(0.0f32) as i32;
     let border_bottom = root_style.border_width.bottom.max(0.0f32) as i32;
+    let bottom_edge_collapsible =
+        padding_bottom == 0i32 && border_bottom == 0i32 && !establishes_bfc(&root_style);
+    // CSS 2.2 §10.6.3: The height of a block is the distance between the top content edge
+    // and the bottom margin edge of the bottommost in-flow block box, plus its own padding/border.
+    // Here, `content_bottom` must already represent the last child's bottom margin edge.
+    let content_bottom_with_parent_mb = ctx.content_bottom;
+    let content_height = content_bottom_with_parent_mb.map_or(0i32, |bottom_value| {
+        bottom_value.saturating_sub(content_origin).max(0i32)
+    });
+
+    log::debug!(
+        "[ROOT-HEIGHT] root={:?} origin_y={} content_bottom={:?} last_pos_mb={} bottom_edge_collapsible={} pb={} bb={} -> content_h={}",
+        ctx.root,
+        content_origin,
+        ctx.content_bottom,
+        ctx.root_last_pos_mb,
+        bottom_edge_collapsible,
+        padding_bottom,
+        border_bottom,
+        content_height
+    );
     let root_height_border_box = content_height
         .saturating_add(ctx.metrics.padding_top)
         .saturating_add(padding_bottom)
@@ -83,7 +100,7 @@ pub fn compute_child_content_height_impl(
         cctx.x,
         cctx.y,
     );
-    let (_reflowed, content_height, last_pos_mb) =
+    let (_reflowed, content_height, last_pos_mb, _last_info) =
         layouter.layout_block_children(cctx.key, &child_metrics, cctx.ancestor_applied_at_edge);
     (content_height, last_pos_mb)
 }

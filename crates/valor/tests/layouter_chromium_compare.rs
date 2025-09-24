@@ -319,8 +319,7 @@ fn run_chromium_layouts() -> Result<(), Error> {
                         "[LAYOUT][DIAG] first element child under ROOT has {child_count} children"
                     );
                 }
-                // The comparison message already contains the precise path and the element snippets for both sides.
-                error!("[LAYOUT] {display_name} ... FAILED: {msg}");
+                // Defer logging to the consolidated error block below to avoid duplicate output.
                 failed.push((display_name.clone(), msg));
             }
         }

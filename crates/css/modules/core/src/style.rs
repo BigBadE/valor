@@ -33,6 +33,90 @@ pub struct StyleComputer {
     parent_by_node: HashMap<NodeKey, NodeKey>,
 }
 
+/// Denotes a single border side for per-side shorthand parsing.
+#[derive(Clone, Copy)]
+enum BorderSide {
+    /// Top border side.
+    Top,
+    /// Right border side.
+    Right,
+    /// Bottom border side.
+    Bottom,
+    /// Left border side.
+    Left,
+}
+
+#[inline]
+/// Parse and apply per-side `border-<side>` shorthand tokens: <width> <style> <color> in any order.
+/// Only the targeted side's width/style/color are updated.
+/// Spec parsing model reference: CSS2.2 border shorthand tokenization (mirrored from `border`).
+fn apply_border_side_shorthand_tokens(
+    value: &str,
+    computed: &mut style_model::ComputedStyle,
+    side: BorderSide,
+) {
+    let mut width_opt: Option<f32> = None;
+    let mut style_opt: Option<style_model::BorderStyle> = None;
+    let mut color_opt: Option<style_model::Rgba> = None;
+    for token_text in value
+        .split(|character: char| character.is_ascii_whitespace())
+        .filter(|text| !text.is_empty())
+    {
+        if width_opt.is_none()
+            && let Some(px_value) = parse_px(token_text)
+        {
+            width_opt = Some(px_value);
+            continue;
+        }
+        if style_opt.is_none() {
+            if token_text.eq_ignore_ascii_case("solid") {
+                style_opt = Some(style_model::BorderStyle::Solid);
+                continue;
+            }
+            if token_text.eq_ignore_ascii_case("none") {
+                style_opt = Some(style_model::BorderStyle::None);
+                continue;
+            }
+        }
+        if color_opt.is_none()
+            && let Some((red8, green8, blue8, alpha8)) = parse_css_color(token_text)
+        {
+            color_opt = Some(style_model::Rgba {
+                red: red8,
+                green: green8,
+                blue: blue8,
+                alpha: alpha8,
+            });
+        }
+    }
+    if let Some(px_value) = width_opt {
+        match side {
+            BorderSide::Top => computed.border_width.top = px_value,
+            BorderSide::Right => computed.border_width.right = px_value,
+            BorderSide::Bottom => computed.border_width.bottom = px_value,
+            BorderSide::Left => computed.border_width.left = px_value,
+        }
+    } else if matches!(style_opt, Some(style_model::BorderStyle::Solid)) {
+        // Width omitted but style specified on per-side shorthand -> default medium for that side only.
+        let medium = 3.0f32;
+        match side {
+            BorderSide::Top => computed.border_width.top = medium,
+            BorderSide::Right => computed.border_width.right = medium,
+            BorderSide::Bottom => computed.border_width.bottom = medium,
+            BorderSide::Left => computed.border_width.left = medium,
+        }
+    }
+    if let Some(style_value) = style_opt {
+        // Update overall border-style; tests and our layouter only consider solid/none, and
+        // side-specific border-style resolution is simplified here to global for parity.
+        computed.border_style = style_value;
+    }
+    if let Some(color_value) = color_opt {
+        // Update overall border color; side-specific colors are not modeled in this minimal engine.
+        computed.border_color = color_value;
+    }
+}
+
 /// Parse positional offsets (top/left/right/bottom) as pixels.
 fn apply_offsets(computed: &mut style_model::ComputedStyle, decls: &HashMap<String, String>) {
     if let Some(value) = decls.get("top")
@@ -747,14 +831,46 @@ fn apply_edges_and_borders(
         };
     }
 
-    // 2) Full border shorthand tokens
+    // 2) Full border shorthand tokens (all sides)
     if let Some(value) = decls.get("border") {
         apply_border_shorthand_tokens(value, computed);
     }
-    // 3) Longhand border-style
+    // 2b) Per-side border shorthands: border-top/right/bottom/left
+    // CSS permits per-side shorthands with tokens in any order: <width> <style> <color>.
+    // Parse each side independently and override only that side's width/style/color.
+    if let Some(value) = decls.get("border-top") {
+        apply_border_side_shorthand_tokens(value, computed, BorderSide::Top);
+    }
+    if let Some(value) = decls.get("border-right") {
+        apply_border_side_shorthand_tokens(value, computed, BorderSide::Right);
+    }
+    if let Some(value) = decls.get("border-bottom") {
+        apply_border_side_shorthand_tokens(value, computed, BorderSide::Bottom);
+    }
+    if let Some(value) = decls.get("border-left") {
+        apply_border_side_shorthand_tokens(value, computed, BorderSide::Left);
+    }
+    // 3) Longhand border-style (all sides or per-side)
     apply_border_style_longhand(decls, computed);
-    // 4) Defaults for solid style
-    ensure_default_solid_widths(computed);
+    // If author specified 'border-style' longhand as solid but omitted widths on some sides,
+    // assign default medium width (3px) only to sides that are still zero/unspecified.
+    if decls.contains_key("border-style")
+        && matches!(computed.border_style, style_model::BorderStyle::Solid)
+    {
+        let medium = 3.0f32;
+        if computed.border_width.top <= 0.0 {
+            computed.border_width.top = medium;
+        }
+        if computed.border_width.right <= 0.0 {
+            computed.border_width.right = medium;
+        }
+        if computed.border_width.bottom <= 0.0 {
+            computed.border_width.bottom = medium;
+        }
+        if computed.border_width.left <= 0.0 {
+            computed.border_width.left = medium;
+        }
+    }
 }
 
 #[inline]
@@ -801,6 +917,15 @@ fn apply_border_shorthand_tokens(value: &str, computed: &mut style_model::Comput
             bottom: px_value,
             left: px_value,
         };
+    } else if matches!(style_opt, Some(style_model::BorderStyle::Solid)) {
+        // Width omitted but style specified on `border` shorthand -> default medium on all sides.
+        let medium = 3.0f32;
+        computed.border_width = style_model::BorderWidths {
+            top: medium,
+            right: medium,
+            bottom: medium,
+            left: medium,
+        };
     }
     if let Some(style_value) = style_opt {
         computed.border_style = style_value;
@@ -838,26 +963,5 @@ fn finalize_borders_after_colors(computed: &mut style_model::ComputedStyle) {
         && computed.border_color.alpha > 0
     {
         computed.border_style = style_model::BorderStyle::Solid;
-    }
-    ensure_default_solid_widths(computed);
-}
-
-#[inline]
-/// Ensure a visible medium width for any side that is zero/unspecified when border-style is Solid.
-fn ensure_default_solid_widths(computed: &mut style_model::ComputedStyle) {
-    if matches!(computed.border_style, style_model::BorderStyle::Solid) {
-        let medium = 3.0f32;
-        if computed.border_width.top <= 0.0 {
-            computed.border_width.top = medium;
-        }
-        if computed.border_width.right <= 0.0 {
-            computed.border_width.right = medium;
-        }
-        if computed.border_width.bottom <= 0.0 {
-            computed.border_width.bottom = medium;
-        }
-        if computed.border_width.left <= 0.0 {
-            computed.border_width.left = medium;
-        }
     }
 }

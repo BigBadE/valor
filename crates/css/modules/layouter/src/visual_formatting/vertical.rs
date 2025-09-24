@@ -276,7 +276,7 @@ fn has_inline_text_descendant(layouter: &Layouter, key: NodeKey) -> bool {
 fn scan_leading_group(
     layouter: &Layouter,
     root: NodeKey,
-    metrics: &ContainerMetrics,
+    _metrics: &ContainerMetrics,
     block_children: &[NodeKey],
     ancestor_applied_at_edge: bool,
 ) -> (Vec<i32>, usize, bool, bool) {
@@ -286,7 +286,17 @@ fn scan_leading_group(
         .cloned()
         .unwrap_or_else(ComputedStyle::default);
     let parent_sides = compute_box_sides(&parent_style);
-    let parent_edge_collapsible = metrics.padding_top == 0i32 && metrics.border_top == 0i32;
+    // CSS 2.2 §8.3.1 Collapsing margins:
+    //   A box's top margin collapses with its first block child's top margin only if the parent's
+    //   top edge is collapsible (no padding/border) AND the parent does not establish a new BFC.
+    //   See also §9.4.1 Block formatting contexts: a box that establishes a BFC does not have its
+    //   margins collapse with margins of its descendants.
+    //   References:
+    //     - https://www.w3.org/TR/CSS22/box.html#collapsing-margins
+    //     - https://www.w3.org/TR/CSS22/visuren.html#block-formatting
+    let parent_edge_collapsible = parent_sides.padding_top == 0i32
+        && parent_sides.border_top == 0i32
+        && !establishes_bfc(&parent_style);
     let include_parent_edge = parent_edge_collapsible && !ancestor_applied_at_edge;
     debug!(
         "[VERT-GROUP pre root={root:?}] parent_edge_collapsible={parent_edge_collapsible} ancestor_applied_at_edge={ancestor_applied_at_edge} -> include_parent_edge={include_parent_edge}"
