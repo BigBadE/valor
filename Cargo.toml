@@ -69,8 +69,9 @@ js = { path = "crates/js" }
 js_engine_v8 = { path = "crates/js/js_engine_v8" }
 
 # CSS modules (internal crates)
-css_core = { path = "crates/css/modules/core" }
+css_orchestrator = { path = "crates/css/orchestrator" }
 css_syntax = { path = "crates/css/modules/syntax" }
+css_selectors = { path = "crates/css/modules/selectors" }
 #css_style_attr = { path = "crates/css/modules/style_attr" }
 #css_media_queries = { path = "crates/css/modules/media_queries" }
 #css_conditional_rules = { path = "crates/css/modules/conditional_rules" }
@@ -93,9 +94,14 @@ css_box = { path = "crates/css/modules/box" }
 #css_sizing = { path = "crates/css/modules/sizing" }
 #css_text = { path = "crates/css/modules/text" }
 #css_text_decoration = { path = "crates/css/modules/text_decoration" }
-layouter = { path = "crates/css/modules/layouter" }
-style_engine = { path = "crates/css/modules/style_engine" }
+# Layouter was renamed to css_core
+css_core = { path = "crates/css/modules/core" }
 css_text = { path = "crates/css/modules/text" }
+
+# Orchestrator dependencies used as workspace deps
+css_style_attr = { path = "crates/css/modules/style_attr" }
+css_variables = { path = "crates/css/modules/variables" }
+css_color = { path = "crates/css/modules/color" }
 
 [profile.dev]
 opt-level = 1

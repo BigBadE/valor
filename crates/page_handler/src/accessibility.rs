@@ -1,7 +1,7 @@
 use crate::snapshots::Snapshot;
 use css::layout_helpers::collapse_whitespace;
+use css_core::LayoutNodeKind;
 use js::NodeKey;
-use layouter::LayoutNodeKind;
 use std::collections::HashMap;
 
 pub fn ax_tree_snapshot_from(

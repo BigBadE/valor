@@ -60,7 +60,10 @@ fn parse_stylesheet_with_next(css: &str, origin: Origin, base_rule_idx: u32) -> 
         origin,
         order: base_rule_idx,
     };
-    let mut sheet = Stylesheet::with_origin(origin);
+    let mut sheet = Stylesheet {
+        rules: Vec::new(),
+        origin,
+    };
     for style_rule in parsed.rules {
         let mut declarations_out: Vec<Declaration> = Vec::new();
         for decl_syntax in style_rule.declarations {

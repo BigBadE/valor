@@ -5,9 +5,9 @@
 use crate::chapter2::part_2_1_outer_inner::is_block_level_outer;
 use crate::chapter2::part_2_7_transformations::used_display_for_child;
 use core::hash::BuildHasher;
+use css_orchestrator::style_model::ComputedStyle;
 use js::NodeKey;
 use std::collections::HashMap;
-use style_engine::ComputedStyle;
 
 /// Kind of anonymous-block-related run found during analysis.
 #[derive(Clone, Debug, PartialEq, Eq)]

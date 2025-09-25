@@ -9,12 +9,7 @@ pub use js::NodeKey;
 
 // Bring core types into scope to avoid fully qualified paths and satisfy clippy
 use crate::parser::parse_stylesheet;
-use css_core::CoreEngine;
-use css_core::layout_model::{LayoutNodeKind as CoreLayoutNodeKind, LayoutRect as CoreLayoutRect};
-use css_core::types::{
-    Declaration as CoreDeclaration, Origin as CoreOrigin, Rule as CoreRule,
-    Stylesheet as CoreStylesheet,
-};
+use css_orchestrator::CoreEngine;
 
 pub mod style_types;
 use crate::style_types::{ComputedStyle, LayoutNodeKind, LayoutRect};
@@ -27,8 +22,6 @@ pub mod layout_helpers;
 
 /// Snapshot of layout nodes and their child ordering for inspection.
 type LayoutSnapshot = Vec<(NodeKey, LayoutNodeKind, Vec<NodeKey>)>;
-/// Snapshot type from the core layout engine used for mapping into public structures.
-type CoreLayoutSnapshot = Vec<(NodeKey, CoreLayoutNodeKind, Vec<NodeKey>)>;
 
 pub struct CSSMirror {
     /// Base URL used for resolving discovered stylesheet links.
@@ -41,6 +34,13 @@ pub struct CSSMirror {
     style_nodes_order: Vec<NodeKey>,
     /// Map from style node key to its accumulated text content.
     style_text_by_node: HashMap<NodeKey, String>,
+}
+
+impl DOMSubscriber for Orchestrator {
+    #[inline]
+    fn apply_update(&mut self, update: DOMUpdate) -> Result<()> {
+        self.apply_dom_update(update)
+    }
 }
 
 impl Default for CSSMirror {
@@ -170,42 +170,6 @@ impl Default for Orchestrator {
 
 impl Orchestrator {
     #[inline]
-    /// Map core layout rects to public `LayoutRect` deterministically.
-    fn map_rects(core_rects: HashMap<NodeKey, CoreLayoutRect>) -> HashMap<NodeKey, LayoutRect> {
-        let mut out: HashMap<NodeKey, LayoutRect> = HashMap::new();
-        let mut pairs: Vec<(NodeKey, CoreLayoutRect)> = core_rects.into_iter().collect();
-        pairs.sort_by_key(|&(key, _)| key.0);
-        for (key, rect) in pairs {
-            out.insert(
-                key,
-                LayoutRect {
-                    x: rect.x,
-                    y: rect.y,
-                    width: rect.width,
-                    height: rect.height,
-                },
-            );
-        }
-        out
-    }
-
-    #[inline]
-    /// Map core layout snapshot to public snapshot types.
-    fn map_layout_snapshot(core_snapshot: CoreLayoutSnapshot) -> LayoutSnapshot {
-        core_snapshot
-            .into_iter()
-            .map(|(key, kind, children)| {
-                let mapped_kind = match kind {
-                    CoreLayoutNodeKind::Document => LayoutNodeKind::Document,
-                    CoreLayoutNodeKind::Block { tag } => LayoutNodeKind::Block { tag },
-                    CoreLayoutNodeKind::InlineText { text } => LayoutNodeKind::InlineText { text },
-                };
-                (key, mapped_kind, children)
-            })
-            .collect()
-    }
-
-    #[inline]
     pub fn new() -> Self {
         Self {
             core: CoreEngine::new(),
@@ -224,37 +188,8 @@ impl Orchestrator {
     /// Replace the current stylesheet used by the engine.
     #[inline]
     pub fn replace_stylesheet(&mut self, sheet: &types::Stylesheet) {
-        // Map orchestrator public type to core type, including rules
-        let mut core_rules = Vec::new();
-        for rule_pub in &sheet.rules {
-            let mut core_decls = Vec::new();
-            for decl_pub in &rule_pub.declarations {
-                core_decls.push(CoreDeclaration {
-                    name: decl_pub.name.clone(),
-                    value: decl_pub.value.clone(),
-                    important: decl_pub.important,
-                });
-            }
-            core_rules.push(CoreRule {
-                origin: match rule_pub.origin {
-                    types::Origin::UserAgent => CoreOrigin::UserAgent,
-                    types::Origin::User => CoreOrigin::User,
-                    types::Origin::Author => CoreOrigin::Author,
-                },
-                source_order: rule_pub.source_order,
-                prelude: rule_pub.prelude.clone(),
-                declarations: core_decls,
-            });
-        }
-        let core_sheet = CoreStylesheet {
-            rules: core_rules,
-            origin: match sheet.origin {
-                types::Origin::UserAgent => CoreOrigin::UserAgent,
-                types::Origin::User => CoreOrigin::User,
-                types::Origin::Author => CoreOrigin::Author,
-            },
-        };
-        self.core.replace_stylesheet(core_sheet);
+        // The public types are re-exports of core types, so we can pass through directly.
+        self.core.replace_stylesheet(sheet.clone());
     }
 
     /// Parse the provided CSS text with the given origin and replace the current stylesheet.
@@ -279,19 +214,11 @@ impl Orchestrator {
         // Map core types to public orchestrator types
         let computed = core_computed;
 
-        let rects = Self::map_rects(core_rects);
+        let rects: HashMap<NodeKey, LayoutRect> = core_rects;
 
-        let dirty_rects: Vec<LayoutRect> = core_dirty
-            .into_iter()
-            .map(|rect| LayoutRect {
-                x: rect.x,
-                y: rect.y,
-                width: rect.width,
-                height: rect.height,
-            })
-            .collect();
+        let dirty_rects: Vec<LayoutRect> = core_dirty;
 
-        let layout_snapshot: LayoutSnapshot = Self::map_layout_snapshot(core_snapshot);
+        let layout_snapshot: LayoutSnapshot = core_snapshot;
         Ok(ProcessArtifacts {
             styles_changed,
             computed_styles: computed,

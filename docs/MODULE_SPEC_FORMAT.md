@@ -28,42 +28,22 @@ This template defines the required structure and standards for each CSS/HTML mod
   - Use these tags inline wherever applicable:
     - `[MVP]`, `[Approximation]`, `[Heuristic]`, `[Fallback]`, `[Non-normative]`, `[TODO]`, `[Production]`.
 
-## 3. Verbatim spec (REQUIRED) with per-section status
+## 3. Integrated verbatim spec with per-section status and mapping (REQUIRED)
 
-- Each module `spec.md` MUST embed the complete relevant normative specification text (excluding non-spec front matter like Abstract, Status, and general Introductions) in a dedicated section.
+- Each module `spec.md` MUST embed the relevant normative specification text (excluding non-spec front matter like Abstract, Status, and general Introductions) in a dedicated section.
 - Precede the embedded text with the W3C legal notice (see §11 for template). Update `$name_of_software`, `$distribution_URI`, and `$year-of-software`.
 - The embedded spec MUST be organized in the same order as the original and MUST include every section relevant to the module.
-- At the start of each embedded section, add a status line in brackets indicating implementation maturity for that section, e.g.: `[Status: Production]`, `[Status: MVP]`, `[Status: Approximation]`.
-- Immediately following each embedded section, add a concise mapping block with:
-  - `Code:` exact symbols and file paths implementing the section.
-  - `Notes:` deviations/approximations/heuristics/fallbacks.
-  - `Fixtures:` concrete test fixtures (full relative paths).
-- This replaces the old checklist; the verbatim text is now the source of truth and is annotated with status and mappings.
-
-### 3.1 Per-chapter verbatim outputs and status configs (generated)
-
-- In addition to the top-level `spec.md`, the vendor pipeline generates per-chapter verbatim HTML files under the module directory, one directory per chapter/appendix, for example:
-  - `crates/css/modules/<module>/<N>_<slug>/spec.html` (numbered chapters)
-  - `crates/css/modules/<module>/appendices/<Letter>_<slug>/spec.html` (appendices)
-- Each `spec.html` mirrors the original spec structure for that chapter and injects a status block immediately after every H3/H4 heading.
-- Status and mapping values are populated from an optional `status.json` file placed alongside each chapter:
-  - `crates/css/modules/<module>/<N>_<slug>/status.json`
-  - `crates/css/modules/<module>/appendices/<Letter>_<slug>/status.json`
-- `status.json` format:
-
-```json
-{
-  "sections": {
-    "<anchor-id>": {
-      "status": "Production | MVP | TODO | Approximation | Heuristic | Fallback | Non-normative",
-      "code": ["<crate_path>::<module_path>::<symbol>", "..."] ,
-      "fixtures": ["crates/<crate>/tests/fixtures/.../file.html"]
-    }
-  }
-}
-```
-
-- The `<anchor-id>` corresponds to the spec section’s anchor (from the self-link `href="#<id>"` or the heading’s `id`). Any sections not present in `status.json` default to `Status: [Unknown]` with empty code/fixtures.
+- Integration requirements:
+  - Place a status/mapping block immediately after each corresponding spec heading (H2 or H3) and before the embedded text.
+  - This block MUST include:
+    - `Status:` one of `[MVP]`, `[Production]`, `[Approximation]`, `[Heuristic]`, `[Fallback]`, `[Non-normative]`, `[TODO]` (choose all that apply).
+    - `Code:` exact symbols and short paths implementing the section (use backticks). Use crate/module-symbol notation consistent with code and avoid fully qualified Rust paths.
+    - `Fixtures:` concrete test fixtures (full relative paths) or `<em>None</em>`.
+    - `Notes:` brief deviations/approximations/heuristics/fallbacks as needed.
+  - Wrap the actual normative spec text for each section in a `<details class="valor-spec">` block with a `<summary>Show spec text</summary>`.
+    - H2 blocks MUST exclude their H3 subsections from the H2 `<details>` region.
+    - Each H3 subsection gets its own `<details>` block.
+- This integrated mapping supersedes the old top-level checklist. You MAY keep a short “One-to-one spec mapping” section at the top to explain that mapping is integrated and to list any cross-spec mappings (e.g., to CSS 2.2) that don’t live in the primary TR.
 
 ## 4. Algorithms and data flow
 
@@ -134,11 +114,11 @@ This template defines the required structure and standards for each CSS/HTML mod
 
 ---
 
-## 11. Verbatim spec embedding (optional but encouraged)
+## 11. Verbatim spec embedding (integrated)
 
-- You MAY embed the entire relevant normative text of the specification directly into the module’s `spec.md`, to facilitate one-to-one mapping and cross-referencing.
+- Embed the relevant normative text directly in `spec.md` and integrate status/mapping blocks in-line with headings as described in §3.
   - Exclude non-spec front matter such as Abstract, Status, and general Introduction sections.
-  - Keep chapters/sections in spec order and clearly mark the beginning of the verbatim appendix.
+  - Keep chapters/sections in spec order and clearly mark the beginning of the embedded verbatim block.
   - Include the following W3C legal notice ahead of the embedded text, replacing placeholders as indicated (keep the license URL intact):
 
 ```
@@ -166,15 +146,7 @@ Primary spec: https://www.w3.org/TR/<SpecVersion>/
 
 ## One-to-one spec mapping
 
-- <Chapter/Section> — Title
-  - Status: [x] / [ ]  [MVP|Production]
-  - Spec: <link>
-  - Code:
-    - `<path>::symbol()` — purpose
-    - `<path>::symbol()` — purpose
-  - Notes: [Approximation] … [TODO] …
-  - Fixtures:
-    - `crates/<crate>/tests/fixtures/<area>/<fixture>.html`
+This information is integrated into the verbatim spec below via per-section blocks. Use this section only for cross-spec mappings that don’t belong to the primary TR.
 
 ## Algorithms and data flow
 
@@ -212,9 +184,9 @@ Primary spec: https://www.w3.org/TR/<SpecVersion>/
 
 ---
 
-## Verbatim Spec Appendix (optional)
+## Verbatim Spec (integrated)
 
-Legal notice (required if embedding spec text):
+Legal notice (required when embedding spec text):
 
 ```
 $name_of_software: $distribution_URI
@@ -223,4 +195,20 @@ Copyright © [$year-of-software] World Wide Web Consortium. All Rights Reserved.
 ```
 
 Begin embedded normative text below (exclude Abstract, Status, general Introduction). Keep chapters in spec order, and clearly indicate the source spec version and URL.
+
+For each section heading (H2/H3), insert immediately after the heading a status/mapping block and then wrap the spec text for that section in a details block. Example:
+
+```html
+<h3 id="list-items">2.3. …</h3>
+<div data-valor-status="list-items">
+  <p><strong>Status:</strong> [MVP]</p>
+  <p><strong>Code:</strong> <code>css_display::chapter2::part_2_3_list_items::maybe_list_item_child</code></p>
+  <p><strong>Fixtures:</strong> <em>None</em></p>
+  <p><strong>Notes:</strong> …</p>
+</div>
+<details class="valor-spec" data-level="3">
+  <summary>Show spec text</summary>
+  <!-- verbatim spec HTML for §2.3 here -->
+</details>
+```
 ```

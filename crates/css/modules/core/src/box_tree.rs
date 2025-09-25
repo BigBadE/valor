@@ -4,9 +4,9 @@
 //! whitespace collapsing for inline text. It implements a subset of CSS Display
 //! 3 sufficient for our block layout MVP.
 
+use css_orchestrator::style_model::ComputedStyle;
 use js::NodeKey;
 use std::collections::HashMap;
-use style_engine::ComputedStyle;
 
 // Use the production display normalization from the display module.
 use css_display::normalize_children as display_normalize_children;

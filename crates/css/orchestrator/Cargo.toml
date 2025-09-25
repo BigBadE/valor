@@ -1,0 +1,13 @@
+[package]
+name = "css_orchestrator"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+js.workspace = true
+css_style_attr.workspace = true
+css_variables.workspace = true
+css_color.workspace = true

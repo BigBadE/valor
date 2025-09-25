@@ -9,3 +9,7 @@
 //! See `crates/css/modules/layouter/spec.md` mapping entries for §10.*.
 
 // No code here by design; this module provides navigational anchors to the spec.
+
+pub mod part_10_1_containing_block;
+pub mod part_10_3_3_block_widths;
+pub mod part_10_6_3_height_of_blocks;

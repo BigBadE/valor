@@ -2,9 +2,9 @@
 //! Spec: <https://www.w3.org/TR/css-display-3/#order>
 //
 use core::hash::BuildHasher;
+use css_orchestrator::style_model::ComputedStyle;
 use js::NodeKey;
 use std::collections::HashMap;
-use style_engine::ComputedStyle;
 
 #[inline]
 /// Return children in tree-abiding, order-modified document order.

@@ -12,7 +12,7 @@
 )]
 
 use css_box::compute_box_sides;
-use style_engine::{ComputedStyle, Edges};
+use css_orchestrator::style_model::{BorderWidths, ComputedStyle, Edges};
 
 #[test]
 fn compute_box_sides_basic() {
@@ -29,7 +29,7 @@ fn compute_box_sides_basic() {
             bottom: 2.0,
             left: 1.2,
         },
-        border_width: Edges {
+        border_width: BorderWidths {
             top: 2.0,
             right: 2.4,
             bottom: 0.0,

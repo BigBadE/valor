@@ -2,7 +2,7 @@
 //! <https://www.w3.org/TR/css-display-3/#outer-role>
 //! <https://www.w3.org/TR/css-display-3/#inner-model>
 
-use style_engine::Display;
+use css_orchestrator::style_model::Display;
 
 #[inline]
 /// Return true if the element participates as a block-level box in flow layout.

@@ -1,18 +1,16 @@
 use anyhow::Error;
+use css_core::LayoutRect;
+use css_core::{LayoutNodeKind, Layouter};
+use css_orchestrator::style_model::ComputedStyle;
 use headless_chrome::{Browser, LaunchOptionsBuilder};
 use js::DOMSubscriber;
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
 use js::NodeKey;
-use layouter::LayoutRect;
-use layouter::{LayoutNodeKind, Layouter};
 use log::{debug, error, info};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
-use style_engine::{
-    AlignItems, BoxSizing, ComputedStyle, Display, LengthOrAuto, Overflow, SizeSpecified,
-};
 use tokio::runtime::Runtime;
 
 use crate::test_support as common;

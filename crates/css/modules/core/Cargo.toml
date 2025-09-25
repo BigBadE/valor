@@ -7,7 +7,12 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+log.workspace = true
+tracing.workspace = true
+html.workspace = true
 js.workspace = true
-css_style_attr = { path = "../style_attr" }
-css_variables = { path = "../variables" }
-css_color = { path = "../color" }
+once_cell.workspace = true
+css_orchestrator.workspace = true
+css_text.workspace = true
+css_box.workspace = true
+css_display.workspace = true

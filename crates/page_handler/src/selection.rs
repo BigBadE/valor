@@ -1,6 +1,6 @@
 use crate::snapshots::{IRect, SnapshotSlice};
+use css_core::{LayoutNodeKind, LayoutRect};
 use js::NodeKey;
-use layouter::{LayoutNodeKind, LayoutRect};
 use std::collections::HashMap;
 
 pub fn selection_rects(

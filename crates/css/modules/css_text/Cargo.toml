@@ -1,9 +1,0 @@
-[package]
-name = "css_text_utils"
-edition.workspace = true
-
-[lints]
-workspace = true
-
-[dependencies]
-style_engine.workspace = true

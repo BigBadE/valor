@@ -5,9 +5,9 @@ use crate::chapter2::part_2_3_list_items::maybe_list_item_child;
 use crate::chapter3::tree_abiding_children;
 use crate::chapter4::is_visible_for_layout;
 use core::hash::BuildHasher;
+use css_orchestrator::style_model::{ComputedStyle, Display};
 use js::NodeKey;
 use std::collections::HashMap;
-use style_engine::{ComputedStyle, Display};
 
 /// Normalize children for layout by applying a subset of CSS Display 3 box generation rules.
 ///

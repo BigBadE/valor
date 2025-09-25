@@ -1,7 +1,7 @@
 //! CSS Box Model Module Level 3 — Box dimensions, margins, borders, padding.
 //! Spec: <https://www.w3.org/TR/css-box-3/>
 
-use style_engine::ComputedStyle;
+use css_orchestrator::style_model::ComputedStyle;
 
 /// Box edges used by layout in pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

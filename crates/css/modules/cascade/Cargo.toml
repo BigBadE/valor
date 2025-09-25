@@ -6,5 +6,5 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-css_core = { path = "../core" }
-css_selectors = { path = "../selectors" }
+css_orchestrator.workspace = true
+css_selectors.workspace = true

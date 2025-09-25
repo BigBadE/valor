@@ -1,16 +1,9 @@
-//! Horizontal solving per CSS 2.2 §10.3.3 (Non-replaced block elements in normal flow)
-//!
-//! Each function below includes a spec pointer and a short note of the exact
-//! clause implemented. Line anchors reference the HTML/CSS 2.2 spec rendering
-//! available at <https://www.w3.org/TR/CSS22/visudet.html#blockwidth>
-//!
-//! Order of items follows the spec evaluation order: constraints -> specified
-//! width path -> auto width path -> logging.
+//! Spec: CSS 2.2 §10.3.3 Non-replaced block elements in normal flow — widths and margins
+//! Horizontal solving implementation: width constraints and margin resolution.
 
-use crate::sizing::used_border_box_width;
 use css_box::BoxSides;
+use css_orchestrator::style_model::{BoxSizing, ComputedStyle};
 use log::debug;
-use style_engine::{BoxSizing, ComputedStyle};
 
 /// Tuple of optional width constraints (specified, min, max) in border-box space.
 pub type WidthConstraints = (Option<i32>, Option<i32>, Option<i32>);
@@ -18,34 +11,34 @@ pub type WidthConstraints = (Option<i32>, Option<i32>, Option<i32>);
 /// Inputs captured for horizontal solving logs (diagnostics only).
 #[derive(Clone, Copy)]
 struct HorizInputs {
-    /// Container content width.
+    /// Container content width in pixels.
     container_w: i32,
-    /// Box sides used (padding/border) for diagnostics.
+    /// Box sides (margins, padding, borders) for the element.
     sides: BoxSides,
-    /// Original author-specified margin-left value (may be negative).
+    /// Raw input margin-left in pixels.
     in_margin_left: i32,
-    /// Original author-specified margin-right value (may be negative).
+    /// Raw input margin-right in pixels.
     in_margin_right: i32,
-    /// Whether margin-left was 'auto'.
+    /// Whether margin-left is auto.
     left_auto: bool,
-    /// Whether margin-right was 'auto'.
+    /// Whether margin-right is auto.
     right_auto: bool,
 }
 
 /// Resolution context for the specified-width horizontal solving path.
 #[derive(Clone, Copy)]
 struct ConstrainedHorizCtx {
-    /// Final constrained border-box width.
+    /// Constrained border-box width (px).
     constrained_bb: i32,
     /// Whether margin-left is auto.
     left_auto: bool,
     /// Whether margin-right is auto.
     right_auto: bool,
-    /// Container content width.
+    /// Container content width (px).
     container_content_width: i32,
-    /// Current margin-left value.
+    /// Resolved margin-left (px).
     margin_left_resolved: i32,
-    /// Current margin-right value.
+    /// Resolved margin-right (px).
     margin_right_resolved: i32,
 }
 
@@ -56,15 +49,15 @@ struct AutoHorizCtx {
     left_auto: bool,
     /// Whether margin-right is auto.
     right_auto: bool,
-    /// Container content width.
+    /// Container content width (px).
     container_content_width: i32,
-    /// Current margin-left value.
+    /// Resolved margin-left (px).
     margin_left_resolved: i32,
-    /// Current margin-right value.
+    /// Resolved margin-right (px).
     margin_right_resolved: i32,
-    /// Minimum border-box width constraint (if any).
+    /// Optional minimum border-box width (px).
     min_bb_opt: Option<i32>,
-    /// Maximum border-box width constraint (if any).
+    /// Optional maximum border-box width (px).
     max_bb_opt: Option<i32>,
 }
 
@@ -126,14 +119,14 @@ pub fn solve_block_horizontal(
     margin_left_in: i32,
     margin_right_in: i32,
 ) -> (i32, i32, i32) {
+    use crate::sizing::used_border_box_width;
     let (specified_bb_opt, min_bb_opt, max_bb_opt) = compute_width_constraints(style, sides);
-    let left_auto = style.margin_left_auto;
-    let right_auto = style.margin_right_auto;
+    let left_auto = false;
+    let right_auto = false;
     let margin_left_resolved = margin_left_in;
     let margin_right_resolved = margin_right_in;
 
     if specified_bb_opt.is_some() {
-        // Spec path: specified width present -> compute used width and resolve margins accordingly.
         let constrained = used_border_box_width(style, container_content_width);
         let ctx = ConstrainedHorizCtx {
             constrained_bb: constrained,
@@ -156,7 +149,6 @@ pub fn solve_block_horizontal(
         return out;
     }
 
-    // Spec path: width:auto
     let ctx = AutoHorizCtx {
         left_auto,
         right_auto,
@@ -222,7 +214,6 @@ fn resolve_with_constrained_width(mut ctx: ConstrainedHorizCtx) -> (i32, i32, i3
             ctx.margin_right_resolved,
         );
     }
-    // Over-constrained: adjust margin-right (assuming LTR; no direction support in shim yet).
     ctx.margin_right_resolved = diff_i32(
         diff_i32(ctx.container_content_width, constrained),
         ctx.margin_left_resolved,
@@ -267,8 +258,7 @@ const fn diff_i32(lhs: i32, rhs: i32) -> i32 {
     if lhs >= rhs {
         lhs.saturating_sub(rhs)
     } else {
-        let delta = rhs.saturating_sub(lhs);
-        0i32.saturating_sub(delta)
+        0i32.saturating_sub(rhs.saturating_sub(lhs))
     }
 }
 

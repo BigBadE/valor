@@ -12,47 +12,9 @@ Primary spec: <https://www.w3.org/TR/css-display-3/>
 
 ## One-to-one spec mapping
 
-- §2.1/§2.2 — Outer/Inner display types
-  - Status: [MVP]
-  - Spec: https://www.w3.org/TR/css-display-3/#outer-role, https://www.w3.org/TR/css-display-3/#inner-model
-  - Code:
-    - `css_display::chapter2::part_2_1_outer_inner::is_block_level_outer`
-  - Notes: Run-in/table/grid/ruby are not modeled in the public `Display` yet.
+This information is now integrated directly into the verbatim spec sections below. See the status/mapping blocks placed immediately after each relevant spec heading (e.g., §2.1, §2.2, §2.3, §2.5, §2.7, §3, §4).
 
-- §2.5 — Box Generation (none/contents)
-  - Status: [Production]
-  - Spec: https://www.w3.org/TR/css-display-3/#box-generation
-  - Code:
-    - `css_display::chapter2::part_2_5_box_generation::normalize_children`
-  - Notes: Integrates §3 tree-abiding ordering and a §4 visibility hook.
-
-- §2.7 — Automatic Box Type Transformations
-  - Status: [MVP]
-  - Spec: https://www.w3.org/TR/css-display-3/#transformations
-  - Code:
-    - `css_display::chapter2::part_2_7_transformations::used_display_for_child`
-  - Notes: Handles root, float/position blockification, and flex parent cases (grid/ruby/table deferred).
-
-- §2.3 — Generating Marker Boxes (list-item)
-  - Status: [TODO]
-  - Spec: https://www.w3.org/TR/css-display-3/#list-items
-  - Code:
-    - `css_display::chapter2::part_2_3_list_items::maybe_list_item_child`
-  - Notes: MVP seam only; returns false until style engine exposes `list-item` and marker/counter plumbing is available.
-
-- §3 — Display Order and Tree-Abiding
-  - Status: [MVP]
-  - Spec: https://www.w3.org/TR/css-display-3/#order
-  - Code:
-    - `css_display::chapter3::tree_abiding_children`
-  - Notes: MVP preserves DOM order; reordering is handled by layout models (flex/grid).
-
-- §4 — Visibility
-  - Status: [MVP]
-  - Spec: https://www.w3.org/TR/css-display-3/#visibility
-  - Code:
-    - `css_display::chapter4::is_visible_for_layout`
-  - Notes: Style engine does not yet expose a visibility property; helper is a paint-time seam (no-op for now).
+Cross-spec mapping not present in CSS Display 3:
 
 - Inline Formatting Context (RFC; CSS 2.2 §9.4.2)
   - Status: [MVP]
@@ -100,10 +62,14 @@ Note: Each top-level section below MUST begin with a status marker and be follow
 <h2 class="heading settled" data-level="2" id="the-display-properties"><span class="secno">2. </span><span class="content"> Box Layout Modes: the <a class="property css" data-link-type="property" href="#propdef-display" id="ref-for-propdef-display①⓪">display</a> property</span><a class="self-link" href="#the-display-properties"></a></h2>
 <div data-valor-status="the-display-properties">
  <p><strong>Status:</strong> [MVP]</p>
- <p><strong>Code:</strong> <code>display::normalize_children</code>, <code>display::normalize_with_anonymous_runs</code>, <code>display::chapter2::part_2_7_transformations::used_display_for_child</code></p>
+ <p><strong>Code:</strong> <em>Overview only</em></p>
  <p><strong>Fixtures:</strong> <em>None</em></p>
+ <p><strong>Notes:</strong> Run-in/table/grid/ruby semantics are delegated to their respective modules; overview anchors used to scope §2 sub-sections.</p>
 </div>
-   <table class="def propdef" data-link-for-hint="display">
+<details class="valor-spec" data-level="2">
+  <summary>Show spec text</summary>
+
+<table class="def propdef" data-link-for-hint="display">
     <tbody>
      <tr>
       <th>Name:
@@ -255,13 +221,19 @@ which dictates how the <a data-link-type="dfn" href="#principal-box" id="ref-for
    </table>
    <p class="note" role="note"><span class="marker">Note:</span> Following the precedence rules of “most backwards-compatible, then shortest”,
 	serialization of equivalent <a class="property css" data-link-type="property" href="#propdef-display" id="ref-for-propdef-display①⑧">display</a> values uses the “Short <span class="property" id="ref-for-propdef-display①⑨">display</span>” column. <a data-link-type="biblio" href="#biblio-cssom" title="CSS Object Model (CSSOM)">[CSSOM]</a></p>
-   <h3 class="heading settled" data-level="2.1" id="outer-role"><span class="secno">2.1. </span><span class="content"> Outer Display Roles for Flow Layout: the <a class="css" data-link-type="maybe" href="#valdef-display-block" id="ref-for-valdef-display-block①">block</a>, <a class="css" data-link-type="maybe" href="#valdef-display-inline" id="ref-for-valdef-display-inline①">inline</a>, and <a class="css" data-link-type="maybe" href="#valdef-display-run-in" id="ref-for-valdef-display-run-in②">run-in</a> keywords</span><a class="self-link" href="#outer-role"></a></h3>
+
+</details>
+<h3 class="heading settled" data-level="2.1" id="outer-role"><span class="secno">2.1. </span><span class="content"> Outer Display Roles for Flow Layout: the <a class="css" data-link-type="maybe" href="#valdef-display-block" id="ref-for-valdef-display-block①">block</a>, <a class="css" data-link-type="maybe" href="#valdef-display-inline" id="ref-for-valdef-display-inline①">inline</a>, and <a class="css" data-link-type="maybe" href="#valdef-display-run-in" id="ref-for-valdef-display-run-in②">run-in</a> keywords</span><a class="self-link" href="#outer-role"></a></h3>
 <div data-valor-status="outer-role">
  <p><strong>Status:</strong> [MVP]</p>
- <p><strong>Code:</strong> <code>display::chapter2::part_2_1_outer_inner::is_block_level_outer</code></p>
+ <p><strong>Code:</strong> <code>css_display::chapter2::part_2_1_outer_inner::is_block_level_outer</code></p>
  <p><strong>Fixtures:</strong> <em>None</em></p>
+ <p><strong>Notes:</strong> Public <code>Display</code> omits run-in/table/grid/ruby for now.</p>
 </div>
-   <p>The <a class="production css" data-link-type="type" href="#typedef-display-outside" id="ref-for-typedef-display-outside②" title="Expands to: block | inline | run-in">&lt;display-outside></a> keywords specify the element’s <a data-link-type="dfn" href="#outer-display-type" id="ref-for-outer-display-type①">outer display type</a>,
+<details class="valor-spec" data-level="3">
+  <summary>Show spec text</summary>
+
+<p>The <a class="production css" data-link-type="type" href="#typedef-display-outside" id="ref-for-typedef-display-outside②" title="Expands to: block | inline | run-in">&lt;display-outside></a> keywords specify the element’s <a data-link-type="dfn" href="#outer-display-type" id="ref-for-outer-display-type①">outer display type</a>,
 	which is essentially its <a data-link-type="dfn" href="#principal-box" id="ref-for-principal-box⑦">principal box’s</a> role in <a data-link-type="dfn" href="#flow-layout" id="ref-for-flow-layout①">flow layout</a>.
 	They are defined as follows:</p>
    <dl>
@@ -277,13 +249,18 @@ which dictates how the <a data-link-type="dfn" href="#principal-box" id="ref-for
    <p class="note" role="note"><span class="marker">Note:</span> <a data-link-type="dfn" href="#outer-display-type" id="ref-for-outer-display-type②">Outer display types</a> do affect <a data-link-type="dfn" href="#replaced-element" id="ref-for-replaced-element②">replaced elements</a>.</p>
    <p>If a <a class="production css" data-link-type="type" href="#typedef-display-outside" id="ref-for-typedef-display-outside③" title="Expands to: block | inline | run-in">&lt;display-outside></a> value is specified but <a class="production css" data-link-type="type" href="#typedef-display-inside" id="ref-for-typedef-display-inside①" title="Expands to: flex | flow | flow-root | grid | ruby | table">&lt;display-inside></a> is omitted,
 	the element’s <a data-link-type="dfn" href="#inner-display-type" id="ref-for-inner-display-type①">inner display type</a> defaults to <a class="css" data-link-type="maybe" href="#valdef-display-flow" id="ref-for-valdef-display-flow">flow</a>.</p>
-   <h3 class="heading settled" data-level="2.2" id="inner-model"><span class="secno">2.2. </span><span class="content"> Inner Display Layout Models: the <a class="css" data-link-type="maybe" href="#valdef-display-flow" id="ref-for-valdef-display-flow①">flow</a>, <a class="css" data-link-type="maybe" href="#valdef-display-flow-root" id="ref-for-valdef-display-flow-root①">flow-root</a>, <a class="css" data-link-type="maybe" href="#valdef-display-table" id="ref-for-valdef-display-table①">table</a>, <a class="css" data-link-type="maybe" href="#valdef-display-flex" id="ref-for-valdef-display-flex①">flex</a>, <a class="css" data-link-type="maybe" href="#valdef-display-grid" id="ref-for-valdef-display-grid①">grid</a>, and <a class="css" data-link-type="maybe" href="#valdef-display-ruby" id="ref-for-valdef-display-ruby①">ruby</a> keywords</span><a class="self-link" href="#inner-model"></a></h3>
+
+</details>
+<h3 class="heading settled" data-level="2.2" id="inner-model"><span class="secno">2.2. </span><span class="content"> Inner Display Layout Models: the <a class="css" data-link-type="maybe" href="#valdef-display-flow" id="ref-for-valdef-display-flow①">flow</a>, <a class="css" data-link-type="maybe" href="#valdef-display-flow-root" id="ref-for-valdef-display-flow-root①">flow-root</a>, <a class="css" data-link-type="maybe" href="#valdef-display-table" id="ref-for-valdef-display-table①">table</a>, <a class="css" data-link-type="maybe" href="#valdef-display-flex" id="ref-for-valdef-display-flex①">flex</a>, <a class="css" data-link-type="maybe" href="#valdef-display-grid" id="ref-for-valdef-display-grid①">grid</a>, and <a class="css" data-link-type="maybe" href="#valdef-display-ruby" id="ref-for-valdef-display-ruby①">ruby</a> keywords</span><a class="self-link" href="#inner-model"></a></h3>
 <div data-valor-status="inner-model">
  <p><strong>Status:</strong> [MVP]</p>
- <p><strong>Code:</strong> <code>display::chapter2::part_2_1_outer_inner::is_block_level_outer</code></p>
+ <p><strong>Code:</strong> <code>css_display::chapter2::part_2_1_outer_inner::is_block_level_outer</code></p>
  <p><strong>Fixtures:</strong> <em>None</em></p>
 </div>
-   <p>The <a class="production css" data-link-type="type" href="#typedef-display-inside" id="ref-for-typedef-display-inside②" title="Expands to: flex | flow | flow-root | grid | ruby | table">&lt;display-inside></a> keywords specify the element’s <a data-link-type="dfn" href="#inner-display-type" id="ref-for-inner-display-type②">inner display type</a>,
+<details class="valor-spec" data-level="3">
+  <summary>Show spec text</summary>
+
+<p>The <a class="production css" data-link-type="type" href="#typedef-display-inside" id="ref-for-typedef-display-inside②" title="Expands to: flex | flow | flow-root | grid | ruby | table">&lt;display-inside></a> keywords specify the element’s <a data-link-type="dfn" href="#inner-display-type" id="ref-for-inner-display-type②">inner display type</a>,
 	which defines the type of formatting context that lays out its contents
 	(assuming it is a <a data-link-type="dfn" href="#replaced-element" id="ref-for-replaced-element③">non-replaced element</a>).
 	They are defined as follows:</p>
@@ -325,13 +302,19 @@ which dictates how the <a data-link-type="dfn" href="#principal-box" id="ref-for
    </dl>
    <p>If a <a class="production css" data-link-type="type" href="#typedef-display-inside" id="ref-for-typedef-display-inside③" title="Expands to: flex | flow | flow-root | grid | ruby | table">&lt;display-inside></a> value is specified but <a class="production css" data-link-type="type" href="#typedef-display-outside" id="ref-for-typedef-display-outside④" title="Expands to: block | inline | run-in">&lt;display-outside></a> is omitted,
 	the element’s <a data-link-type="dfn" href="#outer-display-type" id="ref-for-outer-display-type⑤">outer display type</a> defaults to <a class="css" data-link-type="maybe" href="#valdef-display-block" id="ref-for-valdef-display-block②">block</a>—<wbr>except for <a class="css" data-link-type="maybe" href="#valdef-display-ruby" id="ref-for-valdef-display-ruby②">ruby</a>, which defaults to <a class="css" data-link-type="maybe" href="#valdef-display-inline" id="ref-for-valdef-display-inline③">inline</a>.</p>
-   <h3 class="heading settled" data-level="2.3" id="list-items"><span class="secno">2.3. </span><span class="content"> Generating Marker Boxes: the <a class="css" data-link-type="maybe" href="#valdef-display-list-item" id="ref-for-valdef-display-list-item③">list-item</a> keyword</span><a class="self-link" href="#list-items"></a></h3>
+
+</details>
+<h3 class="heading settled" data-level="2.3" id="list-items"><span class="secno">2.3. </span><span class="content"> Generating Marker Boxes: the <a class="css" data-link-type="maybe" href="#valdef-display-list-item" id="ref-for-valdef-display-list-item③">list-item</a> keyword</span><a class="self-link" href="#list-items"></a></h3>
 <div data-valor-status="list-items">
  <p><strong>Status:</strong> [TODO]</p>
- <p><strong>Code:</strong> <em>Unimplemented</em></p>
+ <p><strong>Code:</strong> <code>css_display::chapter2::part_2_3_list_items::maybe_list_item_child</code></p>
  <p><strong>Fixtures:</strong> <em>None</em></p>
+ <p><strong>Notes:</strong> Returns false until style engine exposes <code>list-item</code> and marker/counter plumbing is available.</p>
 </div>
-   <p>The <dfn class="dfn-paneled css" data-dfn-for="display, <display-listitem>" data-dfn-type="value" data-export id="valdef-display-list-item">list-item</dfn> keyword
+<details class="valor-spec" data-level="3">
+  <summary>Show spec text</summary>
+
+<p>The <dfn class="dfn-paneled css" data-dfn-for="display, <display-listitem>" data-dfn-type="value" data-export id="valdef-display-list-item">list-item</dfn> keyword
 	causes the element to generate a <a class="css" data-link-type="maybe" href="https://www.w3.org/TR/css-pseudo-4/#selectordef-marker" id="ref-for-selectordef-marker①">::marker</a> pseudo-element <a data-link-type="biblio" href="#biblio-css-pseudo-4" title="CSS Pseudo-Elements Module Level 4">[CSS-PSEUDO-4]</a> with the content specified by its <a class="property css" data-link-type="property" href="https://drafts.csswg.org/css2/#propdef-list-style" id="ref-for-propdef-list-style">list-style</a> properties
 	(<a href="https://www.w3.org/TR/CSS2/generate.html#lists">CSS 2.1§12.5 Lists</a>) <a data-link-type="biblio" href="#biblio-css2" title="Cascading Style Sheets Level 2 Revision 1 (CSS 2.1) Specification">[CSS2]</a> together with a principal box of the specified type for its own contents.</p>
    <p>If no <a data-link-type="dfn" href="#inner-display-type" id="ref-for-inner-display-type④">inner display type</a> value is specified,
@@ -342,13 +325,13 @@ which dictates how the <a data-link-type="dfn" href="#principal-box" id="ref-for
 	list-items are limited to the <a data-link-type="dfn" href="#flow-layout" id="ref-for-flow-layout⑤">Flow Layout</a> display types
 	(<a class="css" data-link-type="maybe" href="#valdef-display-block" id="ref-for-valdef-display-block④">block</a>/<a class="css" data-link-type="maybe" href="#valdef-display-inline" id="ref-for-valdef-display-inline④">inline</a>/<a class="css" data-link-type="maybe" href="#valdef-display-run-in" id="ref-for-valdef-display-run-in④">run-in</a> with <a class="css" data-link-type="maybe" href="#valdef-display-flow" id="ref-for-valdef-display-flow③">flow</a>/<a class="css" data-link-type="maybe" href="#valdef-display-flow-root" id="ref-for-valdef-display-flow-root③">flow-root</a> inner types).
 	This restriction may be relaxed in a future level of this module.</p>
-   <h3 class="heading settled" data-level="2.4" id="layout-specific-display"><span class="secno">2.4. </span><span class="content"> Layout-Internal Display Types: the <span class="css">table-*</span> and <span class="css">ruby-*</span> keywords</span><a class="self-link" href="#layout-specific-display"></a></h3>
-<div data-valor-status="layout-specific-display">
- <p><strong>Status:</strong> [TODO]</p>
- <p><strong>Code:</strong> <em>Unimplemented</em></p>
- <p><strong>Fixtures:</strong> <em>None</em></p>
-</div>
-   <p>Some layout models, such as <a class="css" data-link-type="maybe" href="#valdef-display-table" id="ref-for-valdef-display-table②">table</a> and <a class="css" data-link-type="maybe" href="#valdef-display-ruby" id="ref-for-valdef-display-ruby③">ruby</a>,
+
+</details>
+<h3 class="heading settled" data-level="2.4" id="layout-specific-display"><span class="secno">2.4. </span><span class="content"> Layout-Internal Display Types: the <span class="css">table-*</span> and <span class="css">ruby-*</span> keywords</span><a class="self-link" href="#layout-specific-display"></a></h3>
+<details class="valor-spec" data-level="3">
+  <summary>Show spec text</summary>
+
+<p>Some layout models, such as <a class="css" data-link-type="maybe" href="#valdef-display-table" id="ref-for-valdef-display-table②">table</a> and <a class="css" data-link-type="maybe" href="#valdef-display-ruby" id="ref-for-valdef-display-ruby③">ruby</a>,
 	have a complex internal structure,
 	with several different roles that their children and descendants can fill.
 	This section defines those “<dfn class="dfn-paneled" data-dfn-type="dfn" data-export id="layout-internal">layout-internal</dfn>” <a class="property css" data-link-type="property" href="#propdef-display" id="ref-for-propdef-display②⓪">display</a> values,
@@ -421,16 +404,19 @@ which dictates how the <a data-link-type="dfn" href="#principal-box" id="ref-for
 </pre>
     <p>This "fix-up" ensures that table layout has a predictable structure to operate on.</p>
    </div>
-   <h3 class="heading settled" data-level="2.5" id="box-generation"><span class="secno">2.5. </span><span class="content"> Box Generation: the <a class="css" data-link-type="maybe" href="#valdef-display-none" id="ref-for-valdef-display-none④">none</a> and <a class="css" data-link-type="maybe" href="#valdef-display-contents" id="ref-for-valdef-display-contents②">contents</a> keywords</span><a class="self-link" href="#box-generation"></a></h3>
-   <div data-valor-status="box-generation">
-    <p><strong>Status:</strong> [Production]</p>
-    <p><strong>Code:</strong> <code>display::chapter2::part_2_5_box_generation::normalize_children</code></p>
-    <p><strong>Fixtures:</strong>
-      <code>crates/css/modules/display/tests/fixtures/layout/basics/05_overflow_clip.html</code>,
-      <code>crates/css/modules/display/tests/fixtures/layout/clip/01_overflow_hidden.html</code>
-    </p>
-   </div>
-   <p>While <a class="property css" data-link-type="property" href="#propdef-display" id="ref-for-propdef-display②③">display</a> can control the <em>types</em> of boxes an element will generate,
+
+</details>
+<h3 class="heading settled" data-level="2.5" id="box-generation"><span class="secno">2.5. </span><span class="content"> Box Generation: the <a class="css" data-link-type="maybe" href="#valdef-display-none" id="ref-for-valdef-display-none④">none</a> and <a class="css" data-link-type="maybe" href="#valdef-display-contents" id="ref-for-valdef-display-contents②">contents</a> keywords</span><a class="self-link" href="#box-generation"></a></h3>
+<div data-valor-status="box-generation">
+ <p><strong>Status:</strong> [Production]</p>
+ <p><strong>Code:</strong> <code>css_display::chapter2::part_2_5_box_generation::normalize_children</code></p>
+ <p><strong>Fixtures:</strong> <em>None</em></p>
+ <p><strong>Notes:</strong> Integrates §3 tree-abiding ordering and §4 visibility hook.</p>
+</div>
+<details class="valor-spec" data-level="3">
+  <summary>Show spec text</summary>
+
+<p>While <a class="property css" data-link-type="property" href="#propdef-display" id="ref-for-propdef-display②③">display</a> can control the <em>types</em> of boxes an element will generate,
 	it can also control whether an element will generate any boxes at all.</p>
    <p>The <a class="production css" data-link-type="type" href="#typedef-display-box" id="ref-for-typedef-display-box②" title="Expands to: contents | none">&lt;display-box></a> keywords are defined as follows:</p>
    <dl>
@@ -477,13 +463,13 @@ which dictates how the <a data-link-type="dfn" href="#principal-box" id="ref-for
 		they do not affect which table cell is associated with a particular column <em>element</em>.
 		Similarly, they cannot affect which HTML <code><a data-link-type="element" href="https://html.spec.whatwg.org/multipage/interactive-elements.html#the-summary-element" id="ref-for-the-summary-element">summary</a></code> element is associated with a particular table
 		or whether a <code><a data-link-type="element" href="https://html.spec.whatwg.org/multipage/form-elements.html#the-legend-element" id="ref-for-the-legend-element">legend</a></code> is considered to be labelling the contents of a particular <code><a data-link-type="element" href="https://html.spec.whatwg.org/multipage/form-elements.html#the-fieldset-element" id="ref-for-the-fieldset-element">fieldset</a></code>. </span></p>
-   <h3 class="heading settled" data-level="2.6" id="legacy-display"><span class="secno">2.6. </span><span class="content"> Precomposed Inline-level Display Values</span><a class="self-link" href="#legacy-display"></a></h3>
-<div data-valor-status="legacy-display">
- <p><strong>Status:</strong> [TODO]</p>
- <p><strong>Code:</strong> <em>Unimplemented</em></p>
- <p><strong>Fixtures:</strong> <em>None</em></p>
-</div>
-   <p>CSS level 2 used a single-keyword syntax for <a class="property css" data-link-type="property" href="#propdef-display" id="ref-for-propdef-display②⑧">display</a>,
+
+</details>
+<h3 class="heading settled" data-level="2.6" id="legacy-display"><span class="secno">2.6. </span><span class="content"> Precomposed Inline-level Display Values</span><a class="self-link" href="#legacy-display"></a></h3>
+<details class="valor-spec" data-level="3">
+  <summary>Show spec text</summary>
+
+<p>CSS level 2 used a single-keyword syntax for <a class="property css" data-link-type="property" href="#propdef-display" id="ref-for-propdef-display②⑧">display</a>,
 	requiring separate keywords for block-level and inline-level variants of the same layout mode.
 	These <a class="production css" data-link-type="type" href="#typedef-display-legacy" id="ref-for-typedef-display-legacy①" title="Expands to: inline-block | inline-flex | inline-grid | inline-table">&lt;display-legacy></a> keywords map as follows:</p>
    <dl>
@@ -502,13 +488,18 @@ which dictates how the <a data-link-type="dfn" href="#principal-box" id="ref-for
 	will always output these precomposed keywords
 	rather than the equivalent two-keyword pairs
 	due to the <a href="https://www.w3.org/TR/cssom-1/#serializing-css-values">shortest, most backwards-compatible serialization principle</a>.</p>
-   <h3 class="heading settled" data-level="2.7" id="transformations"><span class="secno">2.7. </span><span class="content"> Automatic Box Type Transformations</span><a class="self-link" href="#transformations"></a></h3>
+
+</details>
+<h3 class="heading settled" data-level="2.7" id="transformations"><span class="secno">2.7. </span><span class="content"> Automatic Box Type Transformations</span><a class="self-link" href="#transformations"></a></h3>
 <div data-valor-status="transformations">
  <p><strong>Status:</strong> [MVP]</p>
- <p><strong>Code:</strong> <code>display::chapter2::part_2_7_transformations::used_display_for_child</code></p>
+ <p><strong>Code:</strong> <code>css_display::chapter2::part_2_7_transformations::used_display_for_child</code></p>
  <p><strong>Fixtures:</strong> <em>None</em></p>
 </div>
-   <p>Some layout effects require <dfn class="dfn-paneled" data-dfn-type="dfn" data-export data-lt="blockify|blockification" id="blockify">blockification</dfn> or <dfn class="dfn-paneled" data-dfn-type="dfn" data-export data-lt="inlinify|inlinification" id="inlinify">inlinification</dfn> of the box type,
+<details class="valor-spec" data-level="3">
+  <summary>Show spec text</summary>
+
+<p>Some layout effects require <dfn class="dfn-paneled" data-dfn-type="dfn" data-export data-lt="blockify|blockification" id="blockify">blockification</dfn> or <dfn class="dfn-paneled" data-dfn-type="dfn" data-export data-lt="inlinify|inlinification" id="inlinify">inlinification</dfn> of the box type,
 	which sets the box’s <a data-link-type="dfn" href="https://www.w3.org/TR/css-cascade-5/#computed-value" id="ref-for-computed-value①">computed</a> <a data-link-type="dfn" href="#outer-display-type" id="ref-for-outer-display-type①⓪">outer display type</a> to <a class="css" data-link-type="maybe" href="#valdef-display-block" id="ref-for-valdef-display-block⑤">block</a> or <a class="css" data-link-type="maybe" href="#valdef-display-inline" id="ref-for-valdef-display-inline⑦">inline</a> (respectively).
 	(This has no effect on <a data-link-type="dfn" href="#display-type" id="ref-for-display-type②">display types</a> that generate no box at all,
 	such as <a class="css" data-link-type="maybe" href="#valdef-display-none" id="ref-for-valdef-display-none⑤">none</a> or <a class="css" data-link-type="maybe" href="#valdef-display-contents" id="ref-for-valdef-display-contents③">contents</a>.)
@@ -552,23 +543,23 @@ in an appropriately-typed anonymous inline-level box.)</p>
      <li>A parent with a <a class="css" data-link-type="maybe" href="#valdef-display-grid" id="ref-for-valdef-display-grid②">grid</a> or <a class="css" data-link-type="maybe" href="#valdef-display-flex" id="ref-for-valdef-display-flex②">flex</a> <a class="property css" data-link-type="property" href="#propdef-display" id="ref-for-propdef-display③⓪">display</a> value <a data-link-type="dfn" href="#blockify" id="ref-for-blockify⑤">blockifies</a> the box’s display type. <a data-link-type="biblio" href="#biblio-css-grid-1" title="CSS Grid Layout Module Level 1">[CSS-GRID-1]</a> <a data-link-type="biblio" href="#biblio-css-flexbox-1" title="CSS Flexible Box Layout Module Level 1">[CSS-FLEXBOX-1]</a> 
     </ul>
    </div>
-   <h3 class="heading settled" data-level="2.8" id="root"><span class="secno">2.8. </span><span class="content"> The Root Element’s Principal Box</span><a class="self-link" href="#root"></a></h3>
-<div data-valor-status="root">
- <p><strong>Status:</strong> [TODO]</p>
- <p><strong>Code:</strong> <em>Unimplemented</em></p>
- <p><strong>Fixtures:</strong> <em>None</em></p>
-</div>
-   <p>The <a data-link-type="dfn" href="#root-element" id="ref-for-root-element">root element</a>’s display type is always <a data-link-type="dfn" href="#blockify" id="ref-for-blockify⑥">blockified</a>,
+
+</details>
+<h3 class="heading settled" data-level="2.8" id="root"><span class="secno">2.8. </span><span class="content"> The Root Element’s Principal Box</span><a class="self-link" href="#root"></a></h3>
+<details class="valor-spec" data-level="3">
+  <summary>Show spec text</summary>
+
+<p>The <a data-link-type="dfn" href="#root-element" id="ref-for-root-element">root element</a>’s display type is always <a data-link-type="dfn" href="#blockify" id="ref-for-blockify⑥">blockified</a>,
 	and its <a data-link-type="dfn" href="#principal-box" id="ref-for-principal-box⑧">principal box</a> always establishes an <a data-link-type="dfn" href="#independent-formatting-context" id="ref-for-independent-formatting-context">independent formatting context</a>.
 	This box’s <a data-link-type="dfn" href="#containing-block" id="ref-for-containing-block">containing block</a> is the <a data-link-type="dfn" href="#initial-containing-block" id="ref-for-initial-containing-block">initial containing block</a>.</p>
    <p>Additionally, a <a class="property css" data-link-type="property" href="#propdef-display" id="ref-for-propdef-display③①">display</a> of <a class="css" data-link-type="maybe" href="#valdef-display-contents" id="ref-for-valdef-display-contents④">contents</a> computes to <a class="css" data-link-type="maybe" href="#valdef-display-block" id="ref-for-valdef-display-block⑧">block</a> on the root element.</p>
-   <h2 class="heading settled" data-level="3" id="order-property"><span class="secno">3. </span><span class="content"> Display Order: the <a class="property css" data-link-type="property" href="#propdef-order" id="ref-for-propdef-order">order</a> property</span><a class="self-link" href="#order-property"></a></h2>
-<div data-valor-status="order-property">
- <p><strong>Status:</strong> [TODO]</p>
- <p><strong>Code:</strong> <em>Unimplemented</em></p>
- <p><strong>Fixtures:</strong> <em>None</em></p>
-</div>
-   <table class="def propdef" data-link-for-hint="order">
+
+</details>
+<h2 class="heading settled" data-level="3" id="order-property"><span class="secno">3. </span><span class="content"> Display Order: the <a class="property css" data-link-type="property" href="#propdef-order" id="ref-for-propdef-order">order</a> property</span><a class="self-link" href="#order-property"></a></h2>
+<details class="valor-spec" data-level="2">
+  <summary>Show spec text</summary>
+
+<table class="def propdef" data-link-for-hint="order">
     <tbody>
      <tr>
       <th>Name:
@@ -665,8 +656,13 @@ article.sale-item > img <c- p>{</c->
 	Absolutely-positioned children of a <span id="ref-for-flex-container④">flex</span>/<span id="ref-for-grid-container④">grid container</span> are treated as having <a class="css" data-link-type="propdesc" href="#propdef-order" id="ref-for-propdef-order④">order: 0</a> for the purpose of determining their painting order relative to <span id="ref-for-flex-item③">flex</span>/<span id="ref-for-grid-item③">grid items</span>.</p>
    <p>Unless otherwise specified by a future specification,
 	this property has no effect on boxes that are not <a data-link-type="dfn" href="https://www.w3.org/TR/css-flexbox-1/#flex-item" id="ref-for-flex-item④">flex items</a> or <a data-link-type="dfn" href="https://www.w3.org/TR/css-grid-2/#grid-item" id="ref-for-grid-item④">grid items</a>.</p>
-   <h3 class="heading settled" data-level="3.1" id="order-accessibility"><span class="secno">3.1. </span><span class="content"> Reordering and Accessibility</span><a class="self-link" href="#order-accessibility"></a></h3>
-   <p>The <a class="property css" data-link-type="property" href="#propdef-order" id="ref-for-propdef-order⑤">order</a> property <em>does not</em> affect ordering in non-visual media
+
+</details>
+<h3 class="heading settled" data-level="3.1" id="order-accessibility"><span class="secno">3.1. </span><span class="content"> Reordering and Accessibility</span><a class="self-link" href="#order-accessibility"></a></h3>
+<details class="valor-spec" data-level="3">
+  <summary>Show spec text</summary>
+
+<p>The <a class="property css" data-link-type="property" href="#propdef-order" id="ref-for-propdef-order⑤">order</a> property <em>does not</em> affect ordering in non-visual media
 	(such as <a href="https://www.w3.org/TR/css-speech-1/">speech</a>).
 	Likewise, <span class="property" id="ref-for-propdef-order⑥">order</span> does not affect
 	the default traversal order of sequential navigation modes
@@ -709,13 +705,19 @@ article.sale-item > img <c- p>{</c->
 	that would need to be considered for such a spatial navigation feature.
 	A well-implemented spatial navigation feature would need to consider
 	all the layout features of CSS that modify spatial relationships.</p>
-   <h2 class="heading settled" data-level="4" id="visibility"><span class="secno">4. </span><span class="content"> Invisibility: the <a class="property css" data-link-type="property" href="#propdef-visibility" id="ref-for-propdef-visibility">visibility</a> property</span><a class="self-link" href="#visibility"></a></h2>
+
+</details>
+<h2 class="heading settled" data-level="4" id="visibility"><span class="secno">4. </span><span class="content"> Invisibility: the <a class="property css" data-link-type="property" href="#propdef-visibility" id="ref-for-propdef-visibility">visibility</a> property</span><a class="self-link" href="#visibility"></a></h2>
 <div data-valor-status="visibility">
- <p><strong>Status:</strong> [TODO]</p>
- <p><strong>Code:</strong> <em>Unimplemented</em></p>
+ <p><strong>Status:</strong> [MVP]</p>
+ <p><strong>Code:</strong> <code>css_display::chapter4::is_visible_for_layout</code></p>
  <p><strong>Fixtures:</strong> <em>None</em></p>
+ <p><strong>Notes:</strong> Style engine does not yet expose a visibility property; helper is a paint-time seam (no-op for now).</p>
 </div>
-   <table class="def propdef" data-link-for-hint="visibility">
+<details class="valor-spec" data-level="2">
+  <summary>Show spec text</summary>
+
+<table class="def propdef" data-link-for-hint="visibility">
     <tbody>
      <tr>
       <th>Name:
@@ -816,8 +818,18 @@ article.sale-item > img <c- p>{</c->
 <c- p>&lt;/</c-><c- f>script</c-><c- p>></c->
 </pre>
     <p><strong class="advisement"> This example is deliberately significantly simplified.
+		It is missing a number of accessiblity and UX features
+		that a well-designed spoiler element would have
+		to show off the <a class="property css" data-link-type="property" href="#propdef-visibility" id="ref-for-propdef-visibility④">visibility</a> usage more plainly.
+		Don’t copy this code for a real site.</strong></p>
    </div>
-   <p>A <dfn class="dfn-paneled" data-dfn-type="dfn" data-export data-lt="run-in | run-in box" id="run-in">run-in box</dfn> is a box that <em>merges into</em> a block that comes after it,
+
+</details>
+<h2 class="heading settled" data-level="5" id="run-in-layout"><span class="secno">5. </span><span class="content"> Run-In Layout</span><a class="self-link" href="#run-in-layout"></a></h2>
+<details class="valor-spec" data-level="2">
+  <summary>Show spec text</summary>
+
+<p>A <dfn class="dfn-paneled" data-dfn-type="dfn" data-export data-lt="run-in | run-in box" id="run-in">run-in box</dfn> is a box that <em>merges into</em> a block that comes after it,
 	inserting itself at the beginning of that block’s inline-level content.
 	This is useful for formatting compact headlines, definitions, and other similar things,
 	where the appropriate DOM structure is to have a headline preceding the following prose,
@@ -888,15 +900,25 @@ with explanations; a brief dictionary.
 	selects the first letter of the run-in,
 	rather than the first letter of its own contents.</p>
    <p class="note" role="note"><span class="marker">Note:</span> This run-in model is slightly different from the one proposed in earlier revisions of <a data-link-type="biblio" href="#biblio-css2" title="Cascading Style Sheets Level 2 Revision 1 (CSS 2.1) Specification">[CSS2]</a>.</p>
-   <h2 class="no-num non-normative heading settled" id="unbox"><span class="content"> Appendix B: Effects of <a class="css" data-link-type="propdesc" href="#propdef-display" id="ref-for-propdef-display③⑨">display: contents</a> on Unusual Elements</span><a class="self-link" href="#unbox"></a></h2>
-   <p><em>This section is (currently) non-normative.</em></p>
+
+</details>
+<h2 class="no-num non-normative heading settled" id="unbox"><span class="content"> Appendix B: Effects of <a class="css" data-link-type="propdesc" href="#propdef-display" id="ref-for-propdef-display③⑨">display: contents</a> on Unusual Elements</span><a class="self-link" href="#unbox"></a></h2>
+<details class="valor-spec" data-level="2">
+  <summary>Show spec text</summary>
+
+<p><em>This section is (currently) non-normative.</em></p>
    <p>Some elements aren’t rendered purely by CSS box concepts;
 	for example, replaced elements (such as <code><a data-link-type="element" href="https://html.spec.whatwg.org/multipage/embedded-content.html#the-img-element" id="ref-for-the-img-element①">img</a></code>),
 	many form controls (such as <code><a data-link-type="element" href="https://html.spec.whatwg.org/multipage/input.html#the-input-element" id="ref-for-the-input-element">input</a></code>),
 	and SVG elements.</p>
    <p>This appendix defines how they interact with <a class="css" data-link-type="propdesc" href="#propdef-display" id="ref-for-propdef-display④⓪">display: contents</a>.</p>
-   <h3 class="heading settled" id="unbox-html"><span class="content">HTML Elements</span><a class="self-link" href="#unbox-html"></a></h3>
-   <dl>
+
+</details>
+<h3 class="heading settled" id="unbox-html"><span class="content">HTML Elements</span><a class="self-link" href="#unbox-html"></a></h3>
+<details class="valor-spec" data-level="3">
+  <summary>Show spec text</summary>
+
+<dl>
     <dt data-md><code><a data-link-type="element" href="https://html.spec.whatwg.org/multipage/text-level-semantics.html#the-br-element" id="ref-for-the-br-element">br</a></code>
     <dt data-md><code><a data-link-type="element" href="https://html.spec.whatwg.org/multipage/text-level-semantics.html#the-wbr-element" id="ref-for-the-wbr-element">wbr</a></code>
     <dt data-md><code><a data-link-type="element" href="https://html.spec.whatwg.org/multipage/form-elements.html#the-meter-element" id="ref-for-the-meter-element">meter</a></code>
@@ -930,8 +952,13 @@ and their contents render as normal.</p>
     <dd data-md>
      <p>Behaves as normal for <a class="css" data-link-type="propdesc" href="#propdef-display" id="ref-for-propdef-display④⑥">display: contents</a>.</p>
    </dl>
-   <h3 class="heading settled" id="unbox-svg"><span class="content">SVG Elements</span><a class="self-link" href="#unbox-svg"></a></h3>
-   <dl>
+
+</details>
+<h3 class="heading settled" id="unbox-svg"><span class="content">SVG Elements</span><a class="self-link" href="#unbox-svg"></a></h3>
+<details class="valor-spec" data-level="3">
+  <summary>Show spec text</summary>
+
+<dl>
     <dt data-md>An <code><a data-link-type="element" href="https://www.w3.org/TR/SVG2/struct.html#elementdef-svg" id="ref-for-elementdef-svg">svg</a></code> element that has CSS box layout
 (this includes all <code><a data-link-type="element" href="https://www.w3.org/TR/SVG2/struct.html#elementdef-svg" id="ref-for-elementdef-svg①">svg</a></code> whose parent is an HTML element,
 as well as document root elements)
@@ -977,10 +1004,20 @@ These contents include the shadow-DOM content for <code><a data-link-type="eleme
 	thus such attributes can affect
 	the layout and visual formatting of the element’s descendants
 	by influencing the values of such properties on those descendants.</p>
-   <h3 class="heading settled" id="unbox-mathml"><span class="content">MathML Elements</span><a class="self-link" href="#unbox-mathml"></a></h3>
-   <p>For all MathML elements, <a class="css" data-link-type="propdesc" href="#propdef-display" id="ref-for-propdef-display⑤⑤">display: contents</a> computes to <span class="css" id="ref-for-propdef-display⑤⑥">display: none</span>.</p>
-   <h2 class="no-num heading settled" id="box-guidelines"><span class="content"> Appendix C: Box Construction Guidelines for Spec Authors</span><a class="self-link" href="#box-guidelines"></a></h2>
-   <p><em>This section is non-normative guidance for specification authors.</em></p>
+
+</details>
+<h3 class="heading settled" id="unbox-mathml"><span class="content">MathML Elements</span><a class="self-link" href="#unbox-mathml"></a></h3>
+<details class="valor-spec" data-level="3">
+  <summary>Show spec text</summary>
+
+<p>For all MathML elements, <a class="css" data-link-type="propdesc" href="#propdef-display" id="ref-for-propdef-display⑤⑤">display: contents</a> computes to <span class="css" id="ref-for-propdef-display⑤⑥">display: none</span>.</p>
+
+</details>
+<h2 class="no-num heading settled" id="box-guidelines"><span class="content"> Appendix C: Box Construction Guidelines for Spec Authors</span><a class="self-link" href="#box-guidelines"></a></h2>
+<details class="valor-spec" data-level="2">
+  <summary>Show spec text</summary>
+
+<p><em>This section is non-normative guidance for specification authors.</em></p>
    <ul>
     <li data-md>
      <p>A box cannot be <a data-link-type="dfn" href="#blockify" id="ref-for-blockify⑧">blockified</a> and <a data-link-type="dfn" href="#inlinify" id="ref-for-inlinify⑦">inlinified</a> at the same time;
@@ -1006,7 +1043,8 @@ must not be asked to <a data-link-type="dfn" href="#establish-an-independent-for
 Blockify them first,
 or otherwise change their box type to one that can establish an <span id="ref-for-independent-formatting-context⑦">independent formatting context</span>.</p>
    </ul>
-   
+
+</details>
 <!-- END VERBATIM SPEC: DO NOT EDIT ABOVE. -->
 
 

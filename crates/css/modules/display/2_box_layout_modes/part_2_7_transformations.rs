@@ -1,7 +1,7 @@
 //! Spec: CSS Display 3 — §2.7 Automatic Box Type Transformations
 //! <https://www.w3.org/TR/css-display-3/#transformations>
 
-use style_engine::{ComputedStyle, Display, Float, Position};
+use css_orchestrator::style_model::{ComputedStyle, Display, Float, Position};
 
 #[inline]
 /// Compute the used outer display value for a child box, applying blockification/inlinification

@@ -6,20 +6,21 @@ use crate::scheduler::FrameScheduler;
 use crate::url::stream_url;
 use crate::{focus as focus_mod, selection, telemetry as telemetry_mod};
 use anyhow::{Error, anyhow};
-use css::CSSMirror;
+use css::style_types::ComputedStyle;
 use css::types::Stylesheet;
+use css::{CSSMirror, Orchestrator};
+use css_core::LayoutNodeKind;
+use css_core::LayoutRect;
+use css_core::Layouter;
 use html::dom::DOM;
 use html::parser::HTMLParser;
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
 use js::{DOMMirror, DOMSubscriber, DOMUpdate, DomIndex, JsEngine};
 use js_engine_v8::V8Engine;
-use layouter::LayoutRect;
-use layouter::Layouter;
 use log::{info, trace};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
-use style_engine::{ComputedStyle, StyleEngine};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::error::TryRecvError as UnboundedTryRecvError;
 
@@ -59,8 +60,8 @@ pub struct HtmlPage {
     dom: DOM,
     // Mirror that collects CSS from the DOM stream.
     css_mirror: DOMMirror<CSSMirror>,
-    // StyleEngine mirror that will compute styles (skeleton for now).
-    style_engine_mirror: DOMMirror<StyleEngine>,
+    // Orchestrator mirror that computes styles using the css engine.
+    orchestrator_mirror: DOMMirror<Orchestrator>,
     // Layouter mirror that maintains a layout tree from DOM updates.
     layouter_mirror: DOMMirror<Layouter>,
     // Renderer mirror that maintains a scene graph from DOM updates.
@@ -133,9 +134,9 @@ impl HtmlPage {
             dom.subscribe(),
             CSSMirror::with_base(url.clone()),
         );
-        // Create and attach the StyleEngine mirror to observe DOM updates
-        let style_engine_mirror =
-            DOMMirror::new(in_updater.clone(), dom.subscribe(), StyleEngine::new());
+        // Create and attach the Orchestrator mirror to observe DOM updates
+        let orchestrator_mirror =
+            DOMMirror::new(in_updater.clone(), dom.subscribe(), Orchestrator::new());
         // Create and attach the Layouter mirror to observe DOM updates
         let layouter_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), Layouter::new());
         // Create and attach the Renderer mirror to observe DOM updates
@@ -198,7 +199,7 @@ impl HtmlPage {
             loader: Some(loader),
             dom,
             css_mirror,
-            style_engine_mirror,
+            orchestrator_mirror,
             layouter_mirror,
             renderer_mirror,
             dom_index_mirror,
@@ -391,10 +392,10 @@ impl HtmlPage {
         let mut text_by_key: HashMap<js::NodeKey, String> = HashMap::new();
         for (key, kind, children) in lay_snapshot.into_iter() {
             match kind {
-                layouter::LayoutNodeKind::Block { tag } => {
+                LayoutNodeKind::Block { tag } => {
                     tags_by_key.insert(key, tag);
                 }
-                layouter::LayoutNodeKind::InlineText { text } => {
+                LayoutNodeKind::InlineText { text } => {
                     text_by_key.insert(key, text);
                 }
                 _ => {}
@@ -445,12 +446,11 @@ impl HtmlPage {
         element_children: &HashMap<js::NodeKey, Vec<js::NodeKey>>,
         lay_attrs: &HashMap<js::NodeKey, HashMap<String, String>>,
     ) {
+        // Orchestrator does not require an explicit rebuild; no-op guard retained for symmetry.
         if self.loader.is_none() && !self.style_nodes_rebuilt_after_load {
-            self.style_engine_mirror
-                .mirror_mut()
-                .rebuild_from_layout_snapshot(tags_by_key, element_children, lay_attrs);
+            let _ = (tags_by_key, element_children, lay_attrs);
             self.style_nodes_rebuilt_after_load = true;
-            trace!("process_css_and_styles: node inventory rebuilt");
+            trace!("process_css_and_styles: orchestrator ready");
         }
     }
 
@@ -462,16 +462,12 @@ impl HtmlPage {
         // Ensure CSSMirror has applied any pending DOM updates so that inline <style>
         // rules are visible in the aggregated stylesheet for this tick.
         self.css_mirror.try_update_sync()?;
-        // Synchronize attributes so id/class are available regardless of structure rebuild
+        // Synchronize attributes for potential future needs (kept for symmetry)
         let lay_attrs = self.layouter_mirror.mirror_mut().attrs_map();
         trace!(
             "process_css_and_styles: layouter_attrs_count={} nodes",
             lay_attrs.len()
         );
-        self.style_engine_mirror
-            .mirror_mut()
-            .sync_attrs_from_map(&lay_attrs);
-
         // Snapshot structure once and optionally rebuild StyleEngine's inventory
         let (tags_by_key, element_children, _raw_children, _text_by_key) =
             self.snapshot_layout_maps();
@@ -480,14 +476,12 @@ impl HtmlPage {
         // Use CSSMirror's aggregated in-document stylesheet (rebuilds on <style> updates)
         let author_styles = self.css_mirror.mirror_mut().styles().clone();
 
-        // Replace stylesheet and recompute dirty styles once per tick
-        self.style_engine_mirror
+        // Apply stylesheet to orchestrator and compute once
+        self.orchestrator_mirror
             .mirror_mut()
-            .replace_stylesheet(author_styles.clone());
-        self.style_engine_mirror.mirror_mut().recompute_dirty();
-
-        // Forward artifacts to layouter
-        let computed_styles = self.style_engine_mirror.mirror_mut().computed_snapshot();
+            .replace_stylesheet(&author_styles);
+        let artifacts = self.orchestrator_mirror.mirror_mut().process_once()?;
+        let computed_styles = artifacts.computed_styles;
         self.layouter_mirror
             .mirror_mut()
             .set_stylesheet(author_styles);
@@ -496,30 +490,14 @@ impl HtmlPage {
             .set_computed_styles(computed_styles);
 
         // Mark dirty nodes for reflow if styles changed
-        let style_changed = self
-            .style_engine_mirror
-            .mirror_mut()
-            .take_and_clear_style_changed();
-        let mut changed_nodes_len: usize = 0;
+        let style_changed = artifacts.styles_changed;
         if style_changed {
-            let changed_nodes = self.style_engine_mirror.mirror_mut().take_changed_nodes();
-            changed_nodes_len = changed_nodes.len();
-            if changed_nodes.is_empty() {
-                self.layouter_mirror
-                    .mirror_mut()
-                    .mark_nodes_style_dirty(&[js::NodeKey::ROOT]);
-            } else {
-                self.layouter_mirror
-                    .mirror_mut()
-                    .mark_nodes_style_dirty(&changed_nodes);
-            }
+            self.layouter_mirror
+                .mirror_mut()
+                .mark_nodes_style_dirty(&[js::NodeKey::ROOT]);
         }
 
-        self.last_style_restyled_nodes = if style_changed {
-            changed_nodes_len as u64
-        } else {
-            0
-        };
+        self.last_style_restyled_nodes = 0;
         Ok(style_changed)
     }
 
@@ -714,7 +692,7 @@ impl HtmlPage {
         let mut tags_by_key: HashMap<js::NodeKey, String> = HashMap::new();
         let mut children_tmp: HashMap<js::NodeKey, Vec<js::NodeKey>> = HashMap::new();
         for (key, kind, children) in snapshot.into_iter() {
-            if let layouter::LayoutNodeKind::Block { tag } = kind {
+            if let LayoutNodeKind::Block { tag } = kind {
                 tags_by_key.insert(key, tag);
             }
             children_tmp.insert(key, children);
@@ -804,70 +782,19 @@ impl HtmlPage {
 
     /// Drain mirrors and return a snapshot clone of computed styles per node.
     /// Ensures the latest inline <style> collected by CSSMirror is forwarded to the
-    /// StyleEngine before taking the snapshot so callers that query immediately after
+    /// engine before taking the snapshot so callers that query immediately after
     /// parsing completes (without another update tick) still see up-to-date styles.
     pub fn computed_styles_snapshot(
         &mut self,
-    ) -> Result<HashMap<js::NodeKey, style_engine::ComputedStyle>, Error> {
-        // 1) Drain CSS mirror to capture any late style chunks finalized at EndOfDocument
+    ) -> Result<HashMap<js::NodeKey, ComputedStyle>, Error> {
+        // Ensure the latest inline <style> and orchestrator state are reflected
         self.css_mirror.try_update_sync()?;
-        // 2) Drain StyleEngine DOM updates first so tag/id/class are up-to-date before stylesheet merge
-        self.style_engine_mirror.try_update_sync()?;
-        // 3) Drain Layouter mirror and snapshot structure
-        let _ = self.layouter_mirror.try_update_sync();
-        let (tags_by_key, element_children, raw_children, text_by_key) =
-            self.snapshot_layout_maps();
-        let attrs_by_key = self.layouter_mirror.mirror_mut().attrs_map();
-        // 4) Deterministically rebuild StyleEngine node inventory
-        self.style_engine_mirror
+        let sheet = self.css_mirror.mirror_mut().styles().clone();
+        self.orchestrator_mirror
             .mirror_mut()
-            .rebuild_from_layout_snapshot(&tags_by_key, &element_children, &attrs_by_key);
-
-        // 4.1) Extract inline <style> and build a merged stylesheet
-        let current_styles = self.css_mirror.mirror_mut().styles().clone();
-        let author_count_current = current_styles
-            .rules
-            .iter()
-            .filter(|r| matches!(r.origin, css::types::Origin::Author))
-            .count();
-        let inline_style_css =
-            self.extract_inline_style_css(&tags_by_key, &raw_children, &text_by_key);
-        let inline_style_css_trimmed = inline_style_css.trim().to_string();
-        let mut final_styles: css::types::Stylesheet = css::types::Stylesheet::default();
-        if !inline_style_css_trimmed.is_empty() {
-            let ua_count = current_styles
-                .rules
-                .iter()
-                .filter(|r| matches!(r.origin, css::types::Origin::UserAgent))
-                .count() as u32;
-            let parsed_author = css::parser::parse_stylesheet(
-                &inline_style_css_trimmed,
-                css::types::Origin::Author,
-                ua_count,
-            );
-            if parsed_author.rules.len() > author_count_current {
-                final_styles.rules.extend(
-                    current_styles
-                        .rules
-                        .iter()
-                        .filter(|r| matches!(r.origin, css::types::Origin::UserAgent))
-                        .cloned(),
-                );
-                final_styles.rules.extend(parsed_author.rules);
-            } else {
-                final_styles = current_styles;
-            }
-        } else {
-            final_styles = current_styles;
-        }
-        // 4.2) Replace stylesheet and force full restyle for deterministic snapshot
-        self.style_engine_mirror
-            .mirror_mut()
-            .replace_stylesheet(final_styles);
-        self.style_engine_mirror.mirror_mut().force_full_restyle();
-        // 5) Return a stable snapshot of computed styles
-        let snapshot = self.style_engine_mirror.mirror_mut().computed_snapshot();
-        Ok(snapshot)
+            .replace_stylesheet(&sheet);
+        let artifacts = self.orchestrator_mirror.mirror_mut().process_once()?;
+        Ok(artifacts.computed_styles)
     }
 
     /// Drain CSS mirror and return a snapshot clone of discovered external stylesheet URLs
@@ -972,13 +899,7 @@ impl HtmlPage {
     }
 
     /// Return a list of selection rectangles by intersecting inline text boxes with a selection rect.
-    pub fn selection_rects(
-        &mut self,
-        x0: i32,
-        y0: i32,
-        x1: i32,
-        y1: i32,
-    ) -> Vec<layouter::LayoutRect> {
+    pub fn selection_rects(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<LayoutRect> {
         if self.layouter_mirror.try_update_sync().is_err() {
             return Vec::new();
         }
@@ -988,7 +909,7 @@ impl HtmlPage {
     }
 
     /// Compute a caret rectangle at the given point: a thin bar within the inline text box, if any.
-    pub fn caret_at(&mut self, x: i32, y: i32) -> Option<layouter::LayoutRect> {
+    pub fn caret_at(&mut self, x: i32, y: i32) -> Option<LayoutRect> {
         if self.layouter_mirror.try_update_sync().is_err() {
             return None;
         }

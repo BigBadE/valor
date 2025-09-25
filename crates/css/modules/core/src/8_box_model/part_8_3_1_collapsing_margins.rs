@@ -1,27 +1,111 @@
-//! Vertical margin collapsing per CSS 2.2 §8.3.1
+//! Spec: CSS 2.2 §8.3.1 Collapsing margins
 //!
-//! Implements the leading-top margin collapse group computation and
-//! application rules for block formatting contexts.
-//!
-//! Spec: <https://www.w3.org/TR/CSS22/box.html#collapsing-margins>
+//! This file re-exports the core collapsing margin algorithms from their
+//! current implementation locations to provide a spec-mirrored module path.
 
+use crate::Layouter;
+use crate::chapter9::part_9_4_1_block_formatting_context::establishes_block_formatting_context;
+use crate::types::ContainerMetrics;
+use crate::{LayoutNodeKind, box_tree};
 use css_box::{BoxSides, compute_box_sides};
-use log::debug;
-use style_engine::{Clear, ComputedStyle, Display, Float, Overflow, Position};
-
-use crate::{ContainerMetrics, LayoutNodeKind, Layouter, box_tree};
+use css_orchestrator::style_model::{Clear, ComputedStyle};
 use js::NodeKey;
+use log::debug;
+
+// Convenience pub fns that forward to inherent methods for mapping granularity.
+// Keep functions small and shallow to follow coding standards.
+
+/// Spec: §8.3.1 — Collapse two vertical margins (pair rules).
+#[allow(
+    dead_code,
+    reason = "Public API kept for direct spec-mapped calls; used by tests/future orchestrator paths"
+)]
+#[inline]
+pub fn collapse_margins_pair(left: i32, right: i32) -> i32 {
+    Layouter::collapse_margins_pair(left, right)
+}
+
+/// Spec: §8.3.1 — Public wrapper for effective top margin of a child.
+#[inline]
+pub fn effective_child_top_margin_public(
+    layouter: &Layouter,
+    child_key: NodeKey,
+    child_sides: &BoxSides,
+) -> i32 {
+    effective_child_top_margin(layouter, child_key, child_sides)
+}
+
+/// Spec: §8.3.1 — Public wrapper for effective bottom margin of a child.
+#[inline]
+pub fn effective_child_bottom_margin_public(
+    layouter: &Layouter,
+    child_key: NodeKey,
+    child_sides: &BoxSides,
+) -> i32 {
+    effective_child_bottom_margin(layouter, child_key, child_sides)
+}
+
+/// Spec: §8.3.1 — Collapse a list of vertical margins (algebraic sum of extremes).
+#[allow(
+    dead_code,
+    reason = "Public API kept for direct spec-mapped calls; used by tests/future orchestrator paths"
+)]
+#[inline]
+pub fn collapse_margins_list(margins: &[i32]) -> i32 {
+    Layouter::collapse_margins_list(margins)
+}
+
+/// Spec: §8.3.1 — Compute final outgoing bottom margin for a child box.
+#[allow(
+    dead_code,
+    reason = "Public API kept for direct spec-mapped calls; used by tests/future orchestrator paths"
+)]
+#[inline]
+pub fn compute_margin_bottom_out(margin_top: i32, effective_bottom: i32, is_empty: bool) -> i32 {
+    Layouter::compute_margin_bottom_out(margin_top, effective_bottom, is_empty)
+}
+
+/// Spec: §8.3.1 — Outgoing bottom margin for first placed empty child.
+#[allow(
+    dead_code,
+    reason = "Public API kept for direct spec-mapped calls; used by tests/future orchestrator paths"
+)]
+#[inline]
+pub fn compute_first_placed_empty_margin_bottom(
+    previous_bottom: i32,
+    parent_self_top: i32,
+    child_top_eff: i32,
+    child_bottom_eff: i32,
+) -> i32 {
+    Layouter::compute_first_placed_empty_margin_bottom(
+        previous_bottom,
+        parent_self_top,
+        child_top_eff,
+        child_bottom_eff,
+    )
+}
+
+/// Spec: §8.3.1 — Leading top collapse application at parent's top edge.
+#[inline]
+pub fn apply_leading_top_collapse_public(
+    layouter: &Layouter,
+    root: NodeKey,
+    metrics: &ContainerMetrics,
+    block_children: &[NodeKey],
+    ancestor_applied_at_edge: bool,
+) -> (i32, i32, i32, usize) {
+    apply_leading_top_collapse(
+        layouter,
+        root,
+        metrics,
+        block_children,
+        ancestor_applied_at_edge,
+    )
+}
 
 /// Heuristic structural emptiness used during leading group pre-scan.
-///
-/// Spec: CSS 2.2 §8.3.1 Collapsing margins — empty box internal collapse and propagation
-///   <https://www.w3.org/TR/CSS22/box.html#collapsing-margins>
-///
-/// [Approximation] Walk a chain of first block children while each box has zero top/bottom
-/// padding and border, no explicit height/min-height, and no inline text descendant. If the
-/// chain terminates without another block child under those constraints, treat as empty.
 #[inline]
-pub fn is_structurally_empty_chain(layouter: &Layouter, start: NodeKey) -> bool {
+fn is_structurally_empty_chain(layouter: &Layouter, start: NodeKey) -> bool {
     let mut current = start;
     loop {
         let style = layouter
@@ -29,23 +113,18 @@ pub fn is_structurally_empty_chain(layouter: &Layouter, start: NodeKey) -> bool 
             .get(&current)
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
-        // A box that establishes a BFC is not considered structurally empty for the
-        // purposes of margin propagation across an empty chain (CSS 2.2 §8.3.1).
-        if establishes_bfc(&style) {
+        if establishes_block_formatting_context(&style) {
             debug!("[VERT-EMPTY diag node={current:?}] break: establishes BFC");
             return false;
         }
         let sides = compute_box_sides(&style);
         if style.height.unwrap_or(0.0) as i32 > 0 {
-            debug!("[VERT-EMPTY diag node={current:?}] break: explicit height>0");
             return false;
         }
         if style.min_height.unwrap_or(0.0) as i32 > 0 {
-            debug!("[VERT-EMPTY diag node={current:?}] break: min-height>0");
             return false;
         }
         if has_inline_text_descendant(layouter, current) {
-            debug!("[VERT-EMPTY diag node={current:?}] break: has inline text descendant");
             return false;
         }
         if sides.padding_top != 0
@@ -53,33 +132,21 @@ pub fn is_structurally_empty_chain(layouter: &Layouter, start: NodeKey) -> bool 
             || sides.padding_bottom != 0
             || sides.border_bottom != 0
         {
-            debug!(
-                "[VERT-EMPTY diag node={current:?}] break: non-zero padding/border (pt={},bt={},pb={},bb={})",
-                sides.padding_top, sides.border_top, sides.padding_bottom, sides.border_bottom
-            );
             return false;
         }
         match first_block_child(layouter, current) {
-            None => {
-                debug!("[VERT-EMPTY diag node={current:?}] end-of-chain: returns true");
-                return true;
-            }
+            None => return true,
             Some(next) => {
-                debug!("[VERT-EMPTY diag node={current:?}] continue -> first_block_child={next:?}");
                 current = next;
             }
         }
     }
 }
 
-/// Compute an effective top margin for a child, collapsing with its first block child's top margin.
-///
-/// Spec: CSS 2.2 §8.3.1 Collapsing margins — parent/first-child propagation across empty chains
-///   <https://www.w3.org/TR/CSS22/box.html#collapsing-margins>
-///
-/// [Approximation] Applies when the child has no top padding/border and contains no inline text.
+/// Compute the effective top margin for a child by collapsing with its first block descendant
+/// chain when allowed by padding/border edges and structural emptiness rules.
 #[inline]
-pub fn effective_child_top_margin(
+fn effective_child_top_margin(
     layouter: &Layouter,
     child_key: NodeKey,
     child_sides: &BoxSides,
@@ -87,13 +154,12 @@ pub fn effective_child_top_margin(
     let mut margins: Vec<i32> = vec![child_sides.margin_top];
     let mut current = child_key;
     let mut current_sides = *child_sides;
-    // Do not propagate through a BFC boundary (e.g., overflow other than visible).
     let cur_style = layouter
         .computed_styles
         .get(&current)
         .cloned()
         .unwrap_or_else(ComputedStyle::default);
-    if establishes_bfc(&cur_style) {
+    if establishes_block_formatting_context(&cur_style) {
         return Layouter::collapse_margins_list(&margins);
     }
     while current_sides.padding_top == 0i32
@@ -106,14 +172,9 @@ pub fn effective_child_top_margin(
             .get(&first_desc)
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
-        if establishes_bfc(&first_style) {
-            // Stop propagation at BFC boundary.
+        if establishes_block_formatting_context(&first_style) {
             break;
         }
-        // If the current box is structurally empty, its top and bottom margins
-        // collapse together and propagate to its first block descendant per §8.3.1.
-        // Include the current box's effective bottom margin before descending so the
-        // accumulated list reflects the empty chain correctly (e.g., 0 + 12 -> 12).
         if is_structurally_empty_chain(layouter, current) {
             let eff_bottom = effective_child_bottom_margin(layouter, current, &current_sides);
             margins.push(eff_bottom);
@@ -126,14 +187,10 @@ pub fn effective_child_top_margin(
     Layouter::collapse_margins_list(&margins)
 }
 
-/// Compute an effective bottom margin for a child, collapsing with its last block child's bottom margin.
-///
-/// Spec: CSS 2.2 §8.3.1 Collapsing margins — empty chain propagation on the bottom edge
-///   <https://www.w3.org/TR/CSS22/box.html#collapsing-margins>
-///
-/// [Approximation] Applies when the child has no bottom padding/border and contains no inline text.
+/// Compute the effective bottom margin for a child by collapsing with its last block descendant
+/// chain when allowed by padding/border edges and structural emptiness rules.
 #[inline]
-pub fn effective_child_bottom_margin(
+fn effective_child_bottom_margin(
     layouter: &Layouter,
     child_key: NodeKey,
     child_sides: &BoxSides,
@@ -141,14 +198,12 @@ pub fn effective_child_bottom_margin(
     let mut margins: Vec<i32> = vec![child_sides.margin_bottom];
     let mut current = child_key;
     let mut current_sides = *child_sides;
-    // Do not propagate through a BFC boundary at the descendant edge.
-    if establishes_bfc(
-        &layouter
-            .computed_styles
-            .get(&current)
-            .cloned()
-            .unwrap_or_else(ComputedStyle::default),
-    ) {
+    let style = layouter
+        .computed_styles
+        .get(&current)
+        .cloned()
+        .unwrap_or_else(ComputedStyle::default);
+    if establishes_block_formatting_context(&style) {
         return Layouter::collapse_margins_list(&margins);
     }
     while current_sides.padding_bottom == 0i32
@@ -162,7 +217,7 @@ pub fn effective_child_bottom_margin(
             .get(&last_desc)
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
-        if establishes_bfc(&last_style) {
+        if establishes_block_formatting_context(&last_style) {
             break;
         }
         let last_sides = compute_box_sides(&last_style);
@@ -173,38 +228,9 @@ pub fn effective_child_bottom_margin(
     Layouter::collapse_margins_list(&margins)
 }
 
+/// Return the first block child of a node after display tree flattening.
 #[inline]
-/// Minimal BFC heuristic used by margin-collapsing traversal.
-///
-/// Spec: CSS 2.2 BFC creation (combined from §9.4.* and related)
-///   <https://www.w3.org/TR/CSS22/visuren.html#block-formatting>
-///
-/// [Approximation] Treat overflow != visible, float != none, position != static, or flex container as BFC.
-pub const fn establishes_bfc(style: &ComputedStyle) -> bool {
-    // Establish a BFC if any of the following are true:
-    // - overflow is not Visible
-    // - float is not None
-    // - position is not Static (absolute/fixed)
-    // - display is Flex or InlineFlex
-    if !matches!(style.overflow, Overflow::Visible) {
-        return true;
-    }
-    if !matches!(style.float, Float::None) {
-        return true;
-    }
-    if !matches!(style.position, Position::Static) {
-        return true;
-    }
-    if matches!(style.display, Display::Flex | Display::InlineFlex) {
-        return true;
-    }
-    false
-}
-
-#[inline]
-/// Return the first block child of `key`, if any.
 fn first_block_child(layouter: &Layouter, key: NodeKey) -> Option<NodeKey> {
-    // Walk the flattened display children to honor display:contents passthrough.
     let flattened =
         box_tree::flatten_display_children(&layouter.children, &layouter.computed_styles, key);
     flattened.into_iter().find(|node_key| {
@@ -215,8 +241,8 @@ fn first_block_child(layouter: &Layouter, key: NodeKey) -> Option<NodeKey> {
     })
 }
 
+/// Find the last block descendant under a node using a flattened traversal.
 #[inline]
-/// Depth-first search for the last block-level descendant under `start`.
 fn find_last_block_under(layouter: &Layouter, start: NodeKey) -> Option<NodeKey> {
     let mut last: Option<NodeKey> = None;
     let flattened =
@@ -242,10 +268,9 @@ fn find_last_block_under(layouter: &Layouter, start: NodeKey) -> Option<NodeKey>
     last
 }
 
+/// Return true if there is any inline text descendant under the given node.
 #[inline]
-/// Returns true if any inline text descendant exists beneath `key`.
 fn has_inline_text_descendant(layouter: &Layouter, key: NodeKey) -> bool {
-    // Use flattened display traversal so display:contents does not falsely separate chains.
     let mut stack: Vec<NodeKey> =
         box_tree::flatten_display_children(&layouter.children, &layouter.computed_styles, key);
     while let Some(current) = stack.pop() {
@@ -268,11 +293,9 @@ fn has_inline_text_descendant(layouter: &Layouter, key: NodeKey) -> bool {
     false
 }
 
+/// Scan the leading group to collect margins and skipping information used to apply or forward
+/// collapse at the parent's top edge.
 #[inline]
-/// Scan the leading collapsible group and collect margins.
-///
-/// Spec: CSS 2.2 §8.3.1 — parent edge + leading empty chain group
-/// Returns `(margins, skip_count, include_parent_edge, parent_edge_collapsible)`.
 fn scan_leading_group(
     layouter: &Layouter,
     root: NodeKey,
@@ -286,17 +309,9 @@ fn scan_leading_group(
         .cloned()
         .unwrap_or_else(ComputedStyle::default);
     let parent_sides = compute_box_sides(&parent_style);
-    // CSS 2.2 §8.3.1 Collapsing margins:
-    //   A box's top margin collapses with its first block child's top margin only if the parent's
-    //   top edge is collapsible (no padding/border) AND the parent does not establish a new BFC.
-    //   See also §9.4.1 Block formatting contexts: a box that establishes a BFC does not have its
-    //   margins collapse with margins of its descendants.
-    //   References:
-    //     - https://www.w3.org/TR/CSS22/box.html#collapsing-margins
-    //     - https://www.w3.org/TR/CSS22/visuren.html#block-formatting
     let parent_edge_collapsible = parent_sides.padding_top == 0i32
         && parent_sides.border_top == 0i32
-        && !establishes_bfc(&parent_style);
+        && !establishes_block_formatting_context(&parent_style);
     let include_parent_edge = parent_edge_collapsible && !ancestor_applied_at_edge;
     debug!(
         "[VERT-GROUP pre root={root:?}] parent_edge_collapsible={parent_edge_collapsible} ancestor_applied_at_edge={ancestor_applied_at_edge} -> include_parent_edge={include_parent_edge}"
@@ -317,32 +332,15 @@ fn scan_leading_group(
         let child_sides = compute_box_sides(&child_style);
         let eff_top = effective_child_top_margin(layouter, child_key, &child_sides);
         let is_leading_empty = is_structurally_empty_chain(layouter, child_key);
-        debug!(
-            "[VERT-GROUP scan root={root:?}] child={child_key:?} eff_top={eff_top} paddings(top={},bottom={}) borders(top={},bottom={}) height={:?} structurally_empty_chain={}",
-            child_sides.padding_top,
-            child_sides.padding_bottom,
-            child_sides.border_top,
-            child_sides.border_bottom,
-            child_style.height,
-            is_leading_empty
-        );
         if is_leading_empty {
             let eff_bottom = effective_child_bottom_margin(layouter, child_key, &child_sides);
-            debug!(
-                "[VERT-GROUP scan-empty root={root:?}] child={child_key:?} push(eff_top={eff_top}, eff_bottom={eff_bottom})"
-            );
             leading_margins.push(eff_top);
             leading_margins.push(eff_bottom);
             skip_count = skip_count.saturating_add(1);
             idx = idx.saturating_add(1);
             continue;
         }
-        // If the first non-empty child has clear, its top margin does not collapse with the
-        // previous sibling and should not be absorbed at the parent edge.
         let has_clear = matches!(child_style.clear, Clear::Left | Clear::Right | Clear::Both);
-        debug!(
-            "[VERT-GROUP scan-stop root={root:?}] child={child_key:?} non-empty eff_top={eff_top} clear={has_clear}"
-        );
         if !has_clear {
             leading_margins.push(eff_top);
         }
@@ -356,36 +354,27 @@ fn scan_leading_group(
     )
 }
 
+/// Apply the leading-top collapsed value at the parent's top edge when eligible, otherwise forward
+/// the collapsed value to the first non-empty child.
 #[inline]
-/// Decide where the leading group applies.
-///
-/// Spec: CSS 2.2 §8.3.1 — apply at parent edge if collapsible and no ancestor already applied.
-/// Returns `(y_cursor_start, previous_bottom_after, leading_top_applied)`.
-fn apply_or_forward_group(
+const fn apply_or_forward_group(
     include_parent_edge: bool,
     parent_edge_collapsible: bool,
     leading_top: i32,
 ) -> (i32, i32, i32) {
     if include_parent_edge {
-        let out = (leading_top, 0i32, leading_top);
-        debug!("[VERT-GROUP apply-at-parent] out={out:?}");
-        return out;
+        return (leading_top, 0, leading_top);
     }
     if !parent_edge_collapsible {
-        let out = (0i32, leading_top, 0i32);
-        debug!("[VERT-GROUP forward-internal blocked-parent-edge] out={out:?}");
-        return out;
+        return (0, leading_top, 0);
     }
-    let out = (0i32, leading_top, 0i32);
-    debug!("[VERT-GROUP forward-internal ancestor-already-applied] out={out:?}");
-    out
+    (0, leading_top, 0)
 }
 
-/// Compute and apply the leading-empty-chain collapse per CSS 2.2 §8.3.1.
-///
-/// Returns (`y_cursor_start`, `previous_bottom_margin`, `leading_top_applied`, `skip_count`).
+/// Apply the leading-top collapse rules (parent edge vs forwarding to the first non-empty child)
+/// and return (`y_start`, `prev_bottom_after`, `leading_applied`, `skip_count`).
 #[inline]
-pub fn apply_leading_top_collapse(
+fn apply_leading_top_collapse(
     layouter: &Layouter,
     root: NodeKey,
     metrics: &ContainerMetrics,
@@ -393,8 +382,7 @@ pub fn apply_leading_top_collapse(
     ancestor_applied_at_edge: bool,
 ) -> (i32, i32, i32, usize) {
     if block_children.is_empty() {
-        debug!("[VERT-GROUP root={root:?}] skip pre-scan: empty children");
-        return (0i32, 0i32, 0i32, 0usize);
+        return (0, 0, 0, 0);
     }
     let (leading_margins, skip_count, include_parent_edge, parent_edge_collapsible) =
         scan_leading_group(
@@ -404,18 +392,38 @@ pub fn apply_leading_top_collapse(
             block_children,
             ancestor_applied_at_edge,
         );
-    if skip_count == 0
-        && leading_margins.is_empty()
-        && !include_parent_edge
-        && parent_edge_collapsible
-    {
-        return (0i32, 0i32, 0i32, 0usize);
-    }
     let leading_top = Layouter::collapse_margins_list(&leading_margins);
-    debug!(
-        "[VERT-GROUP root={root:?}] include_parent_edge={include_parent_edge} parent_edge_collapsible={parent_edge_collapsible} ancestor_applied={ancestor_applied_at_edge} leading_skip={skip_count} margins={leading_margins:?} -> leading_top={leading_top}"
-    );
     let (y_start, prev_bottom_after, leading_applied) =
         apply_or_forward_group(include_parent_edge, parent_edge_collapsible, leading_top);
     (y_start, prev_bottom_after, leading_applied, skip_count)
+}
+
+/// Spec: §8.3.1 — Compute the root y after top collapse with first child when applicable.
+#[inline]
+pub fn compute_root_y_after_top_collapse(
+    layouter: &Layouter,
+    root: NodeKey,
+    metrics: &ContainerMetrics,
+) -> i32 {
+    if metrics.padding_top == 0i32 && metrics.border_top == 0i32 {
+        let flattened =
+            box_tree::flatten_display_children(&layouter.children, &layouter.computed_styles, root);
+        if let Some(first_child) = flattened
+            .into_iter()
+            .find(|key| matches!(layouter.nodes.get(key), Some(&LayoutNodeKind::Block { .. })))
+        {
+            let first_style = layouter
+                .computed_styles
+                .get(&first_child)
+                .cloned()
+                .unwrap_or_else(ComputedStyle::default);
+            let first_sides = compute_box_sides(&first_style);
+            let first_effective_top =
+                effective_child_top_margin(layouter, first_child, &first_sides);
+            let collapsed =
+                Layouter::collapse_margins_pair(metrics.margin_top, first_effective_top);
+            return collapsed.max(0);
+        }
+    }
+    metrics.margin_top
 }

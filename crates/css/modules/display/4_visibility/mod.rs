@@ -1,7 +1,7 @@
 //! CSS Display 3 — §4 Visibility
 //! Spec: <https://www.w3.org/TR/css-display-3/#visibility>
 //
-use style_engine::ComputedStyle;
+use css_orchestrator::style_model::ComputedStyle;
 
 #[inline]
 /// Determine whether a box should be considered visible for layout purposes.

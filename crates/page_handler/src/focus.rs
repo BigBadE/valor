@@ -1,6 +1,6 @@
 use crate::snapshots::SnapshotSlice;
+use css_core::LayoutNodeKind;
 use js::NodeKey;
-use layouter::LayoutNodeKind;
 use std::collections::HashMap;
 
 pub fn next(

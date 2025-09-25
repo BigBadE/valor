@@ -2,9 +2,9 @@
 //! Spec: <https://www.w3.org/TR/css-display-3/>
 
 use core::hash::BuildHasher;
+use css_orchestrator::style_model::ComputedStyle;
 use js::NodeKey;
 use std::collections::HashMap;
-use style_engine::ComputedStyle;
 
 mod anonymous_blocks;
 pub use anonymous_blocks::{AnonymousChildRun, build_anonymous_block_runs};

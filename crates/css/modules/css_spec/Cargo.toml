@@ -1,8 +1,0 @@
-[package]
-name = "css_spec_removed"
-edition.workspace = true
-
-[lints]
-workspace = true
-
-[dependencies]

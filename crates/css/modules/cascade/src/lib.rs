@@ -4,7 +4,7 @@
 #![forbid(unsafe_code)]
 
 use core::cmp::Ordering;
-use css_core::types::Origin;
+use css_orchestrator::types::Origin;
 use css_selectors::Specificity;
 
 /// Priority tuple used to order declarations in the cascade.

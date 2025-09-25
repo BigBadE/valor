@@ -1,7 +1,7 @@
 //! CSS Text Module Level 3 — Line breaking, white space, justification, transforms.
 //! Spec: <https://www.w3.org/TR/css-text-3/>
 
-use style_engine::ComputedStyle;
+use css_orchestrator::style_model::ComputedStyle;
 
 /// Collapse ASCII whitespace runs to a single space and trim.
 /// A simplified approximation of CSS white-space collapsing for inline layout.

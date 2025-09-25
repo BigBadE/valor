@@ -18,15 +18,14 @@ js.workspace = true
 
 # Needed by layout compare bin/core
 html.workspace = true
-layouter.workspace = true
 headless_chrome.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 urlencoding.workspace = true
 once_cell.workspace = true
-style_engine.workspace = true
 js_engine_v8.workspace = true
 image.workspace = true
+css_core.workspace = true
 
 [dev-dependencies]
 js.workspace = true

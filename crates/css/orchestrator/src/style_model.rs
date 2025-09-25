@@ -38,11 +38,29 @@ pub enum Position {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Float {
+    #[default]
+    None,
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Clear {
+    #[default]
+    None,
+    Left,
+    Right,
+    Both,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Display {
     #[default]
     Inline,
     Block,
     Flex,
+    InlineFlex,
     None,
     Contents,
 }
@@ -106,6 +124,10 @@ pub struct ComputedStyle {
     pub line_height: Option<f32>,
     pub overflow: Overflow,
     pub position: Position,
+    /// Floating behavior (CSS 2.2 §9.5). Exposed for blockification and clearance logic.
+    pub float: Float,
+    /// Clearance behavior (CSS 2.2 §9.5). Exposed for clearance and BFC decisions.
+    pub clear: Clear,
     pub z_index: Option<i32>,
     // Display and box model
     pub display: Display,

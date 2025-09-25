@@ -1,9 +1,10 @@
 //! Common snapshot types and aliases used across page_handler.
 
+use css_core::LayoutNodeKind;
 use js::NodeKey;
 
 /// Tuple representing one entry in a layout snapshot: (node key, kind, children).
-pub type SnapshotItem = (NodeKey, layouter::LayoutNodeKind, Vec<NodeKey>);
+pub type SnapshotItem = (NodeKey, LayoutNodeKind, Vec<NodeKey>);
 
 /// Owned snapshot list.
 pub type Snapshot = Vec<SnapshotItem>;

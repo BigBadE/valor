@@ -17,8 +17,8 @@
 )]
 
 use core::error::Error;
-use css_core::NodeKey;
-use css_core::{CoreEngine, style_model, types};
+use css_orchestrator::NodeKey;
+use css_orchestrator::{CoreEngine, style_model, types};
 use js::DOMUpdate;
 use std::collections::HashMap;
 

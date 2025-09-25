@@ -9,3 +9,5 @@
 //! See also `crates/css/modules/layouter/spec.md` mapping entries for §8.*.
 
 // No code here by design; this module provides navigational anchors to the spec.
+
+pub mod part_8_3_1_collapsing_margins;

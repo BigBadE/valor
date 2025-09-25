@@ -1,5 +1,7 @@
 use crate::snapshots::IRect;
 use css::layout_helpers::{collapse_whitespace, reorder_bidi_for_display};
+use css::style_types::{BorderStyle, ComputedStyle, Overflow, Position};
+use css_core::{LayoutNodeKind, LayoutRect};
 use js::NodeKey;
 use log::warn;
 use std::collections::HashMap;
@@ -15,15 +17,26 @@ use std::sync::Mutex;
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 
 // Module-scoped aliases to simplify complex tuple types
-type SnapshotItem = (NodeKey, layouter::LayoutNodeKind, Vec<NodeKey>);
+type SnapshotItem = (NodeKey, LayoutNodeKind, Vec<NodeKey>);
 type SnapshotSlice<'a> = &'a [SnapshotItem];
 
+// Walker context bundling borrowed maps for shallow recursion helpers
+struct WalkCtx<'a> {
+    kind_map: &'a HashMap<NodeKey, LayoutNodeKind>,
+    children_map: &'a HashMap<NodeKey, Vec<NodeKey>>,
+    rects: &'a HashMap<NodeKey, LayoutRect>,
+    computed_map: &'a HashMap<NodeKey, ComputedStyle>,
+    computed_fallback: &'a HashMap<NodeKey, ComputedStyle>,
+    computed_robust: &'a Option<HashMap<NodeKey, ComputedStyle>>,
+    parent_map: &'a HashMap<NodeKey, NodeKey>,
+}
+
 pub struct RetainedInputs {
-    pub rects: HashMap<NodeKey, layouter::LayoutRect>,
+    pub rects: HashMap<NodeKey, LayoutRect>,
     pub snapshot: Vec<SnapshotItem>,
-    pub computed_map: HashMap<NodeKey, style_engine::ComputedStyle>,
-    pub computed_fallback: HashMap<NodeKey, style_engine::ComputedStyle>,
-    pub computed_robust: Option<HashMap<NodeKey, style_engine::ComputedStyle>>,
+    pub computed_map: HashMap<NodeKey, ComputedStyle>,
+    pub computed_fallback: HashMap<NodeKey, ComputedStyle>,
+    pub computed_robust: Option<HashMap<NodeKey, ComputedStyle>>,
     pub selection_overlay: Option<IRect>,
     pub focused_node: Option<NodeKey>,
     pub hud_enabled: bool,
@@ -113,11 +126,7 @@ fn measure_text_width_px(text: &str, font_size: f32) -> i32 {
 }
 
 #[inline]
-fn push_border_items(
-    list: &mut DisplayList,
-    rect: &layouter::LayoutRect,
-    cs: &style_engine::ComputedStyle,
-) {
+fn push_border_items(list: &mut DisplayList, rect: &LayoutRect, cs: &ComputedStyle) {
     if let Some(items) = build_border_items(rect, cs) {
         for item in items {
             list.push(item);
@@ -126,11 +135,7 @@ fn push_border_items(
 }
 
 #[inline]
-fn build_border_items(
-    rect: &layouter::LayoutRect,
-    cs: &style_engine::ComputedStyle,
-) -> Option<Vec<DisplayItem>> {
-    use style_engine::BorderStyle;
+fn build_border_items(rect: &LayoutRect, cs: &ComputedStyle) -> Option<Vec<DisplayItem>> {
     let bw = cs.border_width;
     let bs = cs.border_style;
     let bc = cs.border_color;
@@ -195,14 +200,14 @@ fn build_border_items(
 fn z_key_for_child(
     child: NodeKey,
     parent_map: &HashMap<NodeKey, NodeKey>,
-    computed_map: &HashMap<NodeKey, style_engine::ComputedStyle>,
-    computed_fallback: &HashMap<NodeKey, style_engine::ComputedStyle>,
-    computed_robust: &Option<HashMap<NodeKey, style_engine::ComputedStyle>>,
+    computed_map: &HashMap<NodeKey, ComputedStyle>,
+    computed_fallback: &HashMap<NodeKey, ComputedStyle>,
+    computed_robust: &Option<HashMap<NodeKey, ComputedStyle>>,
 ) -> (i32, u64) {
     // Inline nearest-style lookup to avoid deep nesting and inner function coupling
     let style = {
         let mut current = Some(child);
-        let mut found: Option<&style_engine::ComputedStyle> = None;
+        let mut found: Option<&ComputedStyle> = None;
         while let Some(nkey) = current {
             if let Some(cs) = computed_robust
                 .as_ref()
@@ -219,7 +224,7 @@ fn z_key_for_child(
     };
     let (_pos, zi) = style
         .map(|cs| (cs.position, cs.z_index))
-        .unwrap_or((style_engine::Position::Static, None));
+        .unwrap_or((Position::Static, None));
     let bucket: i32 = match zi {
         Some(v) if v < 0 => -1,
         Some(v) if v > 0 => 1,
@@ -232,14 +237,14 @@ pub trait DisplayBuilder: Send + Sync {
     fn build_retained(&self, inputs: RetainedInputs) -> DisplayList;
     fn build_rect_list(
         &self,
-        rects: &HashMap<NodeKey, layouter::LayoutRect>,
+        rects: &HashMap<NodeKey, LayoutRect>,
         snapshot: SnapshotSlice,
     ) -> Vec<wgpu_renderer::DrawRect>;
     fn build_text_list(
         &self,
-        rects: &HashMap<NodeKey, layouter::LayoutRect>,
+        rects: &HashMap<NodeKey, LayoutRect>,
         snapshot: SnapshotSlice,
-        computed_map: &HashMap<NodeKey, style_engine::ComputedStyle>,
+        computed_map: &HashMap<NodeKey, ComputedStyle>,
     ) -> Vec<wgpu_renderer::DrawText>;
 }
 
@@ -251,28 +256,28 @@ impl DisplayBuilder for DefaultDisplayBuilder {
     }
     fn build_rect_list(
         &self,
-        rects: &HashMap<NodeKey, layouter::LayoutRect>,
+        rects: &HashMap<NodeKey, LayoutRect>,
         snapshot: SnapshotSlice,
     ) -> Vec<wgpu_renderer::DrawRect> {
         build_rect_list(rects, snapshot)
     }
     fn build_text_list(
         &self,
-        rects: &HashMap<NodeKey, layouter::LayoutRect>,
+        rects: &HashMap<NodeKey, LayoutRect>,
         snapshot: SnapshotSlice,
-        computed_map: &HashMap<NodeKey, style_engine::ComputedStyle>,
+        computed_map: &HashMap<NodeKey, ComputedStyle>,
     ) -> Vec<wgpu_renderer::DrawText> {
         build_text_list(rects, snapshot, computed_map)
     }
 }
 
 pub fn build_rect_list(
-    rects: &HashMap<NodeKey, layouter::LayoutRect>,
+    rects: &HashMap<NodeKey, LayoutRect>,
     snapshot: SnapshotSlice,
 ) -> Vec<wgpu_renderer::DrawRect> {
     let mut list: Vec<wgpu_renderer::DrawRect> = Vec::new();
     for (node, kind, _children) in snapshot.iter() {
-        if !matches!(kind, layouter::LayoutNodeKind::Block { .. }) {
+        if !matches!(kind, LayoutNodeKind::Block { .. }) {
             continue;
         }
         if let Some(rect) = rects.get(node) {
@@ -289,9 +294,9 @@ pub fn build_rect_list(
 }
 
 pub fn build_text_list(
-    rects: &HashMap<NodeKey, layouter::LayoutRect>,
+    rects: &HashMap<NodeKey, LayoutRect>,
     snapshot: SnapshotSlice,
-    computed_map: &HashMap<NodeKey, style_engine::ComputedStyle>,
+    computed_map: &HashMap<NodeKey, ComputedStyle>,
 ) -> Vec<wgpu_renderer::DrawText> {
     let mut list: Vec<wgpu_renderer::DrawText> = Vec::new();
     // Build a parent map so inline text can inherit from its element parent
@@ -302,7 +307,7 @@ pub fn build_text_list(
         }
     }
     // Helper: climb ancestors until a computed style is found
-    let nearest_style = |start: NodeKey| -> Option<&style_engine::ComputedStyle> {
+    let nearest_style = |start: NodeKey| -> Option<&ComputedStyle> {
         let mut cur = Some(start);
         while let Some(n) = cur {
             if let Some(cs) = computed_map.get(&n) {
@@ -313,7 +318,7 @@ pub fn build_text_list(
         None
     };
     // Helper: climb ancestors until a rect is found (inline text nodes don't have rects).
-    let nearest_rect = |start: NodeKey| -> Option<layouter::LayoutRect> {
+    let nearest_rect = |start: NodeKey| -> Option<LayoutRect> {
         let mut cur = Some(start);
         while let Some(n) = cur {
             if let Some(r) = rects.get(&n) {
@@ -324,7 +329,7 @@ pub fn build_text_list(
         None
     };
     for (key, kind, _children) in snapshot.iter() {
-        if let layouter::LayoutNodeKind::InlineText { text } = kind {
+        if let LayoutNodeKind::InlineText { text } = kind {
             if text.trim().is_empty() {
                 continue;
             }
@@ -387,7 +392,7 @@ pub fn build_text_list(
 
 fn push_text_item(
     list: &mut DisplayList,
-    rect: &layouter::LayoutRect,
+    rect: &LayoutRect,
     text: &str,
     font_size: f32,
     color_rgb: [f32; 3],
@@ -503,7 +508,7 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
         last_style_restyled_nodes,
     } = inputs;
 
-    let mut kind_map: HashMap<NodeKey, layouter::LayoutNodeKind> = HashMap::new();
+    let mut kind_map: HashMap<NodeKey, LayoutNodeKind> = HashMap::new();
     let mut children_map: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
     for (key, kind, children) in snapshot.into_iter() {
         kind_map.insert(key, kind);
@@ -521,10 +526,10 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
     fn nearest_style<'a>(
         start: NodeKey,
         parent_map: &HashMap<NodeKey, NodeKey>,
-        computed_map: &'a HashMap<NodeKey, style_engine::ComputedStyle>,
-        computed_fallback: &'a HashMap<NodeKey, style_engine::ComputedStyle>,
-        computed_robust: &'a Option<HashMap<NodeKey, style_engine::ComputedStyle>>,
-    ) -> Option<&'a style_engine::ComputedStyle> {
+        computed_map: &'a HashMap<NodeKey, ComputedStyle>,
+        computed_fallback: &'a HashMap<NodeKey, ComputedStyle>,
+        computed_robust: &'a Option<HashMap<NodeKey, ComputedStyle>>,
+    ) -> Option<&'a ComputedStyle> {
         let mut cur = Some(start);
         while let Some(n) = cur {
             if let Some(cs) = computed_robust
@@ -543,8 +548,8 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
     fn nearest_rect(
         start: NodeKey,
         parent_map: &HashMap<NodeKey, NodeKey>,
-        rects: &HashMap<NodeKey, layouter::LayoutRect>,
-    ) -> Option<layouter::LayoutRect> {
+        rects: &HashMap<NodeKey, LayoutRect>,
+    ) -> Option<LayoutRect> {
         let mut cur = Some(start);
         while let Some(n) = cur {
             if let Some(r) = rects.get(&n) {
@@ -560,9 +565,9 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
     fn order_children(
         children: &[NodeKey],
         parent_map: &HashMap<NodeKey, NodeKey>,
-        computed_map: &HashMap<NodeKey, style_engine::ComputedStyle>,
-        computed_fallback: &HashMap<NodeKey, style_engine::ComputedStyle>,
-        computed_robust: &Option<HashMap<NodeKey, style_engine::ComputedStyle>>,
+        computed_map: &HashMap<NodeKey, ComputedStyle>,
+        computed_fallback: &HashMap<NodeKey, ComputedStyle>,
+        computed_robust: &Option<HashMap<NodeKey, ComputedStyle>>,
     ) -> Vec<NodeKey> {
         let mut ordered: Vec<NodeKey> = children.to_vec();
         ordered.sort_by_key(|c| {
@@ -592,15 +597,6 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
             }
         }
     }
-    struct WalkCtx<'a> {
-        kind_map: &'a HashMap<NodeKey, layouter::LayoutNodeKind>,
-        children_map: &'a HashMap<NodeKey, Vec<NodeKey>>,
-        rects: &'a HashMap<NodeKey, layouter::LayoutRect>,
-        computed_map: &'a HashMap<NodeKey, style_engine::ComputedStyle>,
-        computed_fallback: &'a HashMap<NodeKey, style_engine::ComputedStyle>,
-        computed_robust: &'a Option<HashMap<NodeKey, style_engine::ComputedStyle>>,
-        parent_map: &'a HashMap<NodeKey, NodeKey>,
-    }
 
     fn recurse(list: &mut DisplayList, node: NodeKey, ctx: &WalkCtx<'_>) {
         let kind = match ctx.kind_map.get(&node) {
@@ -608,14 +604,14 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
             None => return,
         };
         match kind {
-            layouter::LayoutNodeKind::Document => {
+            LayoutNodeKind::Document => {
                 if let Some(children) = ctx.children_map.get(&node) {
                     for &child in children {
                         recurse(list, child, ctx);
                     }
                 }
             }
-            layouter::LayoutNodeKind::Block { .. } => {
+            LayoutNodeKind::Block { .. } => {
                 // Background/border/clip only if we have a rect for this node
                 let rect_opt = ctx.rects.get(&node);
                 let cs_opt = ctx
@@ -660,7 +656,7 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     });
                     let mut opened_clip = false;
                     if let Some(cs) = style_for_node
-                        && matches!(cs.overflow, style_engine::Overflow::Hidden)
+                        && matches!(cs.overflow, Overflow::Hidden)
                     {
                         list.push(DisplayItem::BeginClip {
                             x: rect.x as f32,
@@ -680,7 +676,7 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     process_children(list, node, ctx);
                 }
             }
-            layouter::LayoutNodeKind::InlineText { text } => {
+            LayoutNodeKind::InlineText { text } => {
                 if text.trim().is_empty() {
                     return;
                 }
@@ -704,7 +700,7 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     } else {
                         (16.0, [0.0, 0.0, 0.0])
                     };
-                    push_text_item(list, &rect, text, font_size, color_rgb);
+                    push_text_item(list, &rect, &text, font_size, color_rgb);
                 }
             }
         }
@@ -735,7 +731,7 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
         let sel_y = y0.min(y1);
         let sel_w = (x0.max(x1) - sel_x).max(0);
         let sel_h = (y0.max(y1) - sel_y).max(0);
-        let selection = layouter::LayoutRect {
+        let selection = LayoutRect {
             x: sel_x,
             y: sel_y,
             width: sel_w,

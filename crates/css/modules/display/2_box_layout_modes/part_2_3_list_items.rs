@@ -6,7 +6,7 @@
 //! future-proof integration seam that callers can invoke without branching on
 //! engine details.
 
-use style_engine::ComputedStyle;
+use css_orchestrator::style_model::ComputedStyle;
 
 #[inline]
 /// Return true if the element should behave as a list-item (i.e., generate a `::marker`).

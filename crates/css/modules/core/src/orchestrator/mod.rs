@@ -1,12 +1,13 @@
 //! Orchestrator: entry points and root aggregation for layout.
 
 use css_box::compute_box_sides;
-use style_engine::ComputedStyle;
+use css_orchestrator::style_model::ComputedStyle;
 
-use crate::visual_formatting::dimensions;
+use crate::SCROLLBAR_GUTTER_PX;
+use crate::chapter8::part_8_3_1_collapsing_margins::compute_root_y_after_top_collapse;
+use crate::chapter10::part_10_6_3_height_of_blocks::compute_root_heights;
 use crate::{ContainerMetrics, Layouter, RootHeightsCtx};
 use crate::{INITIAL_CONTAINING_BLOCK_WIDTH, LayoutRect};
-use crate::{SCROLLBAR_GUTTER_PX, visual_formatting};
 use js::NodeKey;
 
 #[inline]
@@ -134,8 +135,7 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
     let (reflowed_count, _content_height_from_cursor, root_last_pos_mb, last_placed_info) =
         layouter.layout_block_children(root, &metrics, false);
 
-    let root_y =
-        visual_formatting::root::compute_root_y_after_top_collapse(layouter, root, &metrics);
+    let root_y = compute_root_y_after_top_collapse(layouter, root, &metrics);
 
     // Prefer effective outgoing bottom margin from the placement loop if available.
     let content_bottom = if let Some((last_key, rect_bottom, mb_out)) = last_placed_info {
@@ -149,7 +149,7 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
     };
     log_last_placed_child_diag(layouter, root, content_bottom);
     let root_y_aligned = root_y;
-    let (content_height, root_height_border_box) = dimensions::compute_root_heights_impl(
+    let (content_height, root_height_border_box) = compute_root_heights(
         layouter,
         RootHeightsCtx {
             root,

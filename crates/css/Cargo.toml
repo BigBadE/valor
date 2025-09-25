@@ -16,7 +16,7 @@ anyhow.workspace = true
 url.workspace = true
 
 # Internal CSS modules (workspace dependencies)
-css_core.workspace = true
+css_orchestrator.workspace = true
 css_syntax.workspace = true
 #css_style_attr.workspace = true
 #css_media_queries.workspace = true

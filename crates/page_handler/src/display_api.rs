@@ -1,5 +1,6 @@
 use crate::state::HtmlPage;
 use anyhow::Error;
+use css_core::LayoutNodeKind;
 use wgpu_renderer::{DisplayList, DrawRect, DrawText};
 
 impl HtmlPage {
@@ -60,7 +61,7 @@ impl HtmlPage {
         let mut body_key: Option<js::NodeKey> = None;
         let mut html_key: Option<js::NodeKey> = None;
         for (key, kind, _children) in snapshot.iter() {
-            if let layouter::LayoutNodeKind::Block { tag } = kind {
+            if let LayoutNodeKind::Block { tag } = kind {
                 if tag.eq_ignore_ascii_case("body") {
                     body_key = Some(*key);
                 }

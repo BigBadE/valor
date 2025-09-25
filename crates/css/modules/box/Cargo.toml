@@ -6,4 +6,4 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-style_engine.workspace = true
+css_orchestrator.workspace = true

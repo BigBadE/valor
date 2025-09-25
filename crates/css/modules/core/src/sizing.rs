@@ -4,7 +4,7 @@
 //! - CSS Box Sizing Module Level 3 — `box-sizing`.
 //! - CSS 2.2 §8.1 Box model.
 
-use style_engine::{BoxSizing, ComputedStyle};
+use css_orchestrator::style_model::{BoxSizing, ComputedStyle};
 
 /// Sum horizontal padding and border widths in pixels (clamped to >= 0).
 #[inline]
