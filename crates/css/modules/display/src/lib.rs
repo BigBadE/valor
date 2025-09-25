@@ -4,16 +4,28 @@
 use core::hash::BuildHasher;
 use js::NodeKey;
 use std::collections::HashMap;
-use style_engine::{ComputedStyle, Display};
+use style_engine::ComputedStyle;
 
 mod anonymous_blocks;
 pub use anonymous_blocks::{AnonymousChildRun, build_anonymous_block_runs};
 
+// Chapter modules (external to src/) mapped to the Display 3 spec structure.
+// Spec: §2 — Box layout modes and the display property
+#[path = "../2-box-layout-modes/mod.rs"]
+mod chapter2;
+// Spec: §3 — Display order
+#[path = "../3-display-order/mod.rs"]
+mod chapter3;
+// Spec: §4 — Visibility
+#[path = "../4-visibility/mod.rs"]
+mod chapter4;
+
 #[inline]
 /// Normalize children for layout by applying a subset of CSS Display 3 box generation rules.
 ///
-/// Spec: CSS Display 3 — Box generation and display types
+/// Spec: CSS Display 3 — §2.5 Box Generation: the `none` and `contents` keywords
 ///   <https://www.w3.org/TR/css-display-3/#box-generation>
+///   - Delegates to `chapter2::box_generation::normalize_children`
 ///
 /// Behavior:
 /// - Skip `display: none` subtrees entirely.
@@ -24,29 +36,8 @@ pub fn normalize_children<SChildren: BuildHasher, SStyles: BuildHasher>(
     styles: &HashMap<NodeKey, ComputedStyle, SStyles>,
     parent: NodeKey,
 ) -> Vec<NodeKey> {
-    let Some(children) = children_by_parent.get(&parent).cloned() else {
-        return Vec::new();
-    };
-    let mut out = Vec::with_capacity(children.len());
-    for child in children {
-        let display = styles
-            .get(&child)
-            .cloned()
-            .unwrap_or_else(ComputedStyle::default)
-            .display;
-        match display {
-            Display::None => {
-                // Skip entirely
-            }
-            Display::Contents => {
-                // Lift grandchildren
-                let mut lifted = normalize_children(children_by_parent, styles, child);
-                out.append(&mut lifted);
-            }
-            _ => out.push(child),
-        }
-    }
-    out
+    // Delegate to §2 implementation.
+    chapter2::box_generation::normalize_children(children_by_parent, styles, parent)
 }
 
 #[inline]

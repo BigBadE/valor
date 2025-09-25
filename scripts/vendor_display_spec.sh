@@ -23,51 +23,43 @@ else
   exit 1
 fi
 
-# Require pandoc for high-quality HTML->Markdown conversion
-PANDOC_BIN="${PANDOC:-}"
-if [[ -z "${PANDOC_BIN}" ]]; then
-  if command -v pandoc >/dev/null 2>&1; then
-    PANDOC_BIN="pandoc"
-  else
-    # Try common Windows installation paths when running under Git Bash/WSL
-    for p in \
-      "/c/Program Files/Pandoc/pandoc.exe" \
-      "/c/Program Files (x86)/Pandoc/pandoc.exe" \
-      "/mnt/c/Program Files/Pandoc/pandoc.exe" \
-      "/mnt/c/Program Files (x86)/Pandoc/pandoc.exe" \
-      "/c/ProgramData/chocolatey/bin/pandoc.exe" \
-      "/mnt/c/ProgramData/chocolatey/bin/pandoc.exe" \
-      "/c/Users/${USERNAME}/AppData/Local/Pandoc/pandoc.exe" \
-      "/mnt/c/Users/${USERNAME}/AppData/Local/Pandoc/pandoc.exe"; do
-      if [[ -x "$p" ]]; then PANDOC_BIN="$p"; break; fi
-    done
-  fi
-fi
-if [[ -z "${PANDOC_BIN}" ]]; then
-  echo "[vendor_display_spec] pandoc not found. Please install pandoc to continue." >&2
-  exit 1
-fi
+# Note: pandoc is not required. We embed raw HTML inside spec.md; Markdown passes it through.
 
 # Extract <body> and remove scripts/styles
 body="$(printf '%s' "${html}" | awk 'BEGIN{IGNORECASE=1} /<body/{p=1} p{print} /<\/body>/{exit}')"
 body="$(printf '%s' "${body}" | sed -E 's/<script[\s\S]*?<\/script>//Ig')"
 body="$(printf '%s' "${body}" | sed -E 's/<style[\s\S]*?<\/style>//Ig')"
 
-# Slice from Chapter 2 to before Acknowledgments (robust to nested spans inside H2)
-# Prefer exact section ids if present, otherwise use heuristics.
-begin_idx=$(perl -0777 -ne '
-  if (/<h2[^>]*id=\"the-display-properties\"/i) { print $-[0]; exit }
-  if (/<h2[^>]*>[\s\S]*?<span[^>]*class=\"[^\"]*secno[^\"]*\"[^>]*>\s*2\.[\s\S]*?<\/h2>/i) { print $-[0]; exit }
-  if (/<h2[^>]*>\s*2(\.|\s)[\s\S]*?<\/h2>/i) { print $-[0]; exit }
+# Slice from the first numbered chapter >= 2 to the first non-numbered H2 (structural-only)
+begin_idx=$(perl -0777 -e '
+  undef $/; $s=<>; my $fallback=-1;
+  while ($s =~ m{<h2[^>]*>(.*?)</h2>}sig) {
+    my $pos = $-[0];
+    my $h = $1;
+    if ($h =~ m{<span[^>]*class="[^"]*secno[^"]*"[^>]*>\s*([0-9]+)\.}i) {
+      my $n = $1; if ($n >= 2) { print $pos; exit }
+    }
+    if ($fallback < 0 && $h =~ m{^\s*([0-9]+)\.[^<]}s) { my $n=$1; if ($n>=2){ $fallback=$pos } }
+  }
+  if ($fallback >= 0) { print $fallback }
 ' <<<"${body}" || true)
-ack_idx=$(perl -0777 -ne '
-  if (/<h2[^>]*id=\"acknowledgments\"/i) { print $-[0]; exit }
-  if (/<h2[^>]*>[\s\S]*?Acknowledg[\s\S]*?<\/h2>/i) { print $-[0]; exit }
+# Export BEGIN_IDX early for subsequent perl
+export BEGIN_IDX="${begin_idx}"
+
+ack_idx=$(perl -0777 -e '
+  undef $/; $s=<>; my $b=$ENV{BEGIN_IDX};
+  if ($b eq q{}) { exit 0 }
+  $s = substr($s, $b);
+  # Find the first H2 that appears to be Acknowledgments (by text or id)
+  while ($s =~ m{<h2[^>]*>(.*?)</h2>}sig) {
+    my $pos = $-[0] + $b;
+    my $h = $1;
+    if ($h =~ m{acknowledg}i) { print $pos; exit }
+  }
 ' <<<"${body}" || true)
 
 if [[ -n "${begin_idx}" ]]; then
   body_slice="$(perl -0777 -pe 'BEGIN{ $b = $ENV{BEGIN_IDX}; $a = $ENV{ACK_IDX}; } END{}' 2>/dev/null <<<"")"
-  export BEGIN_IDX="${begin_idx}"
   export ACK_IDX="${ack_idx}"
   body="$(perl -0777 -e '
     $/=undef; $s=<>; $b=$ENV{BEGIN_IDX}; $a=$ENV{ACK_IDX};
@@ -78,233 +70,14 @@ if [[ -n "${begin_idx}" ]]; then
   ' <<<"${body}")"
 fi
 
-# High-quality conversion to Markdown via pandoc
 # Fallback if slicing failed and produced nearly empty content
 if [[ ${#body} -lt 2000 ]]; then
   echo "[vendor_display_spec] Slice produced too little content; using full spec body." >&2
   body="$(printf '%s' "${html}" | awk 'BEGIN{IGNORECASE=1} /<body/{p=1} p{print} /<\/body>/{exit}')"
 fi
 
-body_md="$(printf '%s' "${body}" | "${PANDOC_BIN}" -f html -t gfm --wrap=none)"
-
-# Post-process tables: merge adjacent headers and drop stray '|' lines inside tables
-:
-
-
-# Reformat property definition blocks into Markdown tables
-body_md="$(awk '
-  # Globals used: g_key, g_rest
-  function norm_key(line,    m,label,canon) {
-    g_key=""; g_rest=""
-    # Only match when the key label appears at the start of the line (ignoring formatting) and is followed by a colon
-    if (match(line, /^\s*(\*\*)?\s*(\[)?(Name|Value|Initial|Applies to|Inherited|Percentages|Computed value|Canonical order|Animation type|Media):(\])?(\*\*)?\s*(.*)$/, m)) {
-      label = m[3]
-      canon = label ":"
-      g_key = canon
-      # Remainder after the key+colon
-      g_rest = m[6]
-      # Trim leading spaces
-      gsub(/^\s+/, "", g_rest)
-      return canon
-    }
-    return ""
-  }
-  function flush_table(){
-    if (in_prop && have_any) {
-      # sanitize values
-      for (k in props) {
-        gsub(/\r?\n+/, "<br>", props[k])
-        gsub(/\|/, "\\|", props[k])
-      }
-      print ""
-      # Determine header row: prefer Name, otherwise first available in order
-      header_key=""
-      if (props["Name:"] != "") header_key="Name:";
-      if (header_key == "") {
-        order_keys[1]="Value:"; order_keys[2]="Initial:"; order_keys[3]="Applies to:";
-        order_keys[4]="Inherited:"; order_keys[5]="Percentages:"; order_keys[6]="Computed value:";
-        order_keys[7]="Canonical order:"; order_keys[8]="Animation type:"; order_keys[9]="Media:";
-        for (i=1;i<=9;i++){ k=order_keys[i]; if (props[k] != "") { header_key=k; break } }
-        delete order_keys
-      }
-      if (header_key != "") {
-        # Print header as the first property row
-        hk=header_key
-        # map label (strip colon)
-        label=hk; sub(/:$/, "", label)
-        print "| " label " | " props[hk] " |"
-        print "|---|---|"
-      }
-      # Print remaining rows, skipping the header_key
-      if (header_key != "Name:" && props["Name:"] != "")        print "| Name | " props["Name:"] " |"
-      if (header_key != "Value:" && props["Value:"] != "")       print "| Value | " props["Value:"] " |"
-      if (header_key != "Initial:" && props["Initial:"] != "")     print "| Initial | " props["Initial:"] " |"
-      if (header_key != "Applies to:" && props["Applies to:"] != "")  print "| Applies to | " props["Applies to:"] " |"
-      if (header_key != "Inherited:" && props["Inherited:"] != "")   print "| Inherited | " props["Inherited:"] " |"
-      if (header_key != "Percentages:" && props["Percentages:"] != "") print "| Percentages | " props["Percentages:"] " |"
-      if (header_key != "Computed value:" && props["Computed value:"]!="")print "| Computed value | " props["Computed value:"] " |"
-      if (header_key != "Canonical order:" && props["Canonical order:"]!="")print "| Canonical order | " props["Canonical order:"] " |"
-      if (header_key != "Animation type:" && props["Animation type:"]!="")print "| Animation type | " props["Animation type:"] " |"
-      if (header_key != "Media:" && props["Media:"] != "")       print "| Media | " props["Media:"] " |"
-      print ""
-    }
-    # reset
-    delete props
-    in_prop=0; expecting=0; last_key=""; have_any=0; seen_any_key=0
-  }
-  BEGIN{
-    in_prop=0; expecting=0; last_key=""; have_any=0; seen_any_key=0; in_code=0
-  }
-  {
-    line=$0
-    # Handle code fences: flush any pending table before entering/exiting
-    if (line ~ /^```/) {
-      flush_table(); in_code = !in_code; print line; next
-    }
-    if (in_code) { print line; next }
-    # If a new section heading starts, flush any pending table first
-    if (line ~ /^## +/ || line ~ /^### +/) {
-      flush_table()
-      print line
-      next
-    }
-    # If a table row begins, flush any pending property table to avoid parsing inside tables
-    if (line ~ /^\|/) {
-      flush_table(); print line; next
-    }
-    # Known property keys (plain or bracketed/linked) at start of line only
-    k = norm_key(line)
-    if (k != "") {
-      in_prop=1
-      last_key=k
-      if (g_rest != "") {
-        props[last_key] = g_rest
-        have_any=1
-        expecting=0
-      } else {
-        expecting=1
-      }
-      seen_any_key=1
-      next
-    }
-    if (in_prop) {
-      # If we just saw a key, capture the first meaningful line (skip blanks)
-      if (expecting) {
-        if (line ~ /^\s*$/) { next }
-        props[last_key]=line
-        have_any=1
-        expecting=0
-        next
-      }
-      # While inside a property block and not expecting a new value,
-      # accumulate continuation lines until next key or heading.
-      k2 = norm_key(line)
-      if (k2 != "") {
-        # New key begins; move on and handle in next iteration
-        in_prop=1
-        last_key=k2
-        if (g_rest != "") {
-          props[last_key] = g_rest
-          have_any=1
-          expecting=0
-        } else {
-          expecting=1
-        }
-        next
-      }
-      if (line ~ /^## +/ || line ~ /^### +/) {
-        # Reached a heading -> end of property block
-        flush_table()
-        print line
-        next
-      }
-      # Otherwise, append the line to the current key value (including blanks)
-      if (last_key != "") {
-        if (line ~ /^\s*$/) {
-          props[last_key] = props[last_key] "\n"
-        } else {
-          props[last_key] = props[last_key] "\n" line
-        }
-      }
-      next
-    }
-    # Default: passthrough
-    print line
-  }
-' <<<"${body_md}")"
-
-# Targeted fix: attach a trailing 'by computed value type' line to preceding Animation type row
-body_md="$(awk '
-  BEGIN{ have_anim=0; saved_row="" }
-  {
-    line=$0
-    if (!have_anim) {
-      if (match(line, /^\|[ ]*Animation type[ ]*\|([^|]*)\|[ ]*$/, m)) {
-        saved_row=line
-        have_anim=1
-        next
-      }
-      print line
-      next
-    }
-    # have_anim == 1
-    t=line; gsub(/^ *| *$/, "", t)
-    if (t == "") { next }
-    if (t == "by computed value type") {
-      # inject into the saved row before the closing |
-      row=saved_row
-      sub(/\|[ ]*$/, "<br>by computed value type |", row)
-      print row
-      have_anim=0; saved_row=""
-      next
-    }
-    # different content; emit saved row and current line
-    print saved_row
-    print line
-    have_anim=0; saved_row=""
-  }
-  END{ if(have_anim) print saved_row }
-' <<<"${body_md}")"
-# Post-process: merge narrative continuation lines into the preceding table row value
-body_md="$(awk '
-  BEGIN{
-    in_table=0; have_row=0; field=""; value=""; row_prefix="| "; in_code=0
-    # Known field names we format
-    fields["Name"]=1; fields["Value"]=1; fields["Initial"]=1; fields["Applies to"]=1;
-    fields["Inherited"]=1; fields["Percentages"]=1; fields["Computed value"]=1;
-    fields["Canonical order"]=1; fields["Animation type"]=1; fields["Media"]=1;
-  }
-  function flush(){ if(have_row){ print row_prefix field " | " value " |"; have_row=0; field=""; value="" } }
-  {
-    line=$0
-    if (line ~ /^```/) { flush(); in_table=0; in_code=!in_code; print line; next }
-    if (in_code) { print line; next }
-    if (match(line, /^\|([^|]+)\|([^|]*)\|\s*$/, m)) {
-      f=m[1]; v=m[2]; gsub(/^ *| *$/, "", f); gsub(/^ *| *$/, "", v)
-      if (!in_table) {
-        if (f in fields) { in_table=1 } else { print line; next }
-      }
-      flush(); field=f; value=v; have_row=1; next
-    }
-    if (line ~ /^\|/) { flush(); in_table=0; print line; next }
-    if (line ~ /^## +/ || line ~ /^### +/) { flush(); in_table=0; print line; next }
-    # Non-table content; accumulate only for known short continuations
-    if (have_row) {
-      t=line; gsub(/^ *| *$/, "", t)
-      if (t == "") { next }
-      if (t ~ /^(specified integer|per grammar|by computed value type)$/) {
-        add=t; gsub(/\|/, "\\|", add)
-        if (value == "") value=add; else value=value "<br>" add
-        next
-      }
-      # otherwise end the table and emit this line
-      flush(); in_table=0; print line; next
-    }
-    # No current row: end table and print
-    in_table=0; print line
-  }
-  END{ flush() }
-' <<<"${body_md}")"
+# Payload is raw sliced HTML (no Markdown conversion, no table post-processing)
+payload_html="${body}"
 
 # Replace content between markers
 start_marker_ps1='<!-- BEGIN VERBATIM SPEC: DO NOT EDIT BELOW. This block is auto-generated by scripts/vendor_display_spec.ps1 -->'
@@ -324,8 +97,8 @@ if ! awk -v m="$start_marker" 'index($0,m){found=1} END{exit(found?0:1)}' "${spe
   exit 1
 fi
 
-# Build new file by replacing content between markers
-awk -v sm="$start_marker" -v em="$end_marker" -v payload="${body_md//\/\\}" '
+# Build new file by replacing content between markers (embed HTML as-is)
+awk -v sm="$start_marker" -v em="$end_marker" -v payload="${payload_html//\/\\}" '
   BEGIN{in_block=0}
   {
     if(!in_block){
