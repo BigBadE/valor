@@ -4,9 +4,9 @@
     reason = "diagnostic-only helper code in test harness"
 )]
 use anyhow::Error;
+use css::style_types::{AlignItems, BorderWidths, ComputedStyle, Display, Edges};
 use css_core::LayoutRect;
 use css_core::{LayoutNodeKind, Layouter};
-use css_orchestrator::style_model::ComputedStyle;
 use headless_chrome::{Browser, LaunchOptionsBuilder};
 use js::DOMSubscriber;
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
@@ -416,20 +416,17 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
         )
     }
 
-    fn to_px_or_auto(sz: &SizeSpecified) -> String {
-        use LengthOrAuto::*;
-        match sz {
-            Pixels(v) => format!("{v}px"),
-            Auto => "auto".to_string(),
-            Percent(p) => format!("{p}%"),
+    // Placeholder until css facade exposes concrete flex-basis types
+    fn to_px_or_auto(v: &Option<f32>) -> String {
+        match v {
+            Some(px) => format!("{}px", *px as f64),
+            None => "auto".to_string(),
         }
     }
 
     fn effective_display(d: &Display) -> &'static str {
-        use Display::*;
-        // Our layouter snapshot only contains block-level boxes; default to 'block' unless explicitly Flex.
         match d {
-            Flex | InlineFlex => "flex",
+            Display::Flex | Display::InlineFlex => "flex",
             _ => "block",
         }
     }
@@ -442,31 +439,39 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
             "left": format!("{}px", e.left as f64),
         })
     }
+
+    fn border_widths_to_map_px(bw: &BorderWidths) -> Value {
+        json!({
+            "top": format!("{}px", bw.top as f64),
+            "right": format!("{}px", bw.right as f64),
+            "bottom": format!("{}px", bw.bottom as f64),
+            "left": format!("{}px", bw.left as f64),
+        })
+    }
+
     fn align_items_to_str(a: &AlignItems) -> &'static str {
-        use AlignItems::*;
         match a {
-            Stretch => "stretch",
-            FlexStart => "flex-start",
-            FlexEnd => "flex-end",
-            Center => "center",
-            Baseline => "baseline",
+            AlignItems::Stretch => "stretch",
+            AlignItems::FlexStart => "flex-start",
+            AlignItems::FlexEnd => "flex-end",
+            AlignItems::Center => "center",
         }
     }
-    fn overflow_to_str(o: &Overflow) -> &'static str {
-        use Overflow::*;
+
+    fn overflow_to_str(o: &css::style_types::Overflow) -> &'static str {
         match o {
-            Visible => "visible",
-            Hidden => "hidden",
-            Scroll => "scroll",
-            Auto => "auto",
+            css::style_types::Overflow::Visible => "visible",
+            _ => "hidden",
         }
     }
-    fn box_sizing_to_str(b: &BoxSizing) -> &'static str {
+
+    fn box_sizing_to_str(b: &css::style_types::BoxSizing) -> &'static str {
         match b {
-            BoxSizing::BorderBox => "border-box",
-            BoxSizing::ContentBox => "content-box",
+            css::style_types::BoxSizing::BorderBox => "border-box",
+            css::style_types::BoxSizing::ContentBox => "content-box",
         }
     }
+
     fn recurse(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
         match ctx.kind_by_key.get(&key) {
             Some(LayoutNodeKind::Block { tag }) => {
@@ -528,7 +533,7 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
                         "flexShrink": cs.flex_shrink as f64,
                         "margin": margin_json,
                         "padding": edges_to_map_px(&cs.padding),
-                        "borderWidth": edges_to_map_px(&cs.border_width),
+                        "borderWidth": border_widths_to_map_px(&cs.border_width),
                         "alignItems": if eff_disp == "flex" {
                             // Chromium serializes default align-items as 'normal' rather than 'stretch'
                             match cs.align_items { AlignItems::Stretch => "normal", _ => align_items_to_str(&cs.align_items) }

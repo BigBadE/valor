@@ -700,7 +700,7 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     } else {
                         (16.0, [0.0, 0.0, 0.0])
                     };
-                    push_text_item(list, &rect, &text, font_size, color_rgb);
+                    push_text_item(list, &rect, text, font_size, color_rgb);
                 }
             }
         }

@@ -416,6 +416,10 @@ impl HtmlPage {
     }
 
     /// Extract concatenated CSS text from inline <style> elements using the current layout snapshot.
+    #[allow(
+        dead_code,
+        reason = "Kept for future inline <style> extraction and test helpers"
+    )]
     fn extract_inline_style_css(
         &mut self,
         tags_by_key: &HashMap<js::NodeKey, String>,

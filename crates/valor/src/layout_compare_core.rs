@@ -1,7 +1,7 @@
 use anyhow::Error;
+use css::style_types::{AlignItems, BoxSizing, ComputedStyle, Display, Overflow};
 use css_core::LayoutRect;
 use css_core::{LayoutNodeKind, Layouter};
-use css_orchestrator::style_model::ComputedStyle;
 use headless_chrome::{Browser, LaunchOptionsBuilder};
 use js::DOMSubscriber;
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
@@ -330,12 +330,9 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
             "head" | "meta" | "title" | "link" | "style" | "script" | "base"
         )
     }
-    fn to_px_or_auto(sz: &SizeSpecified) -> String {
-        match sz {
-            LengthOrAuto::Pixels(v) => format!("{v}px"),
-            LengthOrAuto::Auto => "auto".to_string(),
-            LengthOrAuto::Percent(p) => format!("{p}%"),
-        }
+    // Flex basis formatting not needed for core compare; use a placeholder for now.
+    fn flex_basis_str() -> &'static str {
+        "auto"
     }
     fn effective_display(d: &Display) -> &'static str {
         match d {
@@ -373,7 +370,7 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
             "style": {
                 "display": effective_display(&computed.display),
                 "boxSizing": match computed.box_sizing { BoxSizing::BorderBox => "border-box", BoxSizing::ContentBox => "content-box" },
-                "flexBasis": to_px_or_auto(&computed.flex_basis),
+                "flexBasis": flex_basis_str(),
                 "flexGrow": computed.flex_grow as f64,
                 "flexShrink": computed.flex_shrink as f64,
                 "alignItems": match computed.align_items {
@@ -381,7 +378,6 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
                     AlignItems::Center => "center",
                     AlignItems::FlexEnd => "flex-end",
                     AlignItems::Stretch => "normal",
-                    AlignItems::Baseline => "baseline",
                 },
                 "overflow": match computed.overflow { Overflow::Visible => "visible", _ => "hidden" },
                 "margin": {
