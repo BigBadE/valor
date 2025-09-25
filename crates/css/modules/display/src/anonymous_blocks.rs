@@ -2,10 +2,12 @@
 //! Spec: CSS 2.2 §9.4.1 — Anonymous block boxes
 //!   <https://www.w3.org/TR/CSS22/visuren.html#anonymous-block-level>
 
+use crate::chapter2::part_2_1_outer_inner::is_block_level_outer;
+use crate::chapter2::part_2_7_transformations::used_display_for_child;
 use core::hash::BuildHasher;
 use js::NodeKey;
 use std::collections::HashMap;
-use style_engine::{ComputedStyle, Display};
+use style_engine::ComputedStyle;
 
 /// Kind of anonymous-block-related run found during analysis.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,6 +38,7 @@ pub struct AnonymousChildRun {
 pub fn build_anonymous_block_runs<S: BuildHasher>(
     flat_children: &[NodeKey],
     styles: &HashMap<NodeKey, ComputedStyle, S>,
+    parent_style: Option<&ComputedStyle>,
 ) -> Vec<AnonymousChildRun> {
     let mut out: Vec<AnonymousChildRun> = Vec::new();
     if flat_children.is_empty() {
@@ -48,10 +51,8 @@ pub fn build_anonymous_block_runs<S: BuildHasher>(
             break;
         };
         let is_block_level = styles.get(&key_current).is_none_or(|style_ref| {
-            matches!(
-                style_ref.display,
-                Display::Block | Display::Flex | Display::InlineFlex
-            )
+            let used = used_display_for_child(style_ref, parent_style, false);
+            is_block_level_outer(used)
         });
         if is_block_level {
             out.push(AnonymousChildRun {
@@ -70,10 +71,8 @@ pub fn build_anonymous_block_runs<S: BuildHasher>(
                 break;
             };
             let iter_is_block = styles.get(&key_iter).is_none_or(|style_ref| {
-                matches!(
-                    style_ref.display,
-                    Display::Block | Display::Flex | Display::InlineFlex
-                )
+                let used = used_display_for_child(style_ref, parent_style, false);
+                is_block_level_outer(used)
             });
             if iter_is_block {
                 break;

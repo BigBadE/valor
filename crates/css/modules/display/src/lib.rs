@@ -11,13 +11,13 @@ pub use anonymous_blocks::{AnonymousChildRun, build_anonymous_block_runs};
 
 // Chapter modules (external to src/) mapped to the Display 3 spec structure.
 // Spec: §2 — Box layout modes and the display property
-#[path = "../2-box-layout-modes/mod.rs"]
+#[path = "../2_box_layout_modes/mod.rs"]
 mod chapter2;
 // Spec: §3 — Display order
-#[path = "../3-display-order/mod.rs"]
+#[path = "../3_display_order/mod.rs"]
 mod chapter3;
 // Spec: §4 — Visibility
-#[path = "../4-visibility/mod.rs"]
+#[path = "../4_visibility/mod.rs"]
 mod chapter4;
 
 #[inline]
@@ -25,7 +25,7 @@ mod chapter4;
 ///
 /// Spec: CSS Display 3 — §2.5 Box Generation: the `none` and `contents` keywords
 ///   <https://www.w3.org/TR/css-display-3/#box-generation>
-///   - Delegates to `chapter2::box_generation::normalize_children`
+///   - Delegates to `chapter2::part_2_5_box_generation::normalize_children`
 ///
 /// Behavior:
 /// - Skip `display: none` subtrees entirely.
@@ -37,7 +37,7 @@ pub fn normalize_children<SChildren: BuildHasher, SStyles: BuildHasher>(
     parent: NodeKey,
 ) -> Vec<NodeKey> {
     // Delegate to §2 implementation.
-    chapter2::box_generation::normalize_children(children_by_parent, styles, parent)
+    chapter2::part_2_5_box_generation::normalize_children(children_by_parent, styles, parent)
 }
 
 #[inline]
@@ -52,6 +52,7 @@ pub fn normalize_with_anonymous_runs<SChildren: BuildHasher, SStyles: BuildHashe
     parent: NodeKey,
 ) -> (Vec<NodeKey>, Vec<AnonymousChildRun>) {
     let flat = normalize_children(children_by_parent, styles, parent);
-    let runs = build_anonymous_block_runs(&flat, styles);
+    let parent_style_opt = styles.get(&parent);
+    let runs = build_anonymous_block_runs(&flat, styles, parent_style_opt);
     (flat, runs)
 }

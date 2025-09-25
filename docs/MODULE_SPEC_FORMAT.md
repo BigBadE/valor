@@ -40,6 +40,31 @@ This template defines the required structure and standards for each CSS/HTML mod
   - `Fixtures:` concrete test fixtures (full relative paths).
 - This replaces the old checklist; the verbatim text is now the source of truth and is annotated with status and mappings.
 
+### 3.1 Per-chapter verbatim outputs and status configs (generated)
+
+- In addition to the top-level `spec.md`, the vendor pipeline generates per-chapter verbatim HTML files under the module directory, one directory per chapter/appendix, for example:
+  - `crates/css/modules/<module>/<N>_<slug>/spec.html` (numbered chapters)
+  - `crates/css/modules/<module>/appendices/<Letter>_<slug>/spec.html` (appendices)
+- Each `spec.html` mirrors the original spec structure for that chapter and injects a status block immediately after every H3/H4 heading.
+- Status and mapping values are populated from an optional `status.json` file placed alongside each chapter:
+  - `crates/css/modules/<module>/<N>_<slug>/status.json`
+  - `crates/css/modules/<module>/appendices/<Letter>_<slug>/status.json`
+- `status.json` format:
+
+```json
+{
+  "sections": {
+    "<anchor-id>": {
+      "status": "Production | MVP | TODO | Approximation | Heuristic | Fallback | Non-normative",
+      "code": ["<crate_path>::<module_path>::<symbol>", "..."] ,
+      "fixtures": ["crates/<crate>/tests/fixtures/.../file.html"]
+    }
+  }
+}
+```
+
+- The `<anchor-id>` corresponds to the spec section’s anchor (from the self-link `href="#<id>"` or the heading’s `id`). Any sections not present in `status.json` default to `Status: [Unknown]` with empty code/fixtures.
+
 ## 4. Algorithms and data flow
 
 - Summarize the core algorithms and how data flows between modules:
@@ -94,12 +119,12 @@ This template defines the required structure and standards for each CSS/HTML mod
 ## 12. Spec-driven folder structure and naming (enforced)
 
 - Folder hierarchy MUST mirror the specification’s chapter/section layout, to make navigation and mapping trivial.
-  - Create a folder per top-level chapter, named by the chapter number, optionally followed by a short kebab-case title.
-    - Examples: `8/`, `8-run-in-layout/`, `2-box-layout-modes/`.
+  - Create a folder per top-level chapter, named by the chapter number, followed by an underscore and a short lowercase slug (no dashes).
+    - Examples: `8_block_formatting_context/`, `2_box_layout_modes/`.
   - For subsections, create nested folders using the dotted number prefix, optionally followed by a short kebab-case title.
     - Examples: `8/8.1/`, `8/8.1-anonymous-blocks/`, `2/2.3-list-items/`.
   - Place Rust source files that implement a clause inside the folder that matches that clause number.
-    - Example: the implementation of “Chapter 8” lives under `.../<module>/8/`, and “§8.1” under `.../<module>/8/8.1/`.
+    - Example: the implementation of “Chapter 8” lives under `.../<module>/8_block_formatting_context/`, and “§2.5 Box generation” may be implemented in `.../<module>/2_box_layout_modes/part_2_5_box_generation.rs`.
 - The root `spec.md` in the module references exactly one primary spec (see §0 and §1) and its mapping section points to files inside these chapter/section folders.
 - Comments and doc links in those files MUST cite the exact clause (e.g., `§8.1`, anchor id), and code should be ordered to follow the spec’s order whenever practical.
 
