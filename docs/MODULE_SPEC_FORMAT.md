@@ -9,12 +9,15 @@ This template defines the required structure and standards for each CSS/HTML mod
     - `crates/css/modules/<module>/spec.md`
     - `crates/html/<module>/spec.md`
 - The module-local `spec.md` is the single source of truth for spec coverage and implementation notes.
+- One spec per file: each `spec.md` MUST correspond to exactly one primary specification (single TR URL).
+  - Do not combine multiple specifications in one `spec.md`.
+  - If a module implements pieces from multiple specifications, create a separate `spec.md` per spec (for example under submodules), and cross-link between them.
 
 ## 1. Title and primary spec(s)
 
 - Top lines MUST include a module title and primary spec link(s):
   - `# <Module Name> — Spec Coverage Map (Spec version)`
-  - `Primary spec: https://www.w3.org/TR/<SpecVersion>/`
+  - `Primary spec: https://www.w3.org/TR/<SpecVersion>/` (exactly one primary link per `spec.md`)
   - Add additional spec links as needed (e.g., CSS2, CSS Display, CSS Sizing).
 
 ## 2. Scope and maturity
@@ -72,8 +75,10 @@ This template defines the required structure and standards for each CSS/HTML mod
   - Every public function/type MUST include a concise doc comment with a spec reference line:
     - `/// Spec: <https://www.w3.org/TR/<spec>#<section>>`
   - Prefer short, clear summaries; use links instead of copying spec text.
+  - Every non-trivial code block MUST include an inline comment that cites the exact clause it implements, and files SHOULD implement clauses in the same order as the spec.
+    - Example: `// Spec: §8.1 Block Formatting Context — anonymous block generation` directly above the relevant block.
 - File and module structure:
-  - Mirror spec chapters where practical (`vertical.rs`, `horizontal.rs`, `height.rs`, etc.).
+  - Mirror spec chapters where practical (`vertical.rs`, `horizontal.rs`, `height.rs`, etc.). See §12 for folder structure rules that mirror chapter/section numbering.
   - Keep code files under ~500 lines. Split large modules.
   - The ~500-line limit applies to source code files only; it does NOT apply to documentation like `spec.md`.
 - Imports and style (Rust):
@@ -85,6 +90,18 @@ This template defines the required structure and standards for each CSS/HTML mod
 - Maturity labels in code/comments:
   - Any non-production behaviors MUST be tagged inline with one of: `[MVP]`, `[Approximation]`, `[Heuristic]`, `[Fallback]`, `[Non-normative]`.
   - Link to the section in `spec.md` that justifies the deviation and tracks its TODO.
+
+## 12. Spec-driven folder structure and naming (enforced)
+
+- Folder hierarchy MUST mirror the specification’s chapter/section layout, to make navigation and mapping trivial.
+  - Create a folder per top-level chapter, named by the chapter number, optionally followed by a short kebab-case title.
+    - Examples: `8/`, `8-run-in-layout/`, `2-box-layout-modes/`.
+  - For subsections, create nested folders using the dotted number prefix, optionally followed by a short kebab-case title.
+    - Examples: `8/8.1/`, `8/8.1-anonymous-blocks/`, `2/2.3-list-items/`.
+  - Place Rust source files that implement a clause inside the folder that matches that clause number.
+    - Example: the implementation of “Chapter 8” lives under `.../<module>/8/`, and “§8.1” under `.../<module>/8/8.1/`.
+- The root `spec.md` in the module references exactly one primary spec (see §0 and §1) and its mapping section points to files inside these chapter/section folders.
+- Comments and doc links in those files MUST cite the exact clause (e.g., `§8.1`, anchor id), and code should be ordered to follow the spec’s order whenever practical.
 
 ## 10. Future work
 

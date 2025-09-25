@@ -53,18 +53,38 @@ body="$(printf '%s' "${html}" | awk 'BEGIN{IGNORECASE=1} /<body/{p=1} p{print} /
 body="$(printf '%s' "${body}" | sed -E 's/<script[\s\S]*?<\/script>//Ig')"
 body="$(printf '%s' "${body}" | sed -E 's/<style[\s\S]*?<\/style>//Ig')"
 
-# Slice from Chapter 2 (first H2 starting with "2" or "2.") to before Acknowledgements
-begin_idx=$(perl -0777 -ne 'if (/<h2[^>]*>(\s*2[\.|\s][^<]*)<\/h2>/i) { print $-[0]; exit }' <<<"${body}" || true)
-ack_idx=$(perl -0777 -ne 'if (/<h2[^>]*>\s*Acknowledg/i) { print $-[0]; exit }' <<<"${body}" || true)
+# Slice from Chapter 2 to before Acknowledgments (robust to nested spans inside H2)
+# Prefer exact section ids if present, otherwise use heuristics.
+begin_idx=$(perl -0777 -ne '
+  if (/<h2[^>]*id=\"the-display-properties\"/i) { print $-[0]; exit }
+  if (/<h2[^>]*>[\s\S]*?<span[^>]*class=\"[^\"]*secno[^\"]*\"[^>]*>\s*2\.[\s\S]*?<\/h2>/i) { print $-[0]; exit }
+  if (/<h2[^>]*>\s*2(\.|\s)[\s\S]*?<\/h2>/i) { print $-[0]; exit }
+' <<<"${body}" || true)
+ack_idx=$(perl -0777 -ne '
+  if (/<h2[^>]*id=\"acknowledgments\"/i) { print $-[0]; exit }
+  if (/<h2[^>]*>[\s\S]*?Acknowledg[\s\S]*?<\/h2>/i) { print $-[0]; exit }
+' <<<"${body}" || true)
 
 if [[ -n "${begin_idx}" ]]; then
   body_slice="$(perl -0777 -pe 'BEGIN{ $b = $ENV{BEGIN_IDX}; $a = $ENV{ACK_IDX}; } END{}' 2>/dev/null <<<"")"
   export BEGIN_IDX="${begin_idx}"
   export ACK_IDX="${ack_idx}"
-  body="$(perl -0777 -e '$/=undef; $s=<>; $b=$ENV{BEGIN_IDX}; $a=$ENV{ACK_IDX}; if($b eq q{}){print $s; exit}; if($a eq q{}){$a=length($s);} print substr($s,$b,$a-$b);' <<<"${body}")"
+  body="$(perl -0777 -e '
+    $/=undef; $s=<>; $b=$ENV{BEGIN_IDX}; $a=$ENV{ACK_IDX};
+    if($b eq q{}){print $s; exit};
+    if($a eq q{}){$a=length($s);} 
+    if($a < $b){ $a = length($s); }
+    print substr($s,$b,$a-$b);
+  ' <<<"${body}")"
 fi
 
 # High-quality conversion to Markdown via pandoc
+# Fallback if slicing failed and produced nearly empty content
+if [[ ${#body} -lt 2000 ]]; then
+  echo "[vendor_display_spec] Slice produced too little content; using full spec body." >&2
+  body="$(printf '%s' "${html}" | awk 'BEGIN{IGNORECASE=1} /<body/{p=1} p{print} /<\/body>/{exit}')"
+fi
+
 body_md="$(printf '%s' "${body}" | "${PANDOC_BIN}" -f html -t gfm --wrap=none)"
 
 # Post-process tables: merge adjacent headers and drop stray '|' lines inside tables
@@ -97,17 +117,35 @@ body_md="$(awk '
         gsub(/\|/, "\\|", props[k])
       }
       print ""
-      if (props["Name:"] != "")        print "| Name | " props["Name:"] " |"
-      if (props["Value:"] != "")       print "| Value | " props["Value:"] " |"
-      if (props["Initial:"] != ""
-        )     print "| Initial | " props["Initial:"] " |"
-      if (props["Applies to:"] != "")  print "| Applies to | " props["Applies to:"] " |"
-      if (props["Inherited:"] != "")   print "| Inherited | " props["Inherited:"] " |"
-      if (props["Percentages:"] != "") print "| Percentages | " props["Percentages:"] " |"
-      if (props["Computed value:"]!="")print "| Computed value | " props["Computed value:"] " |"
-      if (props["Canonical order:"]!="")print "| Canonical order | " props["Canonical order:"] " |"
-      if (props["Animation type:"]!="")print "| Animation type | " props["Animation type:"] " |"
-      if (props["Media:"] != "")       print "| Media | " props["Media:"] " |"
+      # Determine header row: prefer Name, otherwise first available in order
+      header_key=""
+      if (props["Name:"] != "") header_key="Name:";
+      if (header_key == "") {
+        order_keys[1]="Value:"; order_keys[2]="Initial:"; order_keys[3]="Applies to:";
+        order_keys[4]="Inherited:"; order_keys[5]="Percentages:"; order_keys[6]="Computed value:";
+        order_keys[7]="Canonical order:"; order_keys[8]="Animation type:"; order_keys[9]="Media:";
+        for (i=1;i<=9;i++){ k=order_keys[i]; if (props[k] != "") { header_key=k; break } }
+        delete order_keys
+      }
+      if (header_key != "") {
+        # Print header as the first property row
+        hk=header_key
+        # map label (strip colon)
+        label=hk; sub(/:$/, "", label)
+        print "| " label " | " props[hk] " |"
+        print "|---|---|"
+      }
+      # Print remaining rows, skipping the header_key
+      if (header_key != "Name:" && props["Name:"] != "")        print "| Name | " props["Name:"] " |"
+      if (header_key != "Value:" && props["Value:"] != "")       print "| Value | " props["Value:"] " |"
+      if (header_key != "Initial:" && props["Initial:"] != "")     print "| Initial | " props["Initial:"] " |"
+      if (header_key != "Applies to:" && props["Applies to:"] != "")  print "| Applies to | " props["Applies to:"] " |"
+      if (header_key != "Inherited:" && props["Inherited:"] != "")   print "| Inherited | " props["Inherited:"] " |"
+      if (header_key != "Percentages:" && props["Percentages:"] != "") print "| Percentages | " props["Percentages:"] " |"
+      if (header_key != "Computed value:" && props["Computed value:"]!="")print "| Computed value | " props["Computed value:"] " |"
+      if (header_key != "Canonical order:" && props["Canonical order:"]!="")print "| Canonical order | " props["Canonical order:"] " |"
+      if (header_key != "Animation type:" && props["Animation type:"]!="")print "| Animation type | " props["Animation type:"] " |"
+      if (header_key != "Media:" && props["Media:"] != "")       print "| Media | " props["Media:"] " |"
       print ""
     }
     # reset
