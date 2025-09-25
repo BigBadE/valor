@@ -8,6 +8,8 @@ use style_engine::ComputedStyle;
 
 mod anonymous_blocks;
 pub use anonymous_blocks::{AnonymousChildRun, build_anonymous_block_runs};
+mod inline_context;
+pub use inline_context::{InlineFragment, LineBox, build_inline_context};
 
 // Chapter modules (external to src/) mapped to the Display 3 spec structure.
 // Spec: §2 — Box layout modes and the display property

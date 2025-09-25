@@ -1,6 +1,9 @@
 //! Spec: CSS Display 3 — §2 Box layout, generation, and the display property
 //! <https://www.w3.org/TR/css-display-3/#box-layout>
 
+use crate::chapter2::part_2_3_list_items::maybe_list_item_child;
+use crate::chapter3::tree_abiding_children;
+use crate::chapter4::is_visible_for_layout;
 use core::hash::BuildHasher;
 use js::NodeKey;
 use std::collections::HashMap;
@@ -16,16 +19,27 @@ pub fn normalize_children<SChildren: BuildHasher, SStyles: BuildHasher>(
     styles: &HashMap<NodeKey, ComputedStyle, SStyles>,
     parent: NodeKey,
 ) -> Vec<NodeKey> {
-    let Some(children) = children_by_parent.get(&parent).cloned() else {
+    // §3 Display order and tree-abiding: obtain children in order-modified document order.
+    // MVP preserves DOM order.
+    let children = tree_abiding_children(children_by_parent, styles, parent);
+    if children.is_empty() {
         return Vec::new();
-    };
+    }
     let mut out = Vec::with_capacity(children.len());
     for child in children {
-        let display = styles
+        let style = styles
             .get(&child)
             .cloned()
-            .unwrap_or_else(ComputedStyle::default)
-            .display;
+            .unwrap_or_else(ComputedStyle::default);
+        if !is_visible_for_layout(&style) {
+            // §4 Visibility (hook): invisible boxes still affect layout in many engines, but
+            // for MVP our is_visible_for_layout always returns true; this call is a future hook.
+            // If it ever returns false, skip as a conservative default.
+            continue;
+        }
+        // §2.3 list-item seam: allow marker plumbing to hook in without branching here.
+        let _is_list_item = maybe_list_item_child(&style);
+        let display = style.display;
         match display {
             Display::None => {
                 // Spec: §2.7 Box generation: display:none generates no box; skip subtree.

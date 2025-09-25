@@ -5,6 +5,8 @@
 //! This module coordinates block children layout, float avoidance bands, and clearance floors.
 /// Spec reference: <https://www.w3.org/TR/CSS22>
 mod box_tree; // display tree flattening
+/// Spec-driven chapter/section modules that mirror CSS 2.2 structure (see docs/MODULE_SPEC_FORMAT.md §12).
+mod chapters;
 pub(crate) mod orchestrator;
 mod sizing;
 /// Shared types (e.g., `LayoutRect`).

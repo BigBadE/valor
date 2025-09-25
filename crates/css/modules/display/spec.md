@@ -10,6 +10,58 @@ Primary spec: <https://www.w3.org/TR/css-display-3/>
   - [MVP] Inline formatting context (line boxes) and inline sizing from shaped text.
   - [TODO] Integration with block/inline formatting contexts across BFC boundaries.
 
+## One-to-one spec mapping
+
+- §2.1/§2.2 — Outer/Inner display types
+  - Status: [MVP]
+  - Spec: https://www.w3.org/TR/css-display-3/#outer-role, https://www.w3.org/TR/css-display-3/#inner-model
+  - Code:
+    - `css_display::chapter2::part_2_1_outer_inner::is_block_level_outer`
+  - Notes: Run-in/table/grid/ruby are not modeled in the public `Display` yet.
+
+- §2.5 — Box Generation (none/contents)
+  - Status: [Production]
+  - Spec: https://www.w3.org/TR/css-display-3/#box-generation
+  - Code:
+    - `css_display::chapter2::part_2_5_box_generation::normalize_children`
+  - Notes: Integrates §3 tree-abiding ordering and a §4 visibility hook.
+
+- §2.7 — Automatic Box Type Transformations
+  - Status: [MVP]
+  - Spec: https://www.w3.org/TR/css-display-3/#transformations
+  - Code:
+    - `css_display::chapter2::part_2_7_transformations::used_display_for_child`
+  - Notes: Handles root, float/position blockification, and flex parent cases (grid/ruby/table deferred).
+
+- §2.3 — Generating Marker Boxes (list-item)
+  - Status: [TODO]
+  - Spec: https://www.w3.org/TR/css-display-3/#list-items
+  - Code:
+    - `css_display::chapter2::part_2_3_list_items::maybe_list_item_child`
+  - Notes: MVP seam only; returns false until style engine exposes `list-item` and marker/counter plumbing is available.
+
+- §3 — Display Order and Tree-Abiding
+  - Status: [MVP]
+  - Spec: https://www.w3.org/TR/css-display-3/#order
+  - Code:
+    - `css_display::chapter3::tree_abiding_children`
+  - Notes: MVP preserves DOM order; reordering is handled by layout models (flex/grid).
+
+- §4 — Visibility
+  - Status: [MVP]
+  - Spec: https://www.w3.org/TR/css-display-3/#visibility
+  - Code:
+    - `css_display::chapter4::is_visible_for_layout`
+  - Notes: Style engine does not yet expose a visibility property; helper is a paint-time seam (no-op for now).
+
+- Inline Formatting Context (RFC; CSS 2.2 §9.4.2)
+  - Status: [MVP]
+  - Spec: https://www.w3.org/TR/CSS22/visuren.html#inline-formatting
+  - Code:
+    - `css_display::build_inline_context`, `css_display::inline_context::build_inline_context_with_filter`
+    - `css_display::build_anonymous_block_runs`
+  - Notes: Groups inline runs into line boxes; whitespace collapsing and shaping are deferred to text/layout modules.
+
 ## Algorithms and data flow
 
 - Entry points (planned):

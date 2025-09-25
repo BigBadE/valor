@@ -1,27 +1,3 @@
-## Clearance (clear) interactions
-
-- Status: [Production] (floors + horizontal bands at block level); [MVP] (full float geometry/IFC interaction)
-- Spec: https://www.w3.org/TR/CSS22/visuren.html#clearance
-- Code:
-  - `src/lib.rs::place_block_children_loop()` — maintains side-specific float floors: `clearance_floor_left_y`, `clearance_floor_right_y`; seeds child context via computed floor.
-  - `src/lib.rs::compute_clearance_floor_for_child()` — computes per-child clearance floor from `clear: left|right|both`, suppressing floors when the child establishes a BFC.
-  - `src/lib.rs::update_clearance_floors_for_float()` — updates left/right floors from preceding floats using rect bottom plus positive margin-bottom.
-  - `src/lib.rs::compute_float_bands_for_y()` — computes horizontal avoidance bands (left/right) from prior floats overlapping a query y.
-  - `src/lib.rs::prepare_child_position()` — integrates collapsed-top with positioning, applies float bands to width/x, and applies clearance by raising `child_y` to the computed floor when `clear != none`.
-  - `src/lib.rs::compute_collapsed_vertical_margin()` — integrates with clearance/bands and handles the first-child under BFC rule (see §8.3.1 below).
-- Notes:
-  - Side-specific clearance floors now implemented. Floors are computed as the bottom edge (border-box bottom + positive `margin-bottom`) of preceding floats on the relevant side(s).
-  - BFC awareness: if the cleared element establishes a new BFC, external float floors are ignored at that boundary (per §9.4.1 interaction with floats).
-  - Horizontal avoidance bands are computed at the effective y used for clearance; for cleared children this is the clearance floor, otherwise the current `y_cursor`.
-  - Remaining work for full production: multi-float avoidance geometry and line box interaction (requires full Floats formatting model), and exhaustive WPT fixture parity.
-- Fixtures:
-  - `crates/css/modules/box/tests/fixtures/layout/box/clear_left_after_float_left.html`
-  - `crates/css/modules/box/tests/fixtures/layout/box/clearance_breaks_collapse.fail` (XFAIL/ignored until floats are complete)
-  - `crates/valor/tests/fixtures/layout/clearance/01_clear_left_after_float_left.html`
-  - `crates/valor/tests/fixtures/layout/clearance/02_clear_right_after_float_right.html`
-  - `crates/valor/tests/fixtures/layout/clearance/03_clear_both_after_left_and_right_floats.html`
-  - `crates/valor/tests/fixtures/layout/clearance/04_clear_left_inside_bfc_ignores_external_floats.html`
-
 # Layouter — Spec Coverage Map (CSS 2.2)
 
 Primary spec: https://www.w3.org/TR/CSS22/
@@ -275,3 +251,17 @@ The following sections track work beyond the current MVP block layout. Each entr
 - Non-production behavior is explicitly tagged in comments with `[MVP]`, `[Approximation]`, `[Heuristic]`, `[Fallback]`, `[Non-normative]`, and linked back to this spec.
 
 ## Future work
+
+---
+
+## Verbatim Spec Appendix (optional)
+
+Legal notice (required if embedding spec text):
+
+```
+$name_of_software: $distribution_URI
+Copyright © [$year-of-software] World Wide Web Consortium. All Rights Reserved. This work is distributed under the W3C® Software and Document License [1] in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+[1] https://www.w3.org/Consortium/Legal/copyright-software
+```
+
+Begin embedded normative text below (exclude Abstract, Status, general Introduction). Keep chapters in spec order, and clearly indicate the source spec version and URL.
