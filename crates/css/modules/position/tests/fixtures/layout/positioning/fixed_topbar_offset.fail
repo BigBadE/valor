@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fixed Topbar Offset</title>
+    <style>
+      html, body { height: 100%; }
+      body { margin: 0; background: #0b0f16; color: #e5e7eb; padding-top: 56px; }
+      .topbar { position: fixed; top: 0; left: 0; right: 0; z-index: 9999; display: block; height: 56px; background: #1f2937; color: #e5e7eb; }
+      .content { padding: 16px; }
+    </style>
+  </head>
+  <body>
+    <div class="topbar"></div>
+    <div class="content"><p id="p">Hello world below the bar</p></div>
+    <script>
+      window._valorRun = function() {
+        var top = document.querySelector('.topbar');
+        var p = document.getElementById('p');
+        var rt = top.getBoundingClientRect();
+        var rp = p.getBoundingClientRect();
+        _valorAssert('topbar-fixed-at-top', Math.round(rt.y) === 0, 'topbar not at y=0');
+        _valorAssert('topbar-height-56', Math.round(rt.height) === 56, 'topbar height not 56');
+        _valorAssert('content-offset-by-padding-top', rp.y >= 56, 'content overlapping fixed bar');
+        _valorAssert('topbar-stacks-above', rt.y <= rp.y, 'unexpected stacking, content above bar');
+      };
+    </script>
+  </body>
+</html>

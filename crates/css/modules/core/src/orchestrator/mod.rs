@@ -9,6 +9,15 @@ use crate::chapter10::part_10_6_3_height_of_blocks::compute_root_heights;
 use crate::{ContainerMetrics, Layouter, RootHeightsCtx};
 use crate::{INITIAL_CONTAINING_BLOCK_WIDTH, LayoutRect};
 use js::NodeKey;
+// Layouter is defined in the parent module (`lib.rs`) to allow this child module
+// to access private fields per Rust's visibility rules.
+
+/// Diagnostics helpers for logging and test instrumentation.
+pub mod diagnostics;
+/// Per-child placement pipeline (position, heights, rect commit, logging).
+pub mod place_child;
+/// Tree traversal and document utilities used by the orchestrator.
+pub mod tree;
 
 #[inline]
 /// Computes a naive block layout and returns the number of nodes affected.

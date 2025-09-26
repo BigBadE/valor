@@ -466,6 +466,8 @@ impl HtmlPage {
         // Ensure CSSMirror has applied any pending DOM updates so that inline <style>
         // rules are visible in the aggregated stylesheet for this tick.
         self.css_mirror.try_update_sync()?;
+        // Ensure the Orchestrator mirror has applied DOM updates prior to stylesheet processing
+        self.orchestrator_mirror.try_update_sync()?;
         // Synchronize attributes for potential future needs (kept for symmetry)
         let lay_attrs = self.layouter_mirror.mirror_mut().attrs_map();
         trace!(
@@ -793,6 +795,8 @@ impl HtmlPage {
     ) -> Result<HashMap<js::NodeKey, ComputedStyle>, Error> {
         // Ensure the latest inline <style> and orchestrator state are reflected
         self.css_mirror.try_update_sync()?;
+        // Ensure the Orchestrator mirror has applied all pending DOM updates before processing
+        self.orchestrator_mirror.try_update_sync()?;
         let sheet = self.css_mirror.mirror_mut().styles().clone();
         self.orchestrator_mirror
             .mirror_mut()

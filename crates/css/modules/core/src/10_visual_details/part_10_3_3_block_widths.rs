@@ -1,8 +1,14 @@
 //! Spec: CSS 2.2 §10.3.3 Non-replaced block elements in normal flow — widths and margins
 //! Horizontal solving implementation: width constraints and margin resolution.
 
+use crate::chapter8::part_8_3_1_collapsing_margins as cm83;
+use crate::chapter9::part_9_4_3_relative_positioning::apply_relative_offsets;
+use crate::chapter10::part_10_1_containing_block as cb10;
+use crate::{ChildLayoutCtx, CollapsedPos, Layouter};
 use css_box::BoxSides;
-use css_orchestrator::style_model::{BoxSizing, ComputedStyle};
+use css_orchestrator::style_model::Clear;
+use css_orchestrator::style_model::{BoxSizing, ComputedStyle, Float};
+use js::NodeKey;
 use log::debug;
 
 /// Tuple of optional width constraints (specified, min, max) in border-box space.
@@ -23,6 +29,87 @@ struct HorizInputs {
     left_auto: bool,
     /// Whether margin-right is auto.
     right_auto: bool,
+}
+
+/// Composite: compute collapsed top and initial position info for a child.
+/// Bridges §8.3.1 (collapsed top), §10.1 (parent origin), §10.3.3 (horizontal), and §9.4.3 (relative offsets).
+#[inline]
+pub fn compute_collapsed_and_position_public(
+    layouter: &Layouter,
+    child_key: NodeKey,
+    ctx: &ChildLayoutCtx,
+    style: &ComputedStyle,
+    sides: &BoxSides,
+) -> CollapsedPos {
+    let margin_top_eff = cm83::effective_child_top_margin_public(layouter, child_key, sides);
+    let collapsed_top = cm83::compute_collapsed_vertical_margin_public(ctx, margin_top_eff, style);
+    let (parent_x, parent_y) = cb10::parent_content_origin(&ctx.metrics);
+    let parent_right = parent_x.saturating_add(ctx.metrics.container_width);
+    let (used_bb_w, child_x, _resolved_ml) = compute_horizontal_position_public(
+        style,
+        sides,
+        parent_x,
+        parent_right,
+        (ctx.float_band_left, ctx.float_band_right),
+    );
+    let (x_adjust, y_adjust) = apply_relative_offsets(style);
+    let mut child_y = cm83::compute_y_position_public(parent_y, ctx.y_cursor, collapsed_top);
+    if matches!(style.float, Float::None)
+        && matches!(style.clear, Clear::Left | Clear::Right | Clear::Both)
+        && ctx.clearance_floor_y > child_y
+    {
+        child_y = ctx.clearance_floor_y;
+    }
+    CollapsedPos {
+        margin_top_eff,
+        collapsed_top,
+        used_bb_w,
+        child_x,
+        child_y,
+        x_adjust,
+        y_adjust,
+    }
+}
+
+/// Sum horizontal paddings and borders in pixels (clamped to >= 0 per side).
+#[inline]
+fn sum_horizontal(style: &ComputedStyle) -> i32 {
+    let pad = style.padding.left.max(0.0f32) + style.padding.right.max(0.0f32);
+    let border = style.border_width.left.max(0.0f32) + style.border_width.right.max(0.0f32);
+    (pad + border) as i32
+}
+
+/// Box-sizing aware used border-box width computation.
+/// Spec: CSS 2.2 §10.3.3 + Box Sizing L3 (non-normative for conversion logic)
+#[inline]
+pub fn used_border_box_width(style: &ComputedStyle, fill_available_border_box_width: i32) -> i32 {
+    let extras = sum_horizontal(style);
+    let specified_bb_opt: Option<i32> = match style.box_sizing {
+        BoxSizing::ContentBox => style
+            .width
+            .map(|width_val| (width_val as i32).saturating_add(extras)),
+        BoxSizing::BorderBox => style.width.map(|width_val| width_val as i32),
+    };
+    let min_bb_opt: Option<i32> = match style.box_sizing {
+        BoxSizing::ContentBox => style
+            .min_width
+            .map(|width_val| (width_val as i32).saturating_add(extras)),
+        BoxSizing::BorderBox => style.min_width.map(|width_val| width_val as i32),
+    };
+    let max_bb_opt: Option<i32> = match style.box_sizing {
+        BoxSizing::ContentBox => style
+            .max_width
+            .map(|width_val| (width_val as i32).saturating_add(extras)),
+        BoxSizing::BorderBox => style.max_width.map(|width_val| width_val as i32),
+    };
+    let mut out = specified_bb_opt.unwrap_or(fill_available_border_box_width);
+    if let Some(min_bb) = min_bb_opt {
+        out = out.max(min_bb);
+    }
+    if let Some(max_bb) = max_bb_opt {
+        out = out.min(max_bb);
+    }
+    out.max(0i32)
 }
 
 /// Resolution context for the specified-width horizontal solving path.
@@ -109,6 +196,42 @@ pub fn clamp_width_to_min_max(
     out
 }
 
+/// Spec: §10.3.3 — Compute horizontal placement with float bands applied.
+/// Returns `(used_border_box_width, child_x, resolved_margin_left)`.
+#[inline]
+pub fn compute_horizontal_position_public(
+    style: &ComputedStyle,
+    sides: &BoxSides,
+    parent_x: i32,
+    parent_content_right: i32,
+    float_bands: (i32, i32),
+) -> (i32, i32, i32) {
+    let (float_band_left, float_band_right) = float_bands;
+    let parent_content_width = parent_content_right.saturating_sub(parent_x).max(0i32);
+    let available_width = parent_content_width
+        .saturating_sub(float_band_left)
+        .saturating_sub(float_band_right)
+        .max(0i32);
+    let (used_bb_w_raw, resolved_ml, _resolved_mr) = solve_block_horizontal(
+        style,
+        sides,
+        available_width,
+        sides.margin_left,
+        sides.margin_right,
+    );
+    let used_bb_w = used_bb_w_raw.min(available_width);
+    let child_x = match style.float {
+        Float::Left => parent_x.saturating_add(float_band_left),
+        Float::Right => parent_content_right
+            .saturating_sub(float_band_right)
+            .saturating_sub(used_bb_w),
+        Float::None => parent_x
+            .saturating_add(float_band_left)
+            .saturating_add(resolved_ml),
+    };
+    (used_bb_w, child_x, resolved_ml)
+}
+
 /// Solve used border-box width and horizontal margins together for a non-replaced block in normal flow.
 /// Implements CSS 2.2 §10.3.3 for horizontal dimensions.
 #[inline]
@@ -119,7 +242,6 @@ pub fn solve_block_horizontal(
     margin_left_in: i32,
     margin_right_in: i32,
 ) -> (i32, i32, i32) {
-    use crate::sizing::used_border_box_width;
     let (specified_bb_opt, min_bb_opt, max_bb_opt) = compute_width_constraints(style, sides);
     let left_auto = false;
     let right_auto = false;

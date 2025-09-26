@@ -11,6 +11,32 @@ Primary spec: https://www.w3.org/TR/CSS22/
   - [MVP] Relative positioning only; absolute/fixed/sticky are out of scope.
   - [MVP] Clearance scaffolding present; full floats and precise clearance interactions are pending.
 
+## Coverage mapping (code symbols ↔ spec clauses)
+
+- 9.5 Floats — [Production]
+  - Code: `9_visual_formatting/part_9_5_floats.rs::{compute_clearance_floor_for_child, update_clearance_floors_for_float, compute_float_bands_for_y}`
+  - Spec: https://www.w3.org/TR/CSS22/visuren.html#floats
+  - Fixtures: under `crates/css/modules/box/tests/fixtures/layout/clearance/` and `floats/`
+
+- 10.1 Containing block — [MVP]
+  - Code: `10_visual_details/part_10_1_containing_block.rs::{parent_content_origin, build_child_metrics}`
+  - Spec: https://www.w3.org/TR/CSS22/visudet.html#containing-block
+  - Integration: `core/src/lib.rs` delegates to these helpers during child layout.
+
+- 10.3.3 Widths of non-replaced blocks — [Production]
+  - Code: `10_visual_details/part_10_3_3_block_widths.rs::{solve_block_horizontal, used_border_box_width}`
+  - Spec: https://www.w3.org/TR/CSS22/visudet.html#blockwidth
+  - Fixtures: `crates/css/modules/sizing/tests/fixtures/layout/basics/box_sizing_controls.*`
+
+- 10.6.3 Heights of non-replaced blocks — [Production]
+  - Code: `10_visual_details/part_10_6_3_height_of_blocks.rs::{compute_used_height, compute_child_content_height, compute_root_heights}`
+  - Spec: https://www.w3.org/TR/CSS22/visudet.html#block-formatting
+  - Fixtures: multiple under `crates/css/modules/box/tests/fixtures/`
+
+- Display 3 §2 normalization — [Production]
+  - Ownership: `css_display::normalize_children` (Display 3 §2)
+  - Call sites: `core/src/lib.rs::collect_block_children` and vertical layout helpers use `normalize_children` for flattening.
+
 ## Verbatim Spec (CSS 2.2)
 
 Note: This module embeds and annotates only the parts of CSS 2.2 that are relevant to the layouter:

@@ -11,15 +11,15 @@ pub use anonymous_blocks::{AnonymousChildRun, build_anonymous_block_runs};
 mod inline_context;
 pub use inline_context::{InlineFragment, LineBox, build_inline_context};
 
-// Chapter modules (external to src/) mapped to the Display 3 spec structure.
+// Chapter modules mapped to the Display 3 spec structure.
 // Spec: §2 — Box layout modes and the display property
-#[path = "../2_box_layout_modes/mod.rs"]
+#[path = "2_box_layout_modes/mod.rs"]
 mod chapter2;
 // Spec: §3 — Display order
-#[path = "../3_display_order/mod.rs"]
+#[path = "3_display_order/mod.rs"]
 mod chapter3;
 // Spec: §4 — Visibility
-#[path = "../4_visibility/mod.rs"]
+#[path = "4_visibility/mod.rs"]
 mod chapter4;
 
 #[inline]

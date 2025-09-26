@@ -336,7 +336,8 @@ pub fn build_text_list(
             let rect = nearest_rect(*key)
                 .or_else(|| nearest_rect(parent_of.get(key).copied().unwrap_or(*key)));
             if let Some(rect) = rect {
-                let (font_size, color_rgb) = if let Some(cs) = nearest_style(*key) {
+                let style_opt = nearest_style(*key);
+                let (font_size, color_rgb) = if let Some(cs) = style_opt {
                     let c = cs.color;
                     (
                         cs.font_size,
@@ -353,11 +354,27 @@ pub fn build_text_list(
                 if collapsed.is_empty() {
                     continue;
                 }
-                let max_width_px = rect.width.max(0);
+                // When overflow is hidden/clip, clip to the content-box width per CSS Display/Overflow.
+                // Border-box rect is provided; compute content-box left and width.
+                let (content_left_x, content_width_px) = style_opt
+                    .filter(|cs| matches!(cs.overflow, Overflow::Hidden))
+                    .map(|cs| {
+                        let pad_left = cs.padding.left.max(0.0) as i32;
+                        let pad_right = cs.padding.right.max(0.0) as i32;
+                        let border_left = cs.border_width.left.max(0.0) as i32;
+                        let border_right = cs.border_width.right.max(0.0) as i32;
+                        let left_x = rect.x + border_left + pad_left;
+                        let width_px = rect
+                            .width
+                            .saturating_sub(border_left + pad_left + pad_right + border_right);
+                        (left_x, width_px)
+                    })
+                    .unwrap_or((rect.x, rect.width));
+                let max_width_px = content_width_px.max(0);
                 // Prefer computed line-height when available; otherwise use real metrics if available.
                 let (asc_px, desc_px, lead_px, lh_from_glyph) =
                     derive_line_metrics_from_content(&collapsed, font_size);
-                let computed_lh = nearest_style(*key).and_then(|cs| cs.line_height);
+                let computed_lh = style_opt.and_then(|cs| cs.line_height);
                 let used_line_height = computed_lh.or(lh_from_glyph).unwrap_or_else(|| {
                     // Spec-like normal using metrics; keep a minimum padding to avoid clip.
                     let sum = asc_px + desc_px + lead_px;
@@ -374,9 +391,9 @@ pub fn build_text_list(
                     // Use line box bounds: top at line_top; bottom at line_top + line_height
                     let top = line_top;
                     let bottom = line_top + line_height;
-                    let bounds = Some((rect.x, top, rect.x + rect.width, bottom));
+                    let bounds = Some((content_left_x, top, content_left_x + max_width_px, bottom));
                     list.push(wgpu_renderer::DrawText {
-                        x: rect.x as f32,
+                        x: content_left_x as f32,
                         y: baseline_y as f32,
                         text: visual_line,
                         color: color_rgb,

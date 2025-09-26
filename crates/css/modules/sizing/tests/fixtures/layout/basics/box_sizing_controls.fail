@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Box Sizing Controls</title>
+    <style>
+      body { margin: 0; }
+      .row { display: flex; align-items: center; height: 40px; padding: 8px; }
+      .btn, .addr { box-sizing: border-box; border: 1px solid #4b5563; padding: 6px 10px; }
+      .btn { background: #374151; color: #e5e7eb; }
+      .addr { min-width: 120px; flex: 1; }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <button class="btn" id="b">B</button>
+      <input class="addr" id="a" value="https://example.com" />
+    </div>
+    <script>
+      window._valorRun = function() {
+        var b = document.getElementById('b');
+        var a = document.getElementById('a');
+        var rb = b.getBoundingClientRect();
+        var ra = a.getBoundingClientRect();
+        _valorAssert('button-has-borderbox-height', rb.height >= 24, 'button too short for padding+border');
+        _valorAssert('input-has-borderbox-height', ra.height >= 24, 'input too short for padding+border');
+      };
+    </script>
+  </body>
+</html>

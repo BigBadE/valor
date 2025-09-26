@@ -3,14 +3,14 @@
 //! This file re-exports the core collapsing margin algorithms from their
 //! current implementation locations to provide a spec-mirrored module path.
 
-use crate::Layouter;
-use crate::chapter9::part_9_4_1_block_formatting_context::establishes_block_formatting_context;
-use crate::types::ContainerMetrics;
-use crate::{LayoutNodeKind, box_tree};
 use css_box::{BoxSides, compute_box_sides};
+use css_display::normalize_children;
 use css_orchestrator::style_model::{Clear, ComputedStyle};
 use js::NodeKey;
 use log::debug;
+
+use crate::chapter9::part_9_4_1_block_formatting_context::establishes_block_formatting_context;
+use crate::{ChildLayoutCtx, ContainerMetrics, LayoutNodeKind, Layouter};
 
 // Convenience pub fns that forward to inherent methods for mapping granularity.
 // Keep functions small and shallow to follow coding standards.
@@ -22,7 +22,45 @@ use log::debug;
 )]
 #[inline]
 pub fn collapse_margins_pair(left: i32, right: i32) -> i32 {
-    Layouter::collapse_margins_pair(left, right)
+    if left >= 0i32 && right >= 0i32 {
+        return left.max(right);
+    }
+    if left <= 0i32 && right <= 0i32 {
+        return left.min(right);
+    }
+    left.saturating_add(right)
+}
+
+/// Spec: §8.3.1 — Compute the vertical offset from collapsed margins above a block child.
+#[inline]
+pub fn compute_collapsed_vertical_margin_public(
+    ctx: &ChildLayoutCtx,
+    child_margin_top: i32,
+    _child_style: &ComputedStyle,
+) -> i32 {
+    if ctx.is_first_placed {
+        if ctx.parent_edge_collapsible {
+            // Collapse with parent's own top margin applied at the edge; return the
+            // incremental collapsed amount beyond the parent's own top margin.
+            let combined = collapse_margins_pair(ctx.parent_self_top_margin, child_margin_top);
+            return combined.saturating_sub(ctx.parent_self_top_margin);
+        }
+        // Parent edge is not collapsible (e.g., establishes a BFC). Use child's own top margin.
+        return child_margin_top;
+    }
+    collapse_margins_pair(ctx.previous_bottom_margin, child_margin_top)
+}
+
+/// Spec: §8.3.1 — Compute the y position for a child from origin, cursor, and collapsed top.
+#[inline]
+pub const fn compute_y_position_public(
+    origin_y: i32,
+    cursor: i32,
+    collapsed_vertical_margin: i32,
+) -> i32 {
+    origin_y
+        .saturating_add(cursor)
+        .saturating_add(collapsed_vertical_margin)
 }
 
 /// Spec: §8.3.1 — Public wrapper for effective top margin of a child.
@@ -52,7 +90,32 @@ pub fn effective_child_bottom_margin_public(
 )]
 #[inline]
 pub fn collapse_margins_list(margins: &[i32]) -> i32 {
-    Layouter::collapse_margins_list(margins)
+    if margins.is_empty() {
+        return 0i32;
+    }
+    let mut max_pos = i32::MIN;
+    let mut min_neg = i32::MAX;
+    let mut any_pos = false;
+    let mut any_neg = false;
+    for &margin in margins {
+        if margin >= 0i32 {
+            any_pos = true;
+            if margin > max_pos {
+                max_pos = margin;
+            }
+        } else {
+            any_neg = true;
+            if margin < min_neg {
+                min_neg = margin;
+            }
+        }
+    }
+    match (any_pos, any_neg) {
+        (true, false) => max_pos,
+        (false, true) => min_neg,
+        (true, true) => max_pos.saturating_add(min_neg),
+        (false, false) => 0i32,
+    }
 }
 
 /// Spec: §8.3.1 — Compute final outgoing bottom margin for a child box.
@@ -62,7 +125,11 @@ pub fn collapse_margins_list(margins: &[i32]) -> i32 {
 )]
 #[inline]
 pub fn compute_margin_bottom_out(margin_top: i32, effective_bottom: i32, is_empty: bool) -> i32 {
-    Layouter::compute_margin_bottom_out(margin_top, effective_bottom, is_empty)
+    if is_empty {
+        collapse_margins_pair(margin_top, effective_bottom)
+    } else {
+        effective_bottom
+    }
 }
 
 /// Spec: §8.3.1 — Outgoing bottom margin for first placed empty child.
@@ -77,12 +144,13 @@ pub fn compute_first_placed_empty_margin_bottom(
     child_top_eff: i32,
     child_bottom_eff: i32,
 ) -> i32 {
-    Layouter::compute_first_placed_empty_margin_bottom(
+    let list = [
         previous_bottom,
         parent_self_top,
         child_top_eff,
         child_bottom_eff,
-    )
+    ];
+    collapse_margins_list(&list)
 }
 
 /// Spec: §8.3.1 — Leading top collapse application at parent's top edge.
@@ -160,7 +228,7 @@ fn effective_child_top_margin(
         .cloned()
         .unwrap_or_else(ComputedStyle::default);
     if establishes_block_formatting_context(&cur_style) {
-        return Layouter::collapse_margins_list(&margins);
+        return collapse_margins_list(&margins);
     }
     while current_sides.padding_top == 0i32
         && current_sides.border_top == 0i32
@@ -184,7 +252,7 @@ fn effective_child_top_margin(
         current = first_desc;
         current_sides = first_sides;
     }
-    Layouter::collapse_margins_list(&margins)
+    collapse_margins_list(&margins)
 }
 
 /// Compute the effective bottom margin for a child by collapsing with its last block descendant
@@ -204,7 +272,7 @@ fn effective_child_bottom_margin(
         .cloned()
         .unwrap_or_else(ComputedStyle::default);
     if establishes_block_formatting_context(&style) {
-        return Layouter::collapse_margins_list(&margins);
+        return collapse_margins_list(&margins);
     }
     while current_sides.padding_bottom == 0i32
         && current_sides.border_bottom == 0i32
@@ -225,28 +293,29 @@ fn effective_child_bottom_margin(
         current = last_desc;
         current_sides = last_sides;
     }
-    Layouter::collapse_margins_list(&margins)
+    collapse_margins_list(&margins)
 }
 
 /// Return the first block child of a node after display tree flattening.
 #[inline]
 fn first_block_child(layouter: &Layouter, key: NodeKey) -> Option<NodeKey> {
-    let flattened =
-        box_tree::flatten_display_children(&layouter.children, &layouter.computed_styles, key);
-    flattened.into_iter().find(|node_key| {
-        matches!(
-            layouter.nodes.get(node_key),
-            Some(&LayoutNodeKind::Block { .. })
-        )
-    })
+    let flattened = normalize_children(&layouter.children, &layouter.computed_styles, key);
+    for child in flattened {
+        if matches!(
+            layouter.nodes.get(&child),
+            Some(LayoutNodeKind::Block { .. })
+        ) {
+            return Some(child);
+        }
+    }
+    None
 }
 
 /// Find the last block descendant under a node using a flattened traversal.
 #[inline]
 fn find_last_block_under(layouter: &Layouter, start: NodeKey) -> Option<NodeKey> {
     let mut last: Option<NodeKey> = None;
-    let flattened =
-        box_tree::flatten_display_children(&layouter.children, &layouter.computed_styles, start);
+    let flattened = normalize_children(&layouter.children, &layouter.computed_styles, start);
     for child_key in flattened {
         if let Some(found) = find_last_block_under(layouter, child_key) {
             last = Some(found);
@@ -271,23 +340,27 @@ fn find_last_block_under(layouter: &Layouter, start: NodeKey) -> Option<NodeKey>
 /// Return true if there is any inline text descendant under the given node.
 #[inline]
 fn has_inline_text_descendant(layouter: &Layouter, key: NodeKey) -> bool {
-    let mut stack: Vec<NodeKey> =
-        box_tree::flatten_display_children(&layouter.children, &layouter.computed_styles, key);
-    while let Some(current) = stack.pop() {
-        let node_kind = layouter.nodes.get(&current).cloned();
-        if matches!(node_kind, Some(LayoutNodeKind::InlineText { .. })) {
+    let top = normalize_children(&layouter.children, &layouter.computed_styles, key);
+    for child in top {
+        if matches!(
+            layouter.nodes.get(&child),
+            Some(&LayoutNodeKind::InlineText { .. })
+        ) {
             return true;
         }
         if matches!(
-            node_kind,
-            Some(LayoutNodeKind::Block { .. } | LayoutNodeKind::Document)
+            layouter.nodes.get(&child),
+            Some(&LayoutNodeKind::Block { .. })
         ) {
-            let mut flattened = box_tree::flatten_display_children(
-                &layouter.children,
-                &layouter.computed_styles,
-                current,
-            );
-            stack.append(&mut flattened);
+            let nested = normalize_children(&layouter.children, &layouter.computed_styles, child);
+            if nested.into_iter().any(|nxt| {
+                matches!(
+                    layouter.nodes.get(&nxt),
+                    Some(&LayoutNodeKind::InlineText { .. })
+                )
+            }) {
+                return true;
+            }
         }
     }
     false
@@ -333,6 +406,16 @@ fn scan_leading_group(
         let eff_top = effective_child_top_margin(layouter, child_key, &child_sides);
         let is_leading_empty = is_structurally_empty_chain(layouter, child_key);
         if is_leading_empty {
+            debug!(
+                "[VERT-GROUP empty] idx={} child={child_key:?} eff_top={} child_mb={} (pad_top={} border_top={} pad_bottom={} border_bottom={})",
+                idx,
+                eff_top,
+                child_sides.margin_bottom,
+                child_sides.padding_top,
+                child_sides.border_top,
+                child_sides.padding_bottom,
+                child_sides.border_bottom
+            );
             let eff_bottom = effective_child_bottom_margin(layouter, child_key, &child_sides);
             leading_margins.push(eff_top);
             leading_margins.push(eff_bottom);
@@ -341,11 +424,22 @@ fn scan_leading_group(
             continue;
         }
         let has_clear = matches!(child_style.clear, Clear::Left | Clear::Right | Clear::Both);
-        if !has_clear {
+        if has_clear {
+            debug!(
+                "[VERT-GROUP first-non-empty CLEAR] idx={idx} child={child_key:?} clear={0:?} -> eff_top suppressed from leading group",
+                child_style.clear
+            );
+        } else {
             leading_margins.push(eff_top);
+            debug!(
+                "[VERT-GROUP first-non-empty] idx={idx} child={child_key:?} include_parent_edge={include_parent_edge} parent_edge_collapsible={parent_edge_collapsible} eff_top_added={eff_top}"
+            );
         }
         break;
     }
+    debug!(
+        "[VERT-GROUP out root={root:?}] include_parent_edge={include_parent_edge} parent_edge_collapsible={parent_edge_collapsible} leading_margins={leading_margins:?} skipped={skip_count}"
+    );
     (
         leading_margins,
         skip_count,
@@ -392,7 +486,7 @@ fn apply_leading_top_collapse(
             block_children,
             ancestor_applied_at_edge,
         );
-    let leading_top = Layouter::collapse_margins_list(&leading_margins);
+    let leading_top = collapse_margins_list(&leading_margins);
     let (y_start, prev_bottom_after, leading_applied) =
         apply_or_forward_group(include_parent_edge, parent_edge_collapsible, leading_top);
     (y_start, prev_bottom_after, leading_applied, skip_count)
@@ -406,8 +500,7 @@ pub fn compute_root_y_after_top_collapse(
     metrics: &ContainerMetrics,
 ) -> i32 {
     if metrics.padding_top == 0i32 && metrics.border_top == 0i32 {
-        let flattened =
-            box_tree::flatten_display_children(&layouter.children, &layouter.computed_styles, root);
+        let flattened = normalize_children(&layouter.children, &layouter.computed_styles, root);
         if let Some(first_child) = flattened
             .into_iter()
             .find(|key| matches!(layouter.nodes.get(key), Some(&LayoutNodeKind::Block { .. })))
@@ -420,8 +513,15 @@ pub fn compute_root_y_after_top_collapse(
             let first_sides = compute_box_sides(&first_style);
             let first_effective_top =
                 effective_child_top_margin(layouter, first_child, &first_sides);
-            let collapsed =
-                Layouter::collapse_margins_pair(metrics.margin_top, first_effective_top);
+            let collapsed = collapse_margins_pair(metrics.margin_top, first_effective_top);
+            debug!(
+                "[ROOT-COLLAPSE] root={root:?} metrics(mt={}, pt={}, bt={}) first_child={first_child:?} eff_top={} -> collapsed_top={}",
+                metrics.margin_top,
+                metrics.padding_top,
+                metrics.border_top,
+                first_effective_top,
+                collapsed
+            );
             return collapsed.max(0);
         }
     }

@@ -37,6 +37,12 @@ Cross-spec mapping not present in CSS Display 3:
 
 - `display: contents` and anonymous block interactions with margin collapsing and BFC boundaries.
 - Whitespace collapsing within inline formatting context (to be implemented here, not in layouter).
+- Overflow clipping width for text: When `overflow: hidden`, text layout and clipping use the content-box width (border and padding excluded) for bounds and wrapping.
+  - Status: [Production]
+  - Spec: CSS Overflow 3 (applies to clipping), interoperable behavior aligned with Chromium
+  - Code:
+    - `page_handler::display::build_text_list` — computes content-box `left_x` and `width_px` and passes bounds to `wgpu_renderer::DrawText` when `overflow: hidden`.
+  - Fixtures: covered indirectly by Chromium layout comparisons; dedicated overflow text fixtures TBD.
 
 ## Testing and fixtures
 

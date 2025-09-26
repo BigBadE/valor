@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>CSS Style Parsing</title>
+    <style>
+      body { margin: 0; }
+      #box { width: 200px; height: 40px; background: rgb(32, 64, 96); }
+    </style>
+  </head>
+  <body>
+    <div id="box"></div>
+    <script>
+      window._valorRun = function() {
+        var b = document.getElementById('box');
+        var r = b.getBoundingClientRect();
+        _valorAssert('style-width-200', Math.round(r.width) === 200, 'width from <style> not applied');
+        _valorAssert('style-height-40', Math.round(r.height) === 40, 'height from <style> not applied');
+      };
+    </script>
+  </body>
+</html>

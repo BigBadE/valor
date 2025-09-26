@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Flex Gap</title>
+    <style>
+      body { margin: 0; }
+      .row { display: flex; gap: 8px; }
+      .box { width: 20px; height: 20px; background: #4b5563; }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <div class="box" id="a"></div>
+      <div class="box" id="b"></div>
+      <div class="box" id="c"></div>
+    </div>
+    <script>
+      window._valorRun = function() {
+        function x(el){ return Math.round(el.getBoundingClientRect().x); }
+        var a = document.getElementById('a');
+        var b = document.getElementById('b');
+        var c = document.getElementById('c');
+        var xa = x(a), xb = x(b), xc = x(c);
+        _valorAssert('gap-between-a-b', (xb - xa) === 28, 'wrong gap between a and b');
+        _valorAssert('gap-between-b-c', (xc - xb) === 28, 'wrong gap between b and c');
+      };
+    </script>
+  </body>
+</html>

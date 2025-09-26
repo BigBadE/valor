@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Flex Row Controls</title>
+    <style>
+      html, body { height: 100%; }
+      body { margin: 0; background: #0b0f16; color: #e5e7eb; }
+      .row { display: flex; gap: 8px; align-items: center; height: 40px; padding: 8px; }
+      .btn { display: inline-block; padding: 6px 10px; background: #374151; color: #e5e7eb; border: 1px solid #4b5563; border-radius: 4px; box-sizing: border-box; }
+      .addr { flex: 1; display: inline-block; padding: 6px 10px; border-radius: 4px; border: 1px solid #4b5563; background: #111827; color: #e5e7eb; box-sizing: border-box; min-width: 120px; }
+      input, button { font: 14px/1.4 -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <button class="btn" id="back">◀</button>
+      <button class="btn" id="forward">▶</button>
+      <input id="address" class="addr" placeholder="Enter URL" value="https://example.com" />
+      <button class="btn" id="go">Go</button>
+    </div>
+    <script>
+      window._valorRun = function() {
+        var row = document.querySelector('.row');
+        var back = document.getElementById('back');
+        var forward = document.getElementById('forward');
+        var addr = document.getElementById('address');
+        var go = document.getElementById('go');
+        function r(el){ return el.getBoundingClientRect(); }
+        var rr = r(row), rb = r(back), rf = r(forward), ra = r(addr), rg = r(go);
+        _valorAssert('row-is-flex-horizontal', rb.y === rf.y && rf.y === ra.y && ra.y === rg.y, 'children not aligned horizontally');
+        _valorAssert('row-height-40px', Math.round(rr.height) === 40, 'row height expected 40px');
+        _valorAssert('button-has-padding', rb.height > 20 && rb.height < 44, 'button height out of expected range');
+        _valorAssert('address-expands-flexibly', ra.width >= 200, 'address did not flex-grow');
+      };
+    </script>
+  </body>
+</html>
