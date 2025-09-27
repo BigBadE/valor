@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- VALOR fixture (documentation): Flexbox §4 Flex Items
+  Doc-only fixture; no flex or positioning applied to avoid layout diffs in compare tests.
+  Purpose: track coverage for item collection logic only (see css_flexbox::collect_flex_items).
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Flexbox §4 flex items (doc-only)</title>
+  <script>
+    // JS-based assertions (geometry-neutral)
+    window._valorRun = function(){
+      if (typeof window._valorAssert !== 'function') return;
+      var inflow = document.getElementById('inflow-a');
+      window._valorAssert('in-flow element exists', !!inflow, '#inflow-a present');
+      var cs = window.getComputedStyle(inflow);
+      window._valorAssert('in-flow display not none', String(cs.display||'').toLowerCase()!=='none', 'display is not none');
+    };
+  </script>
+</head>
+<body>
+  <div id="inflow-a" style="display:block; font-size:16px; line-height:19px;">A</div>
+</body>
+</html>

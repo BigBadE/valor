@@ -33,6 +33,45 @@ pub struct StyleComputer {
     parent_by_node: HashMap<NodeKey, NodeKey>,
 }
 
+/// Parse `gap`, `row-gap`, and `column-gap` (px only; percentages/other units unsupported in MVP).
+fn apply_gaps(computed: &mut style_model::ComputedStyle, decls: &HashMap<String, String>) {
+    // Defaults per spec are 0px when not specified.
+    let mut row_gap = computed.row_gap;
+    let mut column_gap = computed.column_gap;
+    if let Some(value) = decls.get("gap") {
+        // Accept one or two values. One value sets both row and column.
+        let parts: Vec<&str> = value
+            .split(|character: char| character.is_ascii_whitespace())
+            .filter(|segment| !segment.is_empty())
+            .collect();
+        if parts.len() == 1 {
+            if let Some(px_both) = parts.first().and_then(|segment_str| parse_px(segment_str)) {
+                row_gap = px_both;
+                column_gap = px_both;
+            }
+        } else if parts.len() >= 2 {
+            if let Some(px_row) = parts.first().and_then(|segment_str| parse_px(segment_str)) {
+                row_gap = px_row;
+            }
+            if let Some(px_col) = parts.get(1).and_then(|segment_str| parse_px(segment_str)) {
+                column_gap = px_col;
+            }
+        }
+    }
+    if let Some(value) = decls.get("row-gap")
+        && let Some(px_row) = parse_px(value)
+    {
+        row_gap = px_row;
+    }
+    if let Some(value) = decls.get("column-gap")
+        && let Some(px_col) = parse_px(value)
+    {
+        column_gap = px_col;
+    }
+    computed.row_gap = row_gap.max(0.0);
+    computed.column_gap = column_gap.max(0.0);
+}
+
 /// Denotes a single border side for per-side shorthand parsing.
 #[derive(Clone, Copy)]
 enum BorderSide {
@@ -259,6 +298,7 @@ fn build_computed_from_inline(decls: &HashMap<String, String>) -> style_model::C
     apply_typography(&mut computed, decls);
     apply_flex_scalars(&mut computed, decls);
     apply_flex_alignment(&mut computed, decls);
+    apply_gaps(&mut computed, decls);
     apply_offsets(&mut computed, decls);
     computed
 }
@@ -608,18 +648,29 @@ fn apply_colors(computed: &mut style_model::ComputedStyle, decls: &HashMap<Strin
     if let Some(value) = decls.get("background")
         && computed.background_color.alpha == 0
     {
-        for token_text in value
-            .split(|character: char| character.is_ascii_whitespace())
-            .filter(|text| !text.is_empty())
-        {
-            if let Some((red8, green8, blue8, alpha8)) = parse_css_color(token_text) {
-                computed.background_color = style_model::Rgba {
-                    red: red8,
-                    green: green8,
-                    blue: blue8,
-                    alpha: alpha8,
-                };
-                break;
+        // First, try parsing the entire value as a single color (e.g., "rgb(32, 64, 96)").
+        if let Some((red8, green8, blue8, alpha8)) = parse_css_color(value) {
+            computed.background_color = style_model::Rgba {
+                red: red8,
+                green: green8,
+                blue: blue8,
+                alpha: alpha8,
+            };
+        } else {
+            // Fallback: tokenize and look for a color token among other background tokens
+            for token_text in value
+                .split(|character: char| character.is_ascii_whitespace())
+                .filter(|text| !text.is_empty())
+            {
+                if let Some((red8, green8, blue8, alpha8)) = parse_css_color(token_text) {
+                    computed.background_color = style_model::Rgba {
+                        red: red8,
+                        green: green8,
+                        blue: blue8,
+                        alpha: alpha8,
+                    };
+                    break;
+                }
             }
         }
     }

@@ -1,9 +1,23 @@
 //! Spec: CSS 2.2 §10.6.3 The height of blocks
 //! Root height and used height computations.
 
-use css_orchestrator::style_model::ComputedStyle;
+use crate::LayoutRect;
+use css_flexbox::{
+    AlignItems as FlexAlignItems, Axes as FlexAxes, CrossContext as FlexCrossContext,
+    CrossPlacement, FlexChild, FlexContainerInputs, FlexDirection as FlexDir, FlexItem,
+    FlexPlacement, ItemRef as FlexItemRef, ItemStyle as FlexItemStyle,
+    JustifyContent as FlexJustify, WritingMode as FlexWritingMode, collect_flex_items,
+    layout_single_line_with_cross, resolve_axes as flex_resolve_axes,
+};
+use css_orchestrator::style_model::{
+    AlignItems as CoreAlignItems, ComputedStyle, Display as CoreDisplay,
+    FlexDirection as CoreFlexDirection, JustifyContent as CoreJustify, Position as CorePosition,
+};
 use css_text::default_line_height_px;
 use js::NodeKey;
+use std::collections::HashSet;
+
+use crate::LayoutNodeKind;
 
 use crate::chapter8::part_8_3_1_collapsing_margins as cm83;
 use crate::chapter9::part_9_4_1_block_formatting_context::establishes_block_formatting_context;
@@ -11,6 +25,11 @@ use crate::{
     ChildContentCtx, HeightExtras, HeightsAndMargins, HeightsCtx, HorizontalEdges, Layouter,
     RootHeightsCtx, TopEdges,
 };
+
+/// Triplet describing an item's cross size constraints `(size, min, max)`.
+type CrossTriplet = (f32, f32, f32);
+/// Container context for flex layout: `(origin_xy, direction, axes, container_main_size, main_gap)`.
+type FlexContainerCtx = ((i32, i32), FlexDir, FlexAxes, f32, f32);
 
 /// Compute content height and root border-box height.
 #[inline]
@@ -51,6 +70,92 @@ pub fn compute_root_heights(layouter: &Layouter, ctx: RootHeightsCtx) -> (i32, i
         .saturating_add(border_bottom)
         .max(0i32);
     (content_height, root_height_border_box)
+}
+
+#[inline]
+/// Compute container origin, axes, and main inputs for flex layout.
+fn container_layout_context(
+    cctx: ChildContentCtx,
+    container_style: &ComputedStyle,
+) -> FlexContainerCtx {
+    let metrics = Layouter::build_child_metrics(
+        cctx.used_border_box_width,
+        HorizontalEdges {
+            padding_left: cctx.sides.padding_left,
+            padding_right: cctx.sides.padding_right,
+            border_left: cctx.sides.border_left,
+            border_right: cctx.sides.border_right,
+        },
+        TopEdges {
+            padding_top: cctx.sides.padding_top,
+            border_top: cctx.sides.border_top,
+        },
+        cctx.x,
+        cctx.y,
+    );
+    let origin = (
+        cctx.x.saturating_add(
+            cctx.sides
+                .border_left
+                .saturating_add(cctx.sides.padding_left),
+        ),
+        cctx.y
+            .saturating_add(cctx.sides.border_top.saturating_add(cctx.sides.padding_top)),
+    );
+    let direction = match container_style.flex_direction {
+        CoreFlexDirection::Column => FlexDir::Column,
+        CoreFlexDirection::Row => FlexDir::Row,
+    };
+    let writing_mode = FlexWritingMode::HorizontalTb;
+    let axes = flex_resolve_axes(direction, writing_mode);
+    let container_main_size: f32 = if axes.main_is_inline {
+        metrics.container_width as f32
+    } else {
+        1_000_000.0
+    };
+    let main_gap = match container_style.flex_direction {
+        CoreFlexDirection::Column => container_style.row_gap,
+        CoreFlexDirection::Row => container_style.column_gap,
+    }
+    .max(0.0);
+    (origin, direction, axes, container_main_size, main_gap)
+}
+
+#[inline]
+/// Collect normalized flex item shells from children of the container.
+fn collect_item_shells(layouter: &Layouter, parent: NodeKey) -> Vec<(FlexItemRef, FlexItemStyle)> {
+    // Only consider element block children for flex item collection; ignore text/anonymous nodes.
+    let child_list = layouter.children.get(&parent).cloned().unwrap_or_default();
+    let mut block_nodes: HashSet<NodeKey> = HashSet::with_capacity(child_list.len());
+    for (key, kind, _kids) in layouter.snapshot() {
+        if matches!(kind, LayoutNodeKind::Block { .. }) {
+            block_nodes.insert(key);
+        }
+    }
+    let mut out: Vec<(FlexItemRef, FlexItemStyle)> = Vec::with_capacity(child_list.len());
+    for child in &child_list {
+        if !block_nodes.contains(child) {
+            continue;
+        }
+        let style = layouter
+            .computed_styles
+            .get(child)
+            .cloned()
+            .unwrap_or_else(ComputedStyle::default);
+        let is_none = matches!(style.display, CoreDisplay::None);
+        let out_of_flow = !matches!(
+            style.position,
+            CorePosition::Static | CorePosition::Relative
+        );
+        out.push((
+            FlexItemRef(child.0),
+            FlexItemStyle {
+                is_none,
+                out_of_flow,
+            },
+        ));
+    }
+    out
 }
 
 /// Composite: compute heights and outgoing margins for a child.
@@ -169,6 +274,23 @@ pub fn compute_used_height(
 /// Returns `(content_height, last_positive_bottom_margin)`.
 #[inline]
 pub fn compute_child_content_height(layouter: &mut Layouter, cctx: ChildContentCtx) -> (i32, i32) {
+    let container_style = layouter
+        .computed_styles
+        .get(&cctx.key)
+        .cloned()
+        .unwrap_or_else(ComputedStyle::default);
+    if matches!(
+        container_style.display,
+        CoreDisplay::Flex | CoreDisplay::InlineFlex
+    ) {
+        return flex_child_content_height(layouter, cctx, &container_style);
+    }
+    block_child_content_height(layouter, cctx)
+}
+
+#[inline]
+/// Block fallback: lay out the container's children in block formatting context.
+fn block_child_content_height(layouter: &mut Layouter, cctx: ChildContentCtx) -> (i32, i32) {
     let child_metrics = Layouter::build_child_metrics(
         cctx.used_border_box_width,
         HorizontalEdges {
@@ -187,4 +309,183 @@ pub fn compute_child_content_height(layouter: &mut Layouter, cctx: ChildContentC
     let (_reflowed, content_height, last_pos_mb, _last_info) =
         layouter.layout_block_children(cctx.key, &child_metrics, cctx.ancestor_applied_at_edge);
     (content_height, last_pos_mb)
+}
+
+#[inline]
+/// Compute content height and place children for a flex container (single-line MVP).
+fn flex_child_content_height(
+    layouter: &mut Layouter,
+    cctx: ChildContentCtx,
+    container_style: &ComputedStyle,
+) -> (i32, i32) {
+    let ((origin_x, origin_y), direction, axes, container_main_size, main_gap) =
+        container_layout_context(cctx, container_style);
+    let item_shells = collect_item_shells(layouter, cctx.key);
+    let handles = collect_flex_items(&item_shells);
+    let (main_items, cross_inputs) = build_flex_item_inputs(layouter, &handles, direction);
+    let (justify, align_items_val, container_cross_size) =
+        justify_align_context(container_style, direction, &cross_inputs);
+    let container_inputs = FlexContainerInputs {
+        direction,
+        writing_mode: FlexWritingMode::HorizontalTb,
+        container_main_size,
+        main_gap,
+    };
+    let cross_ctx = FlexCrossContext {
+        align_items: align_items_val,
+        container_cross_size,
+    };
+    let pairs = layout_single_line_with_cross(
+        container_inputs,
+        justify,
+        cross_ctx,
+        &main_items,
+        &cross_inputs,
+    );
+    let content_height = write_pairs_and_measure(axes, origin_x, origin_y, layouter, &pairs);
+    (content_height, 0)
+}
+
+#[inline]
+/// Build `FlexChild` inputs and cross constraints for the given item list.
+fn build_flex_item_inputs(
+    layouter: &Layouter,
+    items: &[FlexItem],
+    direction: FlexDir,
+) -> (Vec<FlexChild>, Vec<CrossTriplet>) {
+    let mut main_items: Vec<FlexChild> = Vec::with_capacity(items.len());
+    let mut cross_inputs: Vec<CrossTriplet> = Vec::with_capacity(items.len());
+    for item in items {
+        let key = NodeKey(item.handle.0);
+        let style_item = layouter
+            .computed_styles
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(ComputedStyle::default);
+        let basis_opt = style_item.flex_basis.or(match direction {
+            FlexDir::Row | FlexDir::RowReverse => style_item.width,
+            FlexDir::Column | FlexDir::ColumnReverse => style_item.height,
+        });
+        let flex_basis = basis_opt.unwrap_or(0.0).max(0.0);
+        let (min_main, max_main) = match direction {
+            FlexDir::Row | FlexDir::RowReverse => (
+                style_item.min_width.unwrap_or(0.0).max(0.0),
+                style_item.max_width.unwrap_or(1_000_000.0).max(0.0),
+            ),
+            FlexDir::Column | FlexDir::ColumnReverse => (
+                style_item.min_height.unwrap_or(0.0).max(0.0),
+                style_item.max_height.unwrap_or(1_000_000.0).max(0.0),
+            ),
+        };
+        main_items.push(FlexChild {
+            handle: item.handle,
+            flex_basis,
+            flex_grow: style_item.flex_grow.max(0.0),
+            flex_shrink: style_item.flex_shrink.max(0.0),
+            min_main,
+            max_main,
+        });
+        let (cross, min_c, max_c) = match direction {
+            FlexDir::Row | FlexDir::RowReverse => (
+                style_item.height.unwrap_or(0.0).max(0.0),
+                style_item.min_height.unwrap_or(0.0).max(0.0),
+                style_item.max_height.unwrap_or(1_000_000.0).max(0.0),
+            ),
+            FlexDir::Column | FlexDir::ColumnReverse => (
+                style_item.width.unwrap_or(0.0).max(0.0),
+                style_item.min_width.unwrap_or(0.0).max(0.0),
+                style_item.max_width.unwrap_or(1_000_000.0).max(0.0),
+            ),
+        };
+        cross_inputs.push((cross, min_c, max_c));
+    }
+    (main_items, cross_inputs)
+}
+
+#[inline]
+/// Resolve justify/align context and container cross size from style and item inputs.
+fn justify_align_context(
+    container_style: &ComputedStyle,
+    direction: FlexDir,
+    cross_inputs: &[CrossTriplet],
+) -> (FlexJustify, FlexAlignItems, f32) {
+    let justify = match container_style.justify_content {
+        CoreJustify::Center => FlexJustify::Center,
+        CoreJustify::FlexEnd => FlexJustify::End,
+        CoreJustify::SpaceBetween => FlexJustify::SpaceBetween,
+        CoreJustify::FlexStart => FlexJustify::Start,
+    };
+    let align_items_val = match container_style.align_items {
+        CoreAlignItems::Center => FlexAlignItems::Center,
+        CoreAlignItems::FlexEnd => FlexAlignItems::FlexEnd,
+        CoreAlignItems::FlexStart => FlexAlignItems::FlexStart,
+        CoreAlignItems::Stretch => FlexAlignItems::Stretch,
+    };
+    let mut container_cross_size: f32 = match direction {
+        FlexDir::Row | FlexDir::RowReverse => container_style.height.unwrap_or(0.0).max(0.0),
+        FlexDir::Column | FlexDir::ColumnReverse => container_style.width.unwrap_or(0.0).max(0.0),
+    };
+    if container_cross_size <= 0.0 {
+        container_cross_size = cross_inputs
+            .iter()
+            .copied()
+            .map(|triple| {
+                let (cross_val, _min_cross, _max_cross) = triple;
+                cross_val
+            })
+            .fold(0.0f32, f32::max);
+    }
+    (justify, align_items_val, container_cross_size)
+}
+
+#[inline]
+/// Write item rectangles and return the computed content height for the container.
+fn write_pairs_and_measure(
+    axes: FlexAxes,
+    origin_x: i32,
+    origin_y: i32,
+    layouter: &mut Layouter,
+    pairs: &[(FlexPlacement, CrossPlacement)],
+) -> i32 {
+    let mut max_main_extent: f32 = 0.0;
+    let mut max_cross_extent: f32 = 0.0;
+    for (place, cross) in pairs.iter().copied() {
+        let key = NodeKey(place.handle.0);
+        let pos_x = if axes.main_is_inline {
+            origin_x.saturating_add(place.main_offset as i32)
+        } else {
+            origin_x.saturating_add(cross.cross_offset as i32)
+        };
+        let pos_y = if axes.main_is_inline {
+            origin_y.saturating_add(cross.cross_offset as i32)
+        } else {
+            origin_y.saturating_add(place.main_offset as i32)
+        };
+        let width_px = if axes.main_is_inline {
+            place.main_size as i32
+        } else {
+            cross.cross_size as i32
+        };
+        let height_px = if axes.main_is_inline {
+            cross.cross_size as i32
+        } else {
+            place.main_size as i32
+        };
+        layouter.rects.insert(
+            key,
+            LayoutRect {
+                x: pos_x,
+                y: pos_y,
+                width: width_px,
+                height: height_px,
+            },
+        );
+        max_main_extent = max_main_extent.max(place.main_offset + place.main_size);
+        max_cross_extent = max_cross_extent.max(cross.cross_offset + cross.cross_size);
+    }
+    if axes.main_is_inline {
+        max_cross_extent as i32
+    } else {
+        max_main_extent as i32
+    }
 }

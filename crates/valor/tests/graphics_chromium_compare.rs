@@ -170,6 +170,9 @@ fn build_valor_display_list_for(
     if !finished {
         return Err(anyhow!("Valor parsing did not finish"));
     }
+    // One more update after parse finished to ensure late stylesheet/attr merges are applied
+    // (mirrors the layout harness behavior before snapshotting geometry).
+    let _ = rt.block_on(page.update());
     let dl = page.display_list_retained_snapshot()?;
     // Prepend a full-viewport background using the same logic as the app
     let cc = page.background_rgba();

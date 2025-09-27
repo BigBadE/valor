@@ -103,7 +103,15 @@ pub fn read_cached_json_for_fixture(fixture_path: &Path, harness_src: &str) -> O
     let canon = fixture_path
         .canonicalize()
         .unwrap_or_else(|_| fixture_path.to_path_buf());
-    let key = format!("{}|{:016x}", canon.display(), checksum_u64(harness_src));
+    let content_hash = fs::read_to_string(&canon)
+        .map(|s| checksum_u64(&s))
+        .unwrap_or(0);
+    let key = format!(
+        "{}|{:016x}|{:016x}",
+        canon.display(),
+        checksum_u64(harness_src),
+        content_hash
+    );
     let file = layout_cache_file_for_key(&key);
     if !file.exists() {
         return None;
@@ -122,7 +130,15 @@ pub fn write_cached_json_for_fixture(
     let canon = fixture_path
         .canonicalize()
         .unwrap_or_else(|_| fixture_path.to_path_buf());
-    let key = format!("{}|{:016x}", canon.display(), checksum_u64(harness_src));
+    let content_hash = fs::read_to_string(&canon)
+        .map(|s| checksum_u64(&s))
+        .unwrap_or(0);
+    let key = format!(
+        "{}|{:016x}|{:016x}",
+        canon.display(),
+        checksum_u64(harness_src),
+        content_hash
+    );
     let file = layout_cache_file_for_key(&key);
     if let Some(parent) = file.parent() {
         let _ = fs::create_dir_all(parent);

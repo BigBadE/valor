@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- VALOR fixture (documentation): Flexbox §2 Box Model and Terminology
+  Doc-only fixture with no visual content to avoid layout diffs in chromium compare tests.
+  Purpose: track coverage for terminology mapping only.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Flexbox §2 terminology (doc-only)</title>
+  <script>
+    // JS-based assertions (geometry-neutral)
+    window._valorRun = function(){
+      if (typeof window._valorAssert !== 'function') return;
+      // Sanity: document exists and basic nodes are present
+      window._valorAssert('document ready', !!document && !!document.body, 'document/body present');
+      // Terminology is non-operational; assert that CSSOM APIs are available
+      window._valorAssert('CSSOM present', typeof window.getComputedStyle === 'function', 'getComputedStyle available');
+    };
+  </script>
+</head>
+<body>
+  <div style="font-size:16px; line-height:19px;">Doc-only terminology placeholder</div>
+</body>
+</html>

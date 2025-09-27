@@ -106,28 +106,8 @@ fn run_chromium_layouts() -> Result<(), Error> {
     }
     info!("[LAYOUT] discovered {} fixtures", all.len());
     let mut ran = 0;
-    // Expected-fail fixtures (temporarily) — to be re-enabled once style mapping adds overflow:auto.
-    // Rationale: our ComputedStyle currently distinguishes only Visible/Hidden; 'auto' is mapped to Visible,
-    // so BFC triggered by overflow:auto is not recognized yet, leading to known diffs.
-    const EXPECTED_FAIL_SUBSTR: &[&str] =
-        &["clearance/04_clear_left_inside_bfc_ignores_external_floats.html"];
+
     for input_path in all {
-        if let Some(ref f) = focus {
-            let display_name = input_path.display().to_string();
-            if EXPECTED_FAIL_SUBSTR
-                .iter()
-                .any(|s| display_name.contains(s))
-            {
-                info!(
-                    "[LAYOUT] {} ... EXPECTED-FAIL (overflow:auto BFC not yet mapped)",
-                    display_name
-                );
-                continue;
-            }
-            if !display_name.contains(f) {
-                continue;
-            }
-        }
         let display_name = input_path.display().to_string();
         // Build page and parse via HtmlPage
         let url = common::to_file_url(&input_path)?;

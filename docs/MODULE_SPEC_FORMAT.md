@@ -31,19 +31,21 @@ This template defines the required structure and standards for each CSS/HTML mod
 ## 3. Integrated verbatim spec with per-section status and mapping (REQUIRED)
 
 - Each module `spec.md` MUST embed the relevant normative specification text (excluding non-spec front matter like Abstract, Status, and general Introductions) in a dedicated section.
-- Precede the embedded text with the W3C legal notice (see §11 for template). Update `$name_of_software`, `$distribution_URI`, and `$year-of-software`.
-- The embedded spec MUST be organized in the same order as the original and MUST include every section relevant to the module.
-- Integration requirements:
-  - Place a status/mapping block immediately after each corresponding spec heading (H2 or H3) and before the embedded text.
-  - This block MUST include:
-    - `Status:` one of `[MVP]`, `[Production]`, `[Approximation]`, `[Heuristic]`, `[Fallback]`, `[Non-normative]`, `[TODO]` (choose all that apply).
-    - `Code:` exact symbols and short paths implementing the section (use backticks). Use crate/module-symbol notation consistent with code and avoid fully qualified Rust paths.
-    - `Fixtures:` concrete test fixtures (full relative paths) or `<em>None</em>`.
-    - `Notes:` brief deviations/approximations/heuristics/fallbacks as needed.
-  - Wrap the actual normative spec text for each section in a `<details class="valor-spec">` block with a `<summary>Show spec text</summary>`.
-    - H2 blocks MUST exclude their H3 subsections from the H2 `<details>` region.
-    - Each H3 subsection gets its own `<details>` block.
-- This integrated mapping supersedes the old top-level checklist. You MAY keep a short “One-to-one spec mapping” section at the top to explain that mapping is integrated and to list any cross-spec mappings (e.g., to CSS 2.2) that don’t live in the primary TR.
+- Verbatim spec text MUST be generated via the vendor script: `scripts/vendor_display_spec.ps1` (or the corresponding `.sh`) by providing the source TR URL and the module's `spec.md` path. After generation, you MUST merge your one-to-one mapping blocks into the generated document.
+  - Precede the embedded text with the W3C legal notice (see §11 for template). Update `$name_of_software`, `$distribution_URI`, and `$year-of-software`.
+  - The embedded spec MUST be organized in the same order as the original and MUST include every section relevant to the module.
+  - Integration requirements:
+    - Place a status/mapping block immediately after each corresponding spec heading (H2 or H3) and before the embedded text.
+    - This block MUST include:
+      - `Status:` one of `[MVP]`, `[Production]`, `[Approximation]`, `[Heuristic]`, `[Fallback]`, `[Non-normative]`, `[TODO]` (choose all that apply).
+      - `Code:` exact symbols and short paths implementing the section (use backticks). Use crate/module-symbol notation consistent with code and avoid fully qualified Rust paths.
+      - `Fixtures:` concrete test fixtures (full relative paths) or `<em>None</em>`.
+      - `Notes:` brief deviations/approximations/heuristics/fallbacks as needed.
+    - Wrap the actual normative spec text for each section in a `<details class="valor-spec">` block with a `<summary>Show spec text</summary>`.
+      - H2 blocks MUST exclude their H3 subsections from the H2 `<details>` region.
+      - Each H3 subsection gets its own `<details>` block.
+  - Keep the auto-generated verbatim region markers intact (e.g., `<!-- BEGIN VERBATIM SPEC: DO NOT EDIT BELOW -->`). Insert or update your mapping blocks around headings without altering the vendor markers, so the vendor script can re-run safely.
+  - This integrated mapping supersedes the old top-level checklist. You MAY keep a short “One-to-one spec mapping” section at the top to explain that mapping is integrated and to list any cross-spec mappings (e.g., to CSS 2.2) that don’t live in the primary TR.
 
 ## 4. Algorithms and data flow
 
@@ -116,18 +118,42 @@ This template defines the required structure and standards for each CSS/HTML mod
 
 ## 11. Verbatim spec embedding (integrated)
 
-- Embed the relevant normative text directly in `spec.md` and integrate status/mapping blocks in-line with headings as described in §3.
+- Embed the relevant normative text directly in `spec.md` using the vendor script, and integrate status/mapping blocks in-line with headings as described in §3.
   - Exclude non-spec front matter such as Abstract, Status, and general Introduction sections.
   - Keep chapters/sections in spec order and clearly mark the beginning of the embedded verbatim block.
   - Include the following W3C legal notice ahead of the embedded text, replacing placeholders as indicated (keep the license URL intact):
 
 ```
 $name_of_software: $distribution_URI
-Copyright © [$year-of-software] World Wide Web Consortium. All Rights Reserved. This work is distributed under the W3C® Software and Document License [1] in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+Copyright  [$year-of-software] World Wide Web Consortium. All Rights Reserved. This work is distributed under the W3C Software and Document License [1] in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 [1] https://www.w3.org/Consortium/Legal/copyright-software
 ```
 
-- Keep the embedded verbatim text in a dedicated appendix section (see boilerplate below). The full text can exceed 500 lines; the code-file line limit does not apply to documentation.
+ Begin embedded normative text below (exclude Abstract, Status, general Introduction). Keep chapters in spec order, and clearly indicate the source spec version and URL.
+
+### Vendor workflow
+
+- Use PowerShell (Windows) or Bash (Unix) vendor scripts:
+  - PowerShell: `./scripts/vendor_display_spec.ps1 -SpecUrl "https://www.w3.org/TR/<SpecVersion>/" -ModuleSpecPath "crates/css/modules/<module>/spec.md" -Year "<year>"`
+  - Bash: `./scripts/vendor_display_spec.sh "https://www.w3.org/TR/<SpecVersion>/" "crates/css/modules/<module>/spec.md" "<year>"`
+- After the script generates/refreshes the verbatim block, insert or update the per-section status/mapping blocks immediately after the relevant H2/H3 headings, before the `<details class="valor-spec">` for that section.
+- Do not edit inside the auto-generated verbatim region. Keep vendor markers intact so the script can be re-run idempotently.
+
+For each section heading (H2/H3), insert immediately after the heading a status/mapping block and then wrap the spec text for that section in a details block. Example:
+
+```html
+<h3 id="list-items">2.3. …</h3>
+<div data-valor-status="list-items">
+  <p><strong>Status:</strong> [MVP]</p>
+  <p><strong>Code:</strong> <code>css_display::chapter2::part_2_3_list_items::maybe_list_item_child</code></p>
+  <p><strong>Fixtures:</strong> <em>None</em></p>
+  <p><strong>Notes:</strong> …</p>
+</div>
+<details class="valor-spec" data-level="3">
+  <summary>Show spec text</summary>
+  <!-- verbatim spec HTML for §2.3 here -->
+</details>
+```
 
 ---
 
@@ -190,11 +216,19 @@ Legal notice (required when embedding spec text):
 
 ```
 $name_of_software: $distribution_URI
-Copyright © [$year-of-software] World Wide Web Consortium. All Rights Reserved. This work is distributed under the W3C® Software and Document License [1] in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+Copyright  [$year-of-software] World Wide Web Consortium. All Rights Reserved. This work is distributed under the W3C Software and Document License [1] in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 [1] https://www.w3.org/Consortium/Legal/copyright-software
 ```
 
-Begin embedded normative text below (exclude Abstract, Status, general Introduction). Keep chapters in spec order, and clearly indicate the source spec version and URL.
+ Begin embedded normative text below (exclude Abstract, Status, general Introduction). Keep chapters in spec order, and clearly indicate the source spec version and URL.
+
+### Vendor workflow
+
+- Use PowerShell (Windows) or Bash (Unix) vendor scripts:
+  - PowerShell: `./scripts/vendor_display_spec.ps1 -SpecUrl "https://www.w3.org/TR/<SpecVersion>/" -ModuleSpecPath "crates/css/modules/<module>/spec.md" -Year "<year>"`
+  - Bash: `./scripts/vendor_display_spec.sh "https://www.w3.org/TR/<SpecVersion>/" "crates/css/modules/<module>/spec.md" "<year>"`
+- After the script generates/refreshes the verbatim block, insert or update the per-section status/mapping blocks immediately after the relevant H2/H3 headings, before the `<details class="valor-spec">` for that section.
+- Do not edit inside the auto-generated verbatim region. Keep vendor markers intact so the script can be re-run idempotently.
 
 For each section heading (H2/H3), insert immediately after the heading a status/mapping block and then wrap the spec text for that section in a details block. Example:
 

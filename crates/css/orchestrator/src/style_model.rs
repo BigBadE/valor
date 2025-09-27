@@ -156,4 +156,8 @@ pub struct ComputedStyle {
     pub flex_wrap: FlexWrap,
     pub align_items: AlignItems,
     pub justify_content: JustifyContent,
+    /// Gap between adjacent items along rows (cross axis for column direction), in px.
+    pub row_gap: f32,
+    /// Gap between adjacent items along columns (main axis for row direction), in px.
+    pub column_gap: f32,
 }

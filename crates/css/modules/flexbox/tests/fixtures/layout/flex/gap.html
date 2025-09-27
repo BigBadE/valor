@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- VALOR fixture: Flexbox gap (column-gap on single-line row) -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Flexbox gap (column-gap)</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #container {
+      display: flex;
+      width: 320px; /* fit 3 items (50) + two gaps (10) + side space */
+      height: 100px;
+      column-gap: 10px;
+      background: #fff;
+    }
+    .item { width: 50px; height: 20px; background: #ccc; }
+  </style>
+  <script>/* none */</script>
+</head>
+<body>
+  <div id="container">
+    <div class="item" id="a"></div>
+    <div class="item" id="b"></div>
+    <div class="item" id="c"></div>
+  </div>
+</body>
+</html>

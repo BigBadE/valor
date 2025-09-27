@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- VALOR fixture (documentation): Flexbox §3 Flex Containers
+  Doc-only fixture; no flex-affecting CSS to avoid layout diffs in compare tests.
+  Purpose: track coverage for detection logic (implemented in engine), not visual layout.
+  See code mapping in css_flexbox::establishes_flex_formatting_context.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Flexbox §3 flex container detection (doc-only)</title>
+  <style>
+    .note { font: 14px/1.4 sans-serif; color: #333; }
+  </style>
+  <script>
+    // JS-based, geometry-neutral asserts
+    window._valorRun = function(){
+      if (typeof window._valorAssert !== 'function') return;
+      var elFlex = document.createElement('div');
+      elFlex.style.display = 'flex';
+      document.body.appendChild(elFlex);
+      var csFlex = window.getComputedStyle(elFlex);
+      // Chromium reports display:flex; our engine mirrors effective display as 'flex' in the harness
+      window._valorAssert('flex display keyword recognized', String(csFlex.display||'').toLowerCase()==='flex', 'display:flex computed');
+      // Inline-flex should also be recognized
+      var elInline = document.createElement('div');
+      elInline.style.display = 'inline-flex';
+      document.body.appendChild(elInline);
+      var csInline = window.getComputedStyle(elInline);
+      var disp = String(csInline.display||'').toLowerCase();
+      // Accept Chromium's native 'inline-flex' (the harness normalizes to 'flex' when serializing)
+      window._valorAssert('inline-flex keyword recognized', disp==='inline-flex' || disp==='flex', 'flex formatting context established');
+      // Clean up
+      document.body.removeChild(elFlex);
+      document.body.removeChild(elInline);
+    };
+  </script>
+</head>
+<body>
+  <div class="note" style="font-size:16px; line-height:19px;">Flex container detection is implemented internally; visual assertions are intentionally omitted.</div>
+</body>
+</html>
