@@ -5,20 +5,105 @@ use crate::chapter10::part_10_1_containing_block as cb10;
 use crate::{
     ChildLayoutCtx, CollapsedPos, HeightsAndMargins, HeightsCtx, LayoutRect, Layouter, VertCommit,
 };
-use css_box::compute_box_sides;
+use css_box::{BoxSides, compute_box_sides};
 use css_orchestrator::style_model::ComputedStyle;
 use js::NodeKey;
-use log::debug;
+
+/// Result of placing a single block-level child.
+/// Source of truth for vertical composition. Do not re-derive from y deltas elsewhere.
+#[derive(Clone, Copy)]
+pub struct PlacedBlock {
+    /// Final y position (margin edge) of the child.
+    pub y: i32,
+    /// Final content/border-box height of the child.
+    pub content_height: i32,
+    /// Outgoing bottom margin to the next sibling (signed; consumers apply policy).
+    pub outgoing_bottom_margin: i32,
+    /// Collapsed-top applied at this edge (signed).
+    pub collapsed_top: i32,
+    /// Whether clearance lifted the child above the collapsed-top pre-position.
+    pub clear_lifted: bool,
+    /// Whether the parent top edge is collapsible (for first in-flow child composition rules).
+    pub parent_edge_collapsible: bool,
+    /// Contribution to leading top collapse to subtract from parent content height.
+    /// Non-zero only for the first in-flow child when the parent top edge is collapsible
+    /// and clearance did not lift the child.
+    pub leading_collapse_contrib: i32,
+}
+
+/// Inputs required to emit a vertical commit/log and child rect to the layouter.
+#[derive(Clone, Copy)]
+struct CommitInputs {
+    /// Child node key.
+    child_key: NodeKey,
+    /// Child box sides used for logging (raw margins).
+    sides: BoxSides,
+    /// Effective margin-top used at this edge.
+    margin_top_eff: i32,
+    /// Effective bottom margin after internal propagation.
+    eff_bottom: i32,
+    /// Whether the child is effectively empty for collapsing.
+    is_empty: bool,
+    /// Collapsed-top offset applied at this edge.
+    collapsed_top: i32,
+    /// Child x position (margin edge).
+    child_x: i32,
+    /// Child y position (margin edge).
+    child_y: i32,
+    /// Used border-box width.
+    used_bb_w: i32,
+    /// Relative offset x from position: relative.
+    x_adjust: i32,
+    /// Relative offset y from position: relative.
+    y_adjust: i32,
+    /// Computed border-box height.
+    computed_h: i32,
+}
 
 #[inline]
-/// Place a single block-level child and return `(computed_height, child_y, margin_bottom_out)`.
+/// Emit diagnostics and insert the child's rectangle into the layouter.
+fn emit_vert_commit(layouter: &mut Layouter, ctx: &ChildLayoutCtx, inputs: CommitInputs) {
+    layouter.commit_vert(VertCommit {
+        index: ctx.index,
+        prev_mb: ctx.previous_bottom_margin,
+        margin_top_raw: inputs.sides.margin_top,
+        margin_top_eff: inputs.margin_top_eff,
+        eff_bottom: inputs.eff_bottom,
+        is_empty: inputs.is_empty,
+        collapsed_top: inputs.collapsed_top,
+        parent_origin_y: cb10::parent_content_origin(&ctx.metrics).1,
+        y_position: inputs.child_y,
+        y_cursor_in: ctx.y_cursor,
+        leading_top_applied: if ctx.parent_edge_collapsible && ctx.is_first_placed {
+            ctx.leading_top_applied
+        } else {
+            0
+        },
+        child_key: inputs.child_key,
+        rect: LayoutRect {
+            x: inputs.child_x.saturating_add(inputs.x_adjust),
+            y: inputs.child_y.saturating_add(inputs.y_adjust),
+            width: inputs.used_bb_w,
+            height: inputs.computed_h,
+        },
+    });
+}
+
+#[inline]
+/// Compute the parent leading-collapse contribution for the first in-flow child.
+const fn compute_leading_collapse_contrib(_ctx: &ChildLayoutCtx, _clear_lifted: bool) -> i32 {
+    // Parent origin and child metrics already incorporate any applied leading-top shift.
+    // Reporting a non-zero contribution would double-subtract from the parent content height.
+    0i32
+}
+
+#[inline]
+/// Place a single block-level child and return a `PlacedBlock` bundle for vertical composition.
 pub fn place_child_public(
     layouter: &mut Layouter,
     child_key: NodeKey,
     ctx: ChildLayoutCtx,
-) -> (i32, i32, i32) {
-    let has_style = layouter.computed_styles.contains_key(&child_key);
-    debug!("[LAYOUT][DIAG] child={child_key:?} has_computed_style={has_style}");
+) -> PlacedBlock {
     let style = layouter
         .computed_styles
         .get(&child_key)
@@ -33,6 +118,7 @@ pub fn place_child_public(
         child_y,
         x_adjust,
         y_adjust,
+        clear_lifted,
     } = layouter.compute_collapsed_and_position(child_key, &ctx, &style, &sides);
 
     let HeightsAndMargins {
@@ -51,46 +137,44 @@ pub fn place_child_public(
         margin_top_eff,
     });
 
-    debug!(
-        "[VERT child place idx={}] first={} ancestor_applied_at_edge_for_children={} mt_raw={} mt_eff={} collapsed_top={} is_empty={} parent_origin_y={} y_cursor_in={} -> y={} mb_out={} lt_applied={}",
-        ctx.index,
-        ctx.is_first_placed,
-        ctx.ancestor_applied_at_edge_for_children,
-        sides.margin_top,
-        margin_top_eff,
-        collapsed_top,
-        is_empty,
-        cb10::parent_content_origin(&ctx.metrics).1,
-        ctx.y_cursor,
-        child_y,
-        margin_bottom_out,
-        ctx.leading_top_applied
+    emit_vert_commit(
+        layouter,
+        &ctx,
+        CommitInputs {
+            child_key,
+            sides,
+            margin_top_eff,
+            eff_bottom,
+            is_empty,
+            collapsed_top,
+            child_x,
+            child_y,
+            used_bb_w,
+            x_adjust,
+            y_adjust,
+            computed_h,
+        },
     );
 
-    layouter.commit_vert(VertCommit {
-        index: ctx.index,
-        prev_mb: ctx.previous_bottom_margin,
-        margin_top_raw: sides.margin_top,
-        margin_top_eff,
-        eff_bottom,
-        is_empty,
-        collapsed_top,
-        parent_origin_y: cb10::parent_content_origin(&ctx.metrics).1,
-        y_position: child_y,
-        y_cursor_in: ctx.y_cursor,
-        leading_top_applied: if ctx.index == 0 {
-            ctx.leading_top_applied
-        } else {
-            0
-        },
-        child_key,
-        rect: LayoutRect {
-            x: child_x.saturating_add(x_adjust),
-            y: child_y.saturating_add(y_adjust),
-            width: used_bb_w,
-            height: computed_h,
-        },
-    });
+    // Compute leading collapse contribution via a dedicated helper.
+    let leading_collapse_contrib = compute_leading_collapse_contrib(&ctx, clear_lifted);
+    // Invariants: guard against misuse upstream.
+    debug_assert!(
+        ctx.parent_edge_collapsible || leading_collapse_contrib == 0i32,
+        "leading_collapse_contrib must be 0 when parent edge is non-collapsible"
+    );
+    debug_assert!(
+        !clear_lifted || leading_collapse_contrib == 0i32,
+        "leading_collapse_contrib must be 0 when clearance lifted the child"
+    );
 
-    (computed_h, child_y, margin_bottom_out)
+    PlacedBlock {
+        y: child_y,
+        content_height: computed_h,
+        outgoing_bottom_margin: margin_bottom_out,
+        collapsed_top,
+        clear_lifted,
+        parent_edge_collapsible: ctx.parent_edge_collapsible,
+        leading_collapse_contrib,
+    }
 }

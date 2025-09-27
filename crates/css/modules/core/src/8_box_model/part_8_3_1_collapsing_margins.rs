@@ -40,10 +40,16 @@ pub fn compute_collapsed_vertical_margin_public(
 ) -> i32 {
     if ctx.is_first_placed {
         if ctx.parent_edge_collapsible {
-            // Collapse with parent's own top margin applied at the edge; return the
-            // incremental collapsed amount beyond the parent's own top margin.
-            let combined = collapse_margins_pair(ctx.parent_self_top_margin, child_margin_top);
-            return combined.saturating_sub(ctx.parent_self_top_margin);
+            // If an ancestor already applied the leading-top at its own edge, the parent's
+            // origin has already been shifted by that collapsed value. To avoid double-counting
+            // at the first child, do not add any additional collapsed-top at this child edge.
+            if ctx.ancestor_applied_at_edge_for_children {
+                return 0;
+            }
+            // Otherwise, the leading-top was applied at this parent's top edge. The entire
+            // leading group, including the first child's top margin, has been consumed by the
+            // parent-edge application. Do not add any additional collapsed-top at the child.
+            return 0;
         }
         // Parent edge is not collapsible (e.g., establishes a BFC). Use child's own top margin.
         return child_margin_top;
@@ -424,10 +430,15 @@ fn scan_leading_group(
             continue;
         }
         let has_clear = matches!(child_style.clear, Clear::Left | Clear::Right | Clear::Both);
-        if has_clear {
+        // When an ancestor already applied the leading-top at its own edge, do not include the
+        // first non-empty child's effective top margin in the parent's forwarded leading group.
+        // This prevents double-counting: the forwarded value will be collapsed with the child's
+        // own top margin at the child edge.
+        let suppress_first_eff_top = has_clear || ancestor_applied_at_edge;
+        if suppress_first_eff_top {
             debug!(
-                "[VERT-GROUP first-non-empty CLEAR] idx={idx} child={child_key:?} clear={0:?} -> eff_top suppressed from leading group",
-                child_style.clear
+                "[VERT-GROUP first-non-empty SUPPRESS] idx={idx} child={child_key:?} clear={:?} ancestor_applied_at_edge={} -> eff_top suppressed from leading group",
+                child_style.clear, ancestor_applied_at_edge
             );
         } else {
             leading_margins.push(eff_top);
@@ -457,16 +468,23 @@ const fn apply_or_forward_group(
     leading_top: i32,
 ) -> (i32, i32, i32) {
     if include_parent_edge {
-        return (leading_top, 0, leading_top);
+        // Apply at the parent's top edge: parent rect shifts by `leading_top`, but the
+        // children's y cursor starts at 0 to avoid double-counting.
+        return (0, 0, leading_top);
     }
     if !parent_edge_collapsible {
-        return (0, leading_top, 0);
+        // Parent top edge is not collapsible (padding/border or BFC). Do NOT forward
+        // any leading-top value into the first child's previous-bottom; the first child
+        // must compute its top solely from its own top margin.
+        return (0, 0, 0);
     }
+    // Parent edge collapsible but not applied at parent edge (ancestor already applied):
+    // forward to the first non-empty child.
     (0, leading_top, 0)
 }
 
 /// Apply the leading-top collapse rules (parent edge vs forwarding to the first non-empty child)
-/// and return (`y_start`, `prev_bottom_after`, `leading_applied`, `skip_count`).
+/// and return (`y_cursor_start`, `prev_bottom_after`, `leading_applied`, `skip_count`).
 #[inline]
 fn apply_leading_top_collapse(
     layouter: &Layouter,
@@ -487,9 +505,14 @@ fn apply_leading_top_collapse(
             ancestor_applied_at_edge,
         );
     let leading_top = collapse_margins_list(&leading_margins);
-    let (y_start, prev_bottom_after, leading_applied) =
+    let (y_cursor_start, prev_bottom_after, leading_applied) =
         apply_or_forward_group(include_parent_edge, parent_edge_collapsible, leading_top);
-    (y_start, prev_bottom_after, leading_applied, skip_count)
+    (
+        y_cursor_start,
+        prev_bottom_after,
+        leading_applied,
+        skip_count,
+    )
 }
 
 /// Spec: §8.3.1 — Compute the root y after top collapse with first child when applicable.
@@ -499,31 +522,10 @@ pub fn compute_root_y_after_top_collapse(
     root: NodeKey,
     metrics: &ContainerMetrics,
 ) -> i32 {
-    if metrics.padding_top == 0i32 && metrics.border_top == 0i32 {
-        let flattened = normalize_children(&layouter.children, &layouter.computed_styles, root);
-        if let Some(first_child) = flattened
-            .into_iter()
-            .find(|key| matches!(layouter.nodes.get(key), Some(&LayoutNodeKind::Block { .. })))
-        {
-            let first_style = layouter
-                .computed_styles
-                .get(&first_child)
-                .cloned()
-                .unwrap_or_else(ComputedStyle::default);
-            let first_sides = compute_box_sides(&first_style);
-            let first_effective_top =
-                effective_child_top_margin(layouter, first_child, &first_sides);
-            let collapsed = collapse_margins_pair(metrics.margin_top, first_effective_top);
-            debug!(
-                "[ROOT-COLLAPSE] root={root:?} metrics(mt={}, pt={}, bt={}) first_child={first_child:?} eff_top={} -> collapsed_top={}",
-                metrics.margin_top,
-                metrics.padding_top,
-                metrics.border_top,
-                first_effective_top,
-                collapsed
-            );
-            return collapsed.max(0);
-        }
-    }
-    metrics.margin_top
+    // Preserve any earlier shift applied at the parent's top edge during the placement loop.
+    // If no shift was applied (or rect missing), fall back to the root's own margin-top.
+    layouter
+        .rects
+        .get(&root)
+        .map_or(metrics.margin_top, |rect| rect.y)
 }

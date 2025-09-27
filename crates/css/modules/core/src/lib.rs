@@ -15,6 +15,7 @@ mod chapter8;
 mod chapter9;
 
 // Core types are defined in this file; external uses can import from css_core::types via re-exports.
+use crate::orchestrator::place_child::PlacedBlock;
 use anyhow::Error;
 use chapter8::part_8_3_1_collapsing_margins as cm83;
 use chapter9::part_9_4_1_block_formatting_context::establishes_block_formatting_context;
@@ -91,6 +92,8 @@ pub struct PlaceLoopCtx<'pl> {
     pub parent_edge_collapsible: bool,
     /// Whether an ancestor already applied the leading collapse at an outer edge.
     pub ancestor_applied_at_edge: bool,
+    /// Index of the first in-flow (non-float) block child to place; used for parent/child top collapse.
+    pub first_inflow_index: usize,
 }
 
 /// Aggregated results for collapsed margins and initial child position.
@@ -110,6 +113,8 @@ pub struct CollapsedPos {
     pub x_adjust: i32,
     /// Relative y adjustment from position:relative.
     pub y_adjust: i32,
+    /// True if clearance lifted the child beyond the collapsed-top pre-position.
+    pub clear_lifted: bool,
 }
 
 /// Inputs for computing a child's heights and outgoing bottom margin.
@@ -330,8 +335,8 @@ pub(crate) const SCROLLBAR_GUTTER_PX: i32 = 16;
 type LastPlacedInfo = Option<(NodeKey, i32, i32)>;
 
 /// Compact result for the block-children placement loop:
-/// (`placed_count`, `y_end`, `last_positive_bottom_margin`, `last_placed_info`)
-type PlaceLoopResult = (usize, i32, i32, LastPlacedInfo);
+/// (`placed_count`, `y_end`, `last_positive_bottom_margin`, `last_placed_info`, `leading_collapse_contrib`)
+type PlaceLoopResult = (usize, i32, i32, LastPlacedInfo, i32);
 
 /// Internal result bundle used by `layout_block_children` to keep the function compact.
 ///
@@ -349,8 +354,8 @@ struct LocalRes {
     last_mb: i32,
     /// Last placed child info (key, rect bottom, outgoing mb)
     last_info: LastPlacedInfo,
-    /// Whether the parent's top edge is collapsible
-    parent_edge_collapsible: bool,
+    /// Leading-collapse contribution reported by the first in-flow child (0 otherwise).
+    leading_collapse_contrib: i32,
 }
 
 /// Compact return for `process_one_child` within the placement loop.
@@ -365,6 +370,8 @@ struct ProcessChildOut {
     left_floor_next: i32,
     /// Updated right-side clearance floor (from floats).
     right_floor_next: i32,
+    /// Leading-collapse contribution from the first in-flow child (0 otherwise).
+    leading_collapse_contrib: i32,
 }
 
 /// Compact inputs for per-child processing in the placement loop.
@@ -447,6 +454,65 @@ impl Layouter {
         state.nodes.insert(NodeKey::ROOT, LayoutNodeKind::Document);
         state
     }
+
+    #[inline]
+    /// Compute the y used to query float-avoidance bands for a child and return
+    /// `(y_for_bands, collapsed_top, margin_top_eff)`.
+    fn band_query_y_for_child(
+        &self,
+        loop_ctx: &PlaceLoopCtx<'_>,
+        inputs: &ProcessChildIn,
+        style: &ComputedStyle,
+        clearance_floor_y: i32,
+    ) -> (i32, i32, i32) {
+        if matches!(style.clear, Clear::Left | Clear::Right | Clear::Both) {
+            return (clearance_floor_y, 0, 0);
+        }
+        let sides = compute_box_sides(style);
+        let margin_top_eff =
+            cm83::effective_child_top_margin_public(self, inputs.child_key, &sides);
+        let is_first = inputs.index == loop_ctx.first_inflow_index;
+        let tmp_ctx = ChildLayoutCtx {
+            index: inputs.index,
+            is_first_placed: is_first,
+            metrics: loop_ctx.metrics,
+            y_cursor: inputs.y_cursor,
+            previous_bottom_margin: if is_first {
+                if loop_ctx.parent_edge_collapsible {
+                    loop_ctx.prev_bottom_after
+                } else {
+                    0
+                }
+            } else {
+                inputs.previous_bottom_margin
+            },
+            parent_self_top_margin: if loop_ctx.parent_edge_collapsible
+                && is_first
+                && !loop_ctx.ancestor_applied_at_edge
+            {
+                loop_ctx.parent_sides.margin_top
+            } else {
+                0
+            },
+            leading_top_applied: if loop_ctx.parent_edge_collapsible && is_first {
+                loop_ctx.leading_applied
+            } else {
+                0
+            },
+            ancestor_applied_at_edge_for_children: loop_ctx.ancestor_applied_at_edge,
+            parent_edge_collapsible: loop_ctx.parent_edge_collapsible,
+            clearance_floor_y: 0,
+            float_band_left: 0,
+            float_band_right: 0,
+        };
+        let collapsed_top =
+            cm83::compute_collapsed_vertical_margin_public(&tmp_ctx, margin_top_eff, style);
+        (
+            inputs.y_cursor.saturating_add(collapsed_top),
+            collapsed_top,
+            margin_top_eff,
+        )
+    }
     #[inline]
     /// Returns a shallow snapshot of the known nodes.
     ///
@@ -513,26 +579,25 @@ impl Layouter {
         ancestor_applied_at_edge: bool,
     ) -> (usize, i32, i32, LastPlacedInfo) {
         let block_children = self.collect_block_children(root);
-        let mut first_collapsed_top_positive: i32 = 0;
         let res: LocalRes = if block_children.is_empty() {
             LocalRes {
                 placed: 0,
                 y_end: 0,
                 last_mb: 0,
                 last_info: None,
-                parent_edge_collapsible: true,
+                leading_collapse_contrib: 0,
             }
         } else {
-            let (loop_ctx, parent_edge_collapsible) =
+            let (loop_ctx, _parent_edge_collapsible) =
                 self.prepare_place_loop(root, metrics, &block_children, ancestor_applied_at_edge);
-            let (placed, y_end, last_mb, last_info): PlaceLoopResult =
-                self.place_block_children_loop(loop_ctx, &mut first_collapsed_top_positive);
+            let (placed, y_end, last_mb, last_info, leading_collapse_contrib): PlaceLoopResult =
+                self.place_block_children_loop(loop_ctx);
             LocalRes {
                 placed,
                 y_end,
                 last_mb,
                 last_info,
-                parent_edge_collapsible,
+                leading_collapse_contrib,
             }
         };
 
@@ -554,13 +619,11 @@ impl Layouter {
         } else {
             res.y_end.saturating_add(res.last_mb)
         };
-        let adjusted_content_height = if res.parent_edge_collapsible {
-            y_end_to_bottom_margin_edge
-                .saturating_sub(first_collapsed_top_positive)
-                .max(0i32)
-        } else {
-            y_end_to_bottom_margin_edge.max(0i32)
-        };
+        // Subtract leading-collapse contribution when applicable. The contribution is guaranteed
+        // to be zero when the parent edge is not collapsible.
+        let adjusted_content_height = y_end_to_bottom_margin_edge
+            .saturating_sub(res.leading_collapse_contrib)
+            .max(0i32);
         (
             res.placed,
             adjusted_content_height,
@@ -591,7 +654,7 @@ impl Layouter {
         block_children: &'children [NodeKey],
         ancestor_applied_at_edge: bool,
     ) -> (PlaceLoopCtx<'children>, bool) {
-        let (y_start, prev_bottom_after, leading_applied, skipped) =
+        let (y_cursor_start, prev_bottom_after, leading_applied, skipped) =
             chapter8::part_8_3_1_collapsing_margins::apply_leading_top_collapse_public(
                 self,
                 root,
@@ -600,37 +663,57 @@ impl Layouter {
                 ancestor_applied_at_edge,
             );
         debug!(
-            "[VERT-GROUP apply root={root:?}] y_start={y_start} prev_bottom_after={prev_bottom_after} leading_applied={leading_applied} skip_count={skipped}"
+            "[VERT-GROUP apply root={root:?}] y_cursor_start={y_cursor_start} prev_bottom_after={prev_bottom_after} leading_applied={leading_applied} skip_count={skipped}"
         );
         let (parent_sides, parent_edge_collapsible) = self.build_parent_edge_context(root, metrics);
-        if leading_applied != 0i32
-            && parent_edge_collapsible
-            && let Some(parent_rect) = self.rects.get_mut(&root)
-        {
-            parent_rect.y = y_start;
+        // When applying the leading collapse at the parent's top edge, reflect this shift both
+        // in the parent's rect (for viewport-relative geometry) and in the placement loop's
+        // metrics so that children's parent_content_origin includes the applied offset.
+        let mut metrics_for_children = *metrics;
+        if leading_applied != 0i32 && parent_edge_collapsible {
+            if let Some(parent_rect) = self.rects.get_mut(&root) {
+                parent_rect.y = leading_applied;
+            }
+            metrics_for_children.margin_top = leading_applied;
+        }
+        // Determine the first in-flow child index (ignoring floats) starting at `skipped`.
+        let mut first_inflow_index = usize::MAX;
+        for (idx, key) in block_children.iter().copied().enumerate() {
+            if idx < skipped {
+                continue;
+            }
+            let style = self
+                .computed_styles
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(ComputedStyle::default);
+            if matches!(style.float, Float::None) {
+                first_inflow_index = idx;
+                break;
+            }
         }
         let loop_ctx = PlaceLoopCtx {
             root,
-            metrics: *metrics,
+            metrics: metrics_for_children,
             block_children,
-            y_cursor: y_start,
+            y_cursor: y_cursor_start,
             prev_bottom_after,
             leading_applied,
             skipped,
             parent_sides,
             parent_edge_collapsible,
             ancestor_applied_at_edge,
+            first_inflow_index,
         };
+        debug!(
+            "[PARENT-EDGE ctx root={root:?}] parent_edge_collapsible={parent_edge_collapsible} first_inflow_index={first_inflow_index} y_cursor_start={y_cursor_start} prev_bottom_after={prev_bottom_after} leading_applied={leading_applied} skipped={skipped}"
+        );
         (loop_ctx, parent_edge_collapsible)
     }
 
     /// Place block children, skipping leading structurally-empty boxes per `skipped`.
     #[inline]
-    fn place_block_children_loop(
-        &mut self,
-        loop_ctx: PlaceLoopCtx<'_>,
-        first_collapsed_top_positive: &mut i32,
-    ) -> PlaceLoopResult {
+    fn place_block_children_loop(&mut self, loop_ctx: PlaceLoopCtx<'_>) -> PlaceLoopResult {
         let mut reflowed_count = 0usize;
         let mut previous_bottom_margin: i32 = 0;
         let mut y_cursor = loop_ctx.y_cursor;
@@ -638,6 +721,7 @@ impl Layouter {
         let mut clearance_floor_left_y: i32 = 0;
         let mut clearance_floor_right_y: i32 = 0;
         let mut last_placed_info: Option<(NodeKey, i32, i32)> = None;
+        let mut leading_collapse_contrib: i32 = 0;
         for (index, child_key) in loop_ctx.block_children.iter().copied().enumerate() {
             // Deterministically suppress placement and margin application for leading structurally-empty boxes.
             if index < loop_ctx.skipped {
@@ -667,7 +751,6 @@ impl Layouter {
                     current_left: clearance_floor_left_y,
                     current_right: clearance_floor_right_y,
                 },
-                first_collapsed_top_positive,
             );
             reflowed_count = reflowed_count.saturating_add(1);
             y_cursor = proc.y_next;
@@ -675,12 +758,16 @@ impl Layouter {
             last_placed_info = proc.last_info;
             clearance_floor_left_y = proc.left_floor_next;
             clearance_floor_right_y = proc.right_floor_next;
+            if leading_collapse_contrib == 0i32 && proc.leading_collapse_contrib != 0i32 {
+                leading_collapse_contrib = proc.leading_collapse_contrib;
+            }
         }
         (
             reflowed_count,
             y_cursor,
             previous_bottom_margin,
             last_placed_info,
+            leading_collapse_contrib,
         )
     }
 
@@ -690,7 +777,6 @@ impl Layouter {
         &mut self,
         loop_ctx: &PlaceLoopCtx<'_>,
         inputs: &ProcessChildIn,
-        first_collapsed_top_positive: &mut i32,
     ) -> ProcessChildOut {
         // Determine if the child establishes a new block formatting context (BFC).
         // If so, external floats must not affect it: ignore external float floors and bands.
@@ -716,18 +802,13 @@ impl Layouter {
             masked_left_for_child,
             masked_right_for_child,
         );
-        // Compute bands at the relevant y. Even if the child establishes a new BFC, we must still
-        // avoid overlapping preceding floats when positioning the block. BFC masks external
-        // clearance floors, but does not grant permission to overlap floats.
-        let y_for_bands = if matches!(style.clear, Clear::Left | Clear::Right | Clear::Both) {
-            clearance_floor_y
-        } else {
-            inputs.y_cursor
-        };
+        // Compute bands at the relevant y. Align the query y with the actual child top margin edge.
+        let (y_for_bands, collapsed_top, margin_top_eff) =
+            self.band_query_y_for_child(loop_ctx, inputs, &style, clearance_floor_y);
         let (band_left, band_right) =
             self.compute_float_bands_for_y(loop_ctx, inputs.index, y_for_bands);
         debug!(
-            "[CHILD] idx={} key={:?} float={:?} clear={:?} bands=({}, {}) y_cursor={} y_for_bands={}",
+            "[CHILD] idx={} key={:?} float={:?} clear={:?} bands=({}, {}) y_cursor={} y_for_bands={} collapsed_top={} mt_eff={}",
             inputs.index,
             inputs.child_key,
             style.float,
@@ -735,15 +816,25 @@ impl Layouter {
             band_left,
             band_right,
             inputs.y_cursor,
-            y_for_bands
+            y_for_bands,
+            collapsed_top,
+            margin_top_eff
         );
         let ctx = Self::build_child_ctx(loop_ctx, inputs, clearance_floor_y, band_left, band_right);
-        let (y_calc, mb_calc) = self.layout_child_and_advance(
-            loop_ctx.root,
-            inputs.child_key,
-            ctx,
-            first_collapsed_top_positive,
+        log::debug!(
+            "[CTX] idx={} first={} parent_edge_collapsible={} y_cursor_in={} prev_bottom_in={} -> ctx.prev_bottom={} parent_self_top_margin={} leading_top_applied={} ancestor_applied_at_edge_for_children={}",
+            inputs.index,
+            inputs.index == loop_ctx.first_inflow_index,
+            loop_ctx.parent_edge_collapsible,
+            inputs.y_cursor,
+            inputs.previous_bottom_margin,
+            ctx.previous_bottom_margin,
+            ctx.parent_self_top_margin,
+            ctx.leading_top_applied,
+            ctx.ancestor_applied_at_edge_for_children
         );
+        let (y_calc, mb_calc, leading_contrib_raw) =
+            self.layout_child_and_advance(loop_ctx.root, inputs.child_key, ctx);
         let (y_next, mb_next, last_info) = self.flow_result_after_layout(inputs, y_calc, mb_calc);
         // Update clearance floors by side if this child floats, using the unmasked running floors.
         let (left_floor_next, right_floor_next) = self.update_clearance_floors_for_float(
@@ -751,12 +842,19 @@ impl Layouter {
             inputs.current_left,
             inputs.current_right,
         );
+        // Capture leading collapse contribution only for the first in-flow child.
+        let leading_collapse_contrib = if inputs.index == loop_ctx.first_inflow_index {
+            leading_contrib_raw
+        } else {
+            0i32
+        };
         ProcessChildOut {
             y_next,
             mb_next,
             last_info,
             left_floor_next,
             right_floor_next,
+            leading_collapse_contrib,
         }
     }
 
@@ -786,7 +884,7 @@ impl Layouter {
                 previous_bottom_margin: 0,
                 parent_self_top_margin: 0,
                 leading_top_applied: 0,
-                ancestor_applied_at_edge_for_children: true,
+                ancestor_applied_at_edge_for_children: loop_ctx.ancestor_applied_at_edge,
                 parent_edge_collapsible: loop_ctx.parent_edge_collapsible,
                 // Leading empties are suppressed; no clearance applied.
                 clearance_floor_y: 0i32,
@@ -817,12 +915,8 @@ impl Layouter {
         });
     }
 
-    /// Lay out a single block-level child and return `(height, y_position, margin_bottom)`.
-    fn layout_one_block_child(
-        &mut self,
-        child_key: NodeKey,
-        ctx: ChildLayoutCtx,
-    ) -> (i32, i32, i32) {
+    /// Lay out a single block-level child and return `(height, y_position, margin_bottom, collapsed_top, clear_lifted)`.
+    fn layout_one_block_child(&mut self, child_key: NodeKey, ctx: ChildLayoutCtx) -> PlacedBlock {
         orchestrator::place_child::place_child_public(self, child_key, ctx)
     }
 
@@ -951,22 +1045,47 @@ impl Layouter {
         root: NodeKey,
         child_key: NodeKey,
         ctx: ChildLayoutCtx,
-        first_collapsed_top_positive: &mut i32,
-    ) -> (i32, i32) {
+    ) -> (i32, i32, i32) {
         if ctx.is_first_placed {
             Self::log_first_child_context(root, &ctx);
         }
-        let (computed_h, y_position, margin_bottom) = self.layout_one_block_child(child_key, ctx);
-        orchestrator::diagnostics::record_first_collapsed_top_positive(
-            ctx.parent_edge_collapsible,
-            ctx.index,
-            y_position,
-            cb10::parent_content_origin(&ctx.metrics).1,
-            first_collapsed_top_positive,
-        );
-        let y_next = y_position.saturating_add(computed_h);
-        let mb_next = margin_bottom.max(0i32);
-        (y_next, mb_next)
+        let placed = self.layout_one_block_child(child_key, ctx);
+        if ctx.is_first_placed && !placed.parent_edge_collapsible {
+            let (_px, parent_y) = cb10::parent_content_origin(&ctx.metrics);
+            log::debug!(
+                "[FIRST-NONCOLL out] root={root:?} child={child_key:?} parent_y={parent_y} y_cursor={} y_out={} collapsed_top={} prev_bottom={} parent_self_top_margin={} clear_lifted={}",
+                ctx.y_cursor,
+                placed.y,
+                placed.collapsed_top,
+                ctx.previous_bottom_margin,
+                ctx.parent_self_top_margin,
+                placed.clear_lifted
+            );
+        }
+        if ctx.is_first_placed {
+            log::debug!(
+                "[FIRST-INFLOW DIAG] parent_edge_collapsible={} pre_clear_y={} collapsed_top={} leading_contrib={} clear_lifted={} y_out={}",
+                placed.parent_edge_collapsible,
+                ctx.y_cursor,
+                placed.collapsed_top,
+                placed.leading_collapse_contrib,
+                placed.clear_lifted,
+                placed.y
+            );
+        }
+        // Advance cursor. If clearance lifted the child above the collapsed-top pre-position,
+        // use the absolute placed y; otherwise advance in parent-relative space.
+        let y_next = if placed.clear_lifted {
+            placed.y.saturating_add(placed.content_height)
+        } else {
+            ctx.y_cursor
+                .saturating_add(placed.collapsed_top)
+                .saturating_add(placed.content_height)
+        };
+        // Propagate the signed outgoing bottom margin to the next sibling to allow
+        // proper collapsing with the next child's top margin per §8.3.1.
+        let mb_next = placed.outgoing_bottom_margin;
+        (y_next, mb_next, placed.leading_collapse_contrib)
     }
 
     #[inline]
@@ -1112,36 +1231,34 @@ impl Layouter {
     ) -> ChildLayoutCtx {
         ChildLayoutCtx {
             index: inputs.index,
-            is_first_placed: inputs.index == loop_ctx.skipped,
+            is_first_placed: inputs.index == loop_ctx.first_inflow_index,
             metrics: loop_ctx.metrics,
             y_cursor: inputs.y_cursor,
-            previous_bottom_margin: if inputs.index == loop_ctx.skipped {
-                // For first placed child: if the parent edge is collapsible we preserve the
-                // accumulated leading group (prev_bottom_after); otherwise (e.g., parent is a BFC),
-                // ignore it so the child uses its own top margin only.
+            previous_bottom_margin: if inputs.index == loop_ctx.first_inflow_index {
                 if loop_ctx.parent_edge_collapsible {
                     loop_ctx.prev_bottom_after
                 } else {
-                    0i32
+                    0
                 }
             } else {
                 inputs.previous_bottom_margin
             },
             parent_self_top_margin: if loop_ctx.parent_edge_collapsible
-                && inputs.index == loop_ctx.skipped
+                && inputs.index == loop_ctx.first_inflow_index
                 && !loop_ctx.ancestor_applied_at_edge
             {
                 loop_ctx.parent_sides.margin_top
             } else {
                 0
             },
-            leading_top_applied: if inputs.index == loop_ctx.skipped {
+            leading_top_applied: if loop_ctx.parent_edge_collapsible
+                && inputs.index == loop_ctx.first_inflow_index
+            {
                 loop_ctx.leading_applied
             } else {
                 0i32
             },
-            ancestor_applied_at_edge_for_children: loop_ctx.ancestor_applied_at_edge
-                || (loop_ctx.leading_applied != 0i32),
+            ancestor_applied_at_edge_for_children: loop_ctx.ancestor_applied_at_edge,
             parent_edge_collapsible: loop_ctx.parent_edge_collapsible,
             clearance_floor_y,
             float_band_left: band_left,

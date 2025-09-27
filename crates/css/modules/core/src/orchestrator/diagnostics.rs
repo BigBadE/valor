@@ -28,31 +28,15 @@ pub fn log_vert(entry: VertLog) {
 /// Log the initial context for the first placed child under a parent.
 pub fn log_first_child_context(root: NodeKey, ctx: &ChildLayoutCtx) {
     debug!(
-        "[VERT-CONTEXT first root={root:?}] pad_top={} border_top={} parent_self_top={} prev_bottom={} y_cursor={} lt_applied={}",
+        "[VERT-CONTEXT first root={root:?}] pad_top={} border_top={} parent_self_top={} prev_bottom={} y_cursor={} lt_applied={} parent_edge_collapsible={}",
         ctx.metrics.padding_top,
         ctx.metrics.border_top,
         ctx.parent_self_top_margin,
         ctx.previous_bottom_margin,
         ctx.y_cursor,
-        ctx.leading_top_applied
+        ctx.leading_top_applied,
+        ctx.parent_edge_collapsible
     );
-}
-
-#[inline]
-/// Record the first-child collapsed top amount when positive.
-pub fn record_first_collapsed_top_positive(
-    parent_edge_collapsible: bool,
-    index: usize,
-    y_position: i32,
-    parent_content_origin_y: i32,
-    acc: &mut i32,
-) {
-    if parent_edge_collapsible && index == 0 {
-        let delta = y_position.saturating_sub(parent_content_origin_y);
-        if delta > 0i32 {
-            *acc = (*acc).max(delta);
-        }
-    }
 }
 
 #[inline]

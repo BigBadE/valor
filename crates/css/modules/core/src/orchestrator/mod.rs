@@ -5,6 +5,7 @@ use css_orchestrator::style_model::ComputedStyle;
 
 use crate::SCROLLBAR_GUTTER_PX;
 use crate::chapter8::part_8_3_1_collapsing_margins::compute_root_y_after_top_collapse;
+use crate::chapter9::part_9_4_1_block_formatting_context::establishes_block_formatting_context;
 use crate::chapter10::part_10_6_3_height_of_blocks::compute_root_heights;
 use crate::{ContainerMetrics, Layouter, RootHeightsCtx};
 use crate::{INITIAL_CONTAINING_BLOCK_WIDTH, LayoutRect};
@@ -148,7 +149,21 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
 
     // Prefer effective outgoing bottom margin from the placement loop if available.
     let content_bottom = if let Some((last_key, rect_bottom, mb_out)) = last_placed_info {
-        let bottom_edge = rect_bottom.saturating_add(mb_out);
+        let root_style = layouter
+            .computed_styles
+            .get(&root)
+            .cloned()
+            .unwrap_or_else(ComputedStyle::default);
+        let padding_bottom = root_style.padding.bottom.max(0.0f32) as i32;
+        let border_bottom = root_style.border_width.bottom.max(0.0f32) as i32;
+        let bottom_edge_collapsible = padding_bottom == 0i32
+            && border_bottom == 0i32
+            && !establishes_block_formatting_context(&root_style);
+        let bottom_edge = if bottom_edge_collapsible {
+            rect_bottom
+        } else {
+            rect_bottom.saturating_add(mb_out)
+        };
         log::debug!(
             "[ROOT-LAST] (from loop) key={last_key:?} rect_bottom={rect_bottom} mb_out={mb_out} -> bottom_edge={bottom_edge}"
         );

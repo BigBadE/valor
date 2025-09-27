@@ -37,6 +37,32 @@ Primary spec: https://www.w3.org/TR/CSS22/
   - Ownership: `css_display::normalize_children` (Display 3 §2)
   - Call sites: `core/src/lib.rs::collect_block_children` and vertical layout helpers use `normalize_children` for flattening.
 
+- 8.3.1 Collapsing margins — [Production]
+  - Code:
+    - `8_box_model/part_8_3_1_collapsing_margins.rs::{compute_collapsed_vertical_margin_public, compute_y_position_public, effective_child_top_margin_public, effective_child_bottom_margin_public}`
+    - `core/src/lib.rs::{build_parent_edge_context, prepare_place_loop, place_block_children_loop, process_one_child, build_child_ctx, layout_child_and_advance}`
+    - `core/src/orchestrator/place_child.rs::place_child_public`
+    - `10_visual_details/part_10_3_3_block_widths.rs::compute_collapsed_and_position_public` (records `clear_lifted` and computes pre-clear collapsed position for correctness)
+  - Spec:
+    - CSS 2.2 §8.3.1 Collapsing margins — parent/first-child collapse rules
+    - CSS 2.2 §9.4.1 Block formatting contexts — parent top edge non-collapsible when the parent establishes a BFC
+  - Notes:
+    - The parent top edge is considered collapsible only when `padding-top == 0`, `border-top == 0`, and the parent does not establish a BFC (per §9.4.1). This is decided in `build_parent_edge_context()`.
+    - The first in-flow child is determined via `first_inflow_index` during `prepare_place_loop()`; floats are skipped for this purpose.
+    - When the parent edge is non-collapsible (BFC or has padding/border):
+      - `previous_bottom_margin` and `parent_self_top_margin` are forced to `0` for the first in-flow child in `build_child_ctx()`.
+      - `leading_top_applied` and `ancestor_applied_at_edge_for_children` are not propagated to the subtree.
+      - Diagnostics/commit-time `leading_top_applied` is emitted only when the parent edge is collapsible and the child is the first in-flow, enforced in `orchestrator/place_child.rs::place_child_public`.
+    - Clearance floors and float bands are masked at BFC boundaries per §9.4.1 and §9.5, ensuring no stray y-offsets under BFC parents.
+    - First-child collapsed-top accounting excludes cases where the first in-flow child was lifted by clearance: `layout_child_and_advance()` records the positive first-collapsed-top only when `clear_lifted == false`. This prevents subtracting a positive top margin from the parent’s content height in clearance scenarios.
+
+- 9.4.1 BFC — [Production]
+  - Code: `9_visual_formatting/part_9_4_1_block_formatting_context.rs::establishes_block_formatting_context`
+  - Spec: https://www.w3.org/TR/CSS22/visuren.html#block-formatting
+  - Notes:
+    - Returns true when the element floats, is absolutely/fixed positioned, has non-visible overflow, or is a flex container (`display:flex`/`inline-flex`).
+    - Used by `place_block_children_loop()` to mask external float floors and by margin propagation helpers to suppress leading collapse into BFCs.
+
 ## Verbatim Spec (CSS 2.2)
 
 Note: This module embeds and annotates only the parts of CSS 2.2 that are relevant to the layouter:

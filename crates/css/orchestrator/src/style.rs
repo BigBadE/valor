@@ -767,6 +767,36 @@ fn apply_layout_keywords(
             style_model::Overflow::Visible
         };
     }
+    // CSS 2.2 §9.5 Floats — parse 'float' and 'clear'
+    apply_float_and_clear(computed, decls);
+}
+
+#[inline]
+/// Parse CSS 2.2 `float` and `clear` longhands from declarations into the computed style.
+fn apply_float_and_clear(
+    computed: &mut style_model::ComputedStyle,
+    decls: &HashMap<String, String>,
+) {
+    if let Some(value) = decls.get("float") {
+        computed.float = if value.eq_ignore_ascii_case("left") {
+            style_model::Float::Left
+        } else if value.eq_ignore_ascii_case("right") {
+            style_model::Float::Right
+        } else {
+            style_model::Float::None
+        };
+    }
+    if let Some(value) = decls.get("clear") {
+        computed.clear = if value.eq_ignore_ascii_case("left") {
+            style_model::Clear::Left
+        } else if value.eq_ignore_ascii_case("right") {
+            style_model::Clear::Right
+        } else if value.eq_ignore_ascii_case("both") {
+            style_model::Clear::Both
+        } else {
+            style_model::Clear::None
+        };
+    }
 }
 
 /// Parse width/height/min/max and box-sizing.

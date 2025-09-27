@@ -31,6 +31,21 @@ struct HorizInputs {
     right_auto: bool,
 }
 
+#[inline]
+fn compute_collapsed_top_for_child(
+    ctx: &ChildLayoutCtx,
+    margin_top_eff: i32,
+    style: &ComputedStyle,
+) -> i32 {
+    if ctx.is_first_placed
+        && ctx.parent_edge_collapsible
+        && !ctx.ancestor_applied_at_edge_for_children
+    {
+        return 0i32;
+    }
+    cm83::compute_collapsed_vertical_margin_public(ctx, margin_top_eff, style)
+}
+
 /// Composite: compute collapsed top and initial position info for a child.
 /// Bridges §8.3.1 (collapsed top), §10.1 (parent origin), §10.3.3 (horizontal), and §9.4.3 (relative offsets).
 #[inline]
@@ -42,7 +57,8 @@ pub fn compute_collapsed_and_position_public(
     sides: &BoxSides,
 ) -> CollapsedPos {
     let margin_top_eff = cm83::effective_child_top_margin_public(layouter, child_key, sides);
-    let collapsed_top = cm83::compute_collapsed_vertical_margin_public(ctx, margin_top_eff, style);
+    let collapsed_top = compute_collapsed_top_for_child(ctx, margin_top_eff, style);
+    // first-child diagnostics logged elsewhere
     let (parent_x, parent_y) = cb10::parent_content_origin(&ctx.metrics);
     let parent_right = parent_x.saturating_add(ctx.metrics.container_width);
     let (used_bb_w, child_x, _resolved_ml) = compute_horizontal_position_public(
@@ -53,13 +69,55 @@ pub fn compute_collapsed_and_position_public(
         (ctx.float_band_left, ctx.float_band_right),
     );
     let (x_adjust, y_adjust) = apply_relative_offsets(style);
-    let mut child_y = cm83::compute_y_position_public(parent_y, ctx.y_cursor, collapsed_top);
+    // Compute pre-clear collapsed position: always include y_cursor and collapsed_top.
+    // The parent content origin already accounts for padding/border; y_cursor captures
+    // leading-top adjustments and prior flow.
+    let collapsed_pre_y = cm83::compute_y_position_public(parent_y, ctx.y_cursor, collapsed_top);
+    let mut child_y = collapsed_pre_y;
+    if ctx.is_first_placed {
+        log::debug!(
+            "[VERT-FIRST pre] key={child_key:?} parent_edge_collapsible={} parent_y={} y_cursor={} mt_eff={} collapsed_top={} clear={:?} floor_y={}",
+            ctx.parent_edge_collapsible,
+            parent_y,
+            ctx.y_cursor,
+            margin_top_eff,
+            collapsed_top,
+            style.clear,
+            ctx.clearance_floor_y
+        );
+    }
+    log::debug!(
+        "[VERT-POS pre] key={child_key:?} parent_y={} y_cursor={} collapsed_top={} clear={:?} floor_y={} -> pre_y={}",
+        parent_y,
+        ctx.y_cursor,
+        collapsed_top,
+        style.clear,
+        ctx.clearance_floor_y,
+        child_y
+    );
+    let mut clear_lifted = false;
     if matches!(style.float, Float::None)
         && matches!(style.clear, Clear::Left | Clear::Right | Clear::Both)
         && ctx.clearance_floor_y > child_y
     {
-        child_y = ctx.clearance_floor_y;
+        // If the parent's top edge is non-collapsible (padding/border present or the parent
+        // establishes a BFC), the first in-flow child's clearance must not be influenced by
+        // external floats. The placement loop masks floors at BFC boundaries, but as a guard,
+        // do not lift the first in-flow child under a non-collapsible parent edge here.
+        if !ctx.is_first_placed || ctx.parent_edge_collapsible {
+            child_y = ctx.clearance_floor_y;
+            clear_lifted = child_y > collapsed_pre_y;
+        }
     }
+    log::debug!(
+        "[VERT-POS out] key={child_key:?} child_y={} used_bb_w={} child_x={} mt_eff={} bands=({}, {})",
+        child_y,
+        used_bb_w,
+        child_x,
+        margin_top_eff,
+        ctx.float_band_left,
+        ctx.float_band_right
+    );
     CollapsedPos {
         margin_top_eff,
         collapsed_top,
@@ -68,6 +126,7 @@ pub fn compute_collapsed_and_position_public(
         child_y,
         x_adjust,
         y_adjust,
+        clear_lifted,
     }
 }
 
@@ -219,7 +278,14 @@ pub fn compute_horizontal_position_public(
         sides.margin_left,
         sides.margin_right,
     );
-    let used_bb_w = used_bb_w_raw.min(available_width);
+    // For floats with specified width, do not collapse to 0 when bands consume all inline space.
+    // Use the parent content width as the constraint for the specified-width path (CSS 2.2 §10.3.3 used width),
+    // while still positioning against bands.
+    let used_bb_w = if !matches!(style.float, Float::None) && style.width.is_some() {
+        used_border_box_width(style, parent_content_width)
+    } else {
+        used_bb_w_raw
+    };
     let child_x = match style.float {
         Float::Left => parent_x.saturating_add(float_band_left),
         Float::Right => parent_content_right
@@ -229,6 +295,19 @@ pub fn compute_horizontal_position_public(
             .saturating_add(float_band_left)
             .saturating_add(resolved_ml),
     };
+    debug!(
+        "[HORIZ-POS] float={:?} parent=[x={}, right={}, w={}] bands(L={},R={}) avail_w={} used_bb_w={} child_x={} ml_res={}",
+        style.float,
+        parent_x,
+        parent_content_right,
+        parent_content_width,
+        float_band_left,
+        float_band_right,
+        available_width,
+        used_bb_w,
+        child_x,
+        resolved_ml
+    );
     (used_bb_w, child_x, resolved_ml)
 }
 
