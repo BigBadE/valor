@@ -25,7 +25,8 @@ pub use chapter5::{FlexDirection, FlexWrap};
 pub use chapter6::{FlexItem, ItemRef, ItemStyle, collect_flex_items};
 pub use chapter7::{Axes, WritingMode, order_key, resolve_axes, sort_items_by_order_stable};
 pub use chapter8::{
-    AlignContent, AlignItems, CrossContext, CrossPlacement, FlexChild, FlexContainerInputs,
-    FlexPlacement, JustifyContent, align_cross_for_items, align_single_line_cross,
-    layout_multi_line_with_cross, layout_single_line, layout_single_line_with_cross,
+    AlignContent, AlignItems, CrossAndBaseline, CrossContext, CrossPlacement, FlexChild,
+    FlexContainerInputs, FlexPlacement, JustifyContent, align_cross_for_items,
+    align_single_line_cross, layout_multi_line_with_cross, layout_single_line,
+    layout_single_line_with_cross,
 };

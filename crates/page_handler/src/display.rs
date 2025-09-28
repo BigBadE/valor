@@ -148,10 +148,10 @@ fn build_border_items(rect: &LayoutRect, cs: &ComputedStyle) -> Option<Vec<Displ
     if !(color[3] > 0.0 && matches!(bs, BorderStyle::Solid)) {
         return None;
     }
-    let x = rect.x as f32;
-    let y = rect.y as f32;
-    let w = rect.width as f32;
-    let h = rect.height as f32;
+    let x = rect.x;
+    let y = rect.y;
+    let w = rect.width;
+    let h = rect.height;
     let t = bw.top.max(0.0);
     let r = bw.right.max(0.0);
     let b = bw.bottom.max(0.0);
@@ -282,10 +282,10 @@ pub fn build_rect_list(
         }
         if let Some(rect) = rects.get(node) {
             list.push(wgpu_renderer::DrawRect {
-                x: rect.x as f32,
-                y: rect.y as f32,
-                width: rect.width as f32,
-                height: rect.height as f32,
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
                 color: [1.0, 1.0, 1.0],
             });
         }
@@ -363,13 +363,12 @@ pub fn build_text_list(
                         let pad_right = cs.padding.right.max(0.0) as i32;
                         let border_left = cs.border_width.left.max(0.0) as i32;
                         let border_right = cs.border_width.right.max(0.0) as i32;
-                        let left_x = rect.x + border_left + pad_left;
-                        let width_px = rect
-                            .width
+                        let left_x = (rect.x.round() as i32) + border_left + pad_left;
+                        let width_px = (rect.width.round() as i32)
                             .saturating_sub(border_left + pad_left + pad_right + border_right);
                         (left_x, width_px)
                     })
-                    .unwrap_or((rect.x, rect.width));
+                    .unwrap_or(((rect.x.round() as i32), (rect.width.round() as i32)));
                 let max_width_px = content_width_px.max(0);
                 // Prefer computed line-height when available; otherwise use real metrics if available.
                 let (asc_px, desc_px, lead_px, lh_from_glyph) =
@@ -386,7 +385,7 @@ pub fn build_text_list(
                 let lines = wrap_text_uax14(&collapsed, font_size, max_width_px);
                 for (line_index, raw_line) in lines.iter().enumerate() {
                     let visual_line = reorder_bidi_for_display(raw_line);
-                    let line_top = rect.y + (line_index as i32) * line_height;
+                    let line_top = (rect.y.round() as i32) + (line_index as i32) * line_height;
                     let baseline_y = line_top + ascent;
                     // Use line box bounds: top at line_top; bottom at line_top + line_height
                     let top = line_top;
@@ -418,7 +417,7 @@ fn push_text_item(
     if collapsed.is_empty() {
         return;
     }
-    let max_width_px = rect.width.max(0);
+    let max_width_px = (rect.width.round() as i32).max(0);
     // Immediate path does not have computed styles; prefer glyph-provided line height.
     let (asc_px, desc_px, lead_px, lh_from_glyph) =
         derive_line_metrics_from_content(&collapsed, font_size);
@@ -430,13 +429,18 @@ fn push_text_item(
     let broken_lines = wrap_text_uax14(&collapsed, font_size, max_width_px);
     for (line_index, raw_line) in broken_lines.iter().enumerate() {
         let visual_line = reorder_bidi_for_display(raw_line);
-        let line_top = rect.y + (line_index as i32) * line_height;
+        let line_top = (rect.y.round() as i32) + (line_index as i32) * line_height;
         let baseline_y = line_top + ascent;
         let top = line_top;
         let bottom = line_top + line_height;
-        let bounds = Some((rect.x, top, rect.x + rect.width, bottom));
+        let bounds = Some((
+            rect.x.round() as i32,
+            top,
+            (rect.x + rect.width).round() as i32,
+            bottom,
+        ));
         list.push(DisplayItem::Text {
-            x: rect.x as f32,
+            x: rect.x,
             y: baseline_y as f32,
             text: visual_line,
             color: color_rgb,
@@ -650,10 +654,10 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     });
                     if let Some(fill_rgba) = fill_rgba_opt.filter(|rgba| rgba[3] > 0.0) {
                         list.push(DisplayItem::Rect {
-                            x: rect.x as f32,
-                            y: rect.y as f32,
-                            width: rect.width as f32,
-                            height: rect.height as f32,
+                            x: rect.x,
+                            y: rect.y,
+                            width: rect.width,
+                            height: rect.height,
                             color: fill_rgba,
                         });
                     }
@@ -676,10 +680,10 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                         && matches!(cs.overflow, Overflow::Hidden)
                     {
                         list.push(DisplayItem::BeginClip {
-                            x: rect.x as f32,
-                            y: rect.y as f32,
-                            width: rect.width as f32,
-                            height: rect.height as f32,
+                            x: rect.x,
+                            y: rect.y,
+                            width: rect.width,
+                            height: rect.height,
                         });
                         opened_clip = true;
                     }
@@ -744,10 +748,10 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
     }
 
     if let Some((x0, y0, x1, y1)) = selection_overlay {
-        let sel_x = x0.min(x1);
-        let sel_y = y0.min(y1);
-        let sel_w = (x0.max(x1) - sel_x).max(0);
-        let sel_h = (y0.max(y1) - sel_y).max(0);
+        let sel_x = x0.min(x1) as f32;
+        let sel_y = y0.min(y1) as f32;
+        let sel_w = (x0.max(x1) - sel_x.round() as i32).max(0) as f32;
+        let sel_h = (y0.max(y1) - sel_y.round() as i32).max(0) as f32;
         let selection = LayoutRect {
             x: sel_x,
             y: sel_y,
@@ -759,14 +763,14 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
             let iy = rect.y.max(selection.y);
             let ix1 = (rect.x + rect.width).min(selection.x + selection.width);
             let iy1 = (rect.y + rect.height).min(selection.y + selection.height);
-            let iw = (ix1 - ix).max(0);
-            let ih = (iy1 - iy).max(0);
-            if iw > 0 && ih > 0 {
+            let iw = (ix1 - ix).max(0.0);
+            let ih = (iy1 - iy).max(0.0);
+            if iw > 0.0 && ih > 0.0 {
                 list.push(DisplayItem::Rect {
-                    x: ix as f32,
-                    y: iy as f32,
-                    width: iw as f32,
-                    height: ih as f32,
+                    x: ix,
+                    y: iy,
+                    width: iw,
+                    height: ih,
                     color: [0.2, 0.5, 1.0, 0.35],
                 });
             }
@@ -776,10 +780,10 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
     if let Some(focused) = focused_node
         && let Some(r) = rects.get(&focused)
     {
-        let x = r.x as f32;
-        let y = r.y as f32;
-        let w = r.width as f32;
-        let h = r.height as f32;
+        let x = r.x;
+        let y = r.y;
+        let w = r.width;
+        let h = r.height;
         let c = [0.2, 0.4, 1.0, 1.0];
         let t = 2.0_f32;
         list.push(DisplayItem::Rect {

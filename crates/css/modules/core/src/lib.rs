@@ -35,17 +35,17 @@ use std::collections::HashMap;
 
 use css_orchestrator::style_model::ComputedStyle as _CoreComputedStyleForTypes;
 
-/// A rectangle in device-independent pixels (border-box space).
+/// A rectangle in device-independent pixels (border-box space). Uses f32 for subpixel precision.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LayoutRect {
     /// X coordinate of the border-box origin.
-    pub x: i32,
+    pub x: f32,
     /// Y coordinate of the border-box origin.
-    pub y: i32,
+    pub y: f32,
     /// Border-box width.
-    pub width: i32,
+    pub width: f32,
     /// Border-box height.
-    pub height: i32,
+    pub height: f32,
 }
 
 /// Metrics for the container box edges and available content width.
@@ -672,7 +672,7 @@ impl Layouter {
         let mut metrics_for_children = *metrics;
         if leading_applied != 0i32 && parent_edge_collapsible {
             if let Some(parent_rect) = self.rects.get_mut(&root) {
-                parent_rect.y = leading_applied;
+                parent_rect.y = leading_applied as f32;
             }
             metrics_for_children.margin_top = leading_applied;
         }
@@ -907,10 +907,10 @@ impl Layouter {
             leading_top_applied: 0,
             child_key,
             rect: LayoutRect {
-                x: child_x.saturating_add(x_adjust),
-                y: child_y.saturating_add(y_adjust),
-                width: used_bb_w,
-                height: 0,
+                x: i32::saturating_add(child_x, x_adjust) as f32,
+                y: i32::saturating_add(child_y, y_adjust) as f32,
+                width: used_bb_w as f32,
+                height: 0.0,
             },
         });
     }

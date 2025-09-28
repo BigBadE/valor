@@ -57,6 +57,6 @@ pub fn last_info_for_child(
     mb_out: i32,
 ) -> Option<(NodeKey, i32, i32)> {
     let rect = layouter.rects.get(&child_key).copied()?;
-    let rect_bottom = rect.y.saturating_add(rect.height);
+    let rect_bottom = (rect.y + rect.height).round() as i32;
     Some((child_key, rect_bottom, mb_out))
 }

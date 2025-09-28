@@ -4,11 +4,11 @@
 use crate::LayoutRect;
 use css_flexbox::{
     AlignContent as FlexAlignContent, AlignItems as FlexAlignItems, Axes as FlexAxes,
-    CrossContext as FlexCrossContext, CrossPlacement, FlexChild, FlexContainerInputs,
-    FlexDirection as FlexDir, FlexItem, FlexPlacement, ItemRef as FlexItemRef,
-    ItemStyle as FlexItemStyle, JustifyContent as FlexJustify, WritingMode as FlexWritingMode,
-    collect_flex_items, layout_multi_line_with_cross, layout_single_line_with_cross,
-    resolve_axes as flex_resolve_axes,
+    CrossAndBaseline as FlexCrossAndBaseline, CrossContext as FlexCrossContext, CrossPlacement,
+    FlexChild, FlexContainerInputs, FlexDirection as FlexDir, FlexItem, FlexPlacement,
+    ItemRef as FlexItemRef, ItemStyle as FlexItemStyle, JustifyContent as FlexJustify,
+    WritingMode as FlexWritingMode, collect_flex_items, layout_multi_line_with_cross,
+    layout_single_line_with_cross, resolve_axes as flex_resolve_axes,
 };
 use css_orchestrator::style_model::{
     AlignContent as CoreAlignContent, AlignItems as CoreAlignItems, ComputedStyle,
@@ -32,6 +32,10 @@ use crate::{
 type CrossTriplet = (f32, f32, f32);
 /// Container context for flex layout: `(origin_xy, direction, axes, container_main_size, main_gap)`.
 type FlexContainerCtx = ((i32, i32), FlexDir, FlexAxes, f32, f32);
+/// Baseline metrics vector per item: `(first_baseline, last_baseline)` or `None` when unavailable.
+type BaselineVec = Vec<Option<(f32, f32)>>;
+/// Triple of flex inputs returned by `build_flex_item_inputs`.
+type FlexInputsTriple = (Vec<FlexChild>, Vec<CrossTriplet>, BaselineVec);
 
 /// Compute content height and root border-box height.
 #[inline]
@@ -111,9 +115,11 @@ fn container_layout_context(
     let writing_mode = FlexWritingMode::HorizontalTb;
     let axes = flex_resolve_axes(direction, writing_mode);
     let container_main_size: f32 = if axes.main_is_inline {
+        // Main axis maps to inline axis: use container inline size (width in HorizontalTb)
         metrics.container_width as f32
     } else {
-        1_000_000.0
+        // Main axis maps to block axis: use computed height when specified; otherwise treat as unbounded
+        container_style.height.unwrap_or(1_000_000.0).max(0.0)
     };
     let main_gap = match container_style.flex_direction {
         CoreFlexDirection::Column => container_style.row_gap,
@@ -324,7 +330,8 @@ fn flex_child_content_height(
         container_layout_context(cctx, container_style);
     let item_shells = collect_item_shells(layouter, cctx.key);
     let handles = collect_flex_items(&item_shells);
-    let (main_items, cross_inputs) = build_flex_item_inputs(layouter, &handles, direction);
+    let (main_items, cross_inputs, baseline_inputs) =
+        build_flex_item_inputs(layouter, &handles, direction);
     let (justify, align_items_val, align_content_val, container_cross_size) =
         justify_align_context(container_style, direction, &cross_inputs);
     let container_inputs = FlexContainerInputs {
@@ -333,10 +340,16 @@ fn flex_child_content_height(
         container_main_size,
         main_gap,
     };
+    let cross_gap = match direction {
+        FlexDir::Row | FlexDir::RowReverse => container_style.row_gap,
+        FlexDir::Column | FlexDir::ColumnReverse => container_style.column_gap,
+    }
+    .max(0.0);
     let cross_ctx = FlexCrossContext {
         align_items: align_items_val,
         align_content: align_content_val,
         container_cross_size,
+        cross_gap,
     };
     let pairs = match container_style.flex_wrap {
         CoreFlexWrap::NoWrap => layout_single_line_with_cross(
@@ -344,14 +357,20 @@ fn flex_child_content_height(
             justify,
             cross_ctx,
             &main_items,
-            &cross_inputs,
+            FlexCrossAndBaseline {
+                cross_inputs: &cross_inputs,
+                baseline_inputs: &baseline_inputs,
+            },
         ),
         CoreFlexWrap::Wrap => layout_multi_line_with_cross(
             container_inputs,
             justify,
             cross_ctx,
             &main_items,
-            &cross_inputs,
+            FlexCrossAndBaseline {
+                cross_inputs: &cross_inputs,
+                baseline_inputs: &baseline_inputs,
+            },
         ),
     };
     let content_height = write_pairs_and_measure(axes, origin_x, origin_y, layouter, &pairs);
@@ -364,9 +383,10 @@ fn build_flex_item_inputs(
     layouter: &Layouter,
     items: &[FlexItem],
     direction: FlexDir,
-) -> (Vec<FlexChild>, Vec<CrossTriplet>) {
+) -> FlexInputsTriple {
     let mut main_items: Vec<FlexChild> = Vec::with_capacity(items.len());
     let mut cross_inputs: Vec<CrossTriplet> = Vec::with_capacity(items.len());
+    let mut baseline_inputs: BaselineVec = Vec::with_capacity(items.len());
     for item in items {
         let key = NodeKey(item.handle.0);
         let style_item = layouter
@@ -400,6 +420,8 @@ fn build_flex_item_inputs(
             margin_right: style_item.margin.right.max(0.0),
             margin_top: style_item.margin.top.max(0.0),
             margin_bottom: style_item.margin.bottom.max(0.0),
+            margin_left_auto: false,
+            margin_right_auto: false,
         });
         let (cross, min_c, max_c) = match direction {
             FlexDir::Row | FlexDir::RowReverse => (
@@ -414,8 +436,18 @@ fn build_flex_item_inputs(
             ),
         };
         cross_inputs.push((cross, min_c, max_c));
+        // Baseline metrics [Approximation → Improved]:
+        // Use the computed or default line-height as a proxy for first baseline when available.
+        // Last baseline stays at 0 for MVP until inline layout provides real metrics.
+        let line_h_px = style_item
+            .line_height
+            .unwrap_or_else(|| default_line_height_px(&style_item) as f32)
+            .max(0.0);
+        let first_baseline = line_h_px.min(cross).max(0.0);
+        let last_baseline = 0.0f32;
+        baseline_inputs.push(Some((first_baseline, last_baseline)));
     }
-    (main_items, cross_inputs)
+    (main_items, cross_inputs, baseline_inputs)
 }
 
 #[inline]
@@ -481,8 +513,6 @@ fn write_pairs_and_measure(
 ) -> i32 {
     let mut max_main_extent: f32 = 0.0;
     let mut max_cross_extent: f32 = 0.0;
-    let origin_x_f = origin_x as f32;
-    let origin_y_f = origin_y as f32;
     for (place, cross) in pairs.iter().copied() {
         let key = NodeKey(place.handle.0);
         // Include per-item margins only along the cross axis for row direction (top)
@@ -496,14 +526,14 @@ fn write_pairs_and_measure(
         let margin_left = style.margin.left.max(0.0);
         let margin_top = style.margin.top.max(0.0);
         let pos_x: f32 = if axes.main_is_inline {
-            origin_x_f + place.main_offset
+            origin_x as f32 + place.main_offset
         } else {
-            origin_x_f + cross.cross_offset + margin_left
+            origin_x as f32 + cross.cross_offset + margin_left
         };
         let pos_y: f32 = if axes.main_is_inline {
-            origin_y_f + cross.cross_offset + margin_top
+            origin_y as f32 + cross.cross_offset + margin_top
         } else {
-            origin_y_f + place.main_offset
+            origin_y as f32 + place.main_offset
         };
         let width_px: f32 = if axes.main_is_inline {
             place.main_size

@@ -544,15 +544,15 @@ impl HtmlPage {
             );
 
             // Forward dirty rectangles to the renderer for partial redraws
-            let dirty_rectangles_i32 = layouter.take_dirty_rects();
-            if !dirty_rectangles_i32.is_empty() {
-                let dirty_rectangles: Vec<DrawRect> = dirty_rectangles_i32
+            let dirty_rectangles = layouter.take_dirty_rects();
+            if !dirty_rectangles.is_empty() {
+                let dirty_rectangles: Vec<DrawRect> = dirty_rectangles
                     .into_iter()
                     .map(|rect| DrawRect {
-                        x: rect.x as f32,
-                        y: rect.y as f32,
-                        width: rect.width as f32,
-                        height: rect.height as f32,
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
                         color: [0.0, 0.0, 0.0],
                     })
                     .collect();

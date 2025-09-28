@@ -1,3 +1,143 @@
+use crate::{FlexDirection, ItemRef, WritingMode, resolve_axes};
+use log::debug;
+
+/// Optional baseline metrics per item: `(first_baseline, last_baseline)`.
+type BaselineMetrics = Option<(f32, f32)>;
+/// Slice alias for baseline metrics across items.
+type BaselineSlice<'slice> = &'slice [BaselineMetrics];
+
+/// Read-only inputs to pack lines along the cross axis.
+#[derive(Copy, Clone)]
+struct PackInputs<'inputs> {
+    /// Per-item cross inputs `(cross_size, min_cross, max_cross)`
+    cross_inputs: &'inputs [(f32, f32, f32)],
+    /// Per-item baseline metrics if available
+    baseline_inputs: BaselineSlice<'inputs>,
+    /// Ranges of items per line
+    line_ranges: &'inputs [LineRange],
+    /// Main-axis placements per line
+    per_line_main: &'inputs [PerLineMain],
+    /// Resolved cross-size per line (after stretch)
+    line_cross_vec: &'inputs [f32],
+}
+
+#[inline]
+/// Compute the reference baseline value for a line from per-item baseline metrics and cross sizes.
+fn compute_line_baseline_ref(
+    align: AlignItems,
+    baselines: BaselineSlice<'_>,
+    cross_inputs: &[(f32, f32, f32)],
+) -> f32 {
+    let mut reference = 0.0f32;
+    for (metrics_opt, &(item_cross, _min_c, _max_c)) in baselines.iter().zip(cross_inputs.iter()) {
+        if let Some((first, last)) = *metrics_opt {
+            let candidate = match align {
+                AlignItems::Baseline => first,
+                AlignItems::LastBaseline => last,
+                _ => 0.0,
+            };
+            // Clamp within the item cross-size just in case metrics exceed bounds.
+            let clamped = candidate.max(0.0).min(item_cross);
+            if clamped > reference {
+                reference = clamped;
+            }
+        }
+    }
+    reference
+}
+
+/// Context for adjusting cross offsets to align baselines within a line.
+struct BaselineAdjustCtx<'baseline> {
+    /// The effective `align-items` mode for baseline behavior.
+    align: AlignItems,
+    /// Per-item baseline metrics for the current line.
+    baselines: BaselineSlice<'baseline>,
+    /// Index of the item within the current line.
+    index_in_line: usize,
+    /// The target baseline reference for the line.
+    line_ref: f32,
+    /// The cross-size of the current line.
+    line_cross_max: f32,
+    /// The accumulated cross offset of previous lines.
+    cross_accum_offset: f32,
+}
+
+#[inline]
+/// Adjust the `cross_placement` so that the item's chosen baseline matches the line reference.
+fn adjust_cross_for_baseline(ctx: &BaselineAdjustCtx<'_>, cross_placement: &mut CrossPlacement) {
+    if matches!(ctx.align, AlignItems::Baseline | AlignItems::LastBaseline)
+        && let Some((first, last)) = ctx
+            .baselines
+            .get(ctx.index_in_line)
+            .and_then(|metrics| *metrics)
+    {
+        let item_baseline = match ctx.align {
+            AlignItems::Baseline => first,
+            AlignItems::LastBaseline => last,
+            _ => 0.0,
+        };
+        let desired_in_line = (ctx.line_ref - item_baseline).max(0.0);
+        let max_in_line = (ctx.line_cross_max - cross_placement.cross_size).max(0.0);
+        cross_placement.cross_offset = ctx.cross_accum_offset + desired_in_line.min(max_in_line);
+    }
+}
+
+#[inline]
+/// Quantize a CSS pixel value to the layout unit (1/64 px) to match Chromium's subpixel model.
+fn quantize_layout(value: f32) -> f32 {
+    (value * 64.0).round() / 64.0
+}
+
+/// Bundle of cross and baseline inputs required by the combined layout APIs.
+#[derive(Copy, Clone)]
+pub struct CrossAndBaseline<'cb> {
+    /// Per-item cross inputs `(cross_size, min_cross, max_cross)`
+    pub cross_inputs: &'cb [(f32, f32, f32)],
+    /// Per-item baseline metrics if available
+    pub baseline_inputs: BaselineSlice<'cb>,
+}
+
+#[inline]
+/// Compute hypothetical sizes, gaps, and apply flex grow/shrink.
+fn plan_hypotheticals_and_flex(
+    container: FlexContainerInputs,
+    items: &[FlexChild],
+) -> (Vec<f32>, f32) {
+    let mut sizes: Vec<f32> = items
+        .iter()
+        .map(|child| clamp(child.flex_basis, child.min_main, child.max_main))
+        .collect();
+    let gaps_total = if items.len() > 1 {
+        (items.len() as f32 - 1.0) * container.main_gap.max(0.0)
+    } else {
+        0.0
+    };
+    let sum: f32 = sizes.iter().copied().sum();
+    let free_space = container.container_main_size - sum - gaps_total;
+    debug!(
+        target: "css::flexbox::single_line",
+        "[FLEX-JUSTIFY] items={} sum_sizes={:.3} gaps_total={:.3} container_main={:.3} free_space={:.3}",
+        items.len(),
+        sum,
+        gaps_total,
+        container.container_main_size,
+        free_space
+    );
+    if free_space > 0.0 {
+        distribute_grow(free_space, items, &mut sizes);
+    } else if free_space < 0.0 {
+        distribute_shrink(free_space, items, &mut sizes);
+    }
+    (sizes, gaps_total)
+}
+
+#[inline]
+/// Quantize a CSS pixel value downward to the layout unit (1/64 px). Used for between-spacing to
+/// match Chromium's fixed-point accumulation and avoid accumulating rounding overflow across slots.
+fn quantize_layout_floor(value: f32) -> f32 {
+    ((value * 64.0).floor()) / 64.0
+}
+
 #[inline]
 /// Compute justify-content start offset and between-spacing (excluding CSS gap).
 fn justify_params(
@@ -7,7 +147,7 @@ fn justify_params(
     item_count: usize,
 ) -> (f32, f32) {
     let remaining = (container_main - content_total).max(0.0);
-    match (justify, item_count) {
+    let (start, between) = match (justify, item_count) {
         (JustifyContent::End, _) => (remaining, 0.0),
         (JustifyContent::Center, _) => (remaining * 0.5, 0.0),
         (JustifyContent::SpaceBetween, count) if count > 1 => {
@@ -22,40 +162,33 @@ fn justify_params(
         }
         // Start and all other cases
         _ => (0.0, 0.0),
-    }
+    };
+    (quantize_layout(start), quantize_layout_floor(between))
 }
 
 #[inline]
-/// Build main-axis placements from inner sizes and outer starts (margin-aware starts).
+/// Build main-axis placements from inner sizes and outer starts (margin-aware starts) with
+/// the resolved effective left margins (includes auto margin absorption).
 fn build_main_placements(
     items: &[FlexChild],
     inner_sizes: &[f32],
     outer_starts: &[f32],
+    effective_left_margins: &[f32],
 ) -> Vec<FlexPlacement> {
     items
         .iter()
         .zip(inner_sizes.iter())
         .zip(outer_starts.iter())
-        .map(|((child, size), outer_start)| FlexPlacement {
+        .zip(effective_left_margins.iter())
+        .map(|(((child, size), outer_start), eff_left)| FlexPlacement {
             handle: child.handle,
             main_size: *size,
-            main_offset: *outer_start + child.margin_left.max(0.0),
+            main_offset: *outer_start + *eff_left,
         })
         .collect()
 }
 
-#[inline]
-/// Compute per-item outer sizes (including horizontal margins) and their sum.
-fn outer_sizes_and_sum(items: &[FlexChild], inner_sizes: &[f32]) -> (Vec<f32>, f32) {
-    let mut out: Vec<f32> = Vec::with_capacity(items.len());
-    let mut sum = 0.0f32;
-    for (child, size) in items.iter().zip(inner_sizes.iter().copied()) {
-        let outer = size + child.margin_left.max(0.0) + child.margin_right.max(0.0);
-        out.push(outer);
-        sum += outer;
-    }
-    (out, sum)
-}
+// removed: outer_sizes_and_sum (was unused after auto margin integration)
 
 #[inline]
 /// Ensure the first item's offset aligns to main-start for Start and `SpaceBetween`
@@ -109,6 +242,8 @@ pub struct CrossContext {
     pub align_items: AlignItems,
     pub align_content: AlignContent,
     pub container_cross_size: f32,
+    /// CSS cross-axis gap between adjacent flex lines (row-gap for row direction; column-gap for column direction).
+    pub cross_gap: f32,
 }
 
 #[inline]
@@ -117,20 +252,47 @@ pub fn layout_single_line_with_cross(
     justify_content: JustifyContent,
     cross_ctx: CrossContext,
     items: &[FlexChild],
-    cross_inputs: &[(f32, f32, f32)],
+    cab: CrossAndBaseline<'_>,
 ) -> Vec<(FlexPlacement, CrossPlacement)> {
     debug_assert_eq!(
         items.len(),
-        cross_inputs.len(),
+        cab.cross_inputs.len(),
         "items and cross_inputs length mismatch"
+    );
+    debug_assert_eq!(
+        items.len(),
+        cab.baseline_inputs.len(),
+        "items and baseline_inputs length mismatch"
     );
     let main = layout_single_line(container, justify_content, items);
     let cross = align_cross_for_items(
         cross_ctx.align_items,
         cross_ctx.container_cross_size,
-        cross_inputs,
+        cab.cross_inputs,
     );
-    main.into_iter().zip(cross).collect()
+    let mut pairs: Vec<(FlexPlacement, CrossPlacement)> = main.into_iter().zip(cross).collect();
+    // Adjust cross offsets for baseline alignment if needed (single-line)
+    if matches!(
+        cross_ctx.align_items,
+        AlignItems::Baseline | AlignItems::LastBaseline
+    ) {
+        let line_cross_max = cross_ctx.container_cross_size;
+        let line_ref =
+            compute_line_baseline_ref(cross_ctx.align_items, cab.baseline_inputs, cab.cross_inputs);
+        for (pair, baseline_opt) in pairs.iter_mut().zip(cab.baseline_inputs.iter()) {
+            if let Some((first, last)) = *baseline_opt {
+                let item_baseline = match cross_ctx.align_items {
+                    AlignItems::Baseline => first,
+                    AlignItems::LastBaseline => last,
+                    _ => 0.0,
+                };
+                let desired = (line_ref - item_baseline).max(0.0);
+                let max_offset = (line_cross_max - pair.1.cross_size).max(0.0);
+                pair.1.cross_offset = desired.min(max_offset);
+            }
+        }
+    }
+    pairs
 }
 
 #[inline]
@@ -144,12 +306,17 @@ pub fn layout_multi_line_with_cross(
     justify_content: JustifyContent,
     cross_ctx: CrossContext,
     items: &[FlexChild],
-    cross_inputs: &[(f32, f32, f32)],
+    cab: CrossAndBaseline<'_>,
 ) -> Vec<(FlexPlacement, CrossPlacement)> {
     debug_assert_eq!(
         items.len(),
-        cross_inputs.len(),
+        cab.cross_inputs.len(),
         "items and cross_inputs length mismatch",
+    );
+    debug_assert_eq!(
+        items.len(),
+        cab.baseline_inputs.len(),
+        "items and baseline_inputs length mismatch"
     );
     // Break into lines using outer sizes (margin-aware)
     let line_ranges = break_into_lines(container.container_main_size, container.main_gap, items);
@@ -159,18 +326,20 @@ pub fn layout_multi_line_with_cross(
         container,
         justify_content,
         items,
-        cross_inputs,
+        cab.cross_inputs,
         &line_ranges,
     );
 
     // Build final results using align-content packing
-    build_results_with_align_content(
-        cross_ctx,
-        cross_inputs,
-        &line_ranges,
-        &per_line_main,
-        &per_line_cross_max,
-    )
+    let stretched = stretch_line_crosses(&cross_ctx, &per_line_cross_max);
+    let inputs = PackInputs {
+        cross_inputs: cab.cross_inputs,
+        baseline_inputs: cab.baseline_inputs,
+        line_ranges: &line_ranges,
+        per_line_main: &per_line_main,
+        line_cross_vec: &stretched,
+    };
+    pack_lines_and_build(&cross_ctx, inputs)
 }
 
 /// Compute align-content start offset and between-spacing (excluding CSS gap) for lines.
@@ -186,7 +355,7 @@ fn align_content_params(
     line_count: usize,
 ) -> (f32, f32) {
     let remaining = (container_cross - content_total).max(0.0);
-    match (align, line_count) {
+    let (start, between) = match (align, line_count) {
         (AlignContent::End, _) => (remaining, 0.0),
         (AlignContent::Center, _) => (remaining * 0.5, 0.0),
         (AlignContent::SpaceBetween, count) if count > 1 => (0.0, remaining / (count as f32 - 1.0)),
@@ -197,9 +366,10 @@ fn align_content_params(
             let slots = count as f32 + 1.0;
             (remaining / slots, remaining / slots)
         }
-        // Start and Stretch (MVP: treat Stretch as Start; stretching line boxes not implemented here)
+        // Start and Stretch (stretch handled by line-size expansion)
         _ => (0.0, 0.0),
-    }
+    };
+    (quantize_layout(start), quantize_layout(between))
 }
 
 /// Line start/end indices for items included in the line: `[start, end)`.
@@ -274,17 +444,9 @@ fn per_line_main_and_cross(
     }
     (per_line_main, per_line_cross_max)
 }
-
-/// Build final `(FlexPlacement, CrossPlacement)` pairs by packing lines along the cross axis
 /// according to `align_content`, and aligning items within each line according to `align_items`.
 #[inline]
-fn build_results_with_align_content(
-    cross_ctx: CrossContext,
-    cross_inputs: &[(f32, f32, f32)],
-    line_ranges: &[LineRange],
-    per_line_main: &[PerLineMain],
-    per_line_cross_max: &[f32],
-) -> Vec<(FlexPlacement, CrossPlacement)> {
+fn stretch_line_crosses(cross_ctx: &CrossContext, per_line_cross_max: &[f32]) -> Vec<f32> {
     let mut line_cross_vec: Vec<f32> = per_line_cross_max.to_vec();
     let lines_total_cross: f32 = line_cross_vec.iter().copied().sum();
     let line_count = line_cross_vec.len();
@@ -296,12 +458,13 @@ fn build_results_with_align_content(
         lines_total_cross,
         line_count
     );
-    // Stretch: expand each line's cross-size equally to absorb remaining space.
-    if matches!(cross_ctx.align_content, AlignContent::Stretch)
-        && line_count > 0
-        && cross_ctx.container_cross_size > lines_total_cross
-    {
-        let remaining = cross_ctx.container_cross_size - lines_total_cross;
+    if matches!(cross_ctx.align_content, AlignContent::Stretch) && line_count > 0 {
+        let gaps_total = if line_count > 1 {
+            (line_count as f32 - 1.0) * cross_ctx.cross_gap.max(0.0)
+        } else {
+            0.0
+        };
+        let remaining = (cross_ctx.container_cross_size - lines_total_cross - gaps_total).max(0.0);
         let add_each = remaining / line_count as f32;
         debug!(
             target: "css::flexbox::multi_line",
@@ -311,52 +474,128 @@ fn build_results_with_align_content(
             *value += add_each;
         }
     }
+    line_cross_vec
+}
+
+/// Pack stretched line boxes along the cross axis according to `align-content`, adding cross-axis
+/// gaps between adjacent lines, and build the final `(FlexPlacement, CrossPlacement)` pairs.
+fn pack_lines_and_build(
+    cross_ctx: &CrossContext,
+    inputs: PackInputs<'_>,
+) -> Vec<(FlexPlacement, CrossPlacement)> {
+    let line_count = inputs.line_cross_vec.len();
+    let sum_lines = inputs.line_cross_vec.iter().copied().sum::<f32>();
+    let gaps_total = if line_count > 1 {
+        (line_count as f32 - 1.0) * cross_ctx.cross_gap.max(0.0)
+    } else {
+        0.0
+    };
     let (start_offset, between_spacing) = align_content_params(
         cross_ctx.align_content,
         cross_ctx.container_cross_size,
-        line_cross_vec.iter().copied().sum(),
+        sum_lines + gaps_total,
         line_count,
     );
     let mut cross_accum_offset = start_offset;
-    let capacity: usize = per_line_main.iter().map(Vec::len).sum();
+    let capacity: usize = inputs.per_line_main.iter().map(Vec::len).sum();
     let mut results: Vec<(FlexPlacement, CrossPlacement)> = Vec::with_capacity(capacity);
-    for (index, (line_start, line_end)) in line_ranges.iter().copied().enumerate() {
-        let Some(line_cross_inputs) = cross_inputs.get(line_start..line_end) else {
+    let last_index = inputs.line_ranges.len().saturating_sub(1);
+    for (line_index, (line_start, line_end)) in inputs.line_ranges.iter().copied().enumerate() {
+        let Some(line_cross_inputs) = inputs.cross_inputs.get(line_start..line_end) else {
             return Vec::new();
         };
-        let line_main = per_line_main.get(index).cloned().unwrap_or_default();
-        let line_cross_max = line_cross_vec.get(index).copied().unwrap_or(0.0);
-        debug!(
-            target: "css::flexbox::multi_line",
-            "[ALIGN-CONTENT] line {index} cross_max={line_cross_max:.3} start_offset={cross_accum_offset:.3}"
-        );
-        for (main_place, &(item_cross, min_c, max_c)) in
-            line_main.into_iter().zip(line_cross_inputs.iter())
-        {
-            let within_line = align_single_line_cross(
-                cross_ctx.align_items,
-                line_cross_max,
-                item_cross,
-                min_c,
-                max_c,
-            );
-            let lifted = CrossPlacement {
-                cross_size: within_line.cross_size,
-                cross_offset: cross_accum_offset + within_line.cross_offset,
-            };
-            results.push((main_place, lifted));
-        }
+        let line_baselines = inputs
+            .baseline_inputs
+            .get(line_start..line_end)
+            .unwrap_or(&[]);
+        let line_main = inputs
+            .per_line_main
+            .get(line_index)
+            .cloned()
+            .unwrap_or_default();
+        let line_cross_max = inputs
+            .line_cross_vec
+            .get(line_index)
+            .copied()
+            .unwrap_or(0.0);
+        let line_ref = if matches!(
+            cross_ctx.align_items,
+            AlignItems::Baseline | AlignItems::LastBaseline
+        ) {
+            compute_line_baseline_ref(cross_ctx.align_items, line_baselines, line_cross_inputs)
+        } else {
+            0.0
+        };
+        let line_pairs = build_line_pairs(&LineBuildCtx {
+            cross_ctx,
+            line_main: &line_main,
+            line_cross_inputs,
+            line_baselines,
+            line_cross_max,
+            line_ref,
+            cross_accum_offset,
+        });
+        results.extend(line_pairs);
         cross_accum_offset += line_cross_max + between_spacing;
+        if line_index < last_index {
+            cross_accum_offset += cross_ctx.cross_gap.max(0.0);
+        }
     }
     results
 }
 
-// Single-line flex layout (no-wrap) — main-axis sizing & placement
-// Spec: <https://www.w3.org/TR/css-flexbox-1/#layout-algorithm>
-// This module implements a minimal subset of the main-axis algorithm for single-line flex containers.
+/// Per-line context for building `(FlexPlacement, CrossPlacement)` pairs.
+struct LineBuildCtx<'ctx> {
+    /// Cross-axis and alignment parameters.
+    cross_ctx: &'ctx CrossContext,
+    /// Main placements for items in the line.
+    line_main: &'ctx PerLineMain,
+    /// Cross inputs for items in the line.
+    line_cross_inputs: &'ctx [(f32, f32, f32)],
+    /// Baseline metrics for items in the line.
+    line_baselines: BaselineSlice<'ctx>,
+    /// Max cross-size for the line.
+    line_cross_max: f32,
+    /// Reference baseline value for the line.
+    line_ref: f32,
+    /// Accumulated cross offset before this line.
+    cross_accum_offset: f32,
+}
 
-use crate::{FlexDirection, ItemRef, WritingMode, resolve_axes};
-use log::debug;
+#[inline]
+/// Build `(FlexPlacement, CrossPlacement)` pairs for a single line.
+fn build_line_pairs(ctx: &LineBuildCtx<'_>) -> Vec<(FlexPlacement, CrossPlacement)> {
+    ctx.line_main
+        .iter()
+        .zip(ctx.line_cross_inputs.iter())
+        .enumerate()
+        .map(
+            |(index_in_line, (main_place, &(item_cross, min_c, max_c)))| {
+                let within_line = align_single_line_cross(
+                    ctx.cross_ctx.align_items,
+                    ctx.line_cross_max,
+                    item_cross,
+                    min_c,
+                    max_c,
+                );
+                let mut lifted = CrossPlacement {
+                    cross_size: within_line.cross_size,
+                    cross_offset: ctx.cross_accum_offset + within_line.cross_offset,
+                };
+                let bctx = BaselineAdjustCtx {
+                    align: ctx.cross_ctx.align_items,
+                    baselines: ctx.line_baselines,
+                    index_in_line,
+                    line_ref: ctx.line_ref,
+                    line_cross_max: ctx.line_cross_max,
+                    cross_accum_offset: ctx.cross_accum_offset,
+                };
+                adjust_cross_for_baseline(&bctx, &mut lifted);
+                (*main_place, lifted)
+            },
+        )
+        .collect()
+}
 
 /// Inputs for a flex item needed for single-line main-axis sizing.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -377,6 +616,10 @@ pub struct FlexChild {
     pub margin_right: f32,
     pub margin_top: f32,
     pub margin_bottom: f32,
+    /// Whether the corresponding main-axis margins are `auto`.
+    /// For row direction in horizontal writing modes, these map to left/right.
+    pub margin_left_auto: bool,
+    pub margin_right_auto: bool,
 }
 
 /// Resulting per-item main-axis size and offset.
@@ -416,6 +659,10 @@ pub enum AlignItems {
     Center,
     FlexStart,
     FlexEnd,
+    /// First baseline alignment [Approximation]: treated as `FlexStart` until baseline metrics are available.
+    Baseline,
+    /// Last baseline alignment [Approximation]: treated as `FlexEnd` until baseline metrics are available.
+    LastBaseline,
 }
 
 /// Minimal align-content values for cross-axis multi-line packing.
@@ -449,44 +696,26 @@ pub fn layout_single_line(
     items: &[FlexChild],
 ) -> Vec<FlexPlacement> {
     let axes = resolve_axes(container.direction, container.writing_mode);
+    // 1–3) Hypotheticals, gaps, free space, and flex distribution
+    let (hypothetical_sizes, gaps_total) = plan_hypotheticals_and_flex(container, items);
 
-    // 1) Hypothetical sizes (clamped flex-basis)
-    let mut hypothetical_sizes: Vec<f32> = items
-        .iter()
-        .map(|child| clamp(child.flex_basis, child.min_main, child.max_main))
-        .collect();
-
-    // 2) Free space (account for gaps)
-    let sum_hypotheticals: f32 = hypothetical_sizes.iter().copied().sum();
-    let gaps_total = if items.len() > 1 {
-        (items.len() as f32 - 1.0) * container.main_gap.max(0.0)
-    } else {
-        0.0
-    };
-    // Use outer sizes (including margins) for free space and justification.
-    let (outer_sizes, sum_outer) = outer_sizes_and_sum(items, &hypothetical_sizes);
-    let free_space = container.container_main_size - sum_outer - gaps_total;
-    debug!(
-        target: "css::flexbox::single_line",
-        "[FLEX-JUSTIFY] items={} sum_sizes={:.3} gaps_total={:.3} container_main={:.3} free_space={:.3}",
-        items.len(),
-        sum_hypotheticals,
-        gaps_total,
-        container.container_main_size,
-        free_space
-    );
-
-    // 3) Flexing
-    if free_space > 0.0 {
-        distribute_grow(free_space, items, &mut hypothetical_sizes);
-    } else if free_space < 0.0 {
-        distribute_shrink(free_space, items, &mut hypothetical_sizes);
-    }
-
+    // 3.5) Resolve auto margins and outer sizes (extracted helper)
+    let (outer_sizes, effective_left_margins, auto_slots, sum_outer) =
+        resolve_auto_margins_and_outer(
+            items,
+            &hypothetical_sizes,
+            container.container_main_size,
+            gaps_total,
+        );
     // 4) Main offsets before justification (packed at start of flow direction)
-    let total: f32 = outer_sizes.iter().copied().sum();
+    let total: f32 = sum_outer;
+    let effective_justify = if auto_slots > 0 {
+        JustifyContent::Start
+    } else {
+        justify_content
+    };
     let (start_offset, between_spacing) = justify_params(
-        justify_content,
+        effective_justify,
         container.container_main_size,
         total + gaps_total,
         items.len(),
@@ -494,7 +723,7 @@ pub fn layout_single_line(
     debug!(
         target: "css::flexbox::single_line",
         "[FLEX-JUSTIFY] justify={:?} start_offset={:.3} between_spacing={:.3} total_including_gaps={:.3} sum_outer={:.3}",
-        justify_content,
+        effective_justify,
         start_offset,
         between_spacing,
         total + gaps_total,
@@ -511,9 +740,75 @@ pub fn layout_single_line(
     };
     // Accumulate starting positions of each item's outer box.
     let mut outer_offsets: Vec<f32> = accumulate_main_offsets(&plan, &outer_sizes);
-    clamp_first_offset_if_needed(justify_content, axes.main_reverse, &mut outer_offsets);
+    clamp_first_offset_if_needed(effective_justify, axes.main_reverse, &mut outer_offsets);
     // 6) Build placements preserving input order.
-    build_main_placements(items, &hypothetical_sizes, &outer_offsets)
+    build_main_placements(
+        items,
+        &hypothetical_sizes,
+        &outer_offsets,
+        &effective_left_margins,
+    )
+}
+
+/// Resolve auto margins (§9.4) by distributing remaining space equally across all auto margin slots,
+/// then compute outer sizes and sum. Returns `(outer_sizes, effective_left_margins, auto_slots, sum_outer)`.
+type OuterCalc = (Vec<f32>, Vec<f32>, usize, f32);
+
+/// Distribute remaining main-axis free space across any auto margins, then produce effective
+/// left margins and outer sizes for each item. Returns `(outer_sizes, effective_left_margins, auto_slots, sum_outer)`.
+#[inline]
+fn resolve_auto_margins_and_outer(
+    items: &[FlexChild],
+    inner_sizes: &[f32],
+    container_main_size: f32,
+    gaps_total: f32,
+) -> OuterCalc {
+    // Count auto slots and sum non-auto margins
+    let mut non_auto_margins_sum = 0.0f32;
+    let auto_slots = items.iter().fold(0usize, |acc, child| {
+        let left_slot = usize::from(child.margin_left_auto);
+        let right_slot = usize::from(child.margin_right_auto);
+        non_auto_margins_sum += if child.margin_left_auto {
+            0.0
+        } else {
+            child.margin_left.max(0.0)
+        };
+        non_auto_margins_sum += if child.margin_right_auto {
+            0.0
+        } else {
+            child.margin_right.max(0.0)
+        };
+        acc.saturating_add(left_slot).saturating_add(right_slot)
+    });
+    let sum_inner_after_flex: f32 = inner_sizes.iter().copied().sum();
+    let remaining_for_margins_raw =
+        container_main_size - sum_inner_after_flex - non_auto_margins_sum - gaps_total;
+    let remaining_for_margins_pos = remaining_for_margins_raw.max(0.0);
+    let auto_each = if auto_slots > 0 {
+        quantize_layout_floor(remaining_for_margins_pos / auto_slots as f32)
+    } else {
+        0.0
+    };
+    let mut outer_sizes: Vec<f32> = Vec::with_capacity(items.len());
+    let mut effective_left_margins: Vec<f32> = Vec::with_capacity(items.len());
+    for (child, inner) in items.iter().zip(inner_sizes.iter().copied()) {
+        let eff_left = child.margin_left.max(0.0)
+            + if child.margin_left_auto {
+                auto_each
+            } else {
+                0.0
+            };
+        let eff_right = child.margin_right.max(0.0)
+            + if child.margin_right_auto {
+                auto_each
+            } else {
+                0.0
+            };
+        effective_left_margins.push(eff_left);
+        outer_sizes.push(inner + eff_left + eff_right);
+    }
+    let sum_outer: f32 = outer_sizes.iter().copied().sum();
+    (outer_sizes, effective_left_margins, auto_slots, sum_outer)
 }
 
 // duplicate helper definitions removed; see top-of-file helpers for implementations
@@ -539,27 +834,27 @@ fn accumulate_main_offsets(plan: &MainOffsetPlan, sizes: &[f32]) -> Vec<f32> {
     if plan.reverse {
         // Accumulate from the end in logical order so that earlier logical items
         // appear at larger main-axis coordinates.
-        let mut cursor = plan.container_main_size - plan.start_offset;
+        let mut cursor = quantize_layout(plan.container_main_size - plan.start_offset);
         let mut offsets_accum = Vec::with_capacity(sizes.len());
         let mut iter = sizes.iter().peekable();
         while let Some(size_ref) = iter.next() {
             let size_val = *size_ref;
-            cursor -= size_val;
+            cursor = quantize_layout(cursor - size_val);
             offsets_accum.push(cursor);
             if iter.peek().is_some() {
-                cursor -= plan.main_gap + plan.between_spacing;
+                cursor = quantize_layout(cursor - (plan.main_gap + plan.between_spacing));
             }
         }
         offsets_accum
     } else {
-        let mut cursor = plan.start_offset;
+        let mut cursor = quantize_layout(plan.start_offset);
         let mut offsets_accum = Vec::with_capacity(sizes.len());
         let mut iter = sizes.iter().peekable();
         while let Some(size_ref) = iter.next() {
             offsets_accum.push(cursor);
-            cursor += *size_ref;
+            cursor = quantize_layout(cursor + *size_ref);
             if iter.peek().is_some() {
-                cursor += plan.main_gap + plan.between_spacing;
+                cursor = quantize_layout(cursor + (plan.main_gap + plan.between_spacing));
             }
         }
         offsets_accum
@@ -704,11 +999,11 @@ pub fn align_single_line_cross(
                 cross_offset: offset,
             }
         }
-        AlignItems::FlexStart => CrossPlacement {
+        AlignItems::FlexStart | AlignItems::Baseline => CrossPlacement {
             cross_size: clamped_item,
             cross_offset: 0.0,
         },
-        AlignItems::FlexEnd => {
+        AlignItems::FlexEnd | AlignItems::LastBaseline => {
             let size = clamped_item;
             let offset = (container_cross_size - size).max(0.0);
             CrossPlacement {
@@ -736,6 +1031,8 @@ mod tests {
             margin_right: 0.0,
             margin_top: 0.0,
             margin_bottom: 0.0,
+            margin_left_auto: false,
+            margin_right_auto: false,
         }
     }
 
@@ -746,6 +1043,90 @@ mod tests {
             item_zero_margins(2, 50.0),
             item_zero_margins(3, 50.0),
         ]
+    }
+
+    #[test]
+    /// # Panics
+    /// Panics if auto margin absorption does not push the item to the end correctly.
+    fn auto_margin_single_end_absorbs_free_space() {
+        let container = FlexContainerInputs {
+            direction: FlexDirection::Row,
+            writing_mode: WritingMode::HorizontalTb,
+            container_main_size: 300.0,
+            main_gap: 0.0,
+        };
+        let mut items = vec![item_zero_margins(1, 100.0)];
+        // margin-left:auto should push the item to the end by absorbing remaining space at start.
+        if let Some(first_item) = items.first_mut() {
+            first_item.margin_left_auto = true;
+        }
+        let out = layout_single_line(container, JustifyContent::Center, &items);
+        assert_eq!(out.len(), 1);
+        // Remaining space = 200 -> offset at start equals 200.
+        for placement in &out {
+            assert!((placement.main_offset - 200.0).abs() < 0.001);
+            assert!((placement.main_size - 100.0).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    /// # Panics
+    /// Panics if auto margins on both sides do not center the item.
+    fn auto_margins_both_center_item() {
+        let container = FlexContainerInputs {
+            direction: FlexDirection::Row,
+            writing_mode: WritingMode::HorizontalTb,
+            container_main_size: 300.0,
+            main_gap: 0.0,
+        };
+        let mut items = vec![item_zero_margins(1, 100.0)];
+        if let Some(first_item) = items.first_mut() {
+            first_item.margin_left_auto = true;
+            first_item.margin_right_auto = true;
+        }
+        let out = layout_single_line(container, JustifyContent::Start, &items);
+        assert_eq!(out.len(), 1);
+        // Remaining space = 200 -> split equally -> offset 100.
+        for placement in &out {
+            assert!((placement.main_offset - 100.0).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    /// # Panics
+    /// Panics if multiple auto margins do not share remaining space equally.
+    fn auto_margins_multiple_items_share_space() {
+        let container = FlexContainerInputs {
+            direction: FlexDirection::Row,
+            writing_mode: WritingMode::HorizontalTb,
+            container_main_size: 400.0,
+            main_gap: 0.0,
+        };
+        let mut items = vec![
+            item_zero_margins(1, 50.0),
+            item_zero_margins(2, 50.0),
+            item_zero_margins(3, 50.0),
+        ];
+        // Two auto slots: first has left auto, third has right auto.
+        if let Some(first_item) = items.first_mut() {
+            first_item.margin_left_auto = true;
+        }
+        if let Some(third_item) = items.get_mut(2) {
+            third_item.margin_right_auto = true;
+        }
+        let out = layout_single_line(container, JustifyContent::SpaceBetween, &items);
+        assert_eq!(out.len(), 3);
+        // Total inner = 150, remaining = 250, two slots -> 125 each.
+        // Item 1 offset = 125 (auto left), Item 2 offset = 125 + 50 = 175,
+        // plus no extra spacing beyond margins in this test.
+        for (index, placement) in out.iter().enumerate() {
+            if index == 0 {
+                assert!((placement.main_offset - 125.0).abs() < 0.001);
+            }
+            if index == 1 {
+                assert!((placement.main_offset - 175.0).abs() < 0.001);
+            }
+        }
     }
 
     #[test]
@@ -764,6 +1145,8 @@ mod tests {
                 margin_right: 0.0,
                 margin_top: 0.0,
                 margin_bottom: 0.0,
+                margin_left_auto: false,
+                margin_right_auto: false,
             },
             FlexChild {
                 handle: ItemRef(2),
@@ -776,6 +1159,8 @@ mod tests {
                 margin_right: 0.0,
                 margin_top: 0.0,
                 margin_bottom: 0.0,
+                margin_left_auto: false,
+                margin_right_auto: false,
             },
         ];
         let container = FlexContainerInputs {
@@ -827,6 +1212,8 @@ mod tests {
                 margin_right: 0.0,
                 margin_top: 0.0,
                 margin_bottom: 0.0,
+                margin_left_auto: false,
+                margin_right_auto: false,
             },
             FlexChild {
                 handle: ItemRef(2),
@@ -839,6 +1226,8 @@ mod tests {
                 margin_right: 0.0,
                 margin_top: 0.0,
                 margin_bottom: 0.0,
+                margin_left_auto: false,
+                margin_right_auto: false,
             },
         ];
         let container = FlexContainerInputs {
@@ -941,6 +1330,8 @@ mod tests {
                 margin_right: 0.0,
                 margin_top: 0.0,
                 margin_bottom: 0.0,
+                margin_left_auto: false,
+                margin_right_auto: false,
             },
             FlexChild {
                 handle: ItemRef(2),
@@ -953,6 +1344,8 @@ mod tests {
                 margin_right: 0.0,
                 margin_top: 0.0,
                 margin_bottom: 0.0,
+                margin_left_auto: false,
+                margin_right_auto: false,
             },
         ];
         let cross_inputs = vec![(20.0, 0.0, 100.0), (20.0, 0.0, 100.0)];
@@ -966,13 +1359,17 @@ mod tests {
             align_items: AlignItems::Center,
             align_content: AlignContent::Start,
             container_cross_size: 100.0,
+            cross_gap: 0.0,
         };
         let out = layout_single_line_with_cross(
             container,
             JustifyContent::Center,
             cross_ctx,
             &items,
-            &cross_inputs,
+            CrossAndBaseline {
+                cross_inputs: &cross_inputs,
+                baseline_inputs: &[None, None],
+            },
         );
         assert_eq!(out.len(), 2);
         for (idx, pair) in out.iter().enumerate() {
@@ -1011,6 +1408,7 @@ mod tests {
             align_items: AlignItems::Center,
             align_content: AlignContent::Start,
             container_cross_size: 100.0,
+            cross_gap: 0.0,
         };
 
         let out = layout_multi_line_with_cross(
@@ -1018,7 +1416,10 @@ mod tests {
             JustifyContent::Start,
             cross_ctx,
             &items,
-            &cross_inputs,
+            CrossAndBaseline {
+                cross_inputs: &cross_inputs,
+                baseline_inputs: &[None, None, None],
+            },
         );
         assert_eq!(out.len(), 3, "expected three placements");
 

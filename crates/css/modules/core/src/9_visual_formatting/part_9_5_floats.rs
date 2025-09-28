@@ -59,11 +59,11 @@ pub fn update_clearance_floors_for_float(
         return (left, right);
     };
     let mb_pos = compute_box_sides(style).margin_bottom.max(0i32);
-    let bottom_edge = rect.y.saturating_add(rect.height).saturating_add(mb_pos);
+    let bottom_edge = ((rect.y + rect.height).round() as i32).saturating_add(mb_pos);
     debug!(
         "[FLOOR-UPDATE] child={child_key:?} float={:?} rect_bottom={} mb_pos={} -> bottom_edge={} (prev L={}, R={})",
         style.float,
-        rect.y.saturating_add(rect.height),
+        (rect.y + rect.height),
         mb_pos,
         bottom_edge,
         left,
@@ -131,11 +131,8 @@ pub fn compute_float_bands_for_y(
             continue;
         };
         let sides = compute_box_sides(style);
-        let top = rect.y.saturating_sub(sides.margin_top);
-        let bottom = rect
-            .y
-            .saturating_add(rect.height)
-            .saturating_add(sides.margin_bottom);
+        let top = (rect.y.round() as i32).saturating_sub(sides.margin_top);
+        let bottom = ((rect.y + rect.height).round() as i32).saturating_add(sides.margin_bottom);
         let overlaps = top <= y_in_parent && y_in_parent < bottom;
         let style_float = style.float;
         debug!(
@@ -145,11 +142,8 @@ pub fn compute_float_bands_for_y(
             continue;
         }
         // Compute occupied span using the margin box of the float.
-        let left_edge = rect.x.saturating_sub(sides.margin_left);
-        let right_edge = rect
-            .x
-            .saturating_add(rect.width)
-            .saturating_add(sides.margin_right);
+        let left_edge = (rect.x.round() as i32).saturating_sub(sides.margin_left);
+        let right_edge = ((rect.x + rect.width).round() as i32).saturating_add(sides.margin_right);
         match style.float {
             Float::Left => {
                 // Left band is distance from parent content left to the float's right margin-edge.

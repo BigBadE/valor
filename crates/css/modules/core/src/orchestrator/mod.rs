@@ -51,7 +51,7 @@ fn log_last_placed_child_diag(layouter: &Layouter, root: NodeKey, content_bottom
             .get(&last_key)
             .and_then(|map| map.get("id").cloned())
             .unwrap_or_default();
-        let bottom_edge = rect.y.saturating_add(rect.height).saturating_add(raw_mb);
+        let bottom_edge = ((rect.y + rect.height).round() as i32).saturating_add(raw_mb);
         log::debug!(
             "[ROOT-LAST DIAG] last_key={last_key:?} id=#{} rect=({}, {}, {}, {}) mb_raw={} bottom_edge={} content_bottom={:?}",
             id_opt,
@@ -134,11 +134,11 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
     layouter.rects.insert(
         root,
         LayoutRect {
-            x: 0,
-            y: 0,
+            x: 0.0,
+            y: 0.0,
             // Root rect is the viewport/root element border-box width.
-            width: metrics.total_border_box_width,
-            height: 0,
+            width: metrics.total_border_box_width as f32,
+            height: 0.0,
         },
     );
 
@@ -217,7 +217,7 @@ pub fn compute_last_block_bottom_edge_impl(layouter: &Layouter, root: NodeKey) -
         .computed_styles
         .get(&last_key)
         .map_or(0i32, |style| style.margin.bottom as i32);
-    let bottom_edge = rect.y.saturating_add(rect.height).saturating_add(raw_mb);
+    let bottom_edge = ((rect.y + rect.height).round() as i32).saturating_add(raw_mb);
     log::debug!(
         "[ROOT-LAST] key={last_key:?} rect=({}, {}, {}, {}) mb_raw={} -> bottom_edge={}",
         rect.x,
@@ -239,9 +239,9 @@ pub fn update_root_rect_impl(
     root_height_border_box: i32,
 ) {
     if let Some(root_rect) = layouter.rects.get_mut(&root) {
-        root_rect.x = metrics.margin_left;
-        root_rect.y = root_y;
-        root_rect.height = root_height_border_box;
+        root_rect.x = metrics.margin_left as f32;
+        root_rect.y = root_y as f32;
+        root_rect.height = root_height_border_box as f32;
     }
 }
 
@@ -254,10 +254,10 @@ pub fn push_dirty_rect_if_changed_impl(
 ) {
     if reflowed_count > 0 {
         layouter.dirty_rects.push(LayoutRect {
-            x: 0,
-            y: 0,
-            width,
-            height: content_height.max(0i32),
+            x: 0.0,
+            y: 0.0,
+            width: width as f32,
+            height: content_height.max(0i32) as f32,
         });
     }
 }

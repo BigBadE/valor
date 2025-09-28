@@ -81,10 +81,10 @@ fn emit_vert_commit(layouter: &mut Layouter, ctx: &ChildLayoutCtx, inputs: Commi
         },
         child_key: inputs.child_key,
         rect: LayoutRect {
-            x: inputs.child_x.saturating_add(inputs.x_adjust),
-            y: inputs.child_y.saturating_add(inputs.y_adjust),
-            width: inputs.used_bb_w,
-            height: inputs.computed_h,
+            x: i32::saturating_add(inputs.child_x, inputs.x_adjust) as f32,
+            y: i32::saturating_add(inputs.child_y, inputs.y_adjust) as f32,
+            width: inputs.used_bb_w as f32,
+            height: inputs.computed_h as f32,
         },
     });
 }

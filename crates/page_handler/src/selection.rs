@@ -9,10 +9,10 @@ pub fn selection_rects(
     sel: IRect,
 ) -> Vec<LayoutRect> {
     let (x0, y0, x1, y1) = sel;
-    let sel_x = x0.min(x1);
-    let sel_y = y0.min(y1);
-    let sel_w = (x0.max(x1) - sel_x).max(0);
-    let sel_h = (y0.max(y1) - sel_y).max(0);
+    let sel_x = x0.min(x1) as f32;
+    let sel_y = y0.min(y1) as f32;
+    let sel_w = (x0.max(x1) - sel_x.round() as i32).max(0) as f32;
+    let sel_h = (y0.max(y1) - sel_y.round() as i32).max(0) as f32;
     let selection = LayoutRect {
         x: sel_x,
         y: sel_y,
@@ -30,9 +30,9 @@ pub fn selection_rects(
                 let iy = r.y.max(selection.y);
                 let ix1 = (r.x + r.width).min(selection.x + selection.width);
                 let iy1 = (r.y + r.height).min(selection.y + selection.height);
-                let iw = (ix1 - ix).max(0);
-                let ih = (iy1 - iy).max(0);
-                if iw > 0 && ih > 0 {
+                let iw = (ix1 - ix).max(0.0);
+                let ih = (iy1 - iy).max(0.0);
+                if iw > 0.0 && ih > 0.0 {
                     out.push(LayoutRect {
                         x: ix,
                         y: iy,
@@ -58,11 +58,11 @@ pub fn caret_at(
         && let Some((_k, LayoutNodeKind::InlineText { .. }, _)) =
             snapshot.iter().find(|(k, _, _)| *k == hit_key)
     {
-        let cx = x.clamp(r.x, r.x + r.width);
+        let cx = (x as f32).clamp(r.x, r.x + r.width);
         return Some(LayoutRect {
             x: cx,
             y: r.y,
-            width: 1,
+            width: 1.0,
             height: r.height,
         });
     }
@@ -70,14 +70,14 @@ pub fn caret_at(
     for (key, kind, _children) in snapshot.iter() {
         if let LayoutNodeKind::InlineText { .. } = kind
             && let Some(r) = rects.get(key)
-            && y >= r.y
-            && y < r.y + r.height
+            && y >= r.y.round() as i32
+            && y < (r.y + r.height).round() as i32
         {
-            let cx = x.clamp(r.x, r.x + r.width);
+            let cx = (x as f32).clamp(r.x, r.x + r.width);
             return Some(LayoutRect {
                 x: cx,
                 y: r.y,
-                width: 1,
+                width: 1.0,
                 height: r.height,
             });
         }

@@ -527,5 +527,5 @@ pub fn compute_root_y_after_top_collapse(
     layouter
         .rects
         .get(&root)
-        .map_or(metrics.margin_top, |rect| rect.y)
+        .map_or(metrics.margin_top, |rect| rect.y as i32)
 }
