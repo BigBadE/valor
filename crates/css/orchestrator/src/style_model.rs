@@ -104,12 +104,26 @@ pub enum AlignItems {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AlignContent {
+    #[default]
+    Stretch,
+    FlexStart,
+    Center,
+    FlexEnd,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum JustifyContent {
     #[default]
     FlexStart,
     Center,
     FlexEnd,
     SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -156,6 +170,7 @@ pub struct ComputedStyle {
     pub flex_wrap: FlexWrap,
     pub align_items: AlignItems,
     pub justify_content: JustifyContent,
+    pub align_content: AlignContent,
     /// Gap between adjacent items along rows (cross axis for column direction), in px.
     pub row_gap: f32,
     /// Gap between adjacent items along columns (main axis for row direction), in px.

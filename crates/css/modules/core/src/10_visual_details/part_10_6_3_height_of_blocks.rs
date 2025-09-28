@@ -3,15 +3,17 @@
 
 use crate::LayoutRect;
 use css_flexbox::{
-    AlignItems as FlexAlignItems, Axes as FlexAxes, CrossContext as FlexCrossContext,
-    CrossPlacement, FlexChild, FlexContainerInputs, FlexDirection as FlexDir, FlexItem,
-    FlexPlacement, ItemRef as FlexItemRef, ItemStyle as FlexItemStyle,
-    JustifyContent as FlexJustify, WritingMode as FlexWritingMode, collect_flex_items,
-    layout_single_line_with_cross, resolve_axes as flex_resolve_axes,
+    AlignContent as FlexAlignContent, AlignItems as FlexAlignItems, Axes as FlexAxes,
+    CrossContext as FlexCrossContext, CrossPlacement, FlexChild, FlexContainerInputs,
+    FlexDirection as FlexDir, FlexItem, FlexPlacement, ItemRef as FlexItemRef,
+    ItemStyle as FlexItemStyle, JustifyContent as FlexJustify, WritingMode as FlexWritingMode,
+    collect_flex_items, layout_multi_line_with_cross, layout_single_line_with_cross,
+    resolve_axes as flex_resolve_axes,
 };
 use css_orchestrator::style_model::{
-    AlignItems as CoreAlignItems, ComputedStyle, Display as CoreDisplay,
-    FlexDirection as CoreFlexDirection, JustifyContent as CoreJustify, Position as CorePosition,
+    AlignContent as CoreAlignContent, AlignItems as CoreAlignItems, ComputedStyle,
+    Display as CoreDisplay, FlexDirection as CoreFlexDirection, FlexWrap as CoreFlexWrap,
+    JustifyContent as CoreJustify, Position as CorePosition,
 };
 use css_text::default_line_height_px;
 use js::NodeKey;
@@ -323,7 +325,7 @@ fn flex_child_content_height(
     let item_shells = collect_item_shells(layouter, cctx.key);
     let handles = collect_flex_items(&item_shells);
     let (main_items, cross_inputs) = build_flex_item_inputs(layouter, &handles, direction);
-    let (justify, align_items_val, container_cross_size) =
+    let (justify, align_items_val, align_content_val, container_cross_size) =
         justify_align_context(container_style, direction, &cross_inputs);
     let container_inputs = FlexContainerInputs {
         direction,
@@ -333,15 +335,25 @@ fn flex_child_content_height(
     };
     let cross_ctx = FlexCrossContext {
         align_items: align_items_val,
+        align_content: align_content_val,
         container_cross_size,
     };
-    let pairs = layout_single_line_with_cross(
-        container_inputs,
-        justify,
-        cross_ctx,
-        &main_items,
-        &cross_inputs,
-    );
+    let pairs = match container_style.flex_wrap {
+        CoreFlexWrap::NoWrap => layout_single_line_with_cross(
+            container_inputs,
+            justify,
+            cross_ctx,
+            &main_items,
+            &cross_inputs,
+        ),
+        CoreFlexWrap::Wrap => layout_multi_line_with_cross(
+            container_inputs,
+            justify,
+            cross_ctx,
+            &main_items,
+            &cross_inputs,
+        ),
+    };
     let content_height = write_pairs_and_measure(axes, origin_x, origin_y, layouter, &pairs);
     (content_height, 0)
 }
@@ -384,6 +396,10 @@ fn build_flex_item_inputs(
             flex_shrink: style_item.flex_shrink.max(0.0),
             min_main,
             max_main,
+            margin_left: style_item.margin.left.max(0.0),
+            margin_right: style_item.margin.right.max(0.0),
+            margin_top: style_item.margin.top.max(0.0),
+            margin_bottom: style_item.margin.bottom.max(0.0),
         });
         let (cross, min_c, max_c) = match direction {
             FlexDir::Row | FlexDir::RowReverse => (
@@ -408,11 +424,13 @@ fn justify_align_context(
     container_style: &ComputedStyle,
     direction: FlexDir,
     cross_inputs: &[CrossTriplet],
-) -> (FlexJustify, FlexAlignItems, f32) {
+) -> (FlexJustify, FlexAlignItems, FlexAlignContent, f32) {
     let justify = match container_style.justify_content {
         CoreJustify::Center => FlexJustify::Center,
         CoreJustify::FlexEnd => FlexJustify::End,
         CoreJustify::SpaceBetween => FlexJustify::SpaceBetween,
+        CoreJustify::SpaceAround => FlexJustify::SpaceAround,
+        CoreJustify::SpaceEvenly => FlexJustify::SpaceEvenly,
         CoreJustify::FlexStart => FlexJustify::Start,
     };
     let align_items_val = match container_style.align_items {
@@ -420,6 +438,15 @@ fn justify_align_context(
         CoreAlignItems::FlexEnd => FlexAlignItems::FlexEnd,
         CoreAlignItems::FlexStart => FlexAlignItems::FlexStart,
         CoreAlignItems::Stretch => FlexAlignItems::Stretch,
+    };
+    let align_content_val = match container_style.align_content {
+        CoreAlignContent::Center => FlexAlignContent::Center,
+        CoreAlignContent::FlexEnd => FlexAlignContent::End,
+        CoreAlignContent::SpaceBetween => FlexAlignContent::SpaceBetween,
+        CoreAlignContent::SpaceAround => FlexAlignContent::SpaceAround,
+        CoreAlignContent::SpaceEvenly => FlexAlignContent::SpaceEvenly,
+        CoreAlignContent::Stretch => FlexAlignContent::Stretch,
+        CoreAlignContent::FlexStart => FlexAlignContent::Start,
     };
     let mut container_cross_size: f32 = match direction {
         FlexDir::Row | FlexDir::RowReverse => container_style.height.unwrap_or(0.0).max(0.0),
@@ -435,7 +462,12 @@ fn justify_align_context(
             })
             .fold(0.0f32, f32::max);
     }
-    (justify, align_items_val, container_cross_size)
+    (
+        justify,
+        align_items_val,
+        align_content_val,
+        container_cross_size,
+    )
 }
 
 #[inline]
@@ -449,27 +481,39 @@ fn write_pairs_and_measure(
 ) -> i32 {
     let mut max_main_extent: f32 = 0.0;
     let mut max_cross_extent: f32 = 0.0;
+    let origin_x_f = origin_x as f32;
+    let origin_y_f = origin_y as f32;
     for (place, cross) in pairs.iter().copied() {
         let key = NodeKey(place.handle.0);
-        let pos_x = if axes.main_is_inline {
-            origin_x.saturating_add(place.main_offset as i32)
+        // Include per-item margins only along the cross axis for row direction (top)
+        // or along the inline axis for column direction (left). Main-axis margins
+        // are already accounted for in FlexPlacement.main_offset.
+        let style = layouter
+            .computed_styles
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(ComputedStyle::default);
+        let margin_left = style.margin.left.max(0.0);
+        let margin_top = style.margin.top.max(0.0);
+        let pos_x: f32 = if axes.main_is_inline {
+            origin_x_f + place.main_offset
         } else {
-            origin_x.saturating_add(cross.cross_offset as i32)
+            origin_x_f + cross.cross_offset + margin_left
         };
-        let pos_y = if axes.main_is_inline {
-            origin_y.saturating_add(cross.cross_offset as i32)
+        let pos_y: f32 = if axes.main_is_inline {
+            origin_y_f + cross.cross_offset + margin_top
         } else {
-            origin_y.saturating_add(place.main_offset as i32)
+            origin_y_f + place.main_offset
         };
-        let width_px = if axes.main_is_inline {
-            place.main_size as i32
+        let width_px: f32 = if axes.main_is_inline {
+            place.main_size
         } else {
-            cross.cross_size as i32
+            cross.cross_size
         };
-        let height_px = if axes.main_is_inline {
-            cross.cross_size as i32
+        let height_px: f32 = if axes.main_is_inline {
+            cross.cross_size
         } else {
-            place.main_size as i32
+            place.main_size
         };
         layouter.rects.insert(
             key,

@@ -6,11 +6,11 @@ Primary spec: https://www.w3.org/TR/css-flexbox-1/
 
 - Status:
   - [Production] §§2–4 (terminology, container detection, item collection)
-  - [MVP] §§7–9 initial subset: axes resolution, single-line main-axis layout, justify-content (start/center/end/space-between/around/evenly), CSS main-axis gaps, cross-axis align-items (stretch/center/flex-start/flex-end)
+  - [MVP] §§7–9 subset: axes resolution; single-line main-axis layout; justify-content (start/center/end/space-between/around/evenly); CSS main-axis gaps; cross-axis align-items (stretch/center/flex-start/flex-end); multi-line wrapping with cross-axis packing by align-content (start/center/end/space-between/around/evenly; stretch≈start)
 - Notes:
   - [Heuristic] Cross-axis Stretch applies when item cross-size is auto/unspecified (≤ 0); otherwise we preserve the item’s cross-size.
-  - [Approximation] Single-line layout only; multi-line wrapping and packing not yet implemented.
-  - [TODO] Baseline alignment; auto margins interaction in main-axis distribution; min/max interactions; overflow; advanced writing modes; percentage gaps beyond trivial; absolutely-positioned flex children.
+  - [Approximation] Align-content: stretch is currently treated as start (no line-box stretching yet).
+  - [TODO] Baseline alignment; auto margins interaction in main-axis distribution and across lines; min/max interactions; overflow; advanced writing modes; percentage gaps beyond trivial; absolutely-positioned flex children.
   - Out of scope (for now): fragmentation.
 
 ## One-to-one spec mapping
@@ -27,12 +27,12 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
   - File: `crates/css/modules/flexbox/src/8_single_line_layout/mod.rs`
   - Status: [MVP] — stretch heuristic as noted
 
-- §9 Main-axis layout (single-line)
-  - Code: `css_flexbox::layout_single_line`, `css_flexbox::layout_single_line_with_cross`
-  - Helpers: `css_flexbox::justify_params`, `css_flexbox::accumulate_main_offsets`, `css_flexbox::clamp_first_offset_if_needed`
-  - Types: `css_flexbox::FlexContainerInputs`, `css_flexbox::FlexChild`, `css_flexbox::FlexPlacement`, `css_flexbox::JustifyContent`, `css_flexbox::AlignItems`
+- §9 Main-axis layout (single-line and multi-line)
+  - Code: `css_flexbox::layout_single_line`, `css_flexbox::layout_single_line_with_cross`, `css_flexbox::layout_multi_line_with_cross`
+  - Helpers: `css_flexbox::justify_params`, `css_flexbox::accumulate_main_offsets`, `css_flexbox::align_content_params` (lines), `css_flexbox::break_into_lines`, `css_flexbox::per_line_main_and_cross`, `css_flexbox::build_results_with_align_content`
+  - Types: `css_flexbox::FlexContainerInputs`, `css_flexbox::FlexChild`, `css_flexbox::FlexPlacement`, `css_flexbox::JustifyContent`, `css_flexbox::AlignItems`, `css_flexbox::AlignContent`, `css_flexbox::CrossContext`
   - File: `crates/css/modules/flexbox/src/8_single_line_layout/mod.rs`
-  - Status: [MVP] — single-line only; Start/Center/End/Space* modes supported; no pre-gap at main-start invariant enforced for Start/SpaceBetween when axis not reversed.
+  - Status: [MVP] — single-line main-axis layout plus multi-line wrapping. Lines are packed by `align-content` (start/center/end/space-between/around/evenly). Stretch is approximated as start.
 
 ## Algorithms and data flow
 
@@ -42,6 +42,8 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
   - `css_flexbox::resolve_axes(direction, writing_mode)`
   - `css_flexbox::order_key(order, original_index)` / `css_flexbox::sort_items_by_order_stable(items)`
   - `css_flexbox::layout_single_line(container_inputs, justify_content, items)`
+  - `css_flexbox::layout_single_line_with_cross(container_inputs, justify_content, cross_ctx, items, cross_inputs)`
+  - `css_flexbox::layout_multi_line_with_cross(container_inputs, justify_content, cross_ctx, items, cross_inputs)`
   - `css_flexbox::align_single_line_cross(align_items, container_cross, item_cross, min_cross, max_cross)`
 - Helpers:
   - Axis tuple resolution (main/cross, start/end)
@@ -52,6 +54,10 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
 ## Parsing/inputs (if applicable)
 
 - Inputs are computed styles and normalized child lists produced by Display and Cascade modules. No direct token parsing here.
+- Orchestrator parsing:
+  - `flex-direction`, `flex-wrap`, `justify-content`, `align-items`, `align-content`
+  - Code: `crates/css/orchestrator/src/style.rs` (`apply_flex_alignment` and helpers)
+  - Types: `crates/css/orchestrator/src/style_model.rs` (`FlexDirection`, `FlexWrap`, `JustifyContent`, `AlignItems`, `AlignContent`, `ComputedStyle.align_content`)
 
 ## Integration
 
@@ -62,7 +68,7 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
     - File: `crates/css/modules/core/src/10_visual_details/part_10_6_3_height_of_blocks.rs`
   - `css_core::container_layout_context` (origin, axes, container main size, gap)
   - `css_core::build_flex_item_inputs` (maps computed styles → `FlexChild`, cross constraints)
-  - `css_core::justify_align_context` (maps `ComputedStyle` → `JustifyContent`, `AlignItems`, container cross size)
+  - `css_core::justify_align_context` (maps `ComputedStyle` → `JustifyContent`, `AlignItems`, `AlignContent`, container cross size)
   - `css_core::write_pairs_and_measure` (applies `FlexPlacement`/`CrossPlacement` to rects)
 
 ## Edge cases
@@ -71,6 +77,7 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
 - No pre-gap at main-start for `justify-content: start` and `space-between` on non-reverse axes; invariant enforced post-accumulation.
 - Direction reversal flips accumulation order; unit tests cover reverse/center behavior.
 - Cross-axis Stretch heuristic only when item cross-size is auto/unspecified (≤ 0).
+- Align-content Stretch approximated as Start (line boxes not stretched yet).
 
 ## Testing and fixtures
 
@@ -80,7 +87,12 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
   - `flex/gap.html` — `justify-content: start` with `column-gap`
   - `flex/14_justify_space_between.html` — `justify-content: space-between`
   - `flex/11_align_items_center.html` — cross-axis center alignment
-- Use `.fail` suffix for intentionally unsupported multi-line or advanced cases during development.
+  - [New] Multi-line MVP smoke powered via core integration (`flex-wrap: wrap`): internal scenarios covered by unit tests; external fixtures to be added.
+- Planned fixtures:
+  - `flex/wrap-basic.html` — simple wrapping into two lines (start packing)
+  - `flex/wrap-justify.html` — verify `justify-content` per line with wrapping
+  - `flex/wrap-cross-align-content.html` — cross-axis packing across lines for `align-content` modes
+  - Gate with `.fail` if required during staged rollout
 
 ## Documentation and coding standards
 
@@ -88,9 +100,9 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
 
 ## Future work
 
-- [ ] Multi-line wrapping and packing (§9): line breaking, line cross-size computation, line alignment, main-axis distribution across lines.
+- [ ] Align-content Stretch: stretch line boxes to absorb remaining cross-space per spec.
 - [ ] Baseline alignment (§8, §9): shared baseline groups and first/last baseline alignment.
-- [ ] Auto margins in main-axis distribution (§9.4): absorb free space and interaction with justify modes.
+- [ ] Auto margins in main-axis distribution (§9.4): absorb free space and interaction with justify modes (within and across lines).
 - [ ] Min/max and preferred-size constraints interactions with flexing (CSS Sizing): clamp during grow/shrink; finalize constraints.
 - [ ] Overflow handling and scroll containers in flex context.
 - [ ] Advanced writing modes (vertical, rtl) and axis resolution generalization.

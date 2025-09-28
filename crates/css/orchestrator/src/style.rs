@@ -236,6 +236,19 @@ fn apply_flex_alignment(
     computed: &mut style_model::ComputedStyle,
     decls: &HashMap<String, String>,
 ) {
+    parse_flex_direction_prop(computed, decls);
+    parse_flex_wrap_prop(computed, decls);
+    parse_align_items_prop(computed, decls);
+    parse_justify_content_prop(computed, decls);
+    parse_align_content_prop(computed, decls);
+}
+
+#[inline]
+/// Parse the `flex-direction` property into the computed style.
+fn parse_flex_direction_prop(
+    computed: &mut style_model::ComputedStyle,
+    decls: &HashMap<String, String>,
+) {
     if let Some(value) = decls.get("flex-direction") {
         computed.flex_direction = if value.eq_ignore_ascii_case("column") {
             style_model::FlexDirection::Column
@@ -243,6 +256,14 @@ fn apply_flex_alignment(
             style_model::FlexDirection::Row
         };
     }
+}
+
+#[inline]
+/// Parse the `flex-wrap` property into the computed style.
+fn parse_flex_wrap_prop(
+    computed: &mut style_model::ComputedStyle,
+    decls: &HashMap<String, String>,
+) {
     if let Some(value) = decls.get("flex-wrap") {
         computed.flex_wrap = if value.eq_ignore_ascii_case("wrap") {
             style_model::FlexWrap::Wrap
@@ -250,6 +271,14 @@ fn apply_flex_alignment(
             style_model::FlexWrap::NoWrap
         };
     }
+}
+
+#[inline]
+/// Parse the `align-items` property into the computed style.
+fn parse_align_items_prop(
+    computed: &mut style_model::ComputedStyle,
+    decls: &HashMap<String, String>,
+) {
     if let Some(value) = decls.get("align-items") {
         computed.align_items = if value.eq_ignore_ascii_case("flex-start") {
             style_model::AlignItems::FlexStart
@@ -261,6 +290,14 @@ fn apply_flex_alignment(
             style_model::AlignItems::Stretch
         };
     }
+}
+
+#[inline]
+/// Parse the `justify-content` property into the computed style.
+fn parse_justify_content_prop(
+    computed: &mut style_model::ComputedStyle,
+    decls: &HashMap<String, String>,
+) {
     if let Some(value) = decls.get("justify-content") {
         computed.justify_content = if value.eq_ignore_ascii_case("center") {
             style_model::JustifyContent::Center
@@ -268,8 +305,37 @@ fn apply_flex_alignment(
             style_model::JustifyContent::FlexEnd
         } else if value.eq_ignore_ascii_case("space-between") {
             style_model::JustifyContent::SpaceBetween
+        } else if value.eq_ignore_ascii_case("space-around") {
+            style_model::JustifyContent::SpaceAround
+        } else if value.eq_ignore_ascii_case("space-evenly") {
+            style_model::JustifyContent::SpaceEvenly
         } else {
             style_model::JustifyContent::FlexStart
+        };
+    }
+}
+
+#[inline]
+/// Parse the `align-content` property into the computed style.
+fn parse_align_content_prop(
+    computed: &mut style_model::ComputedStyle,
+    decls: &HashMap<String, String>,
+) {
+    if let Some(value) = decls.get("align-content") {
+        computed.align_content = if value.eq_ignore_ascii_case("center") {
+            style_model::AlignContent::Center
+        } else if value.eq_ignore_ascii_case("flex-end") {
+            style_model::AlignContent::FlexEnd
+        } else if value.eq_ignore_ascii_case("space-between") {
+            style_model::AlignContent::SpaceBetween
+        } else if value.eq_ignore_ascii_case("space-around") {
+            style_model::AlignContent::SpaceAround
+        } else if value.eq_ignore_ascii_case("space-evenly") {
+            style_model::AlignContent::SpaceEvenly
+        } else if value.eq_ignore_ascii_case("stretch") {
+            style_model::AlignContent::Stretch
+        } else {
+            style_model::AlignContent::FlexStart
         };
     }
 }
