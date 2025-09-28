@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Wrap: auto margins across lines</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #container {
+      display: flex;
+      flex-wrap: wrap;
+      width: 520px;
+      height: 260px;
+      background: #f8f8f8;
+      column-gap: 10px;
+      row-gap: 10px;
+    }
+    .item { width: 150px; height: 60px; background: #eef; }
+    /* Use auto margins on some items to require per-line distribution */
+    #b { margin-left: auto; }
+    #d { margin-right: auto; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="a" class="item"></div>
+    <div id="b" class="item"></div>
+    <div id="c" class="item"></div>
+    <div id="d" class="item"></div>
+    <div id="e" class="item"></div>
+  </div>
+</body>
+</html>

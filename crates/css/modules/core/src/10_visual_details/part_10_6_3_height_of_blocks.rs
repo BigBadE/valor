@@ -28,6 +28,14 @@ use crate::{
     RootHeightsCtx, TopEdges,
 };
 
+#[inline]
+/// Try to query real baseline metrics for a node from the inline/text engine.
+/// Returns `(first_baseline, last_baseline)` in CSS px if available.
+/// Currently returns `None` as a placeholder until wired to the inline layout path.
+const fn try_inline_baselines(_layouter: &Layouter, _node: NodeKey) -> Option<(f32, f32)> {
+    None
+}
+
 /// Triplet describing an item's cross size constraints `(size, min, max)`.
 type CrossTriplet = (f32, f32, f32);
 /// Container context for flex layout: `(origin_xy, direction, axes, container_main_size, main_gap)`.
@@ -437,15 +445,19 @@ fn build_flex_item_inputs(
         };
         cross_inputs.push((cross, min_c, max_c));
         // Baseline metrics [Approximation → Improved]:
-        // Use the computed or default line-height as a proxy for first baseline when available.
-        // Last baseline stays at 0 for MVP until inline layout provides real metrics.
-        let line_h_px = style_item
-            .line_height
-            .unwrap_or_else(|| default_line_height_px(&style_item) as f32)
-            .max(0.0);
-        let first_baseline = line_h_px.min(cross).max(0.0);
-        let last_baseline = 0.0f32;
-        baseline_inputs.push(Some((first_baseline, last_baseline)));
+        // 1) Prefer real baselines from inline/text engine when available.
+        // 2) Fallback heuristic: first = line-height clamped to cross; last = cross - first.
+        if let Some((first_real, last_real)) = try_inline_baselines(layouter, key) {
+            baseline_inputs.push(Some((first_real.max(0.0), last_real.max(0.0))));
+        } else {
+            let line_h_px = style_item
+                .line_height
+                .unwrap_or_else(|| default_line_height_px(&style_item) as f32)
+                .max(0.0);
+            let first_baseline = line_h_px.min(cross).max(0.0);
+            let last_baseline = (cross - first_baseline).max(0.0).min(cross);
+            baseline_inputs.push(Some((first_baseline, last_baseline)));
+        }
     }
     (main_items, cross_inputs, baseline_inputs)
 }

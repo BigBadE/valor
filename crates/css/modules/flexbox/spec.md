@@ -100,8 +100,14 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
   - `flex/22_wrap_align_content_space_evenly.html` — wrapping + `align-content: space-evenly`
   - `flex/23_wrap_column_align_content_center.html` — column-direction wrap + `align-content: center`
   - `flex/24_wrap_align_content_space_between.html` — wrapping + `align-content: space-between`
+  - `flex/35_wrap_column_justify_start.html` — column-direction wrap + per-line `justify-content: flex-start`
+  - `flex/36_wrap_column_justify_end.html` — column-direction wrap + per-line `justify-content: flex-end`
+  - `flex/37_wrap_column_justify_center.html` — column-direction wrap + per-line `justify-content: center`
+  - `flex/38_wrap_column_justify_space_between.html` — column-direction wrap + per-line `justify-content: space-between`
+  - `flex/39_wrap_column_justify_space_around.html` — column-direction wrap + per-line `justify-content: space-around`
+  - `flex/40_wrap_column_justify_space_evenly.html` — column-direction wrap + per-line `justify-content: space-evenly`
 - Planned fixtures:
-  - Column-direction per-line `justify-content` matrix
+  - Baseline alignment fixtures (after baseline work)
 
 ### Fixtures Matrix
 
@@ -114,9 +120,22 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
 - Wrap + per-line justify-content (row direction)
   - space-around (17) ✓; flex-start (30) ✓; flex-end (31) ✓; center (32) ✓; space-between (33) ✓; space-evenly (34) ✓
 
+- Wrap + per-line justify-content (column direction)
+  - flex-start (35) ✓; flex-end (36) ✓; center (37) ✓; space-between (38) ✓; space-around (39) ✓; space-evenly (40) ✓
+
 - Planned
-  - Column-direction per-line `justify-content` matrix
   - Baseline alignment fixtures (after baseline work)
+  - 41_row_baseline.fail; 42_row_last_baseline.fail; 43_wrap_multi_line_baseline.fail
+  - Auto margins across lines
+    - 44_wrap_auto_margins_across_lines.fail
+  - Min/max constraints with flexing
+    - 45_flex_min_max_constraints.fail
+  - Absolutely-positioned flex children (§4.1)
+    - 46_abspos_flex_child.fail
+  - Advanced writing modes / RTL
+    - 47_writing_modes_vertical_rtl.fail
+  - Percentage gaps resolution
+    - 48_percentage_gaps.fail
 
 ## Documentation and coding standards
 

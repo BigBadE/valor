@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Wrap (column) + Per-Line Justify: flex-start</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #container {
+      display: flex;
+      flex-direction: column;
+      flex-wrap: wrap;
+      width: 520px;
+      height: 220px;
+      background: #f8f8f8;
+      justify-content: flex-start;
+      column-gap: 10px;
+      row-gap: 10px;
+    }
+    .item { width: 150px; height: 60px; background: #eef; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="a" class="item"></div>
+    <div id="b" class="item"></div>
+    <div id="c" class="item"></div>
+    <div id="d" class="item"></div>
+    <div id="e" class="item"></div>
+  </div>
+</body>
+</html>

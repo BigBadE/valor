@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Wrap: multi-line baseline alignment</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #container {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      width: 520px;
+      height: 260px;
+      background: #f8f8f8;
+      column-gap: 10px;
+      row-gap: 10px;
+    }
+    .item { width: 150px; background: #eef; }
+    .text { font-size: 20px; line-height: 24px; height: 60px; background: #efe; }
+    .tall { height: 120px; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="a" class="item text">A</div>
+    <div id="b" class="item tall"></div>
+    <div id="c" class="item text">C</div>
+    <div id="d" class="item"></div>
+    <div id="e" class="item text">E</div>
+  </div>
+</body>
+</html>
