@@ -66,7 +66,7 @@ html = { path = "crates/html" }
 page_handler = { path = "crates/page_handler" }
 wgpu_renderer = { path = "crates/wgpu_renderer" }
 js = { path = "crates/js" }
-js_engine_v8 = { path = "crates/js/js_engine_v8" }
+js_engine_v8 = { path = "crates/js/js_engine_v8", default-features = false }
 
 # CSS modules (internal crates)
 css_orchestrator = { path = "crates/css/orchestrator" }

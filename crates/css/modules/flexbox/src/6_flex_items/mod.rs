@@ -87,4 +87,35 @@ mod tests {
         let handles: Vec<u64> = items.iter().map(|item| item.handle.0).collect();
         assert_eq!(handles, vec![1, 4]);
     }
+
+    #[test]
+    /// Ensures that when all children are out-of-flow, no flex items are collected.
+    ///
+    /// # Panics
+    /// Panics if `collect_flex_items()` returns any item for out-of-flow-only inputs.
+    fn skips_all_when_all_out_of_flow() {
+        let abs_a = (
+            ItemRef(10),
+            ItemStyle {
+                is_none: false,
+                out_of_flow: true,
+            },
+        );
+        let abs_b = (
+            ItemRef(11),
+            ItemStyle {
+                is_none: false,
+                out_of_flow: true,
+            },
+        );
+        let none_c = (
+            ItemRef(12),
+            ItemStyle {
+                is_none: true,
+                out_of_flow: false,
+            },
+        );
+        let items = collect_flex_items(&[abs_a, abs_b, none_c]);
+        assert!(items.is_empty());
+    }
 }
