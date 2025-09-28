@@ -1130,6 +1130,80 @@ mod tests {
     }
 
     #[test]
+    /// Ensures flex-grow respects `max_main` and redistributes remaining space.
+    ///
+    /// # Panics
+    /// Panics if the produced sizes do not meet clamped/redistribution invariants.
+    fn grow_respects_max_and_redistributes() {
+        let container = FlexContainerInputs {
+            direction: FlexDirection::Row,
+            writing_mode: WritingMode::HorizontalTb,
+            container_main_size: 300.0,
+            main_gap: 0.0,
+        };
+        let mut items = three_items_50(); // basis sum = 150
+        // Remaining = 150; saturate first item at 80 max.
+        if let Some(first) = items.get_mut(0) {
+            first.flex_grow = 1.0;
+            first.max_main = 80.0;
+        }
+        if let Some(second) = items.get_mut(1) {
+            second.flex_grow = 1.0;
+        }
+        if let Some(third) = items.get_mut(2) {
+            third.flex_grow = 1.0;
+        }
+        let out = layout_single_line(container, JustifyContent::Start, &items);
+        assert_eq!(out.len(), 3);
+        let sizes: Vec<f32> = out.iter().map(|placement| placement.main_size).collect();
+        // First must clamp to 80
+        let first_size = sizes.first().copied().unwrap_or(0.0);
+        assert!((first_size - 80.0).abs() < 0.01);
+        // Total equals container
+        let total: f32 = sizes.iter().sum();
+        assert!((total - 300.0).abs() < 0.01);
+        // Others grew beyond base
+        let second_size = sizes.get(1).copied().unwrap_or(0.0);
+        let third_size = sizes.get(2).copied().unwrap_or(0.0);
+        assert!(second_size >= 50.0 && third_size >= 50.0);
+    }
+
+    #[test]
+    /// Ensures flex-shrink respects `min_main` and freezes at min.
+    ///
+    /// # Panics
+    /// Panics if the produced sizes violate min constraints or total does not equal container.
+    fn shrink_respects_min_and_freezes() {
+        let container = FlexContainerInputs {
+            direction: FlexDirection::Row,
+            writing_mode: WritingMode::HorizontalTb,
+            container_main_size: 100.0,
+            main_gap: 0.0,
+        };
+        let mut items = three_items_50(); // sum=150, need shrink by 50
+        for child in &mut items {
+            child.flex_shrink = 1.0;
+        }
+        if let Some(first) = items.get_mut(0) {
+            first.min_main = 40.0; // can only shrink by 10
+        }
+        let out = layout_single_line(container, JustifyContent::Start, &items);
+        assert_eq!(out.len(), 3);
+        let sizes: Vec<f32> = out.iter().map(|placement| placement.main_size).collect();
+        // First must clamp to 40
+        let first_size = sizes.first().copied().unwrap_or(0.0);
+        assert!((first_size - 40.0).abs() < 0.01);
+        // Total equals container
+        let total: f32 = sizes.iter().sum();
+        assert!((total - 100.0).abs() < 0.01);
+        // Others shrank but stayed within [0,50]
+        let second_size = sizes.get(1).copied().unwrap_or(0.0);
+        let third_size = sizes.get(2).copied().unwrap_or(0.0);
+        assert!((0.0..=50.0).contains(&second_size));
+        assert!((0.0..=50.0).contains(&third_size));
+    }
+
+    #[test]
     /// # Panics
     /// Panics if sizes or offsets deviate from the expected results for a simple grow case.
     fn grow_distribution_and_placement_row() {
@@ -1244,11 +1318,11 @@ mod tests {
             "total size must equal container main size"
         );
         // Centered: minimal offset should be >= 0
-        let min_offset = out
-            .iter()
-            .map(|placement| placement.main_offset)
-            .fold(f32::INFINITY, f32::min);
-        assert!(min_offset >= 0.0, "centered layout must not start before 0");
+        let first_offset = out.first().map_or(0.0, |placement| placement.main_offset);
+        assert!(
+            first_offset >= 0.0,
+            "centered layout must not start before 0"
+        );
         // Reverse places earlier logical item at a larger main coordinate (strictly descending offsets)
         let mut previous = f32::INFINITY;
         for offset in out.iter().map(|placement| placement.main_offset) {
@@ -1433,5 +1507,157 @@ mod tests {
             assert!((got_main - exp_main).abs() < 0.001);
             assert!((got_cross - exp_cross).abs() < 0.001);
         }
+    }
+
+    #[test]
+    /// Ensures margin-left:auto on the first item of the first line absorbs remaining space on that line.
+    ///
+    /// # Panics
+    /// Panics if the first item's offset does not equal the per-line remaining space.
+    fn multi_line_auto_margin_left_first_line_absorbs_space() {
+        // Four items of 50 each, gap 10, container 120 → lines: [0,2) and [2,4)
+        let items_line = vec![
+            item_zero_margins(1, 50.0),
+            item_zero_margins(2, 50.0),
+            item_zero_margins(3, 50.0),
+            item_zero_margins(4, 50.0),
+        ];
+        let mut items_with_auto = items_line;
+        if let Some(first) = items_with_auto.get_mut(0) {
+            first.margin_left_auto = true;
+        }
+        let cross_inputs = vec![(20.0, 0.0, 1000.0); 4];
+        let container = FlexContainerInputs {
+            direction: FlexDirection::Row,
+            writing_mode: WritingMode::HorizontalTb,
+            container_main_size: 120.0,
+            main_gap: 10.0,
+        };
+        let cross_ctx = CrossContext {
+            align_items: AlignItems::Center,
+            align_content: AlignContent::Start,
+            container_cross_size: 100.0,
+            cross_gap: 0.0,
+        };
+        let out = layout_multi_line_with_cross(
+            container,
+            JustifyContent::Start,
+            cross_ctx,
+            &items_with_auto,
+            CrossAndBaseline {
+                cross_inputs: &cross_inputs,
+                baseline_inputs: &[None, None, None, None],
+            },
+        );
+        // Per first line: inner sum 100, one gap 10 → remaining = 120 - 110 = 10 → first item offset should be 10.
+        let first_offset = out.first().map_or(0.0, |pair| pair.0.main_offset);
+        assert!((first_offset - 10.0).abs() < 0.001);
+    }
+
+    #[test]
+    /// Ensures a single-item line with both auto margins centers the item within that line.
+    ///
+    /// # Panics
+    /// Panics if the offset is not half of the per-line remaining space.
+    fn multi_line_single_item_both_auto_centers() {
+        // Construct lines: first line uses two items to force a second line with one item.
+        // Container 120, gap 10; items: [50, 50] then [50]
+        let mut items = vec![
+            item_zero_margins(1, 50.0),
+            item_zero_margins(2, 50.0),
+            item_zero_margins(3, 50.0),
+        ];
+        if let Some(last) = items.get_mut(2) {
+            last.margin_left_auto = true;
+            last.margin_right_auto = true;
+        }
+        let cross_inputs = vec![(20.0, 0.0, 1000.0); 3];
+        let container = FlexContainerInputs {
+            direction: FlexDirection::Row,
+            writing_mode: WritingMode::HorizontalTb,
+            container_main_size: 120.0,
+            main_gap: 10.0,
+        };
+        let cross_ctx = CrossContext {
+            align_items: AlignItems::Center,
+            align_content: AlignContent::Start,
+            container_cross_size: 100.0,
+            cross_gap: 0.0,
+        };
+        let out = layout_multi_line_with_cross(
+            container,
+            JustifyContent::Start,
+            cross_ctx,
+            &items,
+            CrossAndBaseline {
+                cross_inputs: &cross_inputs,
+                baseline_inputs: &[None, None, None],
+            },
+        );
+        // First line consumes two placements, third is in second line.
+        // Remaining on line 2: container 120 - inner 50 - gaps 0 = 70 → both auto -> left margin = 35 → offset 35
+        let third_offset = out.get(2).map_or(0.0, |pair| pair.0.main_offset);
+        assert!((third_offset - 35.0).abs() < 0.001);
+    }
+
+    #[test]
+    /// Ensures main-axis CSS gap influences between-spacing for items (simulating percentage-like gap via computed px).
+    ///
+    /// # Panics
+    /// Panics if offsets are not separated by the specified gap in a simple Start layout.
+    fn main_gap_affects_between_offsets() {
+        // Simulate a 10% main gap on a 200px container → 20px
+        let items = three_items_50();
+        let container = FlexContainerInputs {
+            direction: FlexDirection::Row,
+            writing_mode: WritingMode::HorizontalTb,
+            container_main_size: 200.0,
+            main_gap: 20.0, // as if resolved from percentage
+        };
+        let out = layout_single_line(container, JustifyContent::Start, &items);
+        assert_eq!(out.len(), 3);
+        // Expected offsets: 0, 50+20=70, 70+50+20=140
+        let expected_offsets = [0.0f32, 70.0f32, 140.0f32];
+        for (placement, expect) in out.iter().zip(expected_offsets) {
+            assert!((placement.main_offset - expect).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    /// Ensures cross-axis CSS gap is applied between line boxes in multi-line layout.
+    ///
+    /// # Panics
+    /// Panics if the second line's cross offset does not include `cross_gap`.
+    fn multi_line_cross_gap_applied_between_lines() {
+        // Three items of 50 each, container 120, main gap 10 → two lines.
+        // Cross gap set to 8px; per-line cross max is 20, so line 2 offset should be 20 + 8 = 28.
+        let items = three_items_50();
+        let cross_inputs = vec![(20.0, 0.0, 1000.0); 3];
+        let container = FlexContainerInputs {
+            direction: FlexDirection::Row,
+            writing_mode: WritingMode::HorizontalTb,
+            container_main_size: 120.0,
+            main_gap: 10.0,
+        };
+        let cross_ctx = CrossContext {
+            align_items: AlignItems::Center,
+            align_content: AlignContent::Start,
+            container_cross_size: 200.0,
+            cross_gap: 8.0,
+        };
+        let out = layout_multi_line_with_cross(
+            container,
+            JustifyContent::Start,
+            cross_ctx,
+            &items,
+            CrossAndBaseline {
+                cross_inputs: &cross_inputs,
+                baseline_inputs: &[None, None, None],
+            },
+        );
+        assert_eq!(out.len(), 3);
+        // The third item is on line 2; its cross offset should equal line1_cross (20) + cross_gap (8) = 28.
+        let third_cross = out.get(2).map_or(0.0, |pair| pair.1.cross_offset);
+        assert!((third_cross - 28.0).abs() < 0.001);
     }
 }

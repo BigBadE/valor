@@ -6,13 +6,16 @@ Primary spec: https://www.w3.org/TR/css-flexbox-1/
 
 - Status:
   - [Production] §§2–4 (terminology, container detection, item collection)
-  - [MVP] §§7–9 subset: axes resolution; single-line main-axis layout; justify-content (start/center/end/space-between/around/evenly); CSS main-axis gaps; cross-axis align-items (stretch/center/flex-start/flex-end); multi-line wrapping with cross-axis packing by align-content (start/center/end/space-between/around/evenly; stretch)
+  - [Production] §§7–9: axes resolution; single-line and multi-line main-axis layout; per-line justify-content (start/center/end/space-between/around/evenly); CSS gaps; cross-axis align-items (stretch/center/flex-start/flex-end); wrapping with cross-axis packing by align-content (start/center/end/space-between/around/evenly; stretch)
 - Notes:
   - [Heuristic] Cross-axis Stretch applies when item cross-size is auto/unspecified (≤ 0); otherwise we preserve the item’s cross-size.
   - [Production] Align-content: stretch expands line boxes to absorb remaining cross-space, accounting for cross-axis gaps between lines.
-  - [TODO] Baseline alignment; min/max interactions; overflow; advanced writing modes; percentage gaps beyond trivial; absolutely-positioned flex children.
-  - [MVP] Auto margins: main-axis distribution for single-line containers (equal share across auto margin slots; forces start packing before justify).
-  - [Approximation] Baseline alignment: `baseline` behaves like `flex-start`; `last baseline` behaves like `flex-end` until baseline metrics are plumbed.
+  - [Production] Baseline alignment integrates Core (§10.6.3) inline baseline estimation sourced from `css_text` + `display` inline context. Real shaping metrics will evolve as text shaping lands.
+  - [Production] Min/max constraints enforced during hypothetical sizing and flex grow/shrink; items saturate at min/max and redistribution occurs.
+  - [Production] CSS gaps: supports both px and percentage gaps. Percentages are parsed in Orchestrator and resolved in Core against the container’s main/cross sizes.
+  - [TODO] Overflow; advanced writing modes.
+  - [Production] Auto margins: main-axis distribution for single-line and multi-line containers (per-line equal share per auto margin slot; overrides `justify-content` on that line).
+  - [Approximation] Baseline alignment: first/last baseline values use default line-height and line-box grouping; will refine with shaping and font metrics.
   - Out of scope (for now): fragmentation.
 
 ## One-to-one spec mapping
@@ -27,14 +30,20 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
 - §8 Cross-axis alignment (single-line)
   - Code: `css_flexbox::align_single_line_cross`, `css_flexbox::align_cross_for_items`
   - File: `crates/css/modules/flexbox/src/8_single_line_layout/mod.rs`
-  - Status: [MVP], [Approximation] — stretch heuristic as noted; `baseline` approximated to `flex-start`; `last-baseline` approximated to `flex-end`.
+  - Status: [Production], [Approximation] — stretch heuristic as noted; baseline alignment integrates Core baseline estimation (first/last baseline via default line-height × line count) pending shaping.
 
 - §9 Main-axis layout (single-line and multi-line)
   - Code: `css_flexbox::layout_single_line`, `css_flexbox::layout_single_line_with_cross`, `css_flexbox::layout_multi_line_with_cross`
   - Helpers: `css_flexbox::justify_params`, `css_flexbox::accumulate_main_offsets`, `css_flexbox::align_content_params` (lines), `css_flexbox::break_into_lines`, `css_flexbox::per_line_main_and_cross`, `css_flexbox::stretch_line_crosses`, `css_flexbox::pack_lines_and_build`
   - Types: `css_flexbox::FlexContainerInputs`, `css_flexbox::FlexChild`, `css_flexbox::FlexPlacement`, `css_flexbox::JustifyContent`, `css_flexbox::AlignItems`, `css_flexbox::AlignContent`, `css_flexbox::CrossContext` (with `cross_gap`)
   - File: `crates/css/modules/flexbox/src/8_single_line_layout/mod.rs`
-  - Status: [MVP] — single-line main-axis layout plus multi-line wrapping. Lines are packed by `align-content` (start/center/end/space-between/around/evenly). Stretch implemented (line box expansion). Cross-axis gaps (row-gap/column-gap) applied between lines. Auto margins: main-axis distribution for single-line implemented (equal share per auto margin slot; overrides `justify-content`).
+  - Status: [Production] — single-line main-axis layout plus multi-line wrapping. Lines are packed by `align-content` (start/center/end/space-between/around/evenly). Stretch implemented (line box expansion). Cross-axis gaps (row-gap/column-gap) applied between lines. Auto margins: main-axis distribution for single-line and multi-line (per-line equal-share auto margin absorption; overrides `justify-content` on that line). Baseline alignment integrates Core inline baseline estimation (from `css_text` + `display` inline context). Percentage gaps are supported (resolved upstream and in Core).
+
+- §9.10 Absolutely-positioned flex children (scope)
+  - Code: Excluded from flex item collection: `css_flexbox::collect_flex_items` skips out-of-flow children.
+  - Placement: Core positioned layout handles abspos. Minimal placement relative to flex container padding box added in Core for integration testing.
+  - Files: `crates/css/modules/flexbox/src/6_flex_items/mod.rs`, `crates/css/modules/core/src/10_visual_details/part_10_6_3_height_of_blocks.rs`.
+  - Status: [Production] (exclusion), [MVP] (minimal placement in Core).
 
 ## Algorithms and data flow
 
@@ -70,7 +79,7 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
   - `css_core::compute_child_content_height` flex branch
     - File: `crates/css/modules/core/src/10_visual_details/part_10_6_3_height_of_blocks.rs`
   - `css_core::container_layout_context` (origin, axes, container main size, gap)
-  - `css_core::build_flex_item_inputs` (maps computed styles → `FlexChild`, cross constraints)
+  - `css_core::build_flex_item_inputs` (maps computed styles → `FlexChild`, cross constraints, baseline metrics via inline baseline estimation via `try_inline_baselines()`)
   - `css_core::justify_align_context` (maps `ComputedStyle` → `JustifyContent`, `AlignItems`, `AlignContent`, container cross size)
   - `css_core::flex_child_content_height` constructs `CrossContext` with `cross_gap` (row-gap/column-gap per direction)
   - `css_core::write_pairs_and_measure` (applies `FlexPlacement`/`CrossPlacement` to rects)

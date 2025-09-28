@@ -2,6 +2,7 @@
 //! Root height and used height computations.
 
 use crate::LayoutRect;
+use css_display::build_inline_context_with_filter;
 use css_flexbox::{
     AlignContent as FlexAlignContent, AlignItems as FlexAlignItems, Axes as FlexAxes,
     CrossAndBaseline as FlexCrossAndBaseline, CrossContext as FlexCrossContext, CrossPlacement,
@@ -13,11 +14,11 @@ use css_flexbox::{
 use css_orchestrator::style_model::{
     AlignContent as CoreAlignContent, AlignItems as CoreAlignItems, ComputedStyle,
     Display as CoreDisplay, FlexDirection as CoreFlexDirection, FlexWrap as CoreFlexWrap,
-    JustifyContent as CoreJustify, Position as CorePosition,
+    JustifyContent as CoreJustify, Overflow as CoreOverflow, Position as CorePosition,
 };
-use css_text::default_line_height_px;
+use css_text::{collapse_whitespace, default_line_height_px};
 use js::NodeKey;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::LayoutNodeKind;
 
@@ -29,11 +30,41 @@ use crate::{
 };
 
 #[inline]
-/// Try to query real baseline metrics for a node from the inline/text engine.
-/// Returns `(first_baseline, last_baseline)` in CSS px if available.
-/// Currently returns `None` as a placeholder until wired to the inline layout path.
-const fn try_inline_baselines(_layouter: &Layouter, _node: NodeKey) -> Option<(f32, f32)> {
-    None
+/// Compute inline baselines using inline-context grouping and default line-height.
+/// Returns `(first_baseline, last_baseline)` in CSS px when inline content exists.
+fn try_inline_baselines(layouter: &Layouter, node: NodeKey) -> Option<(f32, f32)> {
+    // Gather flat children under this node
+    let children = layouter.children.get(&node).cloned().unwrap_or_default();
+    if children.is_empty() {
+        return None;
+    }
+    // Build a quick node-kind map for whitespace skipping
+    let mut kind_map: HashMap<NodeKey, LayoutNodeKind> = HashMap::new();
+    for (key, kind, _kids) in layouter.snapshot() {
+        kind_map.insert(key, kind);
+    }
+    let styles = &layouter.computed_styles;
+    let parent_style = styles.get(&node);
+    let skip_predicate = |node_key: NodeKey| -> bool {
+        if let Some(LayoutNodeKind::InlineText { text }) = kind_map.get(&node_key).cloned() {
+            collapse_whitespace(&text).is_empty()
+        } else {
+            false
+        }
+    };
+    let lines = build_inline_context_with_filter(&children, styles, parent_style, skip_predicate);
+    if lines.is_empty() {
+        return None;
+    }
+    // Estimate baselines from default line-height
+    let style = styles
+        .get(&node)
+        .cloned()
+        .unwrap_or_else(ComputedStyle::default);
+    let lh_px = default_line_height_px(&style) as f32;
+    let first = lh_px.max(0.0);
+    let last = (lines.len() as f32 * lh_px).max(first);
+    Some((first, last))
 }
 
 /// Triplet describing an item's cross size constraints `(size, min, max)`.
@@ -130,10 +161,15 @@ fn container_layout_context(
         container_style.height.unwrap_or(1_000_000.0).max(0.0)
     };
     let main_gap = match container_style.flex_direction {
-        CoreFlexDirection::Column => container_style.row_gap,
-        CoreFlexDirection::Row => container_style.column_gap,
-    }
-    .max(0.0);
+        CoreFlexDirection::Column => container_style.row_gap_percent.map_or_else(
+            || container_style.row_gap.max(0.0),
+            |percent| (percent * container_main_size).max(0.0),
+        ),
+        CoreFlexDirection::Row => container_style.column_gap_percent.map_or_else(
+            || container_style.column_gap.max(0.0),
+            |percent| (percent * container_main_size).max(0.0),
+        ),
+    };
     (origin, direction, axes, container_main_size, main_gap)
 }
 
@@ -349,10 +385,15 @@ fn flex_child_content_height(
         main_gap,
     };
     let cross_gap = match direction {
-        FlexDir::Row | FlexDir::RowReverse => container_style.row_gap,
-        FlexDir::Column | FlexDir::ColumnReverse => container_style.column_gap,
-    }
-    .max(0.0);
+        FlexDir::Row | FlexDir::RowReverse => container_style.row_gap_percent.map_or_else(
+            || container_style.row_gap.max(0.0),
+            |percent| (percent * container_cross_size).max(0.0),
+        ),
+        FlexDir::Column | FlexDir::ColumnReverse => container_style.column_gap_percent.map_or_else(
+            || container_style.column_gap.max(0.0),
+            |percent| (percent * container_cross_size).max(0.0),
+        ),
+    };
     let cross_ctx = FlexCrossContext {
         align_items: align_items_val,
         align_content: align_content_val,
@@ -382,7 +423,140 @@ fn flex_child_content_height(
         ),
     };
     let content_height = write_pairs_and_measure(axes, origin_x, origin_y, layouter, &pairs);
-    (content_height, 0)
+    // Overflow handling (minimal): if overflow is Hidden, clamp reported content height to container cross-size.
+    let clamped_content_height = if matches!(container_style.overflow, CoreOverflow::Hidden) {
+        let clamp_to = container_cross_size as i32;
+        if content_height > clamp_to {
+            clamp_to
+        } else {
+            content_height
+        }
+    } else {
+        content_height
+    };
+    // Minimal absolutely-positioned children placement relative to the flex container padding box.
+    place_absolute_children(
+        layouter,
+        cctx.key,
+        AbsContainerCtx {
+            origin_x,
+            origin_y,
+            axes,
+            container_main_size,
+            container_cross_size,
+        },
+    );
+    (clamped_content_height, 0)
+}
+
+#[derive(Copy, Clone)]
+/// Minimal context for absolute positioning within a flex container's padding box.
+struct AbsContainerCtx {
+    /// Container padding box origin-x in layout coordinates.
+    origin_x: i32,
+    /// Container padding box origin-y in layout coordinates.
+    origin_y: i32,
+    /// Flex axes derived from direction and writing mode.
+    axes: FlexAxes,
+    /// Container main-axis size used for percentage resolution.
+    container_main_size: f32,
+    /// Container cross-axis size used for percentage resolution.
+    container_cross_size: f32,
+}
+
+#[inline]
+/// Compute the used absolute rectangle for a positioned child, resolving percentage offsets and
+/// supporting auto sizing when both opposite offsets are specified.
+fn compute_abs_rect(style: &ComputedStyle, ctx: AbsContainerCtx) -> LayoutRect {
+    // Resolve containing block inline/block sizes relative to flex axes for percent resolution.
+    let inline_size = if ctx.axes.main_is_inline {
+        ctx.container_main_size
+    } else {
+        ctx.container_cross_size
+    };
+    let block_size = if ctx.axes.main_is_inline {
+        ctx.container_cross_size
+    } else {
+        ctx.container_main_size
+    };
+    // Resolve offsets: prefer percentages when provided, otherwise px.
+    let left_resolved: Option<f32> = style
+        .left_percent
+        .map(|percent| (percent * inline_size).max(0.0))
+        .or_else(|| style.left.map(|value| value.max(0.0)));
+    let right_resolved: Option<f32> = style
+        .right_percent
+        .map(|percent| (percent * inline_size).max(0.0))
+        .or_else(|| style.right.map(|value| value.max(0.0)));
+    let top_resolved: Option<f32> = style
+        .top_percent
+        .map(|percent| (percent * block_size).max(0.0))
+        .or_else(|| style.top.map(|value| value.max(0.0)));
+    let bottom_resolved: Option<f32> = style
+        .bottom_percent
+        .map(|percent| (percent * block_size).max(0.0))
+        .or_else(|| style.bottom.map(|value| value.max(0.0)));
+
+    // Resolve used width/height with auto sizing when both opposite offsets are specified.
+    let used_width = if style.width.is_none()
+        && let (Some(left_px), Some(right_px)) = (left_resolved, right_resolved)
+    {
+        (inline_size - left_px - right_px).max(0.0)
+    } else {
+        style.width.unwrap_or(0.0).max(0.0)
+    };
+
+    let used_height = if style.height.is_none()
+        && let (Some(top_px), Some(bottom_px)) = (top_resolved, bottom_resolved)
+    {
+        (block_size - top_px - bottom_px).max(0.0)
+    } else {
+        style.height.unwrap_or(0.0).max(0.0)
+    };
+
+    // Compute x/y: left takes precedence; otherwise resolve from right; otherwise 0.
+    let x = ctx.origin_x as f32
+        + left_resolved.map_or_else(
+            || {
+                right_resolved.map_or(0.0, |right_px| {
+                    (inline_size - right_px - used_width).max(0.0)
+                })
+            },
+            |left_px| left_px,
+        );
+    let y = ctx.origin_y as f32
+        + top_resolved.map_or_else(
+            || {
+                bottom_resolved.map_or(0.0, |bottom_px| {
+                    (block_size - bottom_px - used_height).max(0.0)
+                })
+            },
+            |top_px| top_px,
+        );
+    LayoutRect {
+        x,
+        y,
+        width: used_width,
+        height: used_height,
+    }
+}
+
+#[inline]
+/// Place absolutely positioned children relative to the container's padding box origin.
+fn place_absolute_children(layouter: &mut Layouter, parent: NodeKey, ctx: AbsContainerCtx) {
+    let children = layouter.children.get(&parent).cloned().unwrap_or_default();
+    for child in children {
+        let style = layouter
+            .computed_styles
+            .get(&child)
+            .cloned()
+            .unwrap_or_else(ComputedStyle::default);
+        if !matches!(style.position, CorePosition::Absolute) {
+            continue;
+        }
+        let rect = compute_abs_rect(&style, ctx);
+        layouter.rects.insert(child, rect);
+    }
 }
 
 #[inline]
@@ -407,7 +581,7 @@ fn build_flex_item_inputs(
             FlexDir::Column | FlexDir::ColumnReverse => style_item.height,
         });
         let flex_basis = basis_opt.unwrap_or(0.0).max(0.0);
-        let (min_main, max_main) = match direction {
+        let (min_main, mut max_main) = match direction {
             FlexDir::Row | FlexDir::RowReverse => (
                 style_item.min_width.unwrap_or(0.0).max(0.0),
                 style_item.max_width.unwrap_or(1_000_000.0).max(0.0),
@@ -417,6 +591,9 @@ fn build_flex_item_inputs(
                 style_item.max_height.unwrap_or(1_000_000.0).max(0.0),
             ),
         };
+        if max_main < min_main {
+            max_main = min_main;
+        }
         main_items.push(FlexChild {
             handle: item.handle,
             flex_basis,
@@ -431,7 +608,7 @@ fn build_flex_item_inputs(
             margin_left_auto: false,
             margin_right_auto: false,
         });
-        let (cross, min_c, max_c) = match direction {
+        let (cross, min_c, mut max_c) = match direction {
             FlexDir::Row | FlexDir::RowReverse => (
                 style_item.height.unwrap_or(0.0).max(0.0),
                 style_item.min_height.unwrap_or(0.0).max(0.0),
@@ -443,6 +620,9 @@ fn build_flex_item_inputs(
                 style_item.max_width.unwrap_or(1_000_000.0).max(0.0),
             ),
         };
+        if max_c < min_c {
+            max_c = min_c;
+        }
         cross_inputs.push((cross, min_c, max_c));
         // Baseline metrics [Approximation → Improved]:
         // 1) Prefer real baselines from inline/text engine when available.

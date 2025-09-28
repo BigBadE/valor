@@ -9,7 +9,9 @@ use std::collections::HashMap;
 mod anonymous_blocks;
 pub use anonymous_blocks::{AnonymousChildRun, build_anonymous_block_runs};
 mod inline_context;
-pub use inline_context::{InlineFragment, LineBox, build_inline_context};
+pub use inline_context::{
+    InlineFragment, LineBox, build_inline_context, build_inline_context_with_filter,
+};
 
 // Chapter modules mapped to the Display 3 spec structure.
 // Spec: §2 — Box layout modes and the display property

@@ -160,6 +160,12 @@ pub struct ComputedStyle {
     pub left: Option<f32>,
     pub right: Option<f32>,
     pub bottom: Option<f32>,
+    /// Optional positional offsets as percentages of the containing block (0.0..=1.0).
+    /// When present, these are resolved during layout and take precedence over px fields above.
+    pub top_percent: Option<f32>,
+    pub left_percent: Option<f32>,
+    pub right_percent: Option<f32>,
+    pub bottom_percent: Option<f32>,
     // Typography
     pub font_family: Option<String>,
     // Flexbox
@@ -175,4 +181,8 @@ pub struct ComputedStyle {
     pub row_gap: f32,
     /// Gap between adjacent items along columns (main axis for row direction), in px.
     pub column_gap: f32,
+    /// Optional row-gap percentage (0.0..=1.0). When present, resolved during layout.
+    pub row_gap_percent: Option<f32>,
+    /// Optional column-gap percentage (0.0..=1.0). When present, resolved during layout.
+    pub column_gap_percent: Option<f32>,
 }
