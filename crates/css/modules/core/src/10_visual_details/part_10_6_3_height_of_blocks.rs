@@ -67,6 +67,8 @@ fn try_inline_baselines(layouter: &Layouter, node: NodeKey) -> Option<(f32, f32)
     Some((first, last))
 }
 
+// Tests moved to dedicated directory to keep clippy pedantic clean for library code.
+
 /// Triplet describing an item's cross size constraints `(size, min, max)`.
 type CrossTriplet = (f32, f32, f32);
 /// Container context for flex layout: `(origin_xy, direction, axes, container_main_size, main_gap)`.

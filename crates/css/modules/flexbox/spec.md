@@ -386,10 +386,10 @@ and <a data-link-type="dfn" href="#flex-container" id="ref-for-flex-container⑧
 </details>
 <h3 class="heading settled" data-level="4.1" id="abspos-items"><span class="secno">4.1. </span><span class="content"> Absolutely-Positioned Flex Children</span><a class="self-link" href="#abspos-items"></a></h3>
 <div data-valor-status="abspos-items">
-  <p><strong>Status:</strong> [TODO]</p>
-  <p><strong>Code:</strong> <code><em>None</em></code></p>
-  <p><strong>Fixtures:</strong> <em>None</em></p>
-  <p><strong>Notes:</strong> Out-of-flow absolutely-positioned children are excluded from flex layout paths; static-position and alignment-container behavior to be implemented alongside Positioning integration.</p>
+  <p><strong>Status:</strong> [Production] (exclusion), [MVP] (minimal placement in Core)</p>
+  <p><strong>Code:</strong> <code>css_flexbox::collect_flex_items</code> (excludes out-of-flow), <code>css_core::place_absolute_children</code>, <code>css_core::compute_abs_rect</code></p>
+  <p><strong>Fixtures:</strong> <em>Planned</em></p>
+  <p><strong>Notes:</strong> Absolutely-positioned children are excluded from flex item collection. Minimal placement is performed relative to the flex container’s padding box origin. Supported offsets: px and percentages (resolved against container inline/block sizes per axes). Auto sizing: when both opposite offsets are specified and the corresponding size is auto, used size is the remaining space.</p>
   <p><strong>Spec:</strong> <a href="https://www.w3.org/TR/css-flexbox-1/#abspos-items">§4.1 Absolutely-Positioned Flex Children</a></p>
 </div>
 
