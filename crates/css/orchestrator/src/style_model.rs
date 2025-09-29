@@ -6,6 +6,14 @@ pub struct Rgba {
     pub alpha: u8,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WritingMode {
+    #[default]
+    HorizontalTb,
+    VerticalRl,
+    VerticalLr,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BorderWidths {
     pub top: f32,
@@ -145,6 +153,8 @@ pub struct ComputedStyle {
     pub z_index: Option<i32>,
     // Display and box model
     pub display: Display,
+    /// Writing mode used for axis mapping in layout algorithms.
+    pub writing_mode: WritingMode,
     pub box_sizing: BoxSizing,
     pub margin: Edges,
     pub padding: Edges,

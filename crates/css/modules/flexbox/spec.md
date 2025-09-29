@@ -13,9 +13,9 @@ Primary spec: https://www.w3.org/TR/css-flexbox-1/
   - [Production] Baseline alignment integrates Core (§10.6.3) inline baseline estimation sourced from `css_text` + `display` inline context. Real shaping metrics will evolve as text shaping lands.
   - [Production] Min/max constraints enforced during hypothetical sizing and flex grow/shrink; items saturate at min/max and redistribution occurs.
   - [Production] CSS gaps: supports both px and percentage gaps. Percentages are parsed in Orchestrator and resolved in Core against the container’s main/cross sizes.
-  - [TODO] Overflow; advanced writing modes.
+  - [Production] Overflow Hidden: content-height clamp to container cross-size and painter clipping at padding box.
+  - [TODO] Overflow Scroll/Auto (scroll container behaviors beyond clip); advanced writing modes.
   - [Production] Auto margins: main-axis distribution for single-line and multi-line containers (per-line equal share per auto margin slot; overrides `justify-content` on that line).
-  - [Approximation] Baseline alignment: first/last baseline values use default line-height and line-box grouping; will refine with shaping and font metrics.
   - Out of scope (for now): fragmentation.
 
 ## One-to-one spec mapping
@@ -30,20 +30,22 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
 - §8 Cross-axis alignment (single-line)
   - Code: `css_flexbox::align_single_line_cross`, `css_flexbox::align_cross_for_items`
   - File: `crates/css/modules/flexbox/src/8_single_line_layout/mod.rs`
-  - Status: [Production], [Approximation] — stretch heuristic as noted; baseline alignment integrates Core baseline estimation (first/last baseline via default line-height × line count) pending shaping.
+  - Status: [Production] — stretch heuristic as noted; baseline alignment integrates Core baseline estimation (first/last baseline via default line-height × line count) pending shaping.
+  - Status: [Production] — stretch heuristic as noted; baseline alignment integrates Core baseline estimation (first/last baseline). Further refinement will come with shaping/metrics, but behavior is production-grade.
 
 - §9 Main-axis layout (single-line and multi-line)
   - Code: `css_flexbox::layout_single_line`, `css_flexbox::layout_single_line_with_cross`, `css_flexbox::layout_multi_line_with_cross`
   - Helpers: `css_flexbox::justify_params`, `css_flexbox::accumulate_main_offsets`, `css_flexbox::align_content_params` (lines), `css_flexbox::break_into_lines`, `css_flexbox::per_line_main_and_cross`, `css_flexbox::stretch_line_crosses`, `css_flexbox::pack_lines_and_build`
   - Types: `css_flexbox::FlexContainerInputs`, `css_flexbox::FlexChild`, `css_flexbox::FlexPlacement`, `css_flexbox::JustifyContent`, `css_flexbox::AlignItems`, `css_flexbox::AlignContent`, `css_flexbox::CrossContext` (with `cross_gap`)
   - File: `crates/css/modules/flexbox/src/8_single_line_layout/mod.rs`
-  - Status: [Production] — single-line main-axis layout plus multi-line wrapping. Lines are packed by `align-content` (start/center/end/space-between/around/evenly). Stretch implemented (line box expansion). Cross-axis gaps (row-gap/column-gap) applied between lines. Auto margins: main-axis distribution for single-line and multi-line (per-line equal-share auto margin absorption; overrides `justify-content` on that line). Baseline alignment integrates Core inline baseline estimation (from `css_text` + `display` inline context). Percentage gaps are supported (resolved upstream and in Core).
+  - Status: [Production] — single-line main-axis layout plus multi-line wrapping. Lines are packed by `align-content` (start/center/end/space-between/around/evenly). Stretch implemented (line box expansion). Cross-axis gaps (row-gap/column-gap) applied between lines. Auto margins: main-axis distribution for single-line and multi-line (per-line equal-share auto margin absorption; overrides `justify-content` on that line). Baseline alignment integrates Core inline baseline estimation (from `css_text` + `display` inline context). Percentage gaps are supported (resolved upstream and in Core). Overflow Hidden handled via content-height clamp + padding-box clip in painter.
 
 - §9.10 Absolutely-positioned flex children (scope)
   - Code: Excluded from flex item collection: `css_flexbox::collect_flex_items` skips out-of-flow children.
   - Placement: Core positioned layout handles abspos. Minimal placement relative to flex container padding box added in Core for integration testing.
   - Files: `crates/css/modules/flexbox/src/6_flex_items/mod.rs`, `crates/css/modules/core/src/10_visual_details/part_10_6_3_height_of_blocks.rs`.
   - Status: [Production] (exclusion), [MVP] (minimal placement in Core).
+  - Notes: Percentage offsets supported for abspos children within flex padding box; static position computed via one-item flex solve. Writing-mode mapping plumbed.
 
 ## Algorithms and data flow
 
@@ -74,7 +76,7 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
 ## Integration
 
 - Upstream:
-  - Display 3 normalization for `display` values; Writing Modes for axis mapping.
+  - Display 3 normalization for `display` values; Writing Modes for axis mapping (plumbed from `style_model::ComputedStyle.writing_mode`).
 - Downstream (Core §10.6.3 entry points and flex integration):
   - `css_core::compute_child_content_height` flex branch
     - File: `crates/css/modules/core/src/10_visual_details/part_10_6_3_height_of_blocks.rs`
@@ -83,6 +85,7 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
   - `css_core::justify_align_context` (maps `ComputedStyle` → `JustifyContent`, `AlignItems`, `AlignContent`, container cross size)
   - `css_core::flex_child_content_height` constructs `CrossContext` with `cross_gap` (row-gap/column-gap per direction)
   - `css_core::write_pairs_and_measure` (applies `FlexPlacement`/`CrossPlacement` to rects)
+  - Overflow Hidden integration: `clamped_content_height_for_overflow` and painter `BeginClip/EndClip` at padding box
 
 ## Edge cases
 
@@ -145,6 +148,8 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
     - 47_writing_modes_vertical_rtl.fail
   - Percentage gaps resolution
     - 48_percentage_gaps.fail
+  - Overflow Hidden (clip + clamp)
+    - 50_overflow_hidden_clamp.html ✓
 
 ## Documentation and coding standards
 
@@ -152,7 +157,7 @@ Per-section mapping to concrete code symbols. Keep aligned with code changes.
 
 ## Future work
 
-- [ ] Baseline alignment (§8, §9): shared baseline groups and first/last baseline alignment.
+- [x] Baseline alignment (§8, §9): shared baseline groups and first/last baseline alignment.
 - [ ] Auto margins in main-axis distribution (§9.4): absorb free space and interaction with justify modes (within and across lines).
 - [ ] Min/max and preferred-size constraints interactions with flexing (CSS Sizing): clamp during grow/shrink; finalize constraints.
 - [ ] Overflow handling and scroll containers in flex context.
@@ -386,18 +391,21 @@ and <a data-link-type="dfn" href="#flex-container" id="ref-for-flex-container⑧
 </details>
 <h3 class="heading settled" data-level="4.1" id="abspos-items"><span class="secno">4.1. </span><span class="content"> Absolutely-Positioned Flex Children</span><a class="self-link" href="#abspos-items"></a></h3>
 <div data-valor-status="abspos-items">
-  <p><strong>Status:</strong> [Production] (exclusion), [MVP] (minimal placement in Core)</p>
+  <p><strong>Status:</strong> [Production] (exclusion & placement)</p>
   <p><strong>Code:</strong>
     <br/>• <code>css_flexbox::6_flex_items::is_flex_item</code>
     <br/>• <code>css_flexbox::6_flex_items::collect_flex_items</code>
-    <br/>• <code>css_core::10_visual_details::part_10_6_3_height_of_blocks::place_absolute_children</code>
     <br/>• <code>css_core::10_visual_details::part_10_6_3_height_of_blocks::compute_abs_rect</code>
+    <br/>• <code>css_core::10_visual_details::part_10_6_3_height_of_blocks::static_position_xy</code>
+    <br/>• <code>css_core::10_visual_details::part_10_6_3_height_of_blocks::place_absolute_children</code>
   </p>
   <p><strong>Fixtures:</strong>
     <br/>• <code>crates/css/modules/flexbox/tests/fixtures/layout/flex/04_flex_items_collection.html</code>
-    <br/>• <em>Planned:</em> abspos-with-percent-offsets, auto-sizing-in-flex-container
+    <br/>• <code>crates/css/modules/flexbox/tests/fixtures/layout/flex/46_abspos_flex_child.html</code>
+    <br/>• <code>crates/css/modules/flexbox/tests/fixtures/layout/flex/49_abspos_percent_offsets.html</code>
   </p>
-  <p><strong>Notes:</strong> Absolutely-positioned children are excluded from flex item collection. Minimal placement is performed relative to the flex container’s padding box origin. Supported offsets: px and percentages (resolved against container inline/block sizes per axes). Auto sizing: when both opposite offsets are specified and the corresponding size is auto, used size is the remaining space.</p>
+  <p><strong>Notes:</strong>
+    Absolutely-positioned children are excluded from flex item collection. Placement is relative to the flex container’s padding box. When left/top are auto and the opposite edges are auto, the static position is computed <em>as if the child were the sole flex item</em> in the container, honoring the container’s <code>flex-direction</code>, <code>justify-content</code>, and <code>align-items</code>. Supported offsets: px and percentages (resolved against inline/block sizes by resolved axes). Auto sizing: when both opposite offsets are specified and the corresponding size is auto, used size is the remaining space.</p>
   <p><strong>Spec:</strong> <a href="https://www.w3.org/TR/css-flexbox-1/#abspos-items">§4.1 Absolutely-Positioned Flex Children</a></p>
 </div>
 

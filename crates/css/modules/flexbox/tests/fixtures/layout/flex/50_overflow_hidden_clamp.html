@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex: overflow hidden clamps reported content height</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #container {
+      position: relative;
+      display: flex;
+      width: 300px;
+      height: 120px; /* cross size */
+      overflow: hidden; /* minimal contract: clamp reported content height */
+      background: #f8f8f8;
+      align-items: flex-start;
+    }
+    .item {
+      width: 100px;
+      height: 200px; /* larger than container cross size */
+      background: #ccd;
+      margin-right: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div class="item"></div>
+    <div class="item"></div>
+  </div>
+</body>
+</html>

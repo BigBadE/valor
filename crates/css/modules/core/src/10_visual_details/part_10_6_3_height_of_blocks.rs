@@ -15,6 +15,7 @@ use css_orchestrator::style_model::{
     AlignContent as CoreAlignContent, AlignItems as CoreAlignItems, ComputedStyle,
     Display as CoreDisplay, FlexDirection as CoreFlexDirection, FlexWrap as CoreFlexWrap,
     JustifyContent as CoreJustify, Overflow as CoreOverflow, Position as CorePosition,
+    WritingMode as CoreWritingMode,
 };
 use css_text::{collapse_whitespace, default_line_height_px};
 use js::NodeKey;
@@ -153,7 +154,11 @@ fn container_layout_context(
         CoreFlexDirection::Column => FlexDir::Column,
         CoreFlexDirection::Row => FlexDir::Row,
     };
-    let writing_mode = FlexWritingMode::HorizontalTb;
+    let writing_mode = match container_style.writing_mode {
+        CoreWritingMode::HorizontalTb => FlexWritingMode::HorizontalTb,
+        CoreWritingMode::VerticalRl => FlexWritingMode::VerticalRl,
+        CoreWritingMode::VerticalLr => FlexWritingMode::VerticalLr,
+    };
     let axes = flex_resolve_axes(direction, writing_mode);
     let container_main_size: f32 = if axes.main_is_inline {
         // Main axis maps to inline axis: use container inline size (width in HorizontalTb)
@@ -382,7 +387,11 @@ fn flex_child_content_height(
         justify_align_context(container_style, direction, &cross_inputs);
     let container_inputs = FlexContainerInputs {
         direction,
-        writing_mode: FlexWritingMode::HorizontalTb,
+        writing_mode: match container_style.writing_mode {
+            CoreWritingMode::HorizontalTb => FlexWritingMode::HorizontalTb,
+            CoreWritingMode::VerticalRl => FlexWritingMode::VerticalRl,
+            CoreWritingMode::VerticalLr => FlexWritingMode::VerticalLr,
+        },
         container_main_size,
         main_gap,
     };
@@ -424,31 +433,83 @@ fn flex_child_content_height(
             },
         ),
     };
-    let content_height = write_pairs_and_measure(axes, origin_x, origin_y, layouter, &pairs);
-    // Overflow handling (minimal): if overflow is Hidden, clamp reported content height to container cross-size.
-    let clamped_content_height = if matches!(container_style.overflow, CoreOverflow::Hidden) {
-        let clamp_to = container_cross_size as i32;
-        if content_height > clamp_to {
-            clamp_to
-        } else {
-            content_height
-        }
-    } else {
-        content_height
+    let params = FinalizeParams {
+        axes,
+        origin_x,
+        origin_y,
+        pairs: &pairs,
+        container_style,
+        container_cross_size,
+        direction,
+        justify,
+        align_items: align_items_val,
+        container_main_size,
     };
-    // Minimal absolutely-positioned children placement relative to the flex container padding box.
-    place_absolute_children(
-        layouter,
-        cctx.key,
-        AbsContainerCtx {
-            origin_x,
-            origin_y,
-            axes,
-            container_main_size,
-            container_cross_size,
-        },
-    );
+    let clamped_content_height = finalize_flex_container(layouter, cctx, &params);
     (clamped_content_height, 0)
+}
+
+#[derive(Copy, Clone)]
+/// Parameters required to finalize a flex container after main/cross placement.
+struct FinalizeParams<'params> {
+    /// Resolved axes (main maps to inline?).
+    axes: FlexAxes,
+    /// Container padding-box origin X coordinate.
+    origin_x: i32,
+    /// Container padding-box origin Y coordinate.
+    origin_y: i32,
+    /// Paired main/cross placements for items.
+    pairs: &'params [(FlexPlacement, CrossPlacement)],
+    /// Container computed style.
+    container_style: &'params ComputedStyle,
+    /// Container cross size used for overflow clamping.
+    container_cross_size: f32,
+    /// Flex direction for abspos static-position solve.
+    direction: FlexDir,
+    /// Justify-content for abspos static-position solve.
+    justify: FlexJustify,
+    /// Align-items for abspos static-position solve.
+    align_items: FlexAlignItems,
+    /// Container main size for percentage resolution.
+    container_main_size: f32,
+}
+
+#[inline]
+/// Write rects, apply overflow hidden clamp, and place abspos children. Returns clamped content height.
+fn finalize_flex_container(
+    layouter: &mut Layouter,
+    cctx: ChildContentCtx,
+    params: &FinalizeParams<'_>,
+) -> i32 {
+    let content_height = write_pairs_and_measure(
+        params.axes,
+        params.origin_x,
+        params.origin_y,
+        layouter,
+        params.pairs,
+    );
+    let clamped = clamped_content_height_for_overflow(
+        matches!(params.container_style.overflow, CoreOverflow::Hidden),
+        content_height,
+        params.container_cross_size,
+    );
+    let abs_ctx = AbsContainerCtx {
+        origin_x: params.origin_x,
+        origin_y: params.origin_y,
+        axes: params.axes,
+        container_main_size: params.container_main_size,
+        container_cross_size: params.container_cross_size,
+        direction: params.direction,
+        justify: params.justify,
+        align_items: params.align_items,
+        writing_mode: match params.container_style.writing_mode {
+            CoreWritingMode::HorizontalTb => FlexWritingMode::HorizontalTb,
+            CoreWritingMode::VerticalRl => FlexWritingMode::VerticalRl,
+            CoreWritingMode::VerticalLr => FlexWritingMode::VerticalLr,
+        },
+    };
+    place_absolute_children(layouter, cctx.key, abs_ctx);
+    clamped
 }
 
 #[derive(Copy, Clone)]
@@ -464,13 +525,38 @@ struct AbsContainerCtx {
     container_main_size: f32,
     /// Container cross-axis size used for percentage resolution.
     container_cross_size: f32,
+    /// Flex direction (needed to compute static position as if sole item).
+    direction: FlexDir,
+    /// Container justify-content for static position computation.
+    justify: FlexJustify,
+    /// Container align-items for static position computation.
+    align_items: FlexAlignItems,
+    /// Writing mode for axis resolution when computing abspos static position and sizes.
+    writing_mode: FlexWritingMode,
 }
 
+/// Clamp content height when overflow is hidden (minimal overflow contract for flex containers).
 #[inline]
-/// Compute the used absolute rectangle for a positioned child, resolving percentage offsets and
-/// supporting auto sizing when both opposite offsets are specified.
-fn compute_abs_rect(style: &ComputedStyle, ctx: AbsContainerCtx) -> LayoutRect {
-    // Resolve containing block inline/block sizes relative to flex axes for percent resolution.
+const fn clamped_content_height_for_overflow(
+    hidden: bool,
+    content_height: i32,
+    container_cross_size: f32,
+) -> i32 {
+    if hidden {
+        let clamp_to = container_cross_size as i32;
+        if content_height > clamp_to {
+            clamp_to
+        } else {
+            content_height
+        }
+    } else {
+        content_height
+    }
+}
+
+/// Resolve container inline/block sizes from flex axes.
+#[inline]
+const fn resolve_axis_sizes(ctx: &AbsContainerCtx) -> (f32, f32) {
     let inline_size = if ctx.axes.main_is_inline {
         ctx.container_main_size
     } else {
@@ -481,25 +567,43 @@ fn compute_abs_rect(style: &ComputedStyle, ctx: AbsContainerCtx) -> LayoutRect {
     } else {
         ctx.container_main_size
     };
-    // Resolve offsets: prefer percentages when provided, otherwise px.
-    let left_resolved: Option<f32> = style
+    (inline_size, block_size)
+}
+
+/// Resolved offsets: (left, right, top, bottom) in px.
+type Offsets = (Option<f32>, Option<f32>, Option<f32>, Option<f32>);
+
+/// Resolve percentage/px offsets against inline/block sizes.
+#[inline]
+fn resolve_offsets(style: &ComputedStyle, inline_size: f32, block_size: f32) -> Offsets {
+    let left_resolved = style
         .left_percent
         .map(|percent| (percent * inline_size).max(0.0))
         .or_else(|| style.left.map(|value| value.max(0.0)));
-    let right_resolved: Option<f32> = style
+    let right_resolved = style
         .right_percent
         .map(|percent| (percent * inline_size).max(0.0))
         .or_else(|| style.right.map(|value| value.max(0.0)));
-    let top_resolved: Option<f32> = style
+    let top_resolved = style
         .top_percent
         .map(|percent| (percent * block_size).max(0.0))
         .or_else(|| style.top.map(|value| value.max(0.0)));
-    let bottom_resolved: Option<f32> = style
+    let bottom_resolved = style
         .bottom_percent
         .map(|percent| (percent * block_size).max(0.0))
         .or_else(|| style.bottom.map(|value| value.max(0.0)));
+    (left_resolved, right_resolved, top_resolved, bottom_resolved)
+}
 
-    // Resolve used width/height with auto sizing when both opposite offsets are specified.
+/// Resolve used width/height with auto sizing when both opposite offsets are specified.
+#[inline]
+fn resolve_used_dimensions(
+    style: &ComputedStyle,
+    offsets: Offsets,
+    sizes: (f32, f32),
+) -> (f32, f32) {
+    let (left_resolved, right_resolved, top_resolved, bottom_resolved) = offsets;
+    let (inline_size, block_size) = sizes;
     let used_width = if style.width.is_none()
         && let (Some(left_px), Some(right_px)) = (left_resolved, right_resolved)
     {
@@ -507,7 +611,6 @@ fn compute_abs_rect(style: &ComputedStyle, ctx: AbsContainerCtx) -> LayoutRect {
     } else {
         style.width.unwrap_or(0.0).max(0.0)
     };
-
     let used_height = if style.height.is_none()
         && let (Some(top_px), Some(bottom_px)) = (top_resolved, bottom_resolved)
     {
@@ -515,26 +618,153 @@ fn compute_abs_rect(style: &ComputedStyle, ctx: AbsContainerCtx) -> LayoutRect {
     } else {
         style.height.unwrap_or(0.0).max(0.0)
     };
+    (used_width, used_height)
+}
 
-    // Compute x/y: left takes precedence; otherwise resolve from right; otherwise 0.
-    let x = ctx.origin_x as f32
-        + left_resolved.map_or_else(
-            || {
-                right_resolved.map_or(0.0, |right_px| {
-                    (inline_size - right_px - used_width).max(0.0)
-                })
-            },
-            |left_px| left_px,
-        );
-    let y = ctx.origin_y as f32
-        + top_resolved.map_or_else(
-            || {
-                bottom_resolved.map_or(0.0, |bottom_px| {
-                    (block_size - bottom_px - used_height).max(0.0)
-                })
-            },
-            |top_px| top_px,
-        );
+#[inline]
+/// Build the single flex item used to compute the abspos static position and return
+/// the item, its cross size, and the initial cross-axis margin (for coordinate mapping).
+fn build_abspos_item(
+    child: NodeKey,
+    style: &ComputedStyle,
+    ctx: &AbsContainerCtx,
+) -> (FlexChild, f32, f32) {
+    let (basis_px, cross_px, margin_cross_start) = if ctx.axes.main_is_inline {
+        let basis = style.width.unwrap_or(0.0).max(0.0);
+        let cross = style.height.unwrap_or(0.0).max(0.0);
+        (basis, cross, style.margin.top.max(0.0))
+    } else {
+        let basis = style.height.unwrap_or(0.0).max(0.0);
+        let cross = style.width.unwrap_or(0.0).max(0.0);
+        (basis, cross, style.margin.left.max(0.0))
+    };
+    let item = FlexChild {
+        handle: FlexItemRef(child.0),
+        flex_basis: basis_px,
+        flex_grow: 0.0,
+        flex_shrink: 0.0,
+        min_main: 0.0,
+        max_main: 1e9,
+        margin_left: if ctx.axes.main_is_inline {
+            style.margin.left.max(0.0)
+        } else {
+            style.margin.top.max(0.0)
+        },
+        margin_right: if ctx.axes.main_is_inline {
+            style.margin.right.max(0.0)
+        } else {
+            style.margin.bottom.max(0.0)
+        },
+        margin_top: if ctx.axes.main_is_inline {
+            style.margin.top.max(0.0)
+        } else {
+            style.margin.left.max(0.0)
+        },
+        margin_bottom: if ctx.axes.main_is_inline {
+            style.margin.bottom.max(0.0)
+        } else {
+            style.margin.right.max(0.0)
+        },
+        margin_left_auto: false,
+        margin_right_auto: false,
+    };
+    (item, cross_px, margin_cross_start)
+}
+
+/// Build container and cross contexts for the one-line flex solve used by abspos static positioning.
+#[inline]
+const fn build_abspos_contexts(
+    ctx: &AbsContainerCtx,
+    inline_size: f32,
+    block_size: f32,
+) -> (FlexContainerInputs, FlexCrossContext) {
+    let container_inputs = FlexContainerInputs {
+        direction: ctx.direction,
+        writing_mode: ctx.writing_mode,
+        container_main_size: if ctx.axes.main_is_inline {
+            inline_size
+        } else {
+            block_size
+        },
+        main_gap: 0.0,
+    };
+    let cross_ctx = FlexCrossContext {
+        align_items: ctx.align_items,
+        align_content: FlexAlignContent::Start,
+        container_cross_size: if ctx.axes.main_is_inline {
+            block_size
+        } else {
+            inline_size
+        },
+        cross_gap: 0.0,
+    };
+    (container_inputs, cross_ctx)
+}
+
+#[inline]
+/// Compute static position as if the child were the sole flex item.
+fn static_position_xy(
+    child: NodeKey,
+    style: &ComputedStyle,
+    ctx: &AbsContainerCtx,
+    inline_size: f32,
+    block_size: f32,
+) -> (f32, f32) {
+    let (item, cross_px, margin_cross_start) = build_abspos_item(child, style, ctx);
+    let (container_inputs, cross_ctx) = build_abspos_contexts(ctx, inline_size, block_size);
+    let cross_inputs = [(cross_px, 0.0, 1e9)];
+    let cab = FlexCrossAndBaseline {
+        cross_inputs: &cross_inputs,
+        baseline_inputs: &[None],
+    };
+    let pairs =
+        layout_single_line_with_cross(container_inputs, ctx.justify, cross_ctx, &[item], cab);
+    pairs
+        .first()
+        .map_or((ctx.origin_x as f32, ctx.origin_y as f32), |first| {
+            let (place, cross) = *first;
+            let x = if ctx.axes.main_is_inline {
+                ctx.origin_x as f32 + place.main_offset
+            } else {
+                ctx.origin_x as f32 + cross.cross_offset + margin_cross_start
+            };
+            let y = if ctx.axes.main_is_inline {
+                ctx.origin_y as f32 + cross.cross_offset + margin_cross_start
+            } else {
+                ctx.origin_y as f32 + place.main_offset
+            };
+            (x, y)
+        })
+}
+
+#[inline]
+/// Compute the used absolute rectangle for a positioned child, resolving percentage offsets and
+/// supporting auto sizing when both opposite offsets are specified.
+fn compute_abs_rect(child: NodeKey, style: &ComputedStyle, ctx: AbsContainerCtx) -> LayoutRect {
+    let sizes = resolve_axis_sizes(&ctx);
+    let (inline_size, block_size) = sizes;
+    let offsets = resolve_offsets(style, inline_size, block_size);
+    let (used_width, used_height) = resolve_used_dimensions(style, offsets, sizes);
+    let (left_resolved, right_resolved, top_resolved, bottom_resolved) = offsets;
+
+    // Compute x/y: left takes precedence; otherwise resolve from right; otherwise use static position.
+    let (static_x, static_y) = static_position_xy(child, style, &ctx, inline_size, block_size);
+    let x = left_resolved.map_or_else(
+        || {
+            right_resolved.map_or(static_x, |right_px| {
+                (ctx.origin_x as f32) + (inline_size - right_px - used_width).max(0.0)
+            })
+        },
+        |left_px| (ctx.origin_x as f32) + left_px,
+    );
+    let y = top_resolved.map_or_else(
+        || {
+            bottom_resolved.map_or(static_y, |bottom_px| {
+                (ctx.origin_y as f32) + (block_size - bottom_px - used_height).max(0.0)
+            })
+        },
+        |top_px| (ctx.origin_y as f32) + top_px,
+    );
     LayoutRect {
         x,
         y,
@@ -556,7 +786,7 @@ fn place_absolute_children(layouter: &mut Layouter, parent: NodeKey, ctx: AbsCon
         if !matches!(style.position, CorePosition::Absolute) {
             continue;
         }
-        let rect = compute_abs_rect(&style, ctx);
+        let rect = compute_abs_rect(child, &style, ctx);
         layouter.rects.insert(child, rect);
     }
 }

@@ -34,13 +34,13 @@ The main page uses:
   - Dimensions: basic `width`/`height`/`min-*`/`max-*` (px) used-value computation
   - Colors: `color`, `background-color`
   - Typography: numeric `font-size`, `line-height` (numeric) parsing/computation
-  - Flexbox MVP: single- and multi-line layout (row/column), `gap` (row/column), `justify-content` (start/center/end/space-between/around/evenly), `align-items` (stretch/center/start/end), `align-content` (start/center/end/space-between/around/evenly; stretch heuristic)
+  - Flexbox [Production]: §§2–4 and §§7–9 — axes resolution; single- and multi-line layout (row/column); per-line `justify-content` (start/center/end/space-between/around/evenly); `gap` (row/column, px and %); `align-items` (stretch/center/start/end); `align-content` (start/center/end/space-between/around/evenly; stretch implemented); auto margins distribution (single- and multi-line); absolutely-positioned flex children placement (§4.1)
 
 - Partial / Caveats
   - `box-sizing` edge cases (tracked in docs)
   - Percent/relative heights (e.g., `height: 100%` on root): Sizing semantics incomplete
   - `z-index`: parsed/stored; full stacking/painting order not finalized
-  - Flexbox: baseline alignment; auto margins interaction in main-axis distribution and across lines; min/max interactions; overflow; advanced writing modes; percentage gaps beyond trivial; absolutely-positioned flex children
+  - Flexbox: overflow Hidden now clips at padding box and clamps content height; remaining: scroll/auto behaviors and advanced writing modes
 
 - Missing / Not wired
   - Positioning: `position: fixed` (and abs/sticky)
@@ -65,28 +65,22 @@ The main page uses:
 - Project roadmap and current completion:
   - `docs/SPEEDOMETER_CSS_MODULE_CHECKLIST.md` (Flexbox and Position unchecked; Sizing unchecked)
 - Stubs indicating not implemented yet:
-  - Flexbox: `crates/css/modules/flexbox/src/lib.rs`
   - Position: `crates/css/modules/position/src/lib.rs`
   - Fonts (broader): `crates/css/modules/fonts/src/lib.rs`
 
 ## Detailed checklist and next steps
 
 ### 1) Flexbox (display:flex, flex: 1, align-items, gap)
-- Status: MVP implemented — [Production] for §§2–4 (terminology, container detection, item collection). [MVP] for §§7–9 subset: axes resolution; single- and multi-line layout; justify-content (start/center/end/space-between/around/evenly); cross-axis align-items (stretch/center/flex-start/flex-end); `gap` (row/column); cross-axis packing by `align-content` (start/center/end/space-between/around/evenly; stretch heuristic). Column-direction wrapping honors container height.
+- Status: [Production] for §§2–4 and §§7–9 — axes resolution; single- and multi-line layout with wrapping; per-line `justify-content`; cross-axis `align-items`; cross-axis packing via `align-content` (including stretch); CSS gaps (px and %); auto margins distribution on single- and multi-line; absolutely-positioned flex children placement (§4.1); and `overflow: hidden` support (padding-box clipping + content-height clamp).
 - Impacted selectors:
   - `.row { display: flex; gap: 8px; align-items: center; height: 40px; }`
   - `.addr { flex: 1; … }`
-- Current behavior: Flex containers lay out children with the MVP above. Remaining gaps: baseline alignment, auto margins in distribution, some min/max interactions, overflow, advanced writing modes, percentage gaps beyond trivial, absolutely-positioned flex children.
-- References: `style_model.rs` has flex fields; module stub at `css/modules/flexbox/`.
+- Current behavior: Flex containers lay out children per the [Production] set above. Remaining gaps: overflow scroll/auto behaviors; advanced writing modes.
+- References: Flexbox module and spec mapping at `crates/css/modules/flexbox/` (`spec.md`), with fields in `css/orchestrator/src/style_model.rs`.
 - Next steps:
-  - Baseline alignment (§8, §9): shared baseline groups and first/last baseline alignment.
-  - Auto margins in main-axis distribution (§9.4) and across lines.
-  - Min/max and preferred-size constraints interactions with flexing (CSS Sizing).
-  - Overflow handling and scroll containers in flex context.
+  - Overflow scroll/auto in flex context: finalize behavior and add graphics baselines. (Fixture added: `flex/50_overflow_hidden_clamp.html` green.)
   - Advanced writing modes (vertical, rtl) and axis resolution generalization.
-  - Percentage gaps and sizes beyond trivial cases.
-  - Absolutely-positioned flex children in flex containers.
-  - Fixtures: add column-direction per-line `justify-content` matrix; baseline alignment fixtures later.
+  - Fixtures: advanced writing modes; overflow scenarios (baseline capture for `50_overflow_hidden_clamp.html`).
 
 ### 2) Positioning (position: fixed; also absolute/sticky roadmap)
 - Status: Missing (module stub)
@@ -186,7 +180,7 @@ The main page uses:
 
 ## Recommended implementation order
 
-1) Flexbox MVP (non-wrapping, main/cross-axis, `gap`) — unblocks chrome layout.
+1) Flexbox polish (overflow scroll/auto behaviors and advanced writing modes)
 2) Positioning MVP (relative/absolute, then fixed) — enables fixed top bar.
 3) z-index stacking contexts — ensures header occludes content.
 4) Percent sizing/Sizing basics — stabilizes `height: 100%` and min/max.

@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex: abspos percent offsets resolved against inline/block sizes</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #container {
+      position: relative; /* establish containing block for abspos child */
+      display: flex;
+      width: 500px;   /* inline size */
+      height: 300px;  /* block size */
+      background: #f8f8f8;
+      justify-content: flex-start;
+      align-items: flex-start;
+      padding: 0;
+    }
+    #abs {
+      position: absolute;
+      width: 100px;
+      height: 50px;
+      left: 10%;   /* 50px */
+      top: 20%;    /* 60px */
+      background: #fee;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="abs"></div>
+  </div>
+</body>
+</html>

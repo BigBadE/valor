@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex: abspos child static position as sole flex item</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #container {
+      position: relative; /* establish containing block for abspos child */
+      display: flex;
+      width: 400px;
+      height: 200px;
+      background: #f8f8f8;
+      justify-content: center;
+      align-items: center;
+      padding: 0; /* padding-box origin equals content origin for this test */
+    }
+    .item { width: 100px; height: 60px; background: #eef; }
+    /* Absolutely positioned child without offsets → static position computed as if sole flex item */
+    #abs { position: absolute; width: 80px; height: 40px; background: #fee; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="a" class="item"></div>
+    <div id="abs"></div>
+    <div id="b" class="item"></div>
+  </div>
+</body>
+</html>

@@ -679,11 +679,29 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     if let Some(cs) = style_for_node
                         && matches!(cs.overflow, Overflow::Hidden)
                     {
+                        // Clip at the padding box per CSS Overflow spec. Compute padding-box
+                        // from the border-box rect and the border widths.
+                        let pad_left = cs.padding.left.max(0.0);
+                        let pad_top = cs.padding.top.max(0.0);
+                        let pad_right = cs.padding.right.max(0.0);
+                        let pad_bottom = cs.padding.bottom.max(0.0);
+                        let border_left = cs.border_width.left.max(0.0);
+                        let border_top = cs.border_width.top.max(0.0);
+                        let border_right = cs.border_width.right.max(0.0);
+                        let border_bottom = cs.border_width.bottom.max(0.0);
+                        let clip_x = rect.x + border_left + pad_left;
+                        let clip_y = rect.y + border_top + pad_top;
+                        let clip_w = (rect.width
+                            - (border_left + pad_left + pad_right + border_right))
+                            .max(0.0);
+                        let clip_h = (rect.height
+                            - (border_top + pad_top + pad_bottom + border_bottom))
+                            .max(0.0);
                         list.push(DisplayItem::BeginClip {
-                            x: rect.x,
-                            y: rect.y,
-                            width: rect.width,
-                            height: rect.height,
+                            x: clip_x,
+                            y: clip_y,
+                            width: clip_w,
+                            height: clip_h,
                         });
                         opened_clip = true;
                     }
