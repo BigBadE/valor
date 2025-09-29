@@ -32,6 +32,21 @@ struct WalkCtx<'a> {
     parent_map: &'a HashMap<NodeKey, NodeKey>,
 }
 
+#[inline]
+fn stacking_boundary_for(cs: &ComputedStyle) -> Option<StackingContextBoundary> {
+    if let Some(alpha) = cs.opacity
+        && alpha < 1.0
+    {
+        return Some(StackingContextBoundary::Opacity { alpha });
+    }
+    if !matches!(cs.position, Position::Static)
+        && let Some(z) = cs.z_index
+    {
+        return Some(StackingContextBoundary::ZIndex { z });
+    }
+    None
+}
+
 pub struct RetainedInputs {
     pub rects: HashMap<NodeKey, LayoutRect>,
     pub snapshot: Vec<SnapshotItem>,
@@ -657,28 +672,13 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                 if let Some(rect) = rect_opt {
                     // Determine if this node establishes a stacking context.
                     // Preference order: Opacity < 1.0, otherwise positioned with non-auto z-index.
-                    let style_for_node_ctx = cs_opt.or_else(|| {
-                        nearest_style(
-                            node,
-                            ctx.parent_map,
-                            ctx.computed_map,
-                            ctx.computed_fallback,
-                            ctx.computed_robust,
-                        )
-                    });
+                    let style_for_node_ctx = cs_opt;
                     let mut opened_ctx = false;
-                    if let Some(cs) = style_for_node_ctx
-                        && let Some(alpha) = cs.opacity
-                        && alpha < 1.0
-                    {
-                        list.push(DisplayItem::BeginStackingContext {
-                            boundary: StackingContextBoundary::Opacity { alpha },
-                        });
+                    let boundary_opt = style_for_node_ctx.and_then(stacking_boundary_for);
+                    if let Some(boundary) = boundary_opt {
+                        list.push(DisplayItem::BeginStackingContext { boundary });
                         opened_ctx = true;
                     }
-                    // NOTE: ZIndex stacking contexts are rendered in-stream by the painter's z-bucket
-                    // ordering. Emission of explicit ZIndex groups is temporarily disabled to preserve
-                    // existing fixtures. When transform/filter/isolation are introduced, revisit.
                     // Background fill from computed styles; only paint if non-transparent
                     let fill_rgba_opt = cs_opt.map(|cs| {
                         let bg = cs.background_color;
@@ -745,7 +745,6 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                         });
                         opened_clip = true;
                     }
-                    // Always recurse into children, independent of having a rect
                     process_children(list, node, ctx);
                     if opened_ctx {
                         list.push(DisplayItem::EndStackingContext);
@@ -765,16 +764,11 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                         )
                     });
                     let mut opened_ctx = false;
-                    if let Some(cs) = style_for_node_ctx
-                        && let Some(alpha) = cs.opacity
-                        && alpha < 1.0
-                    {
-                        list.push(DisplayItem::BeginStackingContext {
-                            boundary: StackingContextBoundary::Opacity { alpha },
-                        });
+                    let boundary_opt = style_for_node_ctx.and_then(stacking_boundary_for);
+                    if let Some(boundary) = boundary_opt {
+                        list.push(DisplayItem::BeginStackingContext { boundary });
                         opened_ctx = true;
                     }
-                    // ZIndex contexts intentionally not emitted here to preserve fixtures; painter order handles z-index.
                     process_children(list, node, ctx);
                     if opened_ctx {
                         list.push(DisplayItem::EndStackingContext);

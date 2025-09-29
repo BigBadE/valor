@@ -227,16 +227,13 @@ type BatchCacheEntry = (Option<(u32, u32, u32, u32)>, Buffer, u32);
 struct TexturePool {
     /// Available textures: (width, height, texture)
     available: Vec<(u32, u32, Texture)>,
-    /// Textures currently in use
-    in_use: Vec<(u32, u32, Texture)>,
 }
 
 impl TexturePool {
-    /// Create a new texture pool with specified maximum size
+    /// Create a new texture pool
     fn new() -> Self {
         Self {
             available: Vec::new(),
-            in_use: Vec::new(),
         }
     }
 
@@ -256,13 +253,12 @@ impl TexturePool {
         if let Some(pos) = self.available.iter().position(|(w, h, _)| {
             *w >= width && *h >= height && *w <= max_width && *h <= max_height
         }) {
-            let (w, h, texture) = self.available.remove(pos);
-            self.in_use.push((w, h, texture.clone()));
+            let (_w, _h, texture) = self.available.remove(pos);
             return texture;
         }
 
         // Create new texture with tight bounds
-        let texture = device.create_texture(&TextureDescriptor {
+        device.create_texture(&TextureDescriptor {
             label: Some("opacity-group-texture"),
             size: Extent3d {
                 width: width.max(1),
@@ -275,16 +271,17 @@ impl TexturePool {
             format,
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
-        });
+        })
+    }
 
-        self.in_use.push((width, height, texture.clone()));
-        texture
+    /// Return a texture to the pool for reuse
+    fn return_texture(&mut self, texture: Texture, width: u32, height: u32) {
+        self.available.push((width.max(1), height.max(1), texture));
     }
 
     /// Clear all textures from the pool (called on resize)
     fn clear(&mut self) {
         self.available.clear();
-        self.in_use.clear();
     }
 }
 
@@ -564,9 +561,11 @@ impl RenderState {
                                 .compute_items_bounds(group_items)
                                 .unwrap_or((0.0, 0.0, 1.0, 1.0)); // Minimal fallback
 
-                            let offscreen =
+                            let (tex, view, tex_w, tex_h) =
                                 self.render_items_to_offscreen_bounded(group_items, bounds);
-                            self.draw_texture_quad(pass, &offscreen, *alpha, bounds);
+                            self.draw_texture_quad(pass, &view, *alpha, bounds);
+                            // Return texture to pool for reuse
+                            self.texture_pool.return_texture(tex, tex_w, tex_h);
                         }
                         _ => {
                             // Other stacking contexts (transforms, filters, etc.) - render normally for now
@@ -657,7 +656,7 @@ impl RenderState {
         &mut self,
         items: &[DisplayItem],
         bounds: (f32, f32, f32, f32),
-    ) -> TextureView {
+    ) -> (Texture, TextureView, u32, u32) {
         let (x, y, width, height) = bounds;
         let tex_width = (width.ceil() as u32).max(1);
         let tex_height = (height.ceil() as u32).max(1);
@@ -749,15 +748,39 @@ impl RenderState {
                 })
                 .collect();
 
-            // Draw translated items using the same group-aware path
+            // Draw translated items (rectangles) using the same group-aware path
             self.draw_items_with_groups(&mut pass, &translated_items);
+            drop(pass);
+
+            // Prepare and draw text in a second pass using glyphon at texture-local coordinates
+            let text_items: Vec<crate::renderer::DrawText> =
+                translated_items.iter().filter_map(map_text_item).collect();
+            if !text_items.is_empty() {
+                self.glyphon_prepare_for(&text_items);
+                let mut text_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("opacity-offscreen-text-pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Load,
+                            store: StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                text_pass.set_viewport(0.0, 0.0, tex_width as f32, tex_height as f32, 0.0, 1.0);
+                self.draw_text_batch(&mut text_pass, &text_items, None);
+            }
         }
 
         self.queue.submit([encoder.finish()]);
 
-        // Return texture to pool when view is dropped (handled by caller)
-        // Note: In a production system, we'd use RAII or explicit return_texture calls
-        view
+        // Caller will return the texture to the pool after compositing
+        (texture, view, tex_width, tex_height)
     }
 
     fn draw_texture_quad(
@@ -767,7 +790,7 @@ impl RenderState {
         alpha: f32,
         bounds: Bounds, // x, y, w, h in px
     ) {
-        // Build a small quad covering the full viewport with UVs 0..1
+        // Build a quad covering the group's bounds with UVs 0..1 over the offscreen texture
         #[repr(C)]
         #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
         struct TexVertex {
@@ -781,11 +804,11 @@ impl RenderState {
         let x1 = ((x + w) / fw) * 2.0 - 1.0;
         let y0 = 1.0 - (y / fh) * 2.0;
         let y1 = 1.0 - ((y + h) / fh) * 2.0;
-        // UVs map to sub-rect of the full offscreen texture
-        let u0 = x / fw;
-        let v0 = y / fh;
-        let u1 = (x + w) / fw;
-        let v1 = (y + h) / fh;
+        // UVs cover the full offscreen texture [0,1]
+        let u0 = 0.0;
+        let v0 = 0.0;
+        let u1 = 1.0;
+        let v1 = 1.0;
         let verts = [
             TexVertex {
                 pos: [x0, y0],
@@ -867,20 +890,46 @@ impl RenderState {
         let mut max_x = f32::NEG_INFINITY;
         let mut max_y = f32::NEG_INFINITY;
         for it in items {
-            if let DisplayItem::Rect {
-                x,
-                y,
-                width,
-                height,
-                ..
-            } = it
-                && *width > 0.0
-                && *height > 0.0
-            {
-                min_x = min_x.min(*x);
-                min_y = min_y.min(*y);
-                max_x = max_x.max(x + width);
-                max_y = max_y.max(y + height);
+            match it {
+                DisplayItem::Rect {
+                    x,
+                    y,
+                    width,
+                    height,
+                    ..
+                } if *width > 0.0 && *height > 0.0 => {
+                    min_x = min_x.min(*x);
+                    min_y = min_y.min(*y);
+                    max_x = max_x.max(x + width);
+                    max_y = max_y.max(y + height);
+                }
+                DisplayItem::Text {
+                    x,
+                    y,
+                    font_size,
+                    bounds,
+                    ..
+                } => {
+                    if let Some((l, t, r, b)) = bounds {
+                        let lx = *l as f32;
+                        let ty = *t as f32;
+                        let rx = *r as f32;
+                        let by = *b as f32;
+                        min_x = min_x.min(lx);
+                        min_y = min_y.min(ty);
+                        max_x = max_x.max(rx);
+                        max_y = max_y.max(by);
+                    } else {
+                        // Conservative fallback: treat a line box around baseline
+                        let h = (*font_size).max(1.0);
+                        let w = (*font_size) * 4.0; // rough estimate
+                        min_x = min_x.min(*x);
+                        min_y = min_y.min(*y - h);
+                        max_x = max_x.max(*x + w);
+                        max_y = max_y.max(*y);
+                    }
+                }
+                _ => {}
             }
         }
         if min_x.is_finite() {
@@ -1128,10 +1177,9 @@ impl RenderState {
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
         self.size = new_size;
         self.configure_surface();
-        // Invalidate cached batches since framebuffer dimensions have changed
+        // Invalidate cached batches and clear pooled textures to avoid size/format mismatches
         self.cached_batches = None;
         self.last_retained_list = None;
-        // Clear texture pool since old textures may have wrong dimensions
         self.texture_pool.clear();
     }
 
@@ -1712,7 +1760,7 @@ fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>) -> VsOut {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let c = textureSample(t_color, t_sampler, in.uv);
-    // Apply group opacity in non-premultiplied form: scale alpha only.
+    // Apply group opacity by scaling the alpha; blending uses SrcAlpha so color is scaled during blend.
     return vec4<f32>(c.rgb, c.a * u_alpha);
 }
 "#;

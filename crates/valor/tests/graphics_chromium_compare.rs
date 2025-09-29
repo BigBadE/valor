@@ -297,7 +297,8 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
     // Just ensure the directory and a dedicated failing subdir exist.
     let _ = fs::create_dir_all(&out_dir);
     let failing_dir = out_dir.join("failing");
-    let _ = fs::create_dir_all(&failing_dir);
+    // Clear failing artifacts on each run so they don't accumulate across runs.
+    common::clear_dir(&failing_dir)?;
 
     // Use the same fixtures as the layout comparer so this test always has inputs
     let fixtures = common::fixture_html_files()?;
