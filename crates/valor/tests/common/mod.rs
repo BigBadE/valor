@@ -20,6 +20,22 @@ pub fn fixtures_dir() -> PathBuf {
         .join("fixtures")
 }
 
+/// Clear an artifacts subdirectory under `target/` if the provided harness source has changed.
+/// Returns the path to the (recreated) subdirectory.
+pub fn clear_artifacts_subdir_if_harness_changed(name: &str, harness_src: &str) -> Result<PathBuf> {
+    let dir = artifacts_subdir(name);
+    let _ = fs::create_dir_all(&dir);
+    let marker = dir.join(".harness_hash");
+    let current = format!("{:016x}", checksum_u64(harness_src));
+    let prev = fs::read_to_string(&marker).unwrap_or_default();
+    if prev.trim() != current {
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir)?;
+        fs::write(&marker, &current)?;
+    }
+    Ok(dir)
+}
+
 // ===== Shared artifacts and caching utilities =====
 
 /// Return the target directory for build/test outputs.
@@ -80,6 +96,22 @@ pub fn route_layouter_cache_to_target() -> Result<PathBuf> {
     let dir = artifacts_subdir("valor_layout_cache");
     fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+/// Clear the `target/valor_layout_cache` directory if the provided harness source has changed.
+/// Uses a small marker file to track the last seen harness hash.
+pub fn clear_valor_layout_cache_if_harness_changed(harness_src: &str) -> Result<()> {
+    let dir = artifacts_subdir("valor_layout_cache");
+    let _ = fs::create_dir_all(&dir);
+    let marker = dir.join(".harness_hash");
+    let current = format!("{:016x}", checksum_u64(harness_src));
+    let prev = fs::read_to_string(&marker).unwrap_or_default();
+    if prev.trim() != current {
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir)?;
+        fs::write(&marker, &current)?;
+    }
+    Ok(())
 }
 
 fn checksum_u64(s: &str) -> u64 {

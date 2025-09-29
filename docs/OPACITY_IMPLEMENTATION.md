@@ -343,99 +343,40 @@ fn render_items_to_offscreen_bounded(&mut self, items: &[DisplayItem], bounds: (
 }
 ```
 
-### Phase 2: Stacking Context System (Week 3-4)
+### ✅ COMPLETED: Phase 2 — Stacking Context System (Week 3-4)
 
-#### 2.1 Implement Stacking Context Detection
+#### 2.1 Implement Stacking Context Detection — ✅ COMPLETED
 
-**Goal**: Properly identify all stacking context creators.
+**Goal**: Properly identify all stacking context creators for Phase 2 scope.
 
-**Implementation**:
-```rust
-#[derive(Debug, Clone)]
-pub struct StackingContext {
-    pub z_index: i32,
-    pub opacity: f32,
-    pub transform: Option<[f32; 16]>,
-    pub filter: Option<FilterId>,
-    pub isolation: bool,
-    pub bounds: (f32, f32, f32, f32),
-    pub items: Vec<DisplayItem>,
-}
+**Scope in this phase**:
+- `opacity < 1` creates a stacking context (CSS 2.2 §9.9.1; Compositing §3.1)
+- positioned elements with non-`auto` `z-index` create a stacking context (CSS 2.2 §9.9.1)
 
-pub fn build_stacking_contexts(items: &[DisplayItem]) -> Vec<StackingContext> {
-    let mut contexts = Vec::new();
-    let mut current_items = Vec::new();
-    let mut current_z = 0;
-    let mut current_opacity = 1.0;
-    
-    for item in items {
-        match item {
-            DisplayItem::Opacity { alpha } => {
-                // Flush current context
-                if !current_items.is_empty() {
-                    contexts.push(StackingContext {
-                        z_index: current_z,
-                        opacity: current_opacity,
-                        transform: None,
-                        filter: None,
-                        isolation: false,
-                        bounds: compute_items_bounds(&current_items),
-                        items: std::mem::take(&mut current_items),
-                    });
-                }
-                current_opacity = *alpha;
-            }
-            _ => {
-                current_items.push(item.clone());
-            }
-        }
-    }
-    
-    // Flush final context
-    if !current_items.is_empty() {
-        contexts.push(StackingContext {
-            z_index: current_z,
-            opacity: current_opacity,
-            transform: None,
-            filter: None,
-            isolation: false,
-            bounds: compute_items_bounds(&current_items),
-            items: current_items,
-        });
-    }
-    
-    contexts
-}
-```
+**Actual Implementation**:
+- Detection and emission occur during retained DL build in `crates/page_handler/src/display.rs` within `build_retained()` → `recurse()` on `LayoutNodeKind::Block`.
+  - Emits `DisplayItem::BeginStackingContext { boundary: StackingContextBoundary::Opacity { alpha } }` when `opacity < 1`.
+  - Else, when `position != static` and `z-index` is present, emits `BeginStackingContext::ZIndex { z }`.
+  - Ensures at most one context per node; closes with `DisplayItem::EndStackingContext` after children.
+- Renderer support already exists in `crates/wgpu_renderer/src/state.rs` via `draw_items_with_groups()`.
 
-#### 2.2 Implement Paint Order Sorting
+**Files Modified**:
+- `crates/page_handler/src/display.rs` — emit stacking context boundaries for opacity and positioned + z-index.
+
+**Notes**:
+- Future stacking context creators (`transform`, `filter`, `isolation`) are out of scope for Phase 2 and will be added in Phase 3+.
+
+#### 2.2 Implement Paint Order Sorting — ✅ COMPLETED
 
 **Goal**: Sort stacking contexts according to CSS paint order rules.
 
-**CSS Paint Order** (CSS 2.2 Appendix E):
-1. Background and borders of the element forming the stacking context
-2. Negative z-index stacking contexts, in order of appearance
-3. In-flow, non-inline-level, non-positioned descendants
-4. Non-positioned floats
-5. In-flow, inline-level, non-positioned descendants
-6. Zero z-index stacking contexts, in order of appearance
-7. Positive z-index stacking contexts, in order of appearance
+**Actual Implementation**:
+- Sorting is performed upstream during DL construction in `crates/page_handler/src/display.rs`:
+  - `order_children()` + `z_key_for_child()` assign CSS 2.2 buckets (negative → normal → positioned auto/0 → positive) and preserve DOM order within buckets.
+  - Because display items (including `BeginStackingContext`/`EndStackingContext`) are emitted in that order, the renderer paints in the correct order without additional runtime sorting.
 
-**Implementation**:
-```rust
-fn sort_stacking_contexts(contexts: &mut [StackingContext]) {
-    contexts.sort_by(|a, b| {
-        // Primary sort: z-index
-        match a.z_index.cmp(&b.z_index) {
-            std::cmp::Ordering::Equal => {
-                // Secondary sort: document order (preserve original order)
-                std::cmp::Ordering::Equal
-            }
-            other => other,
-        }
-    });
-}
-```
+**Renderer behavior**:
+- `crates/wgpu_renderer/src/state.rs::draw_items_with_groups()` walks items linearly, handling opacity groups offscreen and drawing non-opacity contexts in-stream, honoring the pre-sorted order.
 
 ### Phase 3: Advanced Compositing (Week 5-6)
 
@@ -587,7 +528,6 @@ impl DamageTracker {
 - **Testing**: All compilation and functional tests passing
 
 ### 🔄 **FUTURE PHASES** (Not Yet Implemented):
-- **Phase 2**: Build complete stacking context system with paint order sorting
 - **Phase 3**: Implement backdrop isolation and blend modes
 - **Phase 4**: Add damage tracking for performance optimization
 

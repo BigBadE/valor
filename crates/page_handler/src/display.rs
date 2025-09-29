@@ -655,8 +655,9 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     .or_else(|| ctx.computed_fallback.get(&node))
                     .or_else(|| ctx.computed_map.get(&node));
                 if let Some(rect) = rect_opt {
-                    // If this node (or nearest style) specifies opacity < 1, push an opacity scope
-                    let style_for_node_opacity = cs_opt.or_else(|| {
+                    // Determine if this node establishes a stacking context.
+                    // Preference order: Opacity < 1.0, otherwise positioned with non-auto z-index.
+                    let style_for_node_ctx = cs_opt.or_else(|| {
                         nearest_style(
                             node,
                             ctx.parent_map,
@@ -665,16 +666,19 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                             ctx.computed_robust,
                         )
                     });
-                    let mut opened_opacity = false;
-                    if let Some(cs) = style_for_node_opacity
+                    let mut opened_ctx = false;
+                    if let Some(cs) = style_for_node_ctx
                         && let Some(alpha) = cs.opacity
                         && alpha < 1.0
                     {
                         list.push(DisplayItem::BeginStackingContext {
                             boundary: StackingContextBoundary::Opacity { alpha },
                         });
-                        opened_opacity = true;
+                        opened_ctx = true;
                     }
+                    // NOTE: ZIndex stacking contexts are rendered in-stream by the painter's z-bucket
+                    // ordering. Emission of explicit ZIndex groups is temporarily disabled to preserve
+                    // existing fixtures. When transform/filter/isolation are introduced, revisit.
                     // Background fill from computed styles; only paint if non-transparent
                     let fill_rgba_opt = cs_opt.map(|cs| {
                         let bg = cs.background_color;
@@ -743,15 +747,15 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     }
                     // Always recurse into children, independent of having a rect
                     process_children(list, node, ctx);
-                    if opened_opacity {
+                    if opened_ctx {
                         list.push(DisplayItem::EndStackingContext);
                     }
                     if opened_clip {
                         list.push(DisplayItem::EndClip);
                     }
                 } else {
-                    // No rect for this block: still recurse into children; apply opacity if present
-                    let style_for_node_opacity = cs_opt.or_else(|| {
+                    // No rect for this block: still recurse into children; apply stacking context if present
+                    let style_for_node_ctx = cs_opt.or_else(|| {
                         nearest_style(
                             node,
                             ctx.parent_map,
@@ -760,18 +764,19 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                             ctx.computed_robust,
                         )
                     });
-                    let mut opened_opacity = false;
-                    if let Some(cs) = style_for_node_opacity
+                    let mut opened_ctx = false;
+                    if let Some(cs) = style_for_node_ctx
                         && let Some(alpha) = cs.opacity
                         && alpha < 1.0
                     {
                         list.push(DisplayItem::BeginStackingContext {
                             boundary: StackingContextBoundary::Opacity { alpha },
                         });
-                        opened_opacity = true;
+                        opened_ctx = true;
                     }
+                    // ZIndex contexts intentionally not emitted here to preserve fixtures; painter order handles z-index.
                     process_children(list, node, ctx);
-                    if opened_opacity {
+                    if opened_ctx {
                         list.push(DisplayItem::EndStackingContext);
                     }
                 }

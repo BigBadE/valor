@@ -41,6 +41,58 @@ fn now_millis() -> String {
     format!("{ms}")
 }
 
+fn fnv1a64_bytes(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a 64-bit offset basis
+    for b in bytes {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    hash
+}
+
+fn file_content_hash(path: &Path) -> u64 {
+    match fs::read(path) {
+        Ok(bytes) => fnv1a64_bytes(&bytes),
+        Err(_) => 0,
+    }
+}
+
+fn cleanup_artifacts_for_hash(
+    name: &str,
+    out_dir: &Path,
+    failing_dir: &Path,
+    hash_hex: &str,
+) -> Result<()> {
+    // Remove any prior artifacts for this fixture name that don't match the current hash.
+    if let Ok(entries) = fs::read_dir(out_dir) {
+        for ent in entries.flatten() {
+            let p = ent.path();
+            if let Some(fname) = p.file_name().and_then(|n| n.to_str()) {
+                let is_this_fixture = fname.starts_with(&format!("{name}_"));
+                let is_current_hash = fname.contains(&format!("_{hash_hex}_"))
+                    || fname.ends_with(&format!("_{hash_hex}_chrome.png"));
+                let is_stable_chrome = fname.ends_with("_chrome.png");
+                if is_this_fixture && is_stable_chrome && !is_current_hash {
+                    let _ = fs::remove_file(p);
+                }
+            }
+        }
+    }
+    if let Ok(entries) = fs::read_dir(failing_dir) {
+        for ent in entries.flatten() {
+            let p = ent.path();
+            if let Some(fname) = p.file_name().and_then(|n| n.to_str()) {
+                let is_this_fixture = fname.starts_with(&format!("{name}_"));
+                let is_current_hash = fname.contains(&format!("_{hash_hex}_"));
+                if is_this_fixture && !is_current_hash {
+                    let _ = fs::remove_file(p);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 type TextMask = (u32, u32, u32, u32);
 
 struct DiffCtx<'a> {
@@ -237,8 +289,15 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
 
     // Route layouter cache to target dir and ensure artifacts dir is clean
     let _ = common::route_layouter_cache_to_target();
-    let out_dir = target_artifacts_dir();
-    common::clear_dir(&out_dir)?;
+    // If the graphics harness code changes, clear the entire graphics_artifacts dir to avoid stale outputs.
+    let harness_src = include_str!("graphics_chromium_compare.rs");
+    let out_dir =
+        common::clear_artifacts_subdir_if_harness_changed("graphics_artifacts", harness_src)?;
+    // Do not clear the entire artifacts directory on each run so previous failures remain inspectable.
+    // Just ensure the directory and a dedicated failing subdir exist.
+    let _ = fs::create_dir_all(&out_dir);
+    let failing_dir = out_dir.join("failing");
+    let _ = fs::create_dir_all(&failing_dir);
 
     // Use the same fixtures as the layout comparer so this test always has inputs
     let fixtures = common::fixture_html_files()?;
@@ -268,9 +327,14 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
 
     for fixture in fixtures {
         let name = safe_stem(&fixture);
+        // Compute current fixture content hash and cleanup older-hash artifacts.
+        let canon = fixture.canonicalize().unwrap_or_else(|_| fixture.clone());
+        let current_hash = file_content_hash(&canon);
+        let hash_hex = format!("{:016x}", current_hash);
+        cleanup_artifacts_for_hash(&name, &out_dir, &failing_dir, &hash_hex)?;
         let chrome_png = capture_chrome_png(&browser, &fixture, 800, 600)?;
         // Always update a stable Chrome artifact only if contents changed
-        let stable_chrome = out_dir.join(format!("{name}_chrome.png"));
+        let stable_chrome = out_dir.join(format!("{name}_{hash_hex}_chrome.png"));
         let _ = common::write_bytes_if_changed(&stable_chrome, &chrome_png)?;
         // Decode Chrome PNG to RGBA8
         let chrome_img = image::load_from_memory(&chrome_png)?.to_rgba8();
@@ -310,11 +374,12 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
         let allowed = 0.0125; // 1.25%
         if diff_ratio > allowed {
             let stamp = now_millis();
-            let base = out_dir.join(format!("{name}_{stamp}"));
+            // Write failing artifacts under graphics_artifacts/failing with the hash included for deduping.
+            let base = failing_dir.join(format!("{name}_{hash_hex}_{stamp}"));
             let chrome_path = base.with_extension("chrome.png");
             let valor_path = base.with_extension("valor.png");
             let diff_path = base.with_extension("diff.png");
-            let _ = fs::create_dir_all(out_dir.clone());
+            let _ = fs::create_dir_all(failing_dir.clone());
             common::write_png_rgba_if_changed(&chrome_path, chrome_img.as_raw(), w, h)?;
             common::write_png_rgba_if_changed(&valor_path, &valor_img, w, h)?;
             let diff_img = make_diff_image_masked(chrome_img.as_raw(), &valor_img, &ctx);
@@ -344,7 +409,7 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
 
     if any_failed {
         return Err(anyhow!(
-            "graphics comparison found differences — see artifacts under {}",
+            "graphics comparison found differences — see artifacts under {}/failing",
             target_artifacts_dir().display()
         ));
     }

@@ -229,17 +229,14 @@ struct TexturePool {
     available: Vec<(u32, u32, Texture)>,
     /// Textures currently in use
     in_use: Vec<(u32, u32, Texture)>,
-    /// Maximum number of textures to keep in pool
-    max_pool_size: usize,
 }
 
 impl TexturePool {
     /// Create a new texture pool with specified maximum size
-    fn new(max_pool_size: usize) -> Self {
+    fn new() -> Self {
         Self {
             available: Vec::new(),
             in_use: Vec::new(),
-            max_pool_size,
         }
     }
 
@@ -282,16 +279,6 @@ impl TexturePool {
 
         self.in_use.push((width, height, texture.clone()));
         texture
-    }
-
-    /// Return a texture to the pool for reuse
-    fn return_texture(&mut self, texture: Texture, width: u32, height: u32) {
-        // For now, we'll use a simple approach - just add to available if not full
-        // In a production system, we'd use proper texture tracking with IDs
-        if self.available.len() < self.max_pool_size {
-            self.available.push((width, height, texture));
-        }
-        // Otherwise texture is dropped and GPU memory is freed
     }
 
     /// Clear all textures from the pool (called on resize)
@@ -773,13 +760,6 @@ impl RenderState {
         view
     }
 
-    // Legacy function for backward compatibility - uses full viewport
-    fn render_items_to_offscreen(&mut self, items: &[DisplayItem]) -> TextureView {
-        // Use bounded version with full viewport bounds
-        let bounds = (0.0, 0.0, self.size.width as f32, self.size.height as f32);
-        self.render_items_to_offscreen_bounded(items, bounds)
-    }
-
     fn draw_texture_quad(
         &mut self,
         pass: &mut RenderPass<'_>,
@@ -1107,7 +1087,7 @@ impl RenderState {
             cache_reuses: 0,
             layers: Vec::new(),
             clear_color: [1.0, 1.0, 1.0, 1.0],
-            texture_pool: TexturePool::new(8), // Pool up to 8 textures for reuse
+            texture_pool: TexturePool::new(), // Pool initialized; reuse capacity managed internally
         }
     }
 

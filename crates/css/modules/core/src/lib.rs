@@ -332,7 +332,7 @@ pub(crate) const INITIAL_CONTAINING_BLOCK_WIDTH: i32 = 800;
 /// Fixed vertical scrollbar gutter used to approximate Chromium on Windows.
 /// This is subtracted from the initial containing block width when computing the
 /// root container metrics so the available inline size matches Chromium.
-pub(crate) const SCROLLBAR_GUTTER_PX: i32 = 18;
+pub(crate) const SCROLLBAR_GUTTER_PX: i32 = 16;
 
 /// Last placed child info used to compute the parent's content bottom per §10.6.3.
 /// Tuple contents: (child key, rect bottom (y + height), effective outgoing margin-bottom).
@@ -782,45 +782,25 @@ impl Layouter {
         loop_ctx: &PlaceLoopCtx<'_>,
         inputs: &ProcessChildIn,
     ) -> ProcessChildOut {
-        // Determine if the child establishes a new block formatting context (BFC).
-        // If so, external floats must not affect it: ignore external float floors and bands.
+        // Style lookup and BFC/masked floors
         let style = self
             .computed_styles
             .get(&inputs.child_key)
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
-        let child_is_bfc = establishes_block_formatting_context(&style);
-        // Compute clearance floor first (clear may lift the child below floats). For BFC children, mask floors.
-        let masked_left_for_child = if child_is_bfc {
-            0i32
-        } else {
-            inputs.masked_left
-        };
-        let masked_right_for_child = if child_is_bfc {
-            0i32
-        } else {
-            inputs.masked_right
-        };
+        let (_child_is_bfc, masked_left_for_child, masked_right_for_child) =
+            Self::child_bfc_and_masked_floors(&style, inputs);
+
+        // Clearance floor and band query position
         let clearance_floor_y = self.compute_clearance_floor_for_child(
             inputs.child_key,
             masked_left_for_child,
             masked_right_for_child,
         );
-        // Compute bands at the relevant y. Align the query y with the actual child top margin edge.
         let (y_for_bands, collapsed_top, margin_top_eff) =
             self.band_query_y_for_child(loop_ctx, inputs, &style, clearance_floor_y);
-        // If the parent establishes a new BFC, external floats must not create avoidance bands
-        // for its in-flow children. Mask bands to zero in that case.
-        let (band_left, band_right) = if loop_ctx.parent_edge_collapsible
-            && self
-                .computed_styles
-                .get(&loop_ctx.root)
-                .is_some_and(establishes_block_formatting_context)
-        {
-            (0i32, 0i32)
-        } else {
-            self.compute_float_bands_for_y(loop_ctx, inputs.index, y_for_bands)
-        };
+        let (band_left, band_right) =
+            self.compute_bands_for_child(loop_ctx, inputs.index, y_for_bands);
         debug!(
             "[CHILD] idx={} key={:?} float={:?} clear={:?} bands=({}, {}) y_cursor={} y_for_bands={} collapsed_top={} mt_eff={}",
             inputs.index,
@@ -869,6 +849,46 @@ impl Layouter {
             left_floor_next,
             right_floor_next,
             leading_collapse_contrib,
+        }
+    }
+
+    /// Return whether the child forms a BFC and the masked float floors to use for clearance.
+    #[inline]
+    const fn child_bfc_and_masked_floors(
+        style: &ComputedStyle,
+        inputs: &ProcessChildIn,
+    ) -> (bool, i32, i32) {
+        let child_is_bfc = establishes_block_formatting_context(style);
+        let masked_left_for_child = if child_is_bfc {
+            0i32
+        } else {
+            inputs.masked_left
+        };
+        let masked_right_for_child = if child_is_bfc {
+            0i32
+        } else {
+            inputs.masked_right
+        };
+        (child_is_bfc, masked_left_for_child, masked_right_for_child)
+    }
+
+    /// Compute float-avoidance bands at `y_for_bands` accounting for BFC on the parent.
+    #[inline]
+    fn compute_bands_for_child(
+        &self,
+        loop_ctx: &PlaceLoopCtx<'_>,
+        up_to_index: usize,
+        y_for_bands: i32,
+    ) -> (i32, i32) {
+        if loop_ctx.parent_edge_collapsible
+            && self
+                .computed_styles
+                .get(&loop_ctx.root)
+                .is_some_and(establishes_block_formatting_context)
+        {
+            (0, 0)
+        } else {
+            self.compute_float_bands_for_y(loop_ctx, up_to_index, y_for_bands)
         }
     }
 

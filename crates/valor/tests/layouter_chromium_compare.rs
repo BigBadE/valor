@@ -27,6 +27,10 @@ fn run_chromium_layouts() -> Result<(), Error> {
         .is_test(false)
         .try_init();
 
+    // If the layout harness code changes, clear the cached JSON under target/valor_layout_cache
+    let harness_src = include_str!("layouter_chromium_compare.rs");
+    let _ = common::clear_valor_layout_cache_if_harness_changed(harness_src);
+
     // Launch a fresh headless Chrome instance for this test and drop it at the end to avoid hanging threads.
     let launch_opts = LaunchOptionsBuilder::default()
         .headless(true)
