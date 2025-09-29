@@ -34,6 +34,9 @@ pub enum Overflow {
     #[default]
     Visible,
     Hidden,
+    Clip,
+    Auto,
+    Scroll,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -165,6 +168,16 @@ pub struct ComputedStyle {
     pub min_height: Option<f32>,
     pub max_width: Option<f32>,
     pub max_height: Option<f32>,
+    /// Optional height as a percentage fraction (0.0..=1.0) of containing block.
+    pub height_percent: Option<f32>,
+    /// Optional min-height as a percentage fraction (0.0..=1.0).
+    pub min_height_percent: Option<f32>,
+    /// Optional max-height as a percentage fraction (0.0..=1.0).
+    pub max_height_percent: Option<f32>,
+    /// Whether margin-left was specified as 'auto' (used in horizontal width solving).
+    pub margin_left_auto: bool,
+    /// Whether margin-right was specified as 'auto' (used in horizontal width solving).
+    pub margin_right_auto: bool,
     // Positional offsets (px) for positioned layout
     pub top: Option<f32>,
     pub left: Option<f32>,

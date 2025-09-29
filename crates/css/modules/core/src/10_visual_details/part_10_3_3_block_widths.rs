@@ -322,8 +322,8 @@ pub fn solve_block_horizontal(
     margin_right_in: i32,
 ) -> (i32, i32, i32) {
     let (specified_bb_opt, min_bb_opt, max_bb_opt) = compute_width_constraints(style, sides);
-    let left_auto = false;
-    let right_auto = false;
+    let left_auto = style.margin_left_auto;
+    let right_auto = style.margin_right_auto;
     let margin_left_resolved = margin_left_in;
     let margin_right_resolved = margin_right_in;
 

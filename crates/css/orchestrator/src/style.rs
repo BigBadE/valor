@@ -33,6 +33,59 @@ pub struct StyleComputer {
     parent_by_node: HashMap<NodeKey, NodeKey>,
 }
 
+#[inline]
+/// Parse margin-left/right 'auto' from shorthand and longhands and set flags + zero px values.
+fn apply_margin_auto_flags(
+    computed: &mut style_model::ComputedStyle,
+    decls: &HashMap<String, String>,
+) {
+    computed.margin_left_auto = false;
+    computed.margin_right_auto = false;
+    // Shorthand handling (TRBL mapping)
+    if let Some(shorthand) = decls.get("margin") {
+        let tokens: Vec<&str> = shorthand
+            .split(|character: char| character.is_ascii_whitespace())
+            .filter(|segment| !segment.is_empty())
+            .collect();
+        let right_token: Option<&str> = match tokens.len() {
+            1 => tokens.first().copied(),
+            2..=4 => tokens.get(1).copied(),
+            _ => None,
+        };
+        let left_token: Option<&str> = match tokens.len() {
+            1 => tokens.first().copied(),
+            2 | 3 => tokens.get(1).copied(),
+            4 => tokens.get(3).copied(),
+            _ => None,
+        };
+        if let Some(tok) = left_token
+            && tok.eq_ignore_ascii_case("auto")
+        {
+            computed.margin_left_auto = true;
+            computed.margin.left = 0.0;
+        }
+        if let Some(tok) = right_token
+            && tok.eq_ignore_ascii_case("auto")
+        {
+            computed.margin_right_auto = true;
+            computed.margin.right = 0.0;
+        }
+    }
+    // Longhands override
+    if let Some(value) = decls.get("margin-left")
+        && value.trim().eq_ignore_ascii_case("auto")
+    {
+        computed.margin_left_auto = true;
+        computed.margin.left = 0.0;
+    }
+    if let Some(value) = decls.get("margin-right")
+        && value.trim().eq_ignore_ascii_case("auto")
+    {
+        computed.margin_right_auto = true;
+        computed.margin.right = 0.0;
+    }
+}
+
 /// Parse a gap token into either px or percentage (0.0..=1.0).
 fn parse_gap_token(token_text: &str) -> Option<EitherGap> {
     if let Some(px_value) = parse_px(token_text) {
@@ -1049,19 +1102,46 @@ fn apply_dimensions(computed: &mut style_model::ComputedStyle, decls: &HashMap<S
         computed.width = parse_px(value);
     }
     if let Some(value) = decls.get("height") {
-        computed.height = parse_px(value);
+        let trimmed = value.trim();
+        if let Some(percent_str) = trimmed.strip_suffix('%')
+            && let Ok(percent_value) = percent_str.trim().parse::<f32>()
+        {
+            computed.height = None;
+            computed.height_percent = Some((percent_value / 100.0).clamp(0.0, 1.0));
+        } else {
+            computed.height = parse_px(value);
+            computed.height_percent = None;
+        }
     }
     if let Some(value) = decls.get("min-width") {
         computed.min_width = parse_px(value);
     }
     if let Some(value) = decls.get("min-height") {
-        computed.min_height = parse_px(value);
+        let trimmed = value.trim();
+        if let Some(percent_str) = trimmed.strip_suffix('%')
+            && let Ok(percent_value) = percent_str.trim().parse::<f32>()
+        {
+            computed.min_height = None;
+            computed.min_height_percent = Some((percent_value / 100.0).max(0.0));
+        } else {
+            computed.min_height = parse_px(value);
+            computed.min_height_percent = None;
+        }
     }
     if let Some(value) = decls.get("max-width") {
         computed.max_width = parse_px(value);
     }
     if let Some(value) = decls.get("max-height") {
-        computed.max_height = parse_px(value);
+        let trimmed = value.trim();
+        if let Some(percent_str) = trimmed.strip_suffix('%')
+            && let Ok(percent_value) = percent_str.trim().parse::<f32>()
+        {
+            computed.max_height = None;
+            computed.max_height_percent = Some((percent_value / 100.0).max(0.0));
+        } else {
+            computed.max_height = parse_px(value);
+            computed.max_height_percent = None;
+        }
     }
     if let Some(value) = decls.get("box-sizing") {
         computed.box_sizing = if value.eq_ignore_ascii_case("border-box") {
@@ -1078,6 +1158,8 @@ fn apply_edges_and_borders(
     decls: &HashMap<String, String>,
 ) {
     computed.margin = parse_edges("margin", decls);
+    // Margin auto flags from shorthand and longhands
+    apply_margin_auto_flags(computed, decls);
     computed.padding = parse_edges("padding", decls);
     // 1) Border widths
     // Prefer explicit 'border-width' (and per-side longhands) when present.

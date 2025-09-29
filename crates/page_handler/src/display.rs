@@ -677,7 +677,10 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     });
                     let mut opened_clip = false;
                     if let Some(cs) = style_for_node
-                        && matches!(cs.overflow, Overflow::Hidden)
+                        && matches!(
+                            cs.overflow,
+                            Overflow::Hidden | Overflow::Clip | Overflow::Auto | Overflow::Scroll
+                        )
                     {
                         // Clip at the padding box per CSS Overflow spec. Compute padding-box
                         // from the border-box rect and the border widths.

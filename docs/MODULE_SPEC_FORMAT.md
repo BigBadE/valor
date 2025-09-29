@@ -97,6 +97,7 @@ This template defines the required structure and standards for each CSS/HTML mod
 - Maturity labels in code/comments:
   - Any non-production behaviors MUST be tagged inline with one of: `[MVP]`, `[Approximation]`, `[Heuristic]`, `[Fallback]`, `[Non-normative]`.
   - Link to the section in `spec.md` that justifies the deviation and tracks its TODO.
+  - Hardcoded values policy: sections may NOT be marked `[Production]` if behavior depends on incorrectly hardcoded constants or placeholders. Such values MUST be properly wired from inputs/configuration and validated by fixtures before `[Production]` status is allowed.
 
 ## 12. Spec-driven folder structure and naming (enforced)
 

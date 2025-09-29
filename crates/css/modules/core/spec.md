@@ -4,64 +4,29 @@ Primary spec: https://www.w3.org/TR/CSS22/
 
 ## Scope and maturity
 
-- Status: [MVP] transitioning to [Production].
-- Non-production items:
-  - [Approximation] Minimal BFC detection in vertical margin propagation.
-  - [MVP] No inline formatting context (no line boxes), no anonymous block synthesis yet.
-  - [MVP] Relative positioning only; absolute/fixed/sticky are out of scope.
-  - [MVP] Clearance scaffolding present; full floats and precise clearance interactions are pending.
+- Status: [Production] with targeted [Approximation]/[TODO] items tracked below.
+- Non-production items and caveats:
+  - [Approximation] BFC detection is implemented and used; continue to expand test coverage across edge scenarios.
+  - [MVP] Inline formatting context and anonymous block synthesis are owned by the inline/text module and Display reorg; Core assumes block-level children.
+  - [MVP] Positioned layout beyond relative (absolute/fixed/sticky) is owned by the `position` module; Core provides integration points.
+  - [TODO] Box-sizing edge cases (see below under §10.3.3/§10.6.3) to be fully locked by fixtures.
 
-## Coverage mapping (code symbols ↔ spec clauses)
+## One-to-one spec mapping
 
-- 9.5 Floats — [Production]
-  - Code: `9_visual_formatting/part_9_5_floats.rs::{compute_clearance_floor_for_child, update_clearance_floors_for_float, compute_float_bands_for_y}`
-  - Spec: https://www.w3.org/TR/CSS22/visuren.html#floats
-  - Fixtures: under `crates/css/modules/box/tests/fixtures/layout/clearance/` and `floats/`
+This spec uses integrated per-section status/mapping blocks adjacent to the verbatim spec below. Any additional module-specific notes and TODOs are summarized here to avoid duplicate checklists.
 
-- 10.1 Containing block — [MVP]
-  - Code: `10_visual_details/part_10_1_containing_block.rs::{parent_content_origin, build_child_metrics}`
-  - Spec: https://www.w3.org/TR/CSS22/visudet.html#containing-block
-  - Integration: `core/src/lib.rs` delegates to these helpers during child layout.
+- §10.3.3 Widths of non-replaced blocks — [Production] with caveats
+  - [Production] Specified width + auto margins with `box-sizing` conversion: implemented auto margin resolution in the specified-width path.
+  - [Approximation] Percent min/max width in content-box with nested containers: conversion and resolution covered in code, expand fixtures.
+  - [Approximation] Over-constraint clamping (padding+border vs available width): keep asserts/fixtures to stabilize.
+  - Code: `10_visual_details/part_10_3_3_block_widths.rs::{solve_block_horizontal, used_border_box_width, compute_width_constraints, resolve_with_constrained_width, resolve_auto_width}`; parser flags at `css/orchestrator/src/style.rs::apply_edges_and_borders` and model fields `css/orchestrator/src/style_model.rs::ComputedStyle.{margin_left_auto,margin_right_auto}`
 
-- 10.3.3 Widths of non-replaced blocks — [Production]
-  - Code: `10_visual_details/part_10_3_3_block_widths.rs::{solve_block_horizontal, used_border_box_width}`
-  - Spec: https://www.w3.org/TR/CSS22/visudet.html#blockwidth
-  - Fixtures: `crates/css/modules/sizing/tests/fixtures/layout/basics/box_sizing_controls.*`
-
-- 10.6.3 Heights of non-replaced blocks — [Production]
+- §10.6.3 Heights of non-replaced blocks — [Production] with caveats
+  - [Production] Percent/relative heights: root percent resolved to viewport; non-root percent resolved when parent has definite specified height (px); percent min/max constraints applied. Parsing fields in `css/orchestrator/src/style_model.rs::ComputedStyle.{height_percent,min_height_percent,max_height_percent}` with parsing in `css/orchestrator/src/style.rs::apply_dimensions`.
+  - [Approximation] `box-sizing` conversions for min/max height under padding/border; expand fixtures.
   - Code: `10_visual_details/part_10_6_3_height_of_blocks.rs::{compute_used_height, compute_child_content_height, compute_root_heights}`
-  - Spec: https://www.w3.org/TR/CSS22/visudet.html#block-formatting
-  - Fixtures: multiple under `crates/css/modules/box/tests/fixtures/`
 
-- Display 3 §2 normalization — [Production]
-  - Ownership: `css_display::normalize_children` (Display 3 §2)
-  - Call sites: `core/src/lib.rs::collect_block_children` and vertical layout helpers use `normalize_children` for flattening.
-
-- 8.3.1 Collapsing margins — [Production]
-  - Code:
-    - `8_box_model/part_8_3_1_collapsing_margins.rs::{compute_collapsed_vertical_margin_public, compute_y_position_public, effective_child_top_margin_public, effective_child_bottom_margin_public}`
-    - `core/src/lib.rs::{build_parent_edge_context, prepare_place_loop, place_block_children_loop, process_one_child, build_child_ctx, layout_child_and_advance}`
-    - `core/src/orchestrator/place_child.rs::place_child_public`
-    - `10_visual_details/part_10_3_3_block_widths.rs::compute_collapsed_and_position_public` (records `clear_lifted` and computes pre-clear collapsed position for correctness)
-  - Spec:
-    - CSS 2.2 §8.3.1 Collapsing margins — parent/first-child collapse rules
-    - CSS 2.2 §9.4.1 Block formatting contexts — parent top edge non-collapsible when the parent establishes a BFC
-  - Notes:
-    - The parent top edge is considered collapsible only when `padding-top == 0`, `border-top == 0`, and the parent does not establish a BFC (per §9.4.1). This is decided in `build_parent_edge_context()`.
-    - The first in-flow child is determined via `first_inflow_index` during `prepare_place_loop()`; floats are skipped for this purpose.
-    - When the parent edge is non-collapsible (BFC or has padding/border):
-      - `previous_bottom_margin` and `parent_self_top_margin` are forced to `0` for the first in-flow child in `build_child_ctx()`.
-      - `leading_top_applied` and `ancestor_applied_at_edge_for_children` are not propagated to the subtree.
-      - Diagnostics/commit-time `leading_top_applied` is emitted only when the parent edge is collapsible and the child is the first in-flow, enforced in `orchestrator/place_child.rs::place_child_public`.
-    - Clearance floors and float bands are masked at BFC boundaries per §9.4.1 and §9.5, ensuring no stray y-offsets under BFC parents.
-    - First-child collapsed-top accounting excludes cases where the first in-flow child was lifted by clearance: `layout_child_and_advance()` records the positive first-collapsed-top only when `clear_lifted == false`. This prevents subtracting a positive top margin from the parent’s content height in clearance scenarios.
-
-- 9.4.1 BFC — [Production]
-  - Code: `9_visual_formatting/part_9_4_1_block_formatting_context.rs::establishes_block_formatting_context`
-  - Spec: https://www.w3.org/TR/CSS22/visuren.html#block-formatting
-  - Notes:
-    - Returns true when the element floats, is absolutely/fixed positioned, has non-visible overflow, or is a flex container (`display:flex`/`inline-flex`).
-    - Used by `place_block_children_loop()` to mask external float floors and by margin propagation helpers to suppress leading collapse into BFCs.
+---
 
 ## Verbatim Spec (CSS 2.2)
 

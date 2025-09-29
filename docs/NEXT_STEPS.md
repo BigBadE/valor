@@ -34,22 +34,21 @@ The main page uses:
   - Dimensions: basic `width`/`height`/`min-*`/`max-*` (px) used-value computation
   - Colors: `color`, `background-color`
   - Typography: numeric `font-size`, `line-height` (numeric) parsing/computation
-  - Flexbox [Production]: §§2–4 and §§7–9 — axes resolution; single- and multi-line layout (row/column); per-line `justify-content` (start/center/end/space-between/around/evenly); `gap` (row/column, px and %); `align-items` (stretch/center/start/end); `align-content` (start/center/end/space-between/around/evenly; stretch implemented); auto margins distribution (single- and multi-line); absolutely-positioned flex children placement (§4.1)
+  - Flexbox [Production]: §§2–4 and §§7–9 — axes resolution; single- and multi-line layout (row/column); per-line `justify-content` (start/center/end/space-between/around/evenly); `gap` (row/column, px and %); `align-items` (stretch/center/start/end); `align-content` (start/center/end/space-between/around/evenly; stretch implemented); auto margins distribution (single- and multi-line); absolutely-positioned flex children placement (§4.1); overflow Hidden/Clip/Auto/Scroll padding-box clipping (Hidden also clamps content height); and writing-mode plumbing (HorizontalTb/VerticalRl/VerticalLr)
+  - **css_core · sizing**: Percent/relative heights (e.g., `height: 100%` on root)
 
-- Partial / Caveats
-  - `box-sizing` edge cases (tracked in docs)
-  - Percent/relative heights (e.g., `height: 100%` on root): Sizing semantics incomplete
-  - `z-index`: parsed/stored; full stacking/painting order not finalized
-  - Flexbox: overflow Hidden now clips at padding box and clamps content height; remaining: scroll/auto behaviors and advanced writing modes
+- Partial / Caveats (by module)
+  - **css_core · box model**: `box-sizing` edge cases (tracked)
+  - **display/painter · stacking**: `z-index` parsed/stored; full stacking/painting order not finalized
 
-- Missing / Not wired
-  - Positioning: `position: fixed` (and abs/sticky)
-  - `display: inline-block` semantics
-  - `border-radius`
-  - CSS transforms: `transform`
-  - Pseudo-element `::placeholder`
-  - Dynamic pseudo-class styling such as `:active`
-  - `cursor`, `user-select`
+- Missing / Not wired (by module)
+  - **position**: `position: fixed`; roadmap for absolute/sticky
+  - **display**: `display: inline-block` semantics
+  - **backgrounds_borders**: `border-radius`
+  - **transforms**: `transform` (translate/scale/rotate subset)
+  - **selectors · pseudo-elements**: `::placeholder`
+  - **selectors · pseudo-classes/state**: `:active` (dynamic styling path)
+  - **ui/integration**: `cursor`, `user-select` (host integration)
 
 ## Evidence and references
 
@@ -71,16 +70,14 @@ The main page uses:
 ## Detailed checklist and next steps
 
 ### 1) Flexbox (display:flex, flex: 1, align-items, gap)
-- Status: [Production] for §§2–4 and §§7–9 — axes resolution; single- and multi-line layout with wrapping; per-line `justify-content`; cross-axis `align-items`; cross-axis packing via `align-content` (including stretch); CSS gaps (px and %); auto margins distribution on single- and multi-line; absolutely-positioned flex children placement (§4.1); and `overflow: hidden` support (padding-box clipping + content-height clamp).
+- Status: [Production] for §§2–4 and §§7–9 — axes resolution; single- and multi-line layout with wrapping; per-line `justify-content`; cross-axis `align-items`; cross-axis packing via `align-content` (including stretch); CSS gaps (px and %); auto margins distribution on single- and multi-line; absolutely-positioned flex children placement (§4.1); overflow Hidden/Clip/Auto/Scroll clipping (padding-box) with Hidden content-height clamp; and writing-mode plumbing.
 - Impacted selectors:
   - `.row { display: flex; gap: 8px; align-items: center; height: 40px; }`
   - `.addr { flex: 1; … }`
-- Current behavior: Flex containers lay out children per the [Production] set above. Remaining gaps: overflow scroll/auto behaviors; advanced writing modes.
+- Current behavior: Flex containers lay out children per the [Production] set above.
 - References: Flexbox module and spec mapping at `crates/css/modules/flexbox/` (`spec.md`), with fields in `css/orchestrator/src/style_model.rs`.
 - Next steps:
-  - Overflow scroll/auto in flex context: finalize behavior and add graphics baselines. (Fixture added: `flex/50_overflow_hidden_clamp.html` green.)
-  - Advanced writing modes (vertical, rtl) and axis resolution generalization.
-  - Fixtures: advanced writing modes; overflow scenarios (baseline capture for `50_overflow_hidden_clamp.html`).
+  - Fixtures: ensure overflow and writing-modes coverage; `flex/50_overflow_hidden_clamp.html` is green.
 
 ### 2) Positioning (position: fixed; also absolute/sticky roadmap)
 - Status: Missing (module stub)
@@ -150,14 +147,15 @@ The main page uses:
   - For MVP, accept and ignore at layout/paint but expose to host UI for actual behavior.
 
 ### 9) Percent/relative heights and root 100% height
-- Status: Partial / Incomplete
+- Status: [Production]
 - Impacted selectors:
   - `html, body { height: 100%; }`
-- Current behavior: Percent heights may not resolve as per spec in all contexts.
-- References: Sizing module unchecked; `10_6_3_height_of_blocks.rs` exists for some block cases.
-- Next steps:
-  - Implement `css_sizing` percent resolution rules for block and flex contexts.
-  - Ensure root viewport-percentage handling for `html/body` works (establish containing block from the viewport).
+- Current behavior: Implemented.
+  - Root percent heights resolve against the viewport height (initial containing block height).
+  - Non-root percent heights resolve when the parent has a definite specified height (px), with percent min/max applied.
+- References:
+  - Parsing: `crates/css/orchestrator/src/style.rs::apply_dimensions`, fields `ComputedStyle.{height_percent,min_height_percent,max_height_percent}`
+  - Layout: `crates/css/modules/core/src/10_visual_details/part_10_6_3_height_of_blocks.rs::{compute_root_heights, compute_used_height}`
 
 ### 10) z-index and stacking contexts
 - Status: Partial
@@ -180,12 +178,10 @@ The main page uses:
 
 ## Recommended implementation order
 
-1) Flexbox polish (overflow scroll/auto behaviors and advanced writing modes)
-2) Positioning MVP (relative/absolute, then fixed) — enables fixed top bar.
-3) z-index stacking contexts — ensures header occludes content.
-4) Percent sizing/Sizing basics — stabilizes `height: 100%` and min/max.
-5) Visual polish: `border-radius`, `transform` subset.
-6) Pseudo elements/classes (`::placeholder`, `:active`) and cursor/user-select integration.
+1) Positioning MVP (relative/absolute, then fixed) — enables fixed top bar.
+2) z-index stacking contexts — ensures header occludes content.
+3) Visual polish: `border-radius`, `transform` subset.
+4) Pseudo elements/classes (`::placeholder`, `:active`) and cursor/user-select integration.
 
 ## Acceptance criteria for the main page
 

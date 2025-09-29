@@ -33,6 +33,10 @@ use std::collections::HashMap;
 // Core data types (moved from types.rs)
 // =====================
 
+/// Initial viewport height used for root percent-height resolution (approximation).
+/// This mirrors the initial containing block width usage and is kept in sync with renderer defaults.
+pub const INITIAL_CONTAINING_BLOCK_HEIGHT: i32 = 768;
+
 use css_orchestrator::style_model::ComputedStyle as _CoreComputedStyleForTypes;
 
 /// A rectangle in device-independent pixels (border-box space). Uses f32 for subpixel precision.
