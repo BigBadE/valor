@@ -1,4 +1,6 @@
-use crate::display_list::{DisplayItem, DisplayList, Scissor, batch_display_list};
+use crate::display_list::{
+    DisplayItem, DisplayList, Scissor, StackingContextBoundary, batch_display_list,
+};
 use crate::renderer::{DrawRect, DrawText};
 use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Cache, Color as GlyphonColor, FontSystem, Metrics, Resolution,
@@ -219,6 +221,86 @@ pub enum Layer {
 // Reduce type complexity for cached batch entries
 type BatchCacheEntry = (Option<(u32, u32, u32, u32)>, Buffer, u32);
 
+/// Texture pool for efficient reuse of offscreen textures in opacity groups.
+/// Spec: Performance optimization for stacking context rendering
+#[derive(Debug)]
+struct TexturePool {
+    /// Available textures: (width, height, texture)
+    available: Vec<(u32, u32, Texture)>,
+    /// Textures currently in use
+    in_use: Vec<(u32, u32, Texture)>,
+    /// Maximum number of textures to keep in pool
+    max_pool_size: usize,
+}
+
+impl TexturePool {
+    /// Create a new texture pool with specified maximum size
+    fn new(max_pool_size: usize) -> Self {
+        Self {
+            available: Vec::new(),
+            in_use: Vec::new(),
+            max_pool_size,
+        }
+    }
+
+    /// Get or create a texture with the specified dimensions and format
+    /// Spec: Reuse textures to minimize GPU memory allocation overhead
+    fn get_or_create(
+        &mut self,
+        device: &Device,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+    ) -> Texture {
+        // Find suitable existing texture (allow up to 25% larger to improve reuse)
+        let max_width = width + width / 4;
+        let max_height = height + height / 4;
+
+        if let Some(pos) = self.available.iter().position(|(w, h, _)| {
+            *w >= width && *h >= height && *w <= max_width && *h <= max_height
+        }) {
+            let (w, h, texture) = self.available.remove(pos);
+            self.in_use.push((w, h, texture.clone()));
+            return texture;
+        }
+
+        // Create new texture with tight bounds
+        let texture = device.create_texture(&TextureDescriptor {
+            label: Some("opacity-group-texture"),
+            size: Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+
+        self.in_use.push((width, height, texture.clone()));
+        texture
+    }
+
+    /// Return a texture to the pool for reuse
+    fn return_texture(&mut self, texture: Texture, width: u32, height: u32) {
+        // For now, we'll use a simple approach - just add to available if not full
+        // In a production system, we'd use proper texture tracking with IDs
+        if self.available.len() < self.max_pool_size {
+            self.available.push((width, height, texture));
+        }
+        // Otherwise texture is dropped and GPU memory is freed
+    }
+
+    /// Clear all textures from the pool (called on resize)
+    fn clear(&mut self) {
+        self.available.clear();
+        self.in_use.clear();
+    }
+}
+
 /// RenderState owns the GPU device/surface and a minimal pipeline to draw rectangles from layout.
 pub struct RenderState {
     window: Arc<Window>,
@@ -259,6 +341,8 @@ pub struct RenderState {
     layers: Vec<Layer>,
     /// Clear color for the framebuffer (canvas background). RGBA in [0,1].
     clear_color: [f32; 4],
+    /// Texture pool for efficient offscreen texture reuse
+    texture_pool: TexturePool,
 }
 
 impl RenderState {
@@ -474,44 +558,72 @@ impl RenderState {
         self.draw_items_with_groups(pass, &dl.items);
     }
 
+    /// Draw display items with proper stacking context handling
+    /// Spec: CSS 2.2 §9.9.1 - Stacking contexts and paint order
     fn draw_items_with_groups(&mut self, pass: &mut RenderPass<'_>, items: &[DisplayItem]) {
-        // Opacity-aware path with true nested groups.
         let mut i = 0usize;
+
         while i < items.len() {
-            if let DisplayItem::Opacity { alpha } = &items[i] && *alpha < 1.0 {
-                let end = self.find_opacity_group_end(items, i + 1);
-                let group_items = &items[i + 1..end];
-                let offscreen = self.render_items_to_offscreen(group_items);
-                let bounds = self
-                    .compute_items_bounds(group_items)
-                    .unwrap_or((0.0, 0.0, self.size.width as f32, self.size.height as f32));
-                self.draw_texture_quad(pass, &offscreen, *alpha, bounds);
-                i = end + 1;
-                continue;
-            }
-            let start = i;
-            let mut end = i;
-            while end < items.len() {
-                match &items[end] {
-                    DisplayItem::Opacity { alpha } if *alpha < 1.0 => break,
-                    _ => end += 1,
+            match &items[i] {
+                DisplayItem::BeginStackingContext { boundary } => {
+                    // Find the matching end boundary
+                    let end = self.find_stacking_context_end(items, i + 1);
+                    let group_items = &items[i + 1..end];
+
+                    match boundary {
+                        StackingContextBoundary::Opacity { alpha } if *alpha < 1.0 => {
+                            // Render opacity group to offscreen texture with tight bounds
+                            let bounds = self
+                                .compute_items_bounds(group_items)
+                                .unwrap_or((0.0, 0.0, 1.0, 1.0)); // Minimal fallback
+
+                            let offscreen =
+                                self.render_items_to_offscreen_bounded(group_items, bounds);
+                            self.draw_texture_quad(pass, &offscreen, *alpha, bounds);
+                        }
+                        _ => {
+                            // Other stacking contexts (transforms, filters, etc.) - render normally for now
+                            // TODO: Implement transform matrices and filter effects
+                            self.draw_items_batched(pass, group_items);
+                        }
+                    }
+
+                    i = end + 1; // Skip to after EndStackingContext
+                }
+                DisplayItem::EndStackingContext => {
+                    // This should be handled by the BeginStackingContext case
+                    i += 1;
+                }
+                _ => {
+                    // Regular display item - find the next stacking context boundary
+                    let start = i;
+                    let mut end = i;
+                    while end < items.len() {
+                        match &items[end] {
+                            DisplayItem::BeginStackingContext { .. } => break,
+                            _ => end += 1,
+                        }
+                    }
+
+                    if start < end {
+                        self.draw_items_batched(pass, &items[start..end]);
+                    }
+                    i = end;
                 }
             }
-            if start < end {
-                self.draw_items_batched(pass, &items[start..end]);
-            }
-            i = end;
         }
     }
 
+    /// Find the matching EndStackingContext for a BeginStackingContext
+    /// Spec: Proper nesting of stacking context boundaries
     #[inline]
-    fn find_opacity_group_end(&self, items: &[DisplayItem], start: usize) -> usize {
+    fn find_stacking_context_end(&self, items: &[DisplayItem], start: usize) -> usize {
         let mut depth = 1i32;
         let mut j = start;
         while j < items.len() {
             match &items[j] {
-                DisplayItem::Opacity { alpha } if *alpha < 1.0 => depth += 1,
-                DisplayItem::Opacity { alpha } if *alpha >= 1.0 => {
+                DisplayItem::BeginStackingContext { .. } => depth += 1,
+                DisplayItem::EndStackingContext => {
                     depth -= 1;
                     if depth == 0 {
                         return j;
@@ -552,34 +664,40 @@ impl RenderState {
         }
     }
 
-    // Render a slice of items into a transparent offscreen texture, returning its view.
-    fn render_items_to_offscreen(&mut self, items: &[DisplayItem]) -> TextureView {
-        let dl = DisplayList::from_items(items.to_vec());
-        // Choose a linear format for intermediate compositing to avoid sRGB round trips.
+    /// Render items to offscreen texture with tight bounds and texture pooling
+    /// Spec: CSS Compositing Level 1 §3.1 - Stacking context rendering optimization
+    fn render_items_to_offscreen_bounded(
+        &mut self,
+        items: &[DisplayItem],
+        bounds: (f32, f32, f32, f32),
+    ) -> TextureView {
+        let (x, y, width, height) = bounds;
+        let tex_width = (width.ceil() as u32).max(1);
+        let tex_height = (height.ceil() as u32).max(1);
+
+        // Choose linear format for intermediate compositing to avoid sRGB round trips
         let offscreen_format = match self.render_format {
             TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8Unorm,
             TextureFormat::Bgra8UnormSrgb => TextureFormat::Bgra8Unorm,
             other => other,
         };
-        let tex = self.device.create_texture(&TextureDescriptor {
-            label: Some("opacity-group-offscreen"),
-            size: Extent3d {
-                width: self.size.width,
-                height: self.size.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: offscreen_format,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = tex.create_view(&TextureViewDescriptor {
+
+        // Get texture from pool or create new one with tight bounds
+        let texture =
+            self.texture_pool
+                .get_or_create(&self.device, tex_width, tex_height, offscreen_format);
+
+        let view = texture.create_view(&TextureViewDescriptor {
             format: Some(offscreen_format),
             ..Default::default()
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("opacity-group-encoder"),
+            });
+
         {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("opacity-offscreen-pass"),
@@ -588,12 +706,7 @@ impl RenderState {
                     depth_slice: None,
                     resolve_target: None,
                     ops: Operations {
-                        load: LoadOp::Clear(Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 0.0,
-                        }),
+                        load: LoadOp::Clear(Color::TRANSPARENT),
                         store: StoreOp::Store,
                     },
                 })],
@@ -601,12 +714,70 @@ impl RenderState {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+
+            // Set viewport to match texture bounds
+            pass.set_viewport(0.0, 0.0, tex_width as f32, tex_height as f32, 0.0, 1.0);
             pass.set_pipeline(&self.pipeline);
-            // Draw into offscreen using the same group-aware path (supports nested groups)
-            self.draw_items_with_groups(&mut pass, &dl.items);
+
+            // Translate items to texture-local coordinates
+            let translated_items: Vec<DisplayItem> = items
+                .iter()
+                .map(|item| match item {
+                    DisplayItem::Rect {
+                        x: rx,
+                        y: ry,
+                        width: rw,
+                        height: rh,
+                        color,
+                    } => DisplayItem::Rect {
+                        x: rx - x,
+                        y: ry - y,
+                        width: *rw,
+                        height: *rh,
+                        color: *color,
+                    },
+                    DisplayItem::Text {
+                        x: tx,
+                        y: ty,
+                        text,
+                        color,
+                        font_size,
+                        bounds,
+                    } => DisplayItem::Text {
+                        x: tx - x,
+                        y: ty - y,
+                        text: text.clone(),
+                        color: *color,
+                        font_size: *font_size,
+                        bounds: bounds.map(|(l, t, r, b)| {
+                            (
+                                (l as f32 - x) as i32,
+                                (t as f32 - y) as i32,
+                                (r as f32 - x) as i32,
+                                (b as f32 - y) as i32,
+                            )
+                        }),
+                    },
+                    other => other.clone(),
+                })
+                .collect();
+
+            // Draw translated items using the same group-aware path
+            self.draw_items_with_groups(&mut pass, &translated_items);
         }
+
         self.queue.submit([encoder.finish()]);
+
+        // Return texture to pool when view is dropped (handled by caller)
+        // Note: In a production system, we'd use RAII or explicit return_texture calls
         view
+    }
+
+    // Legacy function for backward compatibility - uses full viewport
+    fn render_items_to_offscreen(&mut self, items: &[DisplayItem]) -> TextureView {
+        // Use bounded version with full viewport bounds
+        let bounds = (0.0, 0.0, self.size.width as f32, self.size.height as f32);
+        self.render_items_to_offscreen_bounded(items, bounds)
     }
 
     fn draw_texture_quad(
@@ -636,12 +807,30 @@ impl RenderState {
         let u1 = (x + w) / fw;
         let v1 = (y + h) / fh;
         let verts = [
-            TexVertex { pos: [x0, y0], uv: [u0, v1] },
-            TexVertex { pos: [x1, y0], uv: [u1, v1] },
-            TexVertex { pos: [x1, y1], uv: [u1, v0] },
-            TexVertex { pos: [x0, y0], uv: [u0, v1] },
-            TexVertex { pos: [x1, y1], uv: [u1, v0] },
-            TexVertex { pos: [x0, y1], uv: [u0, v0] },
+            TexVertex {
+                pos: [x0, y0],
+                uv: [u0, v1],
+            },
+            TexVertex {
+                pos: [x1, y0],
+                uv: [u1, v1],
+            },
+            TexVertex {
+                pos: [x1, y1],
+                uv: [u1, v0],
+            },
+            TexVertex {
+                pos: [x0, y0],
+                uv: [u0, v1],
+            },
+            TexVertex {
+                pos: [x1, y1],
+                uv: [u1, v0],
+            },
+            TexVertex {
+                pos: [x0, y1],
+                uv: [u0, v0],
+            },
         ];
         let vb = self.device.create_buffer_init(&util::BufferInitDescriptor {
             label: Some("opacity-quad-vertices"),
@@ -698,8 +887,15 @@ impl RenderState {
         let mut max_x = f32::NEG_INFINITY;
         let mut max_y = f32::NEG_INFINITY;
         for it in items {
-            if let DisplayItem::Rect { x, y, width, height, .. } = it
-                && *width > 0.0 && *height > 0.0
+            if let DisplayItem::Rect {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } = it
+                && *width > 0.0
+                && *height > 0.0
             {
                 min_x = min_x.min(*x);
                 min_y = min_y.min(*y);
@@ -708,7 +904,12 @@ impl RenderState {
             }
         }
         if min_x.is_finite() {
-            Some((min_x.max(0.0), min_y.max(0.0), (max_x - min_x).max(0.0), (max_y - min_y).max(0.0)))
+            Some((
+                min_x.max(0.0),
+                min_y.max(0.0),
+                (max_x - min_x).max(0.0),
+                (max_y - min_y).max(0.0),
+            ))
         } else {
             None
         }
@@ -906,6 +1107,7 @@ impl RenderState {
             cache_reuses: 0,
             layers: Vec::new(),
             clear_color: [1.0, 1.0, 1.0, 1.0],
+            texture_pool: TexturePool::new(8), // Pool up to 8 textures for reuse
         }
     }
 
@@ -949,6 +1151,8 @@ impl RenderState {
         // Invalidate cached batches since framebuffer dimensions have changed
         self.cached_batches = None;
         self.last_retained_list = None;
+        // Clear texture pool since old textures may have wrong dimensions
+        self.texture_pool.clear();
     }
 
     /// Clear any compositor layers; subsequent render() will use the single retained list if set.

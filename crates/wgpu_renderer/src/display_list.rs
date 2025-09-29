@@ -13,6 +13,28 @@ pub type TextBoundsPx = (i32, i32, i32, i32);
 // Compact aliases to keep tuple-heavy types readable and satisfy clippy's type_complexity.
 pub type Scissor = (u32, u32, u32, u32);
 
+/// Stacking context boundary markers for proper opacity grouping.
+/// Spec: CSS 2.2 §9.9.1 - Stacking contexts
+/// Spec: CSS Compositing Level 1 §3.1 - Stacking context creation
+#[derive(Debug, Clone, PartialEq)]
+pub enum StackingContextBoundary {
+    /// Opacity less than 1.0 creates a stacking context
+    /// Spec: https://www.w3.org/TR/CSS22/zindex.html#stacking-context
+    Opacity { alpha: f32 },
+    /// 3D transforms create stacking contexts
+    /// Spec: https://www.w3.org/TR/css-transforms-1/#stacking-context
+    Transform { matrix: [f32; 16] },
+    /// CSS filters create stacking contexts
+    /// Spec: https://www.w3.org/TR/filter-effects-1/#FilterProperty
+    Filter { filter_id: u32 },
+    /// Isolation property creates stacking contexts
+    /// Spec: https://www.w3.org/TR/css-compositing-1/#isolation
+    Isolation,
+    /// Positioned elements with z-index create stacking contexts
+    /// Spec: https://www.w3.org/TR/CSS22/zindex.html#stacking-context
+    ZIndex { z: i32 },
+}
+
 /// A single display list item.
 /// This MVP focuses on rectangles and text, with lightweight placeholders for
 /// clips and opacity that can be wired up later without breaking the API.
@@ -45,8 +67,11 @@ pub enum DisplayItem {
     },
     /// Pop the most recent clip from the stack.
     EndClip,
-    /// Multiply subsequent drawing by an opacity value in [0, 1] (placeholder; batching applies alpha directly to colors).
-    Opacity { alpha: f32 },
+    /// Begin a stacking context boundary (replaces old paired Opacity)
+    /// Spec: CSS 2.2 §9.9.1 - Elements that establish stacking contexts
+    BeginStackingContext { boundary: StackingContextBoundary },
+    /// End the current stacking context (implicit - marks end of grouped content)
+    EndStackingContext,
 }
 
 impl Default for DisplayList {
@@ -145,7 +170,8 @@ impl DisplayList {
                 }),
                 DisplayItem::BeginClip { .. }
                 | DisplayItem::EndClip
-                | DisplayItem::Opacity { .. } => {
+                | DisplayItem::BeginStackingContext { .. }
+                | DisplayItem::EndStackingContext => {
                     // Placeholders for future stateful rendering path.
                 }
             }
@@ -279,7 +305,9 @@ pub fn batch_display_list(
                 let _ = scissor_stack.pop();
                 current_scissor = scissor_stack.iter().cloned().reduce(intersect);
             }
-            DisplayItem::Opacity { .. } => { /* handled at a higher level */ }
+            DisplayItem::BeginStackingContext { .. } | DisplayItem::EndStackingContext => {
+                /* handled at a higher level by stacking context processor */
+            }
             DisplayItem::Text { .. } => { /* handled separately by text subsystem */ }
         }
     }

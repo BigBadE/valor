@@ -5,6 +5,7 @@ use css_core::{LayoutNodeKind, LayoutRect};
 use js::NodeKey;
 use log::warn;
 use std::collections::HashMap;
+use wgpu_renderer::display_list::StackingContextBoundary;
 use wgpu_renderer::{DisplayItem, DisplayList};
 
 // Text shaping imports for measuring and line breaking
@@ -669,7 +670,9 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                         && let Some(alpha) = cs.opacity
                         && alpha < 1.0
                     {
-                        list.push(DisplayItem::Opacity { alpha });
+                        list.push(DisplayItem::BeginStackingContext {
+                            boundary: StackingContextBoundary::Opacity { alpha },
+                        });
                         opened_opacity = true;
                     }
                     // Background fill from computed styles; only paint if non-transparent
@@ -741,7 +744,7 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     // Always recurse into children, independent of having a rect
                     process_children(list, node, ctx);
                     if opened_opacity {
-                        list.push(DisplayItem::Opacity { alpha: 1.0 });
+                        list.push(DisplayItem::EndStackingContext);
                     }
                     if opened_clip {
                         list.push(DisplayItem::EndClip);
@@ -762,12 +765,14 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                         && let Some(alpha) = cs.opacity
                         && alpha < 1.0
                     {
-                        list.push(DisplayItem::Opacity { alpha });
+                        list.push(DisplayItem::BeginStackingContext {
+                            boundary: StackingContextBoundary::Opacity { alpha },
+                        });
                         opened_opacity = true;
                     }
                     process_children(list, node, ctx);
                     if opened_opacity {
-                        list.push(DisplayItem::Opacity { alpha: 1.0 });
+                        list.push(DisplayItem::EndStackingContext);
                     }
                 }
             }

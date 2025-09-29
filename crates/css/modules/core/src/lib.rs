@@ -332,7 +332,7 @@ pub(crate) const INITIAL_CONTAINING_BLOCK_WIDTH: i32 = 800;
 /// Fixed vertical scrollbar gutter used to approximate Chromium on Windows.
 /// This is subtracted from the initial containing block width when computing the
 /// root container metrics so the available inline size matches Chromium.
-pub(crate) const SCROLLBAR_GUTTER_PX: i32 = 16;
+pub(crate) const SCROLLBAR_GUTTER_PX: i32 = 18;
 
 /// Last placed child info used to compute the parent's content bottom per §10.6.3.
 /// Tuple contents: (child key, rect bottom (y + height), effective outgoing margin-bottom).
@@ -809,8 +809,18 @@ impl Layouter {
         // Compute bands at the relevant y. Align the query y with the actual child top margin edge.
         let (y_for_bands, collapsed_top, margin_top_eff) =
             self.band_query_y_for_child(loop_ctx, inputs, &style, clearance_floor_y);
-        let (band_left, band_right) =
-            self.compute_float_bands_for_y(loop_ctx, inputs.index, y_for_bands);
+        // If the parent establishes a new BFC, external floats must not create avoidance bands
+        // for its in-flow children. Mask bands to zero in that case.
+        let (band_left, band_right) = if loop_ctx.parent_edge_collapsible
+            && self
+                .computed_styles
+                .get(&loop_ctx.root)
+                .is_some_and(establishes_block_formatting_context)
+        {
+            (0i32, 0i32)
+        } else {
+            self.compute_float_bands_for_y(loop_ctx, inputs.index, y_for_bands)
+        };
         debug!(
             "[CHILD] idx={} key={:?} float={:?} clear={:?} bands=({}, {}) y_cursor={} y_for_bands={} collapsed_top={} mt_eff={}",
             inputs.index,

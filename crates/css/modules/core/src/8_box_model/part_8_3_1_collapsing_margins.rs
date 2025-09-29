@@ -38,6 +38,12 @@ pub fn compute_collapsed_vertical_margin_public(
     child_margin_top: i32,
     _child_style: &ComputedStyle,
 ) -> i32 {
+    // If the parent's leading-top collapse has already been applied at the parent edge,
+    // do not add any collapsed top again for the first placed child. This prevents a
+    // double-application that would shift the child downward (e.g., +10px).
+    if ctx.is_first_placed && ctx.leading_top_applied != 0i32 {
+        return 0;
+    }
     if ctx.is_first_placed {
         if ctx.parent_edge_collapsible {
             // If an ancestor already applied the leading-top at its own edge, the parent's
@@ -309,7 +315,7 @@ fn first_block_child(layouter: &Layouter, key: NodeKey) -> Option<NodeKey> {
     for child in flattened {
         if matches!(
             layouter.nodes.get(&child),
-            Some(LayoutNodeKind::Block { .. })
+            Some(&LayoutNodeKind::Block { .. })
         ) {
             return Some(child);
         }

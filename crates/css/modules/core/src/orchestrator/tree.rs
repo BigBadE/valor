@@ -65,7 +65,7 @@ pub fn choose_layout_root(layouter: &Layouter) -> Option<NodeKey> {
     let doc_key = layouter
         .nodes
         .iter()
-        .find_map(|(key, kind)| matches!(kind, LayoutNodeKind::Document).then_some(*key))?;
+        .find_map(|(key, kind)| matches!(kind, &LayoutNodeKind::Document).then_some(*key))?;
     let first_block = find_first_block_under(layouter, doc_key)?;
     let is_html = tag_of(layouter, first_block).is_some_and(|tag| tag.eq_ignore_ascii_case("html"));
     if !is_html {
