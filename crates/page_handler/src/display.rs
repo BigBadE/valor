@@ -746,11 +746,14 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                         opened_clip = true;
                     }
                     process_children(list, node, ctx);
-                    if opened_ctx {
-                        list.push(DisplayItem::EndStackingContext);
-                    }
+                    // If a clip was opened inside this node, it must be closed
+                    // before the stacking context ends so the clip applies to
+                    // the entire context's painted content.
                     if opened_clip {
                         list.push(DisplayItem::EndClip);
+                    }
+                    if opened_ctx {
+                        list.push(DisplayItem::EndStackingContext);
                     }
                 } else {
                     // No rect for this block: still recurse into children; apply stacking context if present

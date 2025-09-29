@@ -2,6 +2,7 @@ use crate::display_list::{
     DisplayItem, DisplayList, Scissor, StackingContextBoundary, batch_display_list,
 };
 use crate::renderer::{DrawRect, DrawText};
+use anyhow::{Result as AnyResult, anyhow};
 use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Cache, Color as GlyphonColor, FontSystem, Metrics, Resolution,
     Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -14,6 +15,9 @@ use wgpu::util::DeviceExt;
 use wgpu::*;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
+
+// pollster is used to synchronously await wgpu error scopes in a non-async context.
+use pollster::block_on;
 
 #[inline]
 fn batch_texts_with_scissor(
@@ -90,6 +94,7 @@ fn batch_texts_with_scissor(
             _ => {}
         }
     }
+
     if !current_texts.is_empty() {
         out.push((current_scissor, current_texts));
     }
@@ -97,6 +102,13 @@ fn batch_texts_with_scissor(
 }
 
 type TextBatch = (Option<Scissor>, Vec<DrawText>);
+
+// Composite info for a pre-rendered opacity group.
+// (start_index, end_index, texture, texture_view, tex_w, tex_h, alpha, bounds)
+type OpacityComposite = (usize, usize, Texture, TextureView, u32, u32, f32, Bounds);
+
+// Result payload for offscreen renders: (texture, view, width, height)
+type OffscreenRender = (Texture, TextureView, u32, u32);
 
 #[inline]
 fn rect_to_scissor(framebuffer: (u32, u32), x: f32, y: f32, w: f32, h: f32) -> Scissor {
@@ -349,6 +361,8 @@ pub struct RenderState {
     clear_color: [f32; 4],
     /// Texture pool for efficient offscreen texture reuse
     texture_pool: TexturePool,
+    /// Tracks nesting of offscreen group renders to prevent nested encoders.
+    offscreen_depth: u32,
     /// Persistent offscreen render target for readback-based renders
     offscreen_tex: Option<Texture>,
     /// Persistent readback buffer sized for current framebuffer (padded bytes-per-row)
@@ -358,6 +372,116 @@ pub struct RenderState {
 }
 
 impl RenderState {
+    #[inline]
+    fn collect_opacity_composites(
+        &mut self,
+        items: &[DisplayItem],
+    ) -> AnyResult<Vec<OpacityComposite>> {
+        let mut out: Vec<OpacityComposite> = Vec::new();
+        let mut i = 0usize;
+        while i < items.len() {
+            if let DisplayItem::BeginStackingContext { boundary } = &items[i]
+                && matches!(boundary, StackingContextBoundary::Opacity { alpha } if *alpha < 1.0)
+            {
+                let end = self.find_stacking_context_end(items, i + 1);
+                let group_items = &items[i + 1..end];
+                let bounds = self
+                    .compute_items_bounds(group_items)
+                    .unwrap_or((0.0, 0.0, 1.0, 1.0));
+                let (tex, view, tw, th) =
+                    self.render_items_to_offscreen_bounded(group_items, bounds)?;
+                let alpha = match boundary {
+                    StackingContextBoundary::Opacity { alpha } => *alpha,
+                    _ => 1.0,
+                };
+                out.push((i, end, tex, view, tw, th, alpha, bounds));
+                i = end + 1;
+                continue;
+            }
+            i += 1;
+        }
+        Ok(out)
+    }
+
+    #[inline]
+    fn draw_items_excluding_ranges(
+        &mut self,
+        pass: &mut RenderPass<'_>,
+        items: &[DisplayItem],
+        exclude: &[(usize, usize)],
+    ) {
+        let mut i = 0usize;
+        let mut ex_idx = 0usize;
+        while i < items.len() {
+            if ex_idx < exclude.len() && i == exclude[ex_idx].0 {
+                i = exclude[ex_idx].1 + 1;
+                ex_idx += 1;
+                continue;
+            }
+            let next = exclude.get(ex_idx).map(|r| r.0).unwrap_or(items.len());
+            if i < next {
+                self.draw_items_batched(pass, &items[i..next]);
+                i = next;
+            }
+        }
+    }
+
+    #[inline]
+    fn submit_with_error_scope<I>(&mut self, submissions: I) -> AnyResult<()>
+    where
+        I: IntoIterator<Item = CommandBuffer>,
+    {
+        self.device.push_error_scope(ErrorFilter::Validation);
+        self.queue.submit(submissions);
+        let fut = self.device.pop_error_scope();
+        let res = block_on(fut);
+        if let Some(err) = res {
+            log::error!(target: "wgpu_renderer", "WGPU error (scoped): {:?}", err);
+            return Err(anyhow!("wgpu scoped error: {err:?}"));
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn build_exclude_ranges(&self, comps: &[OpacityComposite]) -> Vec<(usize, usize)> {
+        let mut ranges = Vec::with_capacity(comps.len());
+        for (s, e, ..) in comps.iter() {
+            ranges.push((*s, *e));
+        }
+        ranges
+    }
+
+    #[inline]
+    fn composite_groups(&mut self, pass: &mut RenderPass<'_>, comps: Vec<OpacityComposite>) {
+        for (_s, _e, tex, view, tw, th, alpha, bounds) in comps.into_iter() {
+            self.draw_texture_quad(pass, &view, alpha, bounds);
+            self.texture_pool.return_texture(tex, tw, th);
+        }
+    }
+
+    #[inline]
+    fn draw_opacity_group(
+        &mut self,
+        pass: &mut RenderPass<'_>,
+        group_items: &[DisplayItem],
+        alpha: f32,
+    ) -> AnyResult<()> {
+        if self.offscreen_depth != 0 {
+            // Inside offscreen already: avoid nested encoders; draw directly
+            self.draw_items_batched(pass, group_items);
+            return Ok(());
+        }
+        // Render opacity group to offscreen texture with tight bounds
+        let bounds = self
+            .compute_items_bounds(group_items)
+            .unwrap_or((0.0, 0.0, 1.0, 1.0));
+        let (tex, view, tex_w, tex_h) =
+            self.render_items_to_offscreen_bounded(group_items, bounds)?;
+        self.draw_texture_quad(pass, &view, alpha, bounds);
+        // Return texture to pool for reuse
+        self.texture_pool.return_texture(tex, tex_w, tex_h);
+        Ok(())
+    }
     #[inline]
     fn draw_text_batch(
         &mut self,
@@ -391,7 +515,11 @@ impl RenderState {
     }
     /// Record all render passes (rectangles + text) into the provided texture view.
     /// This uses the exact same code paths as `render()`.
-    fn record_draw_passes(&mut self, texture_view: &TextureView, encoder: &mut CommandEncoder) {
+    fn record_draw_passes(
+        &mut self,
+        texture_view: &TextureView,
+        encoder: &mut CommandEncoder,
+    ) -> AnyResult<()> {
         let use_layers = !self.layers.is_empty();
         let use_retained = self.retained_display_list.is_some() && !use_layers;
 
@@ -408,40 +536,82 @@ impl RenderState {
 
         // First pass: rectangles only
         {
-            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("main-pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: texture_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(Color {
-                            r: self.clear_color[0] as f64,
-                            g: self.clear_color[1] as f64,
-                            b: self.clear_color[2] as f64,
-                            a: self.clear_color[3] as f64,
-                        }),
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            pass.set_pipeline(&self.pipeline);
+            // Always clear first to the background color, then drop pass to allow offscreen pre-renders.
+            {
+                let _clear_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("clear-pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: texture_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Clear(Color {
+                                r: self.clear_color[0] as f64,
+                                g: self.clear_color[1] as f64,
+                                b: self.clear_color[2] as f64,
+                                a: self.clear_color[3] as f64,
+                            }),
+                            store: StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+            }
 
             if use_layers {
+                // Layers path unchanged: open a fresh main pass and draw layers.
+                let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("main-pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: texture_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Load,
+                            store: StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&self.pipeline);
                 for layer in self.layers.clone().iter() {
                     match layer {
                         Layer::Background => continue,
-                        Layer::Content(dl) | Layer::Chrome(dl) => self.draw_layer(&mut pass, dl),
+                        Layer::Content(dl) | Layer::Chrome(dl) => self.draw_layer(&mut pass, dl)?,
                     }
                 }
             } else if use_retained {
-                // Draw retained display list via stacking-context-aware path so opacity groups work.
                 if let Some(dl) = self.retained_display_list.clone() {
-                    self.draw_layer(&mut pass, &dl);
+                    let items: Vec<DisplayItem> = dl.items;
+                    // Pre-render opacity groups offscreen before opening the main pass, avoiding nested encoders.
+                    let comps = self.collect_opacity_composites(&items)?;
+                    // Open main pass and draw non-group items, then composite groups in order.
+                    let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                        label: Some("main-pass"),
+                        color_attachments: &[Some(RenderPassColorAttachment {
+                            view: texture_view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: Operations {
+                                load: LoadOp::Load,
+                                store: StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    pass.set_pipeline(&self.pipeline);
+
+                    // Draw normal items excluding group ranges
+                    let ranges = self.build_exclude_ranges(&comps);
+                    self.draw_items_excluding_ranges(&mut pass, &items, &ranges);
+                    // Composite groups in order
+                    self.composite_groups(&mut pass, comps);
                 }
             } else {
                 // Immediate path: batch all rects into one draw call as before
@@ -462,6 +632,22 @@ impl RenderState {
                 });
                 self.vertex_buffer = vertex_buffer;
                 self.vertex_count = vertices.len() as u32;
+                let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("main-pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: texture_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Load,
+                            store: StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&self.pipeline);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 if self.vertex_count > 0 {
                     pass.draw(0..self.vertex_count, 0..1);
@@ -514,6 +700,7 @@ impl RenderState {
                     .render(&self.text_atlas, &self.viewport, &mut pass);
             }
         }
+        Ok(())
     }
 
     #[inline]
@@ -558,13 +745,17 @@ impl RenderState {
         ]);
     }
 
-    fn draw_layer(&mut self, pass: &mut RenderPass<'_>, dl: &DisplayList) {
-        self.draw_items_with_groups(pass, &dl.items);
+    fn draw_layer(&mut self, pass: &mut RenderPass<'_>, dl: &DisplayList) -> AnyResult<()> {
+        self.draw_items_with_groups(pass, &dl.items)
     }
 
     /// Draw display items with proper stacking context handling
     /// Spec: CSS 2.2 §9.9.1 - Stacking contexts and paint order
-    fn draw_items_with_groups(&mut self, pass: &mut RenderPass<'_>, items: &[DisplayItem]) {
+    fn draw_items_with_groups(
+        &mut self,
+        pass: &mut RenderPass<'_>,
+        items: &[DisplayItem],
+    ) -> AnyResult<()> {
         let mut i = 0usize;
 
         while i < items.len() {
@@ -576,16 +767,7 @@ impl RenderState {
 
                     match boundary {
                         StackingContextBoundary::Opacity { alpha } if *alpha < 1.0 => {
-                            // Render opacity group to offscreen texture with tight bounds
-                            let bounds = self
-                                .compute_items_bounds(group_items)
-                                .unwrap_or((0.0, 0.0, 1.0, 1.0)); // Minimal fallback
-
-                            let (tex, view, tex_w, tex_h) =
-                                self.render_items_to_offscreen_bounded(group_items, bounds);
-                            self.draw_texture_quad(pass, &view, *alpha, bounds);
-                            // Return texture to pool for reuse
-                            self.texture_pool.return_texture(tex, tex_w, tex_h);
+                            self.draw_opacity_group(pass, group_items, *alpha)?;
                         }
                         _ => {
                             // Other stacking contexts (transforms, filters, etc.) - render normally for now
@@ -618,6 +800,7 @@ impl RenderState {
                 }
             }
         }
+        Ok(())
     }
 
     /// Find the matching EndStackingContext for a BeginStackingContext
@@ -676,7 +859,7 @@ impl RenderState {
         &mut self,
         items: &[DisplayItem],
         bounds: (f32, f32, f32, f32),
-    ) -> (Texture, TextureView, u32, u32) {
+    ) -> AnyResult<OffscreenRender> {
         let (x, y, width, height) = bounds;
         let tex_width = (width.ceil() as u32).max(1);
         let tex_height = (height.ceil() as u32).max(1);
@@ -695,6 +878,8 @@ impl RenderState {
             ..Default::default()
         });
 
+        // Increase offscreen depth to disable nested offscreen compositing
+        self.offscreen_depth = self.offscreen_depth.saturating_add(1);
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor {
@@ -765,8 +950,13 @@ impl RenderState {
                 })
                 .collect();
 
-            // Draw translated items (rectangles) using the same group-aware path
-            self.draw_items_with_groups(&mut pass, &translated_items);
+            // Draw translated items (rectangles) using the same group-aware path.
+            // Temporarily override framebuffer size so scissor/viewport computations
+            // inside draw paths are clamped to the offscreen texture.
+            let old_size = self.size;
+            self.size = PhysicalSize::new(tex_width, tex_height);
+            self.draw_items_with_groups(&mut pass, &translated_items)?;
+            self.size = old_size;
             drop(pass);
 
             // Prepare and draw text in a second pass using glyphon at texture-local coordinates
@@ -790,14 +980,20 @@ impl RenderState {
                     occlusion_query_set: None,
                 });
                 text_pass.set_viewport(0.0, 0.0, tex_width as f32, tex_height as f32, 0.0, 1.0);
+                let old_size2 = self.size;
+                self.size = PhysicalSize::new(tex_width, tex_height);
                 self.draw_text_batch(&mut text_pass, &text_items, None);
+                self.size = old_size2;
             }
         }
 
-        self.queue.submit([encoder.finish()]);
+        let cb = encoder.finish();
+        self.submit_with_error_scope([cb])?;
+        // Decrease offscreen depth after finishing this offscreen render
+        self.offscreen_depth = self.offscreen_depth.saturating_sub(1);
 
         // Caller will return the texture to the pool after compositing
-        (texture, view, tex_width, tex_height)
+        Ok((texture, view, tex_width, tex_height))
     }
 
     fn draw_texture_quad(
@@ -1062,6 +1258,11 @@ impl RenderState {
         let mut font_system_runtime = FontSystem::new();
         font_system_runtime.db_mut().load_system_fonts();
 
+        // Log any uncaptured WGPU errors to help diagnose backend issues
+        device.on_uncaptured_error(Box::new(|e| {
+            log::error!(target: "wgpu_renderer", "WGPU uncaptured error: {:?}", e);
+        }));
+
         RenderState {
             window,
             device,
@@ -1089,6 +1290,7 @@ impl RenderState {
             layers: Vec::new(),
             clear_color: [1.0, 1.0, 1.0, 1.0],
             texture_pool: TexturePool::new(), // Pool initialized; reuse capacity managed internally
+            offscreen_depth: 0,
             offscreen_tex: None,
             readback_buf: None,
             readback_padded_bpr: 0,
@@ -1333,8 +1535,9 @@ impl RenderState {
             ..Default::default()
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        self.record_draw_passes(&texture_view, &mut encoder);
-        self.queue.submit([encoder.finish()]);
+        self.record_draw_passes(&texture_view, &mut encoder)?;
+        let cb = encoder.finish();
+        self.submit_with_error_scope([cb])?;
         self.window.pre_present_notify();
         surface_texture.present();
         Ok(())
@@ -1373,7 +1576,7 @@ impl RenderState {
                 format: Some(self.render_format),
                 ..Default::default()
             });
-        self.record_draw_passes(&tmp_view, &mut encoder);
+        self.record_draw_passes(&tmp_view, &mut encoder)?;
 
         // Read back with 256-byte aligned rows
         let width = self.size.width;
@@ -1425,10 +1628,7 @@ impl RenderState {
                 depth_or_array_layers: 1,
             },
         );
-
-        self.queue.submit([encoder.finish()]);
-
-        // Map and repack into tightly packed bytes (in the texture's native ordering)
+        // Map and wait for the copy to be available
         let slice = readback.slice(..);
         let (sender, receiver) = std::sync::mpsc::channel();
         slice.map_async(MapMode::Read, move |res| {
@@ -1738,7 +1938,7 @@ fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>) -> VsOut {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let c = textureSample(t_color, t_sampler, in.uv);
     let a = u_params.alpha;
-    // Straight alpha compositing: scale color by group alpha and set output alpha to group alpha.
-    return vec4<f32>(c.rgb * a, a);
+    // Preserve per-pixel alpha: scale color by group alpha and scale alpha by group alpha.
+    return vec4<f32>(c.rgb * a, c.a * a);
 }
 "#;

@@ -3,7 +3,7 @@ use anyhow::{Result, anyhow};
 use headless_chrome::{
     Browser, LaunchOptionsBuilder, Tab, protocol::cdp::Page::CaptureScreenshotFormatOption,
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -507,8 +507,7 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
             }
         }
 
-        // Per-fixture timing summary (always)
-        warn!(
+        trace!(
             "[GRAPHICS][TIMING] {}: cache_io={:?} chrome_capture={:?} build_dl={:?} batch_dbg={:?} raster={:?} png_decode={:?} equal_check={:?} masked_diff={:?} fail_write={:?} skipped_diff={}",
             name,
             agg_cache_io,
