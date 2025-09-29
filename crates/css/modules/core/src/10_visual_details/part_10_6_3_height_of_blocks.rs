@@ -12,6 +12,7 @@ use css_flexbox::{
     WritingMode as FlexWritingMode, collect_flex_items, layout_multi_line_with_cross,
     layout_single_line_with_cross, resolve_axes as flex_resolve_axes,
 };
+use css_orchestrator::style_model::BoxSizing;
 use css_orchestrator::style_model::{
     AlignContent as CoreAlignContent, AlignItems as CoreAlignItems, ComputedStyle,
     Display as CoreDisplay, FlexDirection as CoreFlexDirection, FlexWrap as CoreFlexWrap,
@@ -40,6 +41,7 @@ fn try_inline_baselines(layouter: &Layouter, node: NodeKey) -> Option<(f32, f32)
     if children.is_empty() {
         return None;
     }
+
     // Build a quick node-kind map for whitespace skipping
     let mut kind_map: HashMap<NodeKey, LayoutNodeKind> = HashMap::new();
     for (key, kind, _kids) in layouter.snapshot() {
@@ -343,27 +345,6 @@ pub fn compute_used_height(
         }
         out.max(0i32)
     }
-    // Try to resolve percentage height/min/max when the parent has a definite specified height (px).
-    #[inline]
-    fn parent_specified_content_height(layouter: &Layouter, child_key: NodeKey) -> Option<i32> {
-        // Find parent by scanning the tree snapshot; avoid adding fields to hot structs.
-        let mut parent_key_opt: Option<NodeKey> = None;
-        for (node, _kind, kids) in layouter.snapshot() {
-            if kids.iter().any(|k| *k == child_key) {
-                parent_key_opt = Some(node);
-                break;
-            }
-        }
-        let parent_key = parent_key_opt?;
-        let parent_style = layouter.computed_styles.get(&parent_key)?;
-        let specified_bb = parent_style.height.map(|h| h as i32)?;
-        // Convert parent specified border-box height to content height by removing its vertical extras.
-        let parent_pad = parent_style.padding.top.max(0.0) + parent_style.padding.bottom.max(0.0);
-        let parent_border = parent_style.border_width.top.max(0.0)
-            + parent_style.border_width.bottom.max(0.0);
-        let parent_extras = (parent_pad + parent_border) as i32;
-        Some(specified_bb.saturating_sub(parent_extras).max(0))
-    }
 
     let mut computed_height = used_border_box_height(style);
     if style.height.is_none() {
@@ -376,36 +357,71 @@ pub fn compute_used_height(
             let child_border = style.border_width.top.max(0.0) + style.border_width.bottom.max(0.0);
             let child_extras = (child_pad + child_border) as i32;
             computed_height = match style.box_sizing {
-                css_orchestrator::style_model::BoxSizing::ContentBox => {
-                    target_content.saturating_add(child_extras)
-                }
-                css_orchestrator::style_model::BoxSizing::BorderBox => target_content,
+                BoxSizing::ContentBox => target_content.saturating_add(child_extras),
+                BoxSizing::BorderBox => target_content,
             };
+            computed_height =
+                apply_percent_min_max_from_parent(style, parent_content_h, computed_height);
         } else {
-        computed_height = child_content_height
-            .saturating_add(extras.padding_top)
-            .saturating_add(extras.padding_bottom)
-            .saturating_add(extras.border_top)
-            .saturating_add(extras.border_bottom);
-        if computed_height == 0i32 && layouter.has_inline_text_descendant(child_key) {
-            computed_height = default_line_height_px(style);
-        }
+            computed_height = child_content_height
+                .saturating_add(extras.padding_top)
+                .saturating_add(extras.padding_bottom)
+                .saturating_add(extras.border_top)
+                .saturating_add(extras.border_bottom);
+            if computed_height == 0i32 && layouter.has_inline_text_descendant(child_key) {
+                computed_height = default_line_height_px(style);
+            }
         }
         // Apply percent min/max height constraints if present and parent definite.
         if let Some(parent_content_h) = parent_specified_content_height(layouter, child_key) {
-            if let Some(min_pct) = style.min_height_percent {
-                let min_bb = ((parent_content_h as f32) * min_pct.max(0.0)).round() as i32;
-                computed_height = computed_height.max(min_bb);
-            }
-            if let Some(max_pct) = style.max_height_percent {
-                let max_bb = ((parent_content_h as f32) * max_pct.max(0.0)).round() as i32;
-                computed_height = computed_height.min(max_bb);
-            }
+            computed_height =
+                apply_percent_min_max_from_parent(style, parent_content_h, computed_height);
         }
     }
     computed_height
 }
 
+/// Return the parent's specified content height (px) if the parent has a definite specified
+/// border-box height; converts to content height by subtracting vertical padding and borders.
+#[inline]
+fn parent_specified_content_height(layouter: &Layouter, child_key: NodeKey) -> Option<i32> {
+    let mut parent_key_opt: Option<NodeKey> = None;
+    for (node_key, _kind, children) in layouter.snapshot() {
+        if children.contains(&child_key) {
+            parent_key_opt = Some(node_key);
+            break;
+        }
+    }
+    let parent_key = parent_key_opt?;
+    let parent_style = layouter.computed_styles.get(&parent_key)?;
+    let specified_border_box = parent_style.height.map(|height_px| height_px as i32)?;
+    let parent_pad = parent_style.padding.top.max(0.0) + parent_style.padding.bottom.max(0.0);
+    let parent_border =
+        parent_style.border_width.top.max(0.0) + parent_style.border_width.bottom.max(0.0);
+    let parent_extras = (parent_pad + parent_border) as i32;
+    Some(specified_border_box.saturating_sub(parent_extras).max(0))
+}
+
+/// Apply percent min/max height constraints using the parent's definite content height.
+#[inline]
+fn apply_percent_min_max_from_parent(
+    style: &ComputedStyle,
+    parent_content_h: i32,
+    current_bb: i32,
+) -> i32 {
+    let mut out = current_bb;
+    if let Some(min_pct) = style.min_height_percent {
+        let min_bb = ((parent_content_h as f32) * min_pct.max(0.0)).round() as i32;
+        out = out.max(min_bb);
+    }
+    if let Some(max_pct) = style.max_height_percent {
+        let max_bb = ((parent_content_h as f32) * max_pct.max(0.0)).round() as i32;
+        out = out.min(max_bb);
+    }
+    out
+}
+
+/// Try to resolve percentage height/min/max when the parent has a definite specified height (px).
 /// Build child container metrics and compute raw content height by laying out descendants.
 /// Returns `(content_height, last_positive_bottom_margin)`.
 #[inline]

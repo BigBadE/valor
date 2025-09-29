@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>z-index stacking buckets — negative, normal, positioned auto/0, positive</title>
+<style>
+  .container { position: relative; width: 200px; height: 200px; }
+  .box { position: absolute; width: 100px; height: 100px; top: 50px; left: 50px; }
+  .neg { z-index: -1; background: rgba(255,0,0,0.9); }
+  .normal { position: static; background: rgba(0,255,0,0.9); }
+  .auto0 { z-index: 0; background: rgba(0,0,255,0.9); }
+  .pos { z-index: 2; background: rgba(255,255,0,0.9); }
+</style>
+<div class="container">
+  <div class="box neg"></div>
+  <div class="box auto0"></div>
+  <div class="box pos"></div>
+  <div class="box normal" style="top: 60px; left: 60px;"></div>
+</div>

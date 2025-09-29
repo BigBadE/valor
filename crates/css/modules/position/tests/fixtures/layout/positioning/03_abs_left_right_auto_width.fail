@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Absolute: left+right+auto width</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #cb { position: relative; width: 400px; height: 200px; background: #eee; }
+    #abs { position: absolute; left: 10px; right: 20px; width: auto; height: 40px; top: 30px; background: #cfe; }
+  </style>
+</head>
+<body>
+  <div id="cb">
+    <div id="abs"></div>
+  </div>
+</body>
+</html>

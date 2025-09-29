@@ -34,6 +34,32 @@ pub struct StyleComputer {
 }
 
 #[inline]
+/// Parse visual effects such as `opacity`.
+fn apply_effects(computed: &mut style_model::ComputedStyle, decls: &HashMap<String, String>) {
+    if let Some(raw) = decls.get("opacity") {
+        let trimmed = raw.trim();
+        let mut parsed: Option<f32> = None;
+        if let Some(percent_str) = trimmed.strip_suffix('%')
+            && let Ok(percent_value) = percent_str.trim().parse::<f32>()
+        {
+            parsed = Some((percent_value / 100.0).clamp(0.0, 1.0));
+        } else if let Ok(number) = trimmed.parse::<f32>() {
+            parsed = Some(number.clamp(0.0, 1.0));
+        }
+        if let Some(alpha) = parsed {
+            // Store None for 1.0 to keep default fast path; otherwise Some(alpha)
+            if alpha >= 1.0 {
+                computed.opacity = None;
+            } else if alpha <= 0.0 {
+                computed.opacity = Some(0.0);
+            } else {
+                computed.opacity = Some(alpha);
+            }
+        }
+    }
+}
+
+#[inline]
 /// Parse margin-left/right 'auto' from shorthand and longhands and set flags + zero px values.
 fn apply_margin_auto_flags(
     computed: &mut style_model::ComputedStyle,
@@ -541,6 +567,7 @@ fn build_computed_from_inline(decls: &HashMap<String, String>) -> style_model::C
     apply_colors(&mut computed, decls);
     // Borders may depend on color defaults (currentColor). Finalize after colors.
     finalize_borders_after_colors(&mut computed);
+    apply_effects(&mut computed, decls);
     apply_typography(&mut computed, decls);
     apply_flex_scalars(&mut computed, decls);
     apply_flex_alignment(&mut computed, decls);

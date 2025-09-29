@@ -14,8 +14,6 @@ Primary spec: <https://www.w3.org/TR/css-display-3/>
 
 This information is now integrated directly into the verbatim spec sections below. See the status/mapping blocks placed immediately after each relevant spec heading (e.g., §2.1, §2.2, §2.3, §2.5, §2.7, §3, §4).
 
-Cross-spec mapping not present in CSS Display 3:
-
 - Inline Formatting Context (RFC; CSS 2.2 §9.4.2)
   - Status: [MVP]
   - Spec: https://www.w3.org/TR/CSS22/visuren.html#inline-formatting
@@ -23,6 +21,25 @@ Cross-spec mapping not present in CSS Display 3:
     - `css_display::build_inline_context`, `css_display::inline_context::build_inline_context_with_filter`
     - `css_display::build_anonymous_block_runs`
   - Notes: Groups inline runs into line boxes; whitespace collapsing and shaping are deferred to text/layout modules.
+
+- Display Order (CSS Display 3 §3)
+  - Status: [MVP]
+  - Spec: https://www.w3.org/TR/css-display-3/#order
+  - Code:
+    - `page_handler::display::z_key_for_child`
+    - `page_handler::display::build_retained::order_children`
+  - Fixtures: TBD
+  - Notes: Implements sibling ordering by stacking buckets and z-index within bucket with DOM order tiebreakers. Full stacking context creation for opacity/transform is tracked.
+
+- Visibility (CSS Display 3 §4) — Opacity handling
+  - Status: [MVP]
+  - Spec: https://www.w3.org/TR/css-display-3/#visibility; `opacity` per CSS Color (applied here as subtree alpha multiply)
+  - Code:
+    - `css_orchestrator::style::apply_effects` — parses `opacity` into `ComputedStyle.opacity`
+    - `css_orchestrator::style_model::ComputedStyle.opacity`
+    - `page_handler::display::build_retained` — emits `DisplayItem::Opacity { alpha }` before subtree and resets to 1.0 after
+  - Fixtures: TBD
+  - Notes: MVP multiplies alpha for subsequent items; no offscreen compositing or true stacking context isolation yet.
 
 ## Algorithms and data flow
 
@@ -32,6 +49,22 @@ Cross-spec mapping not present in CSS Display 3:
 - Integration:
   - Upstream: `style_engine::ComputedStyle`.
   - Downstream: `layouter` consumes normalized tree via `box_tree::flatten_display_children()` and inline fragments for layout passes.
+
+- Painter ordering (implemented):
+  - Status: [MVP]
+  - Spec: CSS 2.2 stacking order; CSS Display 3 overview of display order
+  - Code:
+    - `page_handler::display::z_key_for_child` — computes a 3-key sort tuple: (bucket, z-index value, DOM order)
+    - `page_handler::display::build_retained::order_children` — sorts children by bucket: negative z-index positioned → normal flow → positioned auto/0 → positive z-index; within buckets sorts by z-index, then DOM order
+  - Notes: Stacking contexts from opacity/transform and absolute/fixed integration are tracked separately.
+
+- Parsing/inputs (implemented):
+  - `css_orchestrator::style::apply_effects` — parses `opacity: <number | %>` into `ComputedStyle.opacity`
+  - `css_orchestrator::style::apply_layout_keywords` — parses `display`, `position`, `overflow`, `z-index`
+
+- Integration points:
+  - Upstream: `ComputedStyle.opacity` consumed by painter for subtree alpha.
+  - Downstream: `wgpu_renderer::DisplayItem::Opacity` multiplies quad alpha; no offscreen surfaces yet.
 
 ## Edge cases and conformance nuances
 

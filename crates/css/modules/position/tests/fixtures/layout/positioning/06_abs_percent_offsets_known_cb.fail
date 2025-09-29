@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Absolute: percent offsets with known CB height</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #cb { position: relative; width: 400px; height: 300px; background: #eef; }
+    #abs { position: absolute; left: 10%; top: 25%; width: 80px; height: 40px; background: #9fe; }
+  </style>
+</head>
+<body>
+  <div id="cb">
+    <div id="abs"></div>
+  </div>
+</body>
+</html>

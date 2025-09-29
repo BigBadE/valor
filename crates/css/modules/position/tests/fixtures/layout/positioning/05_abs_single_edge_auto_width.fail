@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Absolute: single edge + auto width (shrink-to-fit fallback)</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #cb { position: relative; width: 360px; height: 180px; background: #eee; }
+    /* Only left specified, width auto -> fallback to remaining CB extent per engine rules */
+    #abs { position: absolute; left: 40px; width: auto; top: 20px; height: 40px; background: #ece; }
+  </style>
+</head>
+<body>
+  <div id="cb">
+    <div id="abs"></div>
+  </div>
+</body>
+</html>

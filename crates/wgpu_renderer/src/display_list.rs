@@ -192,7 +192,7 @@ pub fn batch_display_list(
     let mut current_quads: Vec<Quad> = Vec::new();
     let mut scissor_stack: Vec<Scissor> = Vec::new();
     let mut current_scissor: Option<Scissor> = None;
-    let mut current_opacity: f32 = 1.0;
+    // Opacity is handled by group compositing in RenderState; do not scale here.
 
     let rect_to_scissor = |x: f32, y: f32, w: f32, h: f32| -> Scissor {
         let framebuffer_w = framebuffer_width.max(1);
@@ -236,8 +236,7 @@ pub fn batch_display_list(
                 height,
                 color,
             } => {
-                let mut rgba = *color;
-                rgba[3] *= current_opacity;
+                let rgba = *color;
                 if *width > 0.0 && *height > 0.0 {
                     current_quads.push(Quad {
                         x: *x,
@@ -280,9 +279,7 @@ pub fn batch_display_list(
                 let _ = scissor_stack.pop();
                 current_scissor = scissor_stack.iter().cloned().reduce(intersect);
             }
-            DisplayItem::Opacity { alpha } => {
-                current_opacity = *alpha;
-            }
+            DisplayItem::Opacity { .. } => { /* handled at a higher level */ }
             DisplayItem::Text { .. } => { /* handled separately by text subsystem */ }
         }
     }

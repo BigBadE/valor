@@ -149,6 +149,8 @@ pub struct ComputedStyle {
     pub line_height: Option<f32>,
     pub overflow: Overflow,
     pub position: Position,
+    /// Optional opacity multiplier in [0.0, 1.0]. None represents 1.0 (fully opaque).
+    pub opacity: Option<f32>,
     /// Floating behavior (CSS 2.2 §9.5). Exposed for blockification and clearance logic.
     pub float: Float,
     /// Clearance behavior (CSS 2.2 §9.5). Exposed for clearance and BFC decisions.

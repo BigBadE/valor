@@ -229,6 +229,9 @@ pub struct RenderState {
     surface_format: TextureFormat,
     render_format: TextureFormat,
     pipeline: RenderPipeline,
+    tex_pipeline: RenderPipeline,
+    tex_bind_layout: BindGroupLayout,
+    linear_sampler: Sampler,
     vertex_buffer: Buffer,
     vertex_count: u32,
     display_list: Vec<DrawRect>,
@@ -437,25 +440,8 @@ impl RenderState {
         let x1 = ((x + w) / fw) * 2.0 - 1.0;
         let y0 = 1.0 - (y / fh) * 2.0;
         let y1 = 1.0 - ((y + h) / fh) * 2.0;
-        // Convert sRGB inputs to linear; the sRGB render target will convert back on write.
-        let c = [
-            if color[0] <= 0.04045 {
-                color[0] / 12.92
-            } else {
-                ((color[0] + 0.055) / 1.055).powf(2.4)
-            },
-            if color[1] <= 0.04045 {
-                color[1] / 12.92
-            } else {
-                ((color[1] + 0.055) / 1.055).powf(2.4)
-            },
-            if color[2] <= 0.04045 {
-                color[2] / 12.92
-            } else {
-                ((color[2] + 0.055) / 1.055).powf(2.4)
-            },
-            color[3],
-        ];
+        // Pass through color; shader handles sRGB->linear conversion for blending.
+        let c = color;
         out.extend_from_slice(&[
             Vertex {
                 position: [x0, y0],
@@ -485,8 +471,63 @@ impl RenderState {
     }
 
     fn draw_layer(&mut self, pass: &mut RenderPass<'_>, dl: &DisplayList) {
-        // Draw rectangles using DL batching (no cache for per-layer path)
-        let batches = batch_display_list(dl, self.size.width, self.size.height);
+        self.draw_items_with_groups(pass, &dl.items);
+    }
+
+    fn draw_items_with_groups(&mut self, pass: &mut RenderPass<'_>, items: &[DisplayItem]) {
+        // Opacity-aware path with true nested groups.
+        let mut i = 0usize;
+        while i < items.len() {
+            if let DisplayItem::Opacity { alpha } = &items[i] && *alpha < 1.0 {
+                let end = self.find_opacity_group_end(items, i + 1);
+                let group_items = &items[i + 1..end];
+                let offscreen = self.render_items_to_offscreen(group_items);
+                let bounds = self
+                    .compute_items_bounds(group_items)
+                    .unwrap_or((0.0, 0.0, self.size.width as f32, self.size.height as f32));
+                self.draw_texture_quad(pass, &offscreen, *alpha, bounds);
+                i = end + 1;
+                continue;
+            }
+            let start = i;
+            let mut end = i;
+            while end < items.len() {
+                match &items[end] {
+                    DisplayItem::Opacity { alpha } if *alpha < 1.0 => break,
+                    _ => end += 1,
+                }
+            }
+            if start < end {
+                self.draw_items_batched(pass, &items[start..end]);
+            }
+            i = end;
+        }
+    }
+
+    #[inline]
+    fn find_opacity_group_end(&self, items: &[DisplayItem], start: usize) -> usize {
+        let mut depth = 1i32;
+        let mut j = start;
+        while j < items.len() {
+            match &items[j] {
+                DisplayItem::Opacity { alpha } if *alpha < 1.0 => depth += 1,
+                DisplayItem::Opacity { alpha } if *alpha >= 1.0 => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return j;
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        items.len() // fallback if unmatched
+    }
+
+    #[inline]
+    fn draw_items_batched(&mut self, pass: &mut RenderPass<'_>, items: &[DisplayItem]) {
+        let sub = DisplayList::from_items(items.to_vec());
+        let batches = batch_display_list(&sub, self.size.width, self.size.height);
         for b in batches.into_iter() {
             let mut vertices: Vec<Vertex> = Vec::with_capacity(b.quads.len() * 6);
             for q in b.quads.iter() {
@@ -508,6 +549,168 @@ impl RenderState {
             if !vertices.is_empty() {
                 pass.draw(0..(vertices.len() as u32), 0..1);
             }
+        }
+    }
+
+    // Render a slice of items into a transparent offscreen texture, returning its view.
+    fn render_items_to_offscreen(&mut self, items: &[DisplayItem]) -> TextureView {
+        let dl = DisplayList::from_items(items.to_vec());
+        // Choose a linear format for intermediate compositing to avoid sRGB round trips.
+        let offscreen_format = match self.render_format {
+            TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8Unorm,
+            TextureFormat::Bgra8UnormSrgb => TextureFormat::Bgra8Unorm,
+            other => other,
+        };
+        let tex = self.device.create_texture(&TextureDescriptor {
+            label: Some("opacity-group-offscreen"),
+            size: Extent3d {
+                width: self.size.width,
+                height: self.size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: offscreen_format,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&TextureViewDescriptor {
+            format: Some(offscreen_format),
+            ..Default::default()
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("opacity-offscreen-pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
+                        }),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            // Draw into offscreen using the same group-aware path (supports nested groups)
+            self.draw_items_with_groups(&mut pass, &dl.items);
+        }
+        self.queue.submit([encoder.finish()]);
+        view
+    }
+
+    fn draw_texture_quad(
+        &mut self,
+        pass: &mut RenderPass<'_>,
+        view: &TextureView,
+        alpha: f32,
+        bounds: Bounds, // x, y, w, h in px
+    ) {
+        // Build a small quad covering the full viewport with UVs 0..1
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct TexVertex {
+            pos: [f32; 2],
+            uv: [f32; 2],
+        }
+        let (x, y, w, h) = bounds;
+        let fw = self.size.width.max(1) as f32;
+        let fh = self.size.height.max(1) as f32;
+        let x0 = (x / fw) * 2.0 - 1.0;
+        let x1 = ((x + w) / fw) * 2.0 - 1.0;
+        let y0 = 1.0 - (y / fh) * 2.0;
+        let y1 = 1.0 - ((y + h) / fh) * 2.0;
+        // UVs map to sub-rect of the full offscreen texture
+        let u0 = x / fw;
+        let v0 = y / fh;
+        let u1 = (x + w) / fw;
+        let v1 = (y + h) / fh;
+        let verts = [
+            TexVertex { pos: [x0, y0], uv: [u0, v1] },
+            TexVertex { pos: [x1, y0], uv: [u1, v1] },
+            TexVertex { pos: [x1, y1], uv: [u1, v0] },
+            TexVertex { pos: [x0, y0], uv: [u0, v1] },
+            TexVertex { pos: [x1, y1], uv: [u1, v0] },
+            TexVertex { pos: [x0, y1], uv: [u0, v0] },
+        ];
+        let vb = self.device.create_buffer_init(&util::BufferInitDescriptor {
+            label: Some("opacity-quad-vertices"),
+            contents: bytemuck::cast_slice(&verts),
+            usage: BufferUsages::VERTEX,
+        });
+        // Create a tiny uniform buffer for alpha
+        let alpha_buf = self.device.create_buffer_init(&util::BufferInitDescriptor {
+            label: Some("opacity-alpha"),
+            contents: bytemuck::cast_slice(&[alpha]),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        });
+        // Bind group for texture + sampler + alpha
+        let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
+            label: Some("opacity-tex-bind"),
+            layout: &self.tex_bind_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&self.linear_sampler),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: alpha_buf.as_entire_binding(),
+                },
+            ],
+        });
+        // Constrain drawing to the group's bounds to avoid edge bleed and match compositing region.
+        pass.set_pipeline(&self.tex_pipeline);
+        let sx = x.max(0.0).floor() as u32;
+        let sy = y.max(0.0).floor() as u32;
+        let sw = w.max(0.0).ceil() as u32;
+        let sh = h.max(0.0).ceil() as u32;
+        let fw_u = self.size.width.max(1);
+        let fh_u = self.size.height.max(1);
+        let rx = sx.min(fw_u);
+        let ry = sy.min(fh_u);
+        let rw = sw.min(fw_u.saturating_sub(rx));
+        let rh = sh.min(fh_u.saturating_sub(ry));
+        pass.set_scissor_rect(rx, ry, rw, rh);
+        pass.set_vertex_buffer(0, vb.slice(..));
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..6, 0..1);
+    }
+
+    #[inline]
+    fn compute_items_bounds(&self, items: &[DisplayItem]) -> Option<Bounds> {
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for it in items {
+            if let DisplayItem::Rect { x, y, width, height, .. } = it
+                && *width > 0.0 && *height > 0.0
+            {
+                min_x = min_x.min(*x);
+                min_y = min_y.min(*y);
+                max_x = max_x.max(x + width);
+                max_y = max_y.max(y + height);
+            }
+        }
+        if min_x.is_finite() {
+            Some((min_x.max(0.0), min_y.max(0.0), (max_x - min_x).max(0.0), (max_y - min_y).max(0.0)))
+        } else {
+            None
         }
     }
 
@@ -647,6 +850,8 @@ impl RenderState {
         // Build pipeline and buffers now that formats are known
         let (pipeline, vertex_buffer, vertex_count) =
             build_pipeline_and_buffers(&device, render_format);
+        let (tex_pipeline, tex_bind_layout, linear_sampler) =
+            build_texture_pipeline(&device, render_format);
 
         // Initialize glyphon text subsystem
         let glyphon_cache_local = Cache::new(&device);
@@ -680,6 +885,9 @@ impl RenderState {
             surface_format,
             render_format,
             pipeline,
+            tex_pipeline,
+            tex_bind_layout,
+            linear_sampler,
             vertex_buffer,
             vertex_count,
             display_list: Vec::new(),
@@ -1106,7 +1314,18 @@ fn build_pipeline_and_buffers(
             entry_point: Some("fs_main"),
             targets: &[Some(ColorTargetState {
                 format: render_format,
-                blend: Some(BlendState::ALPHA_BLENDING),
+                blend: Some(BlendState {
+                    color: BlendComponent {
+                        src_factor: BlendFactor::SrcAlpha,
+                        dst_factor: BlendFactor::OneMinusSrcAlpha,
+                        operation: BlendOperation::Add,
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::One,
+                        dst_factor: BlendFactor::OneMinusSrcAlpha,
+                        operation: BlendOperation::Add,
+                    },
+                }),
                 write_mask: ColorWrites::ALL,
             })],
             compilation_options: Default::default(),
@@ -1139,6 +1358,115 @@ fn build_pipeline_and_buffers(
     (pipeline, vertex_buffer, vertices.len() as u32)
 }
 
+fn build_texture_pipeline(
+    device: &Device,
+    render_format: TextureFormat,
+) -> (RenderPipeline, BindGroupLayout, Sampler) {
+    let shader = device.create_shader_module(ShaderModuleDescriptor {
+        label: Some("texture-shader"),
+        source: ShaderSource::Wgsl(Cow::Borrowed(TEX_SHADER_WGSL)),
+    });
+    let bind_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some("tex-bind-layout"),
+        entries: &[
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Texture {
+                    sample_type: TextureSampleType::Float { filterable: true },
+                    view_dimension: TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some("tex-pipeline-layout"),
+        bind_group_layouts: &[&bind_layout],
+        push_constant_ranges: &[],
+    });
+    let vbuf = [VertexBufferLayout {
+        array_stride: (std::mem::size_of::<f32>() as BufferAddress) * 4,
+        step_mode: VertexStepMode::Vertex,
+        attributes: &[
+            VertexAttribute {
+                format: VertexFormat::Float32x2,
+                offset: 0,
+                shader_location: 0,
+            },
+            VertexAttribute {
+                format: VertexFormat::Float32x2,
+                offset: 8,
+                shader_location: 1,
+            },
+        ],
+    }];
+    let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+        label: Some("texture-pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &vbuf,
+            compilation_options: Default::default(),
+        },
+        primitive: PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: MultisampleState::default(),
+        fragment: Some(FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(ColorTargetState {
+                format: render_format,
+                blend: Some(BlendState {
+                    color: BlendComponent {
+                        src_factor: BlendFactor::SrcAlpha,
+                        dst_factor: BlendFactor::OneMinusSrcAlpha,
+                        operation: BlendOperation::Add,
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::One,
+                        dst_factor: BlendFactor::OneMinusSrcAlpha,
+                        operation: BlendOperation::Add,
+                    },
+                }),
+                write_mask: ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        multiview: None,
+        cache: None,
+    });
+    let sampler = device.create_sampler(&SamplerDescriptor {
+        label: Some("linear-sampler"),
+        mag_filter: FilterMode::Linear,
+        min_filter: FilterMode::Linear,
+        mipmap_filter: FilterMode::Nearest,
+        address_mode_u: AddressMode::ClampToEdge,
+        address_mode_v: AddressMode::ClampToEdge,
+        address_mode_w: AddressMode::ClampToEdge,
+        ..Default::default()
+    });
+    (pipeline, bind_layout, sampler)
+}
+
 /// Vertex data used by the simple pipeline.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1147,7 +1475,10 @@ struct Vertex {
     color: [f32; 4],
 }
 
-/// Minimal WGSL shader that passes through a colored triangle with alpha.
+/// Pixel bounds (x, y, width, height)
+type Bounds = (f32, f32, f32, f32);
+
+/// Minimal WGSL shader that converts sRGB vertex colors to linear for correct blending into an sRGB target.
 const SHADER_WGSL: &str = r#"
 struct VertexOut {
     @builtin(position) pos: vec4<f32>,
@@ -1164,6 +1495,40 @@ fn vs_main(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> V
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    return in.color;
+    // Convert sRGB -> linear for correct blending when render target is *Srgb
+    let c = in.color;
+    let rgb = c.xyz;
+    let lo = rgb / 12.92;
+    let hi = pow((rgb + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    let t = step(vec3<f32>(0.04045), rgb);
+    let linear_rgb = mix(lo, hi, t);
+    return vec4<f32>(linear_rgb, c.w);
+}
+"#;
+
+/// WGSL for textured quad with external alpha multiplier.
+const TEX_SHADER_WGSL: &str = r#"
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@group(0) @binding(0) var t_color: texture_2d<f32>;
+@group(0) @binding(1) var t_sampler: sampler;
+@group(0) @binding(2) var<uniform> u_alpha: f32;
+
+@vertex
+fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>) -> VsOut {
+    var out: VsOut;
+    out.pos = vec4<f32>(pos, 0.0, 1.0);
+    out.uv = uv;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(t_color, t_sampler, in.uv);
+    // Apply group opacity in non-premultiplied form: scale alpha only.
+    return vec4<f32>(c.rgb, c.a * u_alpha);
 }
 "#;

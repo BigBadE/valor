@@ -36,10 +36,12 @@ The main page uses:
   - Typography: numeric `font-size`, `line-height` (numeric) parsing/computation
   - Flexbox [Production]: §§2–4 and §§7–9 — axes resolution; single- and multi-line layout (row/column); per-line `justify-content` (start/center/end/space-between/around/evenly); `gap` (row/column, px and %); `align-items` (stretch/center/start/end); `align-content` (start/center/end/space-between/around/evenly; stretch implemented); auto margins distribution (single- and multi-line); absolutely-positioned flex children placement (§4.1); overflow Hidden/Clip/Auto/Scroll padding-box clipping (Hidden also clamps content height); and writing-mode plumbing (HorizontalTb/VerticalRl/VerticalLr)
   - **css_core · sizing**: Percent/relative heights (e.g., `height: 100%` on root)
+  - **display/painter · stacking**: z-index painter stacking buckets (negative → normal → positioned auto/0 → positive), with sorting by z-index within buckets and stable DOM order as a tie-breaker
+  - **display/painter · opacity [MVP]**: subtree alpha via `opacity` parsing; painter emits `Opacity` before subtree and resets after
 
 - Partial / Caveats (by module)
   - **css_core · box model**: `box-sizing` edge cases (tracked)
-  - **display/painter · stacking**: `z-index` parsed/stored; full stacking/painting order not finalized
+  - **display/painter · stacking contexts**: positioned (absolute/fixed) integrated into stacking buckets; stacking contexts from opacity/transform not finalized (no offscreen compositing yet)
 
 - Missing / Not wired (by module)
   - **position**: `position: fixed`; roadmap for absolute/sticky
@@ -161,10 +163,10 @@ The main page uses:
 - Status: Partial
 - Impacted selectors:
   - `.topbar { z-index: 9999; }`
-- Current behavior: `z_index` is parsed/stored but full stacking/painting order may not be reliable.
+- Current behavior: Painter applies CSS 2.2-style 4-bucket z-index stacking with stable DOM order within buckets. Remaining: positioned (absolute/fixed) integration and stacking contexts from opacity/transform.
 - Next steps:
-  - Define stacking context creation (positioned, opacity/transform when added later, root) and implement a painter pass that sorts by z-index within contexts.
-  - Add fixtures covering overlap and z-ordering.
+  - Implement positioning integration (absolute/fixed) and stacking context creation (opacity/transform when added) and sort by z-index within contexts.
+  - Add fixtures covering overlap and z-ordering across buckets and contexts.
 
 ### 11) Fonts and shorthand application
 - Status: Partial (font-family system and metrics pending broader Fonts module)

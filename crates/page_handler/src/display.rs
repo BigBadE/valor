@@ -222,14 +222,25 @@ fn z_key_for_child(
         }
         found
     };
-    let (_pos, zi) = style
+    let (pos, zi_opt) = style
         .map(|cs| (cs.position, cs.z_index))
         .unwrap_or((Position::Static, None));
-    let bucket: i32 = match zi {
-        Some(v) if v < 0 => -1,
-        Some(v) if v > 0 => 1,
-        Some(_) | None => 0,
+    // CSS 2.2 stacking order (simplified):
+    //  - Negative z-index positioned descendants behind
+    //  - Normal flow (non-positioned)
+    //  - Positioned with z-index auto/0
+    //  - Positive z-index positioned descendants on top
+    let positioned = !matches!(pos, Position::Static);
+    let bucket: i32 = if positioned {
+        match zi_opt {
+            Some(v) if v < 0 => -2,
+            Some(v) if v > 0 => 2,
+            Some(_) | None => 1,
+        }
+    } else {
+        0
     };
+    // Sort by bucket first, then DOM order within each bucket.
     (bucket, child.0)
 }
 
@@ -592,13 +603,14 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
     ) -> Vec<NodeKey> {
         let mut ordered: Vec<NodeKey> = children.to_vec();
         ordered.sort_by_key(|c| {
-            z_key_for_child(
+            let (bucket, dom) = z_key_for_child(
                 *c,
                 parent_map,
                 computed_map,
                 computed_fallback,
                 computed_robust,
-            )
+            );
+            (bucket, dom)
         });
         ordered
     }
@@ -642,6 +654,24 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     .or_else(|| ctx.computed_fallback.get(&node))
                     .or_else(|| ctx.computed_map.get(&node));
                 if let Some(rect) = rect_opt {
+                    // If this node (or nearest style) specifies opacity < 1, push an opacity scope
+                    let style_for_node_opacity = cs_opt.or_else(|| {
+                        nearest_style(
+                            node,
+                            ctx.parent_map,
+                            ctx.computed_map,
+                            ctx.computed_fallback,
+                            ctx.computed_robust,
+                        )
+                    });
+                    let mut opened_opacity = false;
+                    if let Some(cs) = style_for_node_opacity
+                        && let Some(alpha) = cs.opacity
+                        && alpha < 1.0
+                    {
+                        list.push(DisplayItem::Opacity { alpha });
+                        opened_opacity = true;
+                    }
                     // Background fill from computed styles; only paint if non-transparent
                     let fill_rgba_opt = cs_opt.map(|cs| {
                         let bg = cs.background_color;
@@ -710,12 +740,35 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     }
                     // Always recurse into children, independent of having a rect
                     process_children(list, node, ctx);
+                    if opened_opacity {
+                        list.push(DisplayItem::Opacity { alpha: 1.0 });
+                    }
                     if opened_clip {
                         list.push(DisplayItem::EndClip);
                     }
                 } else {
-                    // No rect for this block: still recurse into children
+                    // No rect for this block: still recurse into children; apply opacity if present
+                    let style_for_node_opacity = cs_opt.or_else(|| {
+                        nearest_style(
+                            node,
+                            ctx.parent_map,
+                            ctx.computed_map,
+                            ctx.computed_fallback,
+                            ctx.computed_robust,
+                        )
+                    });
+                    let mut opened_opacity = false;
+                    if let Some(cs) = style_for_node_opacity
+                        && let Some(alpha) = cs.opacity
+                        && alpha < 1.0
+                    {
+                        list.push(DisplayItem::Opacity { alpha });
+                        opened_opacity = true;
+                    }
                     process_children(list, node, ctx);
+                    if opened_opacity {
+                        list.push(DisplayItem::Opacity { alpha: 1.0 });
+                    }
                 }
             }
             LayoutNodeKind::InlineText { text } => {
