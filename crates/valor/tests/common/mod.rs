@@ -374,33 +374,6 @@ pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
     Ok(unique)
 }
 
-/// Discover all .html files under each crate's tests/fixtures/graphics directory recursively.
-pub fn graphics_fixture_html_files() -> Result<Vec<PathBuf>> {
-    let mut files: Vec<PathBuf> = Vec::new();
-    // Valor crate local graphics fixtures
-    let local = fixtures_dir().join("graphics");
-    if local.exists() {
-        collect_html_recursively(&local, &mut files)?;
-    }
-    // Include graphics fixtures from every crate in the workspace
-    for root in workspace_crate_graphics_fixture_roots() {
-        collect_html_recursively(&root, &mut files)?;
-    }
-    // Keep only files that are under a subdirectory of a fixtures folder (not directly under .../fixtures).
-    files.retain(|p| {
-        p.parent()
-            .and_then(|d| d.parent().map(|pp| (pp.file_name(), d.file_name())))
-            .map(|(pp_name, d_name)| {
-                let is_under_fixtures = pp_name.map(|n| n == "fixtures").unwrap_or(false);
-                let not_directly_under_fixtures = d_name.map(|n| n != "fixtures").unwrap_or(false);
-                is_under_fixtures && not_directly_under_fixtures
-            })
-            .unwrap_or(false)
-    });
-    files.sort();
-    Ok(files)
-}
-
 /// Convert a local file Path to a file:// Url, after canonicalizing when possible.
 pub fn to_file_url(p: &Path) -> Result<Url> {
     let canonical = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());

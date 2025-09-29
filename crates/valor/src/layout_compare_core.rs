@@ -83,7 +83,7 @@ pub fn run(filter: Option<String>) -> Result<usize, Error> {
         })?;
         if !finished {
             let msg = "Parsing did not finish".to_string();
-            eprintln!("[LAYOUT] {display_name} ... FAILED: {msg}");
+            error!("[LAYOUT] {display_name} ... FAILED: {msg}");
             failed.push((display_name.clone(), msg));
             continue;
         }

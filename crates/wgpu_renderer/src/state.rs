@@ -6,6 +6,7 @@ use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Cache, Color as GlyphonColor, FontSystem, Metrics, Resolution,
     Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
+use log::debug;
 use std::borrow::Cow;
 use std::sync::Arc;
 use tracing::info_span;
@@ -661,12 +662,8 @@ impl RenderState {
         let tex_width = (width.ceil() as u32).max(1);
         let tex_height = (height.ceil() as u32).max(1);
 
-        // Choose linear format for intermediate compositing to avoid sRGB round trips
-        let offscreen_format = match self.render_format {
-            TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8Unorm,
-            TextureFormat::Bgra8UnormSrgb => TextureFormat::Bgra8Unorm,
-            other => other,
-        };
+        // Use the same render format as the main pipeline to ensure pipeline compatibility
+        let offscreen_format = self.render_format;
 
         // Get texture from pool or create new one with tight bounds
         let texture =
@@ -840,10 +837,10 @@ impl RenderState {
             contents: bytemuck::cast_slice(&verts),
             usage: BufferUsages::VERTEX,
         });
-        // Create a tiny uniform buffer for alpha
+        // Create a tiny uniform buffer for alpha (std140-like padded to 16 bytes)
         let alpha_buf = self.device.create_buffer_init(&util::BufferInitDescriptor {
             label: Some("opacity-alpha"),
-            contents: bytemuck::cast_slice(&[alpha]),
+            contents: bytemuck::cast_slice(&[alpha, 0.0f32, 0.0f32, 0.0f32]),
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
         // Bind group for texture + sampler + alpha
@@ -1286,18 +1283,16 @@ impl RenderState {
             areas,
             &mut self.swash_cache,
         );
-        if cfg!(debug_assertions) {
-            eprintln!(
-                "glyphon_prepare: areas={areas_count} viewport={framebuffer_width}x{framebuffer_height} result={prep_res:?}"
-            );
-        }
+        debug!(
+            target: "wgpu_renderer",
+            "glyphon_prepare: areas={areas_count} viewport={framebuffer_width}x{framebuffer_height} result={prep_res:?}"
+        );
         let elapsed_ms = start.elapsed().as_millis() as u64;
-        if cfg!(debug_assertions) {
-            eprintln!(
-                "glyphon_prepare: text_items={} time_ms={elapsed_ms}",
-                self.text_list.len()
-            );
-        }
+        debug!(
+            target: "wgpu_renderer",
+            "glyphon_prepare: text_items={} time_ms={elapsed_ms}",
+            self.text_list.len()
+        );
     }
 
     fn glyphon_prepare_for(&mut self, items: &[DrawText]) {
@@ -1359,16 +1354,15 @@ impl RenderState {
             areas,
             &mut self.swash_cache,
         );
-        if cfg!(debug_assertions) {
-            eprintln!(
-                "glyphon_prepare_for: items={} areas={} viewport={}x{} result={:?}",
-                items.len(),
-                areas_len,
-                framebuffer_width,
-                framebuffer_height,
-                prep_res
-            );
-        }
+        debug!(
+            target: "wgpu_renderer",
+            "glyphon_prepare_for: items={} areas={} viewport={}x{} result={:?}",
+            items.len(),
+            areas_len,
+            framebuffer_width,
+            framebuffer_height,
+            prep_res
+        );
     }
 
     /// Render a frame by clearing and drawing quads from the current display list.
@@ -1546,9 +1540,10 @@ fn build_pipeline_and_buffers(
             entry_point: Some("fs_main"),
             targets: &[Some(ColorTargetState {
                 format: render_format,
+                // Premultiplied alpha blending; shader outputs premultiplied color
                 blend: Some(BlendState {
                     color: BlendComponent {
-                        src_factor: BlendFactor::SrcAlpha,
+                        src_factor: BlendFactor::One,
                         dst_factor: BlendFactor::OneMinusSrcAlpha,
                         operation: BlendOperation::Add,
                     },
@@ -1747,7 +1742,8 @@ struct VsOut {
 
 @group(0) @binding(0) var t_color: texture_2d<f32>;
 @group(0) @binding(1) var t_sampler: sampler;
-@group(0) @binding(2) var<uniform> u_alpha: f32;
+struct Params { alpha: f32, _pad0: vec3<f32> };
+@group(0) @binding(2) var<uniform> u_params: Params;
 
 @vertex
 fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>) -> VsOut {
@@ -1760,7 +1756,8 @@ fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>) -> VsOut {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let c = textureSample(t_color, t_sampler, in.uv);
-    // Apply group opacity by scaling the alpha; blending uses SrcAlpha so color is scaled during blend.
-    return vec4<f32>(c.rgb, c.a * u_alpha);
+    let a = u_params.alpha;
+    // Straight alpha compositing: scale color by group alpha and set output alpha to group alpha.
+    return vec4<f32>(c.rgb * a, a);
 }
 "#;

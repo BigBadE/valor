@@ -3,7 +3,7 @@ use css::layout_helpers::{collapse_whitespace, reorder_bidi_for_display};
 use css::style_types::{BorderStyle, ComputedStyle, Overflow, Position};
 use css_core::{LayoutNodeKind, LayoutRect};
 use js::NodeKey;
-use log::warn;
+use log::{debug, warn};
 use std::collections::HashMap;
 use wgpu_renderer::display_list::StackingContextBoundary;
 use wgpu_renderer::{DisplayItem, DisplayList};
@@ -816,14 +816,10 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
         parent_map: &parent_map,
     };
     recurse(&mut list, NodeKey::ROOT, &ctx);
-
-    #[cfg(debug_assertions)]
-    {
-        eprintln!(
-            "[DL DEBUG] build_retained produced items={}",
-            list.items.len()
-        );
-    }
+    debug!(
+        "[DL DEBUG] build_retained produced items={}",
+        list.items.len()
+    );
 
     if let Some((x0, y0, x1, y1)) = selection_overlay {
         let sel_x = x0.min(x1) as f32;

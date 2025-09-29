@@ -1,14 +1,14 @@
 #![allow(dead_code)]
 use anyhow::{Result, anyhow};
 use headless_chrome::{
-    Browser, LaunchOptionsBuilder, protocol::cdp::Page::CaptureScreenshotFormatOption,
+    Browser, LaunchOptionsBuilder, Tab, protocol::cdp::Page::CaptureScreenshotFormatOption,
 };
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use wgpu_renderer::display_list::batch_display_list;
 use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
@@ -18,13 +18,12 @@ use winit::window::Window;
 
 mod common;
 
+// Fast compression for cached RGBA snapshots
+use zstd::bulk::{compress as zstd_compress, decompress as zstd_decompress};
+
 fn target_artifacts_dir() -> PathBuf {
     common::artifacts_subdir("graphics_artifacts")
 }
-
-// (no test-side color normalization; renderer returns RGBA)
-
-// Graphics fixtures are discovered across all crates by common::graphics_fixture_html_files()
 
 fn safe_stem(p: &Path) -> String {
     p.file_stem()
@@ -59,6 +58,7 @@ fn file_content_hash(path: &Path) -> u64 {
 
 fn cleanup_artifacts_for_hash(
     name: &str,
+    path_hash_hex: &str,
     out_dir: &Path,
     failing_dir: &Path,
     hash_hex: &str,
@@ -68,10 +68,13 @@ fn cleanup_artifacts_for_hash(
         for ent in entries.flatten() {
             let p = ent.path();
             if let Some(fname) = p.file_name().and_then(|n| n.to_str()) {
-                let is_this_fixture = fname.starts_with(&format!("{name}_"));
+                let prefix = format!("{name}_{path_hash_hex}_");
+                let is_this_fixture = fname.starts_with(&prefix);
                 let is_current_hash = fname.contains(&format!("_{hash_hex}_"))
-                    || fname.ends_with(&format!("_{hash_hex}_chrome.png"));
-                let is_stable_chrome = fname.ends_with("_chrome.png");
+                    || fname.ends_with(&format!("_{hash_hex}_chrome.png"))
+                    || fname.ends_with(&format!("_{hash_hex}_chrome.rgba.zst"));
+                let is_stable_chrome =
+                    fname.ends_with("_chrome.png") || fname.ends_with("_chrome.rgba.zst");
                 if is_this_fixture && is_stable_chrome && !is_current_hash {
                     let _ = fs::remove_file(p);
                 }
@@ -82,7 +85,8 @@ fn cleanup_artifacts_for_hash(
         for ent in entries.flatten() {
             let p = ent.path();
             if let Some(fname) = p.file_name().and_then(|n| n.to_str()) {
-                let is_this_fixture = fname.starts_with(&format!("{name}_"));
+                let prefix = format!("{name}_{path_hash_hex}_");
+                let is_this_fixture = fname.starts_with(&prefix);
                 let is_current_hash = fname.contains(&format!("_{hash_hex}_"));
                 if is_this_fixture && !is_current_hash {
                     let _ = fs::remove_file(p);
@@ -190,13 +194,7 @@ fn extract_text_masks(dl: &wgpu_renderer::DisplayList, width: u32, height: u32) 
     masks
 }
 
-fn capture_chrome_png(
-    browser: &Browser,
-    path: &Path,
-    _width: u32,
-    _height: u32,
-) -> Result<Vec<u8>> {
-    let tab = browser.new_tab()?;
+fn capture_chrome_png(tab: &Tab, path: &Path) -> Result<Vec<u8>> {
     let url = common::to_file_url(path)?;
     let url_string = url.as_str().to_owned();
     tab.navigate_to(&url_string)?;
@@ -289,12 +287,8 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
 
     // Route layouter cache to target dir and ensure artifacts dir is clean
     let _ = common::route_layouter_cache_to_target();
-    // If the graphics harness code changes, clear the entire graphics_artifacts dir to avoid stale outputs.
-    let harness_src = include_str!("graphics_chromium_compare.rs");
-    let out_dir =
-        common::clear_artifacts_subdir_if_harness_changed("graphics_artifacts", harness_src)?;
-    // Do not clear the entire artifacts directory on each run so previous failures remain inspectable.
-    // Just ensure the directory and a dedicated failing subdir exist.
+    // Route artifacts to target/graphics_artifacts and keep them across runs.
+    let out_dir = common::artifacts_subdir("graphics_artifacts");
     let _ = fs::create_dir_all(&out_dir);
     let failing_dir = out_dir.join("failing");
     // Clear failing artifacts on each run so they don't accumulate across runs.
@@ -309,22 +303,21 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
         return Ok(());
     }
 
-    let launch_opts = LaunchOptionsBuilder::default()
-        .headless(true)
-        .window_size(Some((800, 600)))
-        .idle_browser_timeout(std::time::Duration::from_secs(120))
-        .args(vec![
-            OsStr::new("--force-device-scale-factor=1"),
-            OsStr::new("--hide-scrollbars"),
-            OsStr::new("--blink-settings=imagesEnabled=false"),
-            OsStr::new("--disable-gpu"),
-            OsStr::new("--force-color-profile=sRGB"),
-        ])
-        .build()
-        .expect("Failed to build LaunchOptions for headless_chrome");
-    let browser = Browser::new(launch_opts).expect("Failed to launch headless Chrome browser");
+    // Lazily create the headless Chrome browser and a single tab only if a capture is required.
+    let mut browser: Option<Browser> = None;
+    let mut tab: Option<Arc<Tab>> = None;
 
     let mut any_failed = false;
+    // Aggregate timings across all fixtures
+    let mut agg_cache_io = Duration::ZERO; // read or write cached PNG
+    let mut agg_chrome_capture = Duration::ZERO; // headless Chrome screenshot
+    let mut agg_build_dl = Duration::ZERO; // build Valor display list
+    let mut agg_batch_dbg = Duration::ZERO; // batch_display_list debug step
+    let mut agg_raster = Duration::ZERO; // GPU rasterize to RGBA
+    let mut agg_png_decode = Duration::ZERO; // decode Chrome PNG to RGBA
+    let mut agg_equal_check = Duration::ZERO; // byte-for-byte equality check
+    let mut agg_masked_diff = Duration::ZERO; // masked per-pixel diff and diff image
+    let mut agg_fail_write = Duration::ZERO; // write failing artifacts
 
     for fixture in fixtures {
         let name = safe_stem(&fixture);
@@ -332,23 +325,112 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
         let canon = fixture.canonicalize().unwrap_or_else(|_| fixture.clone());
         let current_hash = file_content_hash(&canon);
         let hash_hex = format!("{:016x}", current_hash);
-        cleanup_artifacts_for_hash(&name, &out_dir, &failing_dir, &hash_hex)?;
-        let chrome_png = capture_chrome_png(&browser, &fixture, 800, 600)?;
-        // Always update a stable Chrome artifact only if contents changed
-        let stable_chrome = out_dir.join(format!("{name}_{hash_hex}_chrome.png"));
-        let _ = common::write_bytes_if_changed(&stable_chrome, &chrome_png)?;
-        // Decode Chrome PNG to RGBA8
-        let chrome_img = image::load_from_memory(&chrome_png)?.to_rgba8();
-        let (w, h) = chrome_img.dimensions();
-        // Build Valor display list (with viewport background) and rasterize to RGBA
+        let path_hash = fnv1a64_bytes(canon.to_string_lossy().as_bytes());
+        let path_hash_hex = format!("{:016x}", path_hash);
+        cleanup_artifacts_for_hash(&name, &path_hash_hex, &out_dir, &failing_dir, &hash_hex)?;
+
+        // Cached/stable decoded RGBA path with fast zstd compression (PNG is not cached)
+        let stable_chrome_rgba_zst =
+            out_dir.join(format!("{name}_{path_hash_hex}_{hash_hex}_chrome.rgba.zst"));
+        let t_cache_io_start = Instant::now();
+        // Ensure Chrome is available only if we need to capture
+        let chrome_img = if stable_chrome_rgba_zst.exists() {
+            // Read cached RGBA (compressed) directly
+            let zbytes = fs::read(&stable_chrome_rgba_zst)?;
+            agg_cache_io += t_cache_io_start.elapsed();
+            let expected = (784u32 * 453u32 * 4) as usize;
+            // Decompress and validate length
+            if let Ok(bytes) = zstd_decompress(&zbytes, expected) {
+                image::RgbaImage::from_raw(784, 453, bytes).unwrap_or_else(|| {
+                    image::RgbaImage::from_vec(784, 453, vec![0; expected]).unwrap()
+                })
+            } else {
+                // Corrupted cache; fall back to capture
+                if browser.is_none() {
+                    let launch_opts = LaunchOptionsBuilder::default()
+                        .headless(true)
+                        .window_size(Some((800, 600)))
+                        .idle_browser_timeout(std::time::Duration::from_secs(120))
+                        .args(vec![
+                            OsStr::new("--force-device-scale-factor=1"),
+                            OsStr::new("--hide-scrollbars"),
+                            OsStr::new("--blink-settings=imagesEnabled=false"),
+                            OsStr::new("--disable-gpu"),
+                            OsStr::new("--force-color-profile=sRGB"),
+                        ])
+                        .build()
+                        .expect("Failed to build LaunchOptions for headless_chrome");
+                    let b = Browser::new(launch_opts)
+                        .expect("Failed to launch headless Chrome browser");
+                    let t = b.new_tab().expect("Failed to create headless Chrome tab");
+                    tab = Some(t);
+                    browser = Some(b);
+                }
+                let t_cap = Instant::now();
+                let png_bytes = capture_chrome_png(tab.as_ref().expect("tab"), &fixture)?;
+                agg_chrome_capture += t_cap.elapsed();
+                let t_decode = Instant::now();
+                let img = image::load_from_memory(&png_bytes)?.to_rgba8();
+                agg_png_decode += t_decode.elapsed();
+                // Compress and write RGBA cache
+                let level = 1; // fast
+                let compressed = zstd_compress(img.as_raw(), level).unwrap_or_default();
+                let _ = fs::write(&stable_chrome_rgba_zst, compressed);
+                img
+            }
+        } else {
+            // Initialize browser on first cache miss
+            if browser.is_none() {
+                let launch_opts = LaunchOptionsBuilder::default()
+                    .headless(true)
+                    .window_size(Some((800, 600)))
+                    .idle_browser_timeout(std::time::Duration::from_secs(120))
+                    .args(vec![
+                        OsStr::new("--force-device-scale-factor=1"),
+                        OsStr::new("--hide-scrollbars"),
+                        OsStr::new("--blink-settings=imagesEnabled=false"),
+                        OsStr::new("--disable-gpu"),
+                        OsStr::new("--force-color-profile=sRGB"),
+                    ])
+                    .build()
+                    .expect("Failed to build LaunchOptions for headless_chrome");
+                let b =
+                    Browser::new(launch_opts).expect("Failed to launch headless Chrome browser");
+                let t = b.new_tab().expect("Failed to create headless Chrome tab");
+                tab = Some(t);
+                browser = Some(b);
+            }
+            let t_cap = Instant::now();
+            let png_bytes = capture_chrome_png(tab.as_ref().expect("tab"), &fixture)?;
+            agg_chrome_capture += t_cap.elapsed();
+            let t_decode = Instant::now();
+            let img = image::load_from_memory(&png_bytes)?.to_rgba8();
+            agg_png_decode += t_decode.elapsed();
+            // Compress and write RGBA cache for future runs
+            let level = 1; // fast
+            let compressed = zstd_compress(img.as_raw(), level).unwrap_or_default();
+            let _ = fs::write(&stable_chrome_rgba_zst, compressed);
+            img
+        };
+
+        // Known Chrome viewport size for our harness: 784x453.
+        let (w, h) = (784u32, 453u32);
+
+        // Build Valor display list
+        let t_build = Instant::now();
         let dl = build_valor_display_list_for(&fixture, w, h)?;
+        agg_build_dl += t_build.elapsed();
         debug!(
             "[GRAPHICS][DEBUG] {}: DL items={} (first 5: {:?})",
             name,
             dl.items.len(),
             dl.items.iter().take(5).collect::<Vec<_>>()
         );
+
+        // Batch debug (diagnostic)
+        let t_batch = Instant::now();
         let dbg_batches = batch_display_list(&dl, w, h);
+        agg_batch_dbg += t_batch.elapsed();
         let dbg_quads: usize = dbg_batches.iter().map(|b| b.quads.len()).sum();
         debug!(
             "[GRAPHICS][DEBUG] {}: batches={} total_quads={}",
@@ -356,63 +438,111 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
             dbg_batches.len(),
             dbg_quads
         );
-        let valor_img = rasterize_display_list_to_rgba(&dl, w, h);
 
-        let eps: u8 = 3;
-        // Ignore differences inside text bounds until GPU text capture is compared apples-to-apples
-        let masks = extract_text_masks(&dl, w, h);
-        let ctx = DiffCtx {
-            width: w,
-            height: h,
-            eps,
-            masks: &masks,
-        };
-        let (over, total) = per_pixel_diff_masked(chrome_img.as_raw(), &valor_img, &ctx);
-        let diff_ratio = (over as f64) / (total as f64);
-        // Allow a small tolerance for GPU AA/rounding differences
-        // Allow a slightly higher tolerance to account for minor rasterization differences
-        // across environments and recent layout shim refactors.
-        let allowed = 0.0125; // 1.25%
-        if diff_ratio > allowed {
-            let stamp = now_millis();
-            // Write failing artifacts under graphics_artifacts/failing with the hash included for deduping.
-            let base = failing_dir.join(format!("{name}_{hash_hex}_{stamp}"));
-            let chrome_path = base.with_extension("chrome.png");
-            let valor_path = base.with_extension("valor.png");
-            let diff_path = base.with_extension("diff.png");
-            let _ = fs::create_dir_all(failing_dir.clone());
-            common::write_png_rgba_if_changed(&chrome_path, chrome_img.as_raw(), w, h)?;
-            common::write_png_rgba_if_changed(&valor_path, &valor_img, w, h)?;
-            let diff_img = make_diff_image_masked(chrome_img.as_raw(), &valor_img, &ctx);
-            common::write_png_rgba_if_changed(&diff_path, &diff_img, w, h)?;
-            error!(
-                "[GRAPHICS] {} — pixel diffs found ({} over {}, {:.4}%); wrote\n  {}\n  {}\n  {}",
-                name,
-                over,
-                total,
-                diff_ratio * 100.0,
-                chrome_path.display(),
-                valor_path.display(),
-                diff_path.display()
-            );
-            any_failed = true;
-        } else if over > 0 {
-            info!(
-                "[GRAPHICS] {} — pixel diffs under tolerance ({} over {}, {:.4}% <= {:.2}%); accepting",
-                name,
-                over,
-                total,
-                diff_ratio * 100.0,
-                allowed * 100.0
-            );
+        // Rasterize Valor
+        let t_rast = Instant::now();
+        let valor_img = rasterize_display_list_to_rgba(&dl, w, h);
+        agg_raster += t_rast.elapsed();
+
+        // chrome_img is already prepared above as an RGBA image (possibly from cache)
+
+        // Exact equality short-circuit
+        let t_equal = Instant::now();
+        let mut skipped_diff = false;
+        if chrome_img.as_raw() == &valor_img {
+            agg_equal_check += t_equal.elapsed();
+            skipped_diff = true;
+        } else {
+            agg_equal_check += t_equal.elapsed();
+
+            let eps: u8 = 3;
+            // Ignore differences inside text bounds until GPU text capture is compared apples-to-apples
+            let masks = extract_text_masks(&dl, w, h);
+            let ctx = DiffCtx {
+                width: w,
+                height: h,
+                eps,
+                masks: &masks,
+            };
+            let t_diff = Instant::now();
+            let (over, total) = per_pixel_diff_masked(chrome_img.as_raw(), &valor_img, &ctx);
+            agg_masked_diff += t_diff.elapsed();
+            let diff_ratio = (over as f64) / (total as f64);
+            let allowed = 0.0125; // 1.25%
+            if diff_ratio > allowed {
+                let stamp = now_millis();
+                // Write failing artifacts under graphics_artifacts/failing with path+hash included for deduping.
+                let base = failing_dir.join(format!("{name}_{path_hash_hex}_{hash_hex}_{stamp}"));
+                let chrome_path = base.with_extension("chrome.png");
+                let valor_path = base.with_extension("valor.png");
+                let diff_path = base.with_extension("diff.png");
+                let t_write_fail = Instant::now();
+                let _ = fs::create_dir_all(failing_dir.clone());
+                common::write_png_rgba_if_changed(&chrome_path, chrome_img.as_raw(), w, h)?;
+                common::write_png_rgba_if_changed(&valor_path, &valor_img, w, h)?;
+                let diff_img = make_diff_image_masked(chrome_img.as_raw(), &valor_img, &ctx);
+                common::write_png_rgba_if_changed(&diff_path, &diff_img, w, h)?;
+                agg_fail_write += t_write_fail.elapsed();
+                error!(
+                    "[GRAPHICS] {} — pixel diffs found ({} over {}, {:.4}%); wrote\n  {}\n  {}\n  {}",
+                    name,
+                    over,
+                    total,
+                    diff_ratio * 100.0,
+                    chrome_path.display(),
+                    valor_path.display(),
+                    diff_path.display()
+                );
+                any_failed = true;
+            } else if over > 0 {
+                info!(
+                    "[GRAPHICS] {} — {} pixels over epsilon out of {} ({:.4}%)",
+                    name,
+                    over,
+                    total,
+                    diff_ratio * 100.0
+                );
+            } else {
+                info!("[GRAPHICS] {} — exact match within masked regions", name);
+            }
         }
+
+        // Per-fixture timing summary (always)
+        warn!(
+            "[GRAPHICS][TIMING] {}: cache_io={:?} chrome_capture={:?} build_dl={:?} batch_dbg={:?} raster={:?} png_decode={:?} equal_check={:?} masked_diff={:?} fail_write={:?} skipped_diff={}",
+            name,
+            agg_cache_io,
+            agg_chrome_capture,
+            agg_build_dl,
+            agg_batch_dbg,
+            agg_raster,
+            agg_png_decode,
+            agg_equal_check,
+            agg_masked_diff,
+            agg_fail_write,
+            skipped_diff
+        );
     }
 
+    // Aggregate timing summary across all fixtures
+    info!(
+        "[GRAPHICS][TIMING][TOTALS] cache_io={:?} chrome_capture={:?} build_dl={:?} batch_dbg={:?} raster={:?} png_decode={:?} equal_check={:?} masked_diff={:?} fail_write={:?}",
+        agg_cache_io,
+        agg_chrome_capture,
+        agg_build_dl,
+        agg_batch_dbg,
+        agg_raster,
+        agg_png_decode,
+        agg_equal_check,
+        agg_masked_diff,
+        agg_fail_write
+    );
+
     if any_failed {
-        return Err(anyhow!(
-            "graphics comparison found differences — see artifacts under {}/failing",
-            target_artifacts_dir().display()
-        ));
+        return Err(anyhow!(format!(
+            "graphics comparison found differences — see artifacts under {}",
+            failing_dir.display()
+        )));
     }
     Ok(())
 }

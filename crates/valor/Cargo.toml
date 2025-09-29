@@ -30,6 +30,7 @@ image.workspace = true
 
 [dev-dependencies]
 js.workspace = true
+zstd = "0.12"
 
 [features]
 # Default to V8 so existing behavior remains unchanged
