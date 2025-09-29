@@ -26,6 +26,8 @@ fn batch_texts_with_scissor(
     let mut stack: Vec<Scissor> = Vec::new();
     let mut current_scissor: Option<Scissor> = None;
     let mut current_texts: Vec<DrawText> = Vec::new();
+    let mut sc_stack_is_opacity: Vec<bool> = Vec::new();
+    let mut opacity_depth: usize = 0;
     for item in &dl.items {
         match item {
             DisplayItem::BeginClip {
@@ -53,6 +55,19 @@ fn batch_texts_with_scissor(
                 let _ = stack.pop();
                 current_scissor = stack.iter().cloned().reduce(intersect_scissor);
             }
+            DisplayItem::BeginStackingContext { boundary } => {
+                let is_opacity =
+                    matches!(boundary, StackingContextBoundary::Opacity { alpha } if *alpha < 1.0);
+                sc_stack_is_opacity.push(is_opacity);
+                if is_opacity {
+                    opacity_depth += 1;
+                }
+            }
+            DisplayItem::EndStackingContext => {
+                if sc_stack_is_opacity.pop().unwrap_or(false) && opacity_depth > 0 {
+                    opacity_depth -= 1;
+                }
+            }
             DisplayItem::Text {
                 x,
                 y,
@@ -61,14 +76,16 @@ fn batch_texts_with_scissor(
                 font_size,
                 bounds,
             } => {
-                current_texts.push(DrawText {
-                    x: *x,
-                    y: *y,
-                    text: text.clone(),
-                    color: *color,
-                    font_size: *font_size,
-                    bounds: *bounds,
-                });
+                if opacity_depth == 0 {
+                    current_texts.push(DrawText {
+                        x: *x,
+                        y: *y,
+                        text: text.clone(),
+                        color: *color,
+                        font_size: *font_size,
+                        bounds: *bounds,
+                    });
+                }
             }
             _ => {}
         }
@@ -133,6 +150,8 @@ fn batch_layer_texts_with_scissor(
         let mut stack: Vec<Scissor> = Vec::new();
         let mut current_scissor: Option<Scissor> = None;
         let mut current_texts: Vec<DrawText> = Vec::new();
+        let mut sc_stack_is_opacity: Vec<bool> = Vec::new();
+        let mut opacity_depth: usize = 0;
         for item in &dl.items {
             match item {
                 DisplayItem::BeginClip {
@@ -160,6 +179,18 @@ fn batch_layer_texts_with_scissor(
                     let _ = stack.pop();
                     current_scissor = stack.iter().cloned().reduce(intersect_scissor);
                 }
+                DisplayItem::BeginStackingContext { boundary } => {
+                    let is_opacity = matches!(boundary, StackingContextBoundary::Opacity { alpha } if *alpha < 1.0);
+                    sc_stack_is_opacity.push(is_opacity);
+                    if is_opacity {
+                        opacity_depth += 1;
+                    }
+                }
+                DisplayItem::EndStackingContext => {
+                    if sc_stack_is_opacity.pop().unwrap_or(false) && opacity_depth > 0 {
+                        opacity_depth -= 1;
+                    }
+                }
                 DisplayItem::Text {
                     x,
                     y,
@@ -169,14 +200,16 @@ fn batch_layer_texts_with_scissor(
                     bounds,
                 } => {
                     // Map to DrawText, keeping bounds and color as-is
-                    current_texts.push(DrawText {
-                        x: *x,
-                        y: *y,
-                        text: text.clone(),
-                        color: *color,
-                        font_size: *font_size,
-                        bounds: *bounds,
-                    });
+                    if opacity_depth == 0 {
+                        current_texts.push(DrawText {
+                            x: *x,
+                            y: *y,
+                            text: text.clone(),
+                            color: *color,
+                            font_size: *font_size,
+                            bounds: *bounds,
+                        });
+                    }
                 }
                 _ => {}
             }
@@ -211,16 +244,12 @@ fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
     None
 }
 
-/// Layer types for the simple compositor: order determines z-position.
 #[derive(Debug, Clone)]
 pub enum Layer {
     Background,
     Content(DisplayList),
     Chrome(DisplayList),
 }
-
-// Reduce type complexity for cached batch entries
-type BatchCacheEntry = (Option<(u32, u32, u32, u32)>, Buffer, u32);
 
 /// Texture pool for efficient reuse of offscreen textures in opacity groups.
 /// Spec: Performance optimization for stacking context rendering
@@ -314,20 +343,18 @@ pub struct RenderState {
     #[allow(dead_code)]
     glyphon_cache: Cache,
     viewport: Viewport,
-    /// Cached GPU buffers per retained-DL batch; reused when the DL is unchanged between frames.
-    cached_batches: Option<Vec<BatchCacheEntry>>,
-    /// Last retained display list used to populate the cache, for equality-based no-op detection.
-    last_retained_list: Option<DisplayList>,
-    /// Number of times retained-DL batches were rebuilt this session.
-    cache_builds: u64,
-    /// Number of times we reused cached batches without rebuilding.
-    cache_reuses: u64,
     /// Optional layers for multi-DL compositing; when non-empty, render() draws these instead of the single retained list.
     layers: Vec<Layer>,
     /// Clear color for the framebuffer (canvas background). RGBA in [0,1].
     clear_color: [f32; 4],
     /// Texture pool for efficient offscreen texture reuse
     texture_pool: TexturePool,
+    /// Persistent offscreen render target for readback-based renders
+    offscreen_tex: Option<Texture>,
+    /// Persistent readback buffer sized for current framebuffer (padded bytes-per-row)
+    readback_buf: Option<Buffer>,
+    readback_padded_bpr: u32,
+    readback_size: u64,
 }
 
 impl RenderState {
@@ -412,18 +439,10 @@ impl RenderState {
                     }
                 }
             } else if use_retained {
-                // Use (or build) cached GPU buffers for retained DL batches.
-                let need_rebuild = if let (Some(prev), Some(cur)) =
-                    (&self.last_retained_list, &self.retained_display_list)
-                {
-                    prev != cur
-                } else {
-                    true
-                };
-                if need_rebuild {
-                    self.rebuild_cached_batches();
+                // Draw retained display list via stacking-context-aware path so opacity groups work.
+                if let Some(dl) = self.retained_display_list.clone() {
+                    self.draw_layer(&mut pass, &dl);
                 }
-                self.draw_cached_batches(&mut pass, need_rebuild);
             } else {
                 // Immediate path: batch all rects into one draw call as before
                 let mut vertices: Vec<Vertex> = Vec::with_capacity(self.display_list.len() * 6);
@@ -670,8 +689,9 @@ impl RenderState {
             self.texture_pool
                 .get_or_create(&self.device, tex_width, tex_height, offscreen_format);
 
+        // For internally-created textures, leave view format as None to use the texture's own format.
         let view = texture.create_view(&TextureViewDescriptor {
-            format: Some(offscreen_format),
+            format: None,
             ..Default::default()
         });
 
@@ -941,67 +961,6 @@ impl RenderState {
         }
     }
 
-    fn rebuild_cached_batches(&mut self) {
-        if let Some(dl) = &self.retained_display_list {
-            let batches = batch_display_list(dl, self.size.width, self.size.height);
-            let mut cache: Vec<BatchCacheEntry> = Vec::with_capacity(batches.len());
-            for b in batches.into_iter() {
-                let mut vertices: Vec<Vertex> = Vec::with_capacity(b.quads.len() * 6);
-                for q in b.quads.iter() {
-                    self.push_rect_vertices_ndc(
-                        &mut vertices,
-                        [q.x, q.y, q.width, q.height],
-                        q.color,
-                    );
-                }
-                if vertices.is_empty() {
-                    cache.push((
-                        b.scissor,
-                        self.device.create_buffer(&BufferDescriptor {
-                            label: Some("empty-batch"),
-                            size: 4,
-                            usage: BufferUsages::VERTEX,
-                            mapped_at_creation: false,
-                        }),
-                        0,
-                    ));
-                } else {
-                    let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
-                    let vertex_buffer =
-                        self.device.create_buffer_init(&util::BufferInitDescriptor {
-                            label: Some("rect-batch"),
-                            contents: vertex_bytes,
-                            usage: BufferUsages::VERTEX,
-                        });
-                    cache.push((b.scissor, vertex_buffer, vertices.len() as u32));
-                }
-            }
-            self.cached_batches = Some(cache);
-            self.last_retained_list = self.retained_display_list.clone();
-            self.cache_builds = self.cache_builds.wrapping_add(1);
-        }
-    }
-
-    fn draw_cached_batches(&mut self, pass: &mut RenderPass<'_>, need_rebuild: bool) {
-        if let Some(ref cache) = self.cached_batches {
-            if !need_rebuild {
-                self.cache_reuses = self.cache_reuses.wrapping_add(1);
-            }
-            for (scissor_opt, buffer, count) in cache.iter() {
-                pass.set_vertex_buffer(0, buffer.slice(..));
-                match scissor_opt {
-                    Some((x, y, w, h)) => pass.set_scissor_rect(*x, *y, *w, *h),
-                    None => {
-                        pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1))
-                    }
-                }
-                if *count > 0 {
-                    pass.draw(0..*count, 0..1);
-                }
-            }
-        }
-    }
-
     /// Create the GPU device/surface and initialize a simple render pipeline.
     pub async fn new(window: Arc<Window>) -> RenderState {
         let instance = Instance::new(&InstanceDescriptor {
@@ -1010,7 +969,7 @@ impl RenderState {
         });
         let adapter = instance
             .request_adapter(&RequestAdapterOptions {
-                power_preference: Default::default(),
+                power_preference: PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: false,
             })
@@ -1127,13 +1086,13 @@ impl RenderState {
             text_renderer: text_renderer_local,
             glyphon_cache: glyphon_cache_local,
             viewport: viewport_local,
-            cached_batches: None,
-            last_retained_list: None,
-            cache_builds: 0,
-            cache_reuses: 0,
             layers: Vec::new(),
             clear_color: [1.0, 1.0, 1.0, 1.0],
             texture_pool: TexturePool::new(), // Pool initialized; reuse capacity managed internally
+            offscreen_tex: None,
+            readback_buf: None,
+            readback_padded_bpr: 0,
+            readback_size: 0,
         }
     }
 
@@ -1142,10 +1101,7 @@ impl RenderState {
         &self.window
     }
 
-    /// Return (cache_builds, cache_reuses) for retained display list batches.
-    pub fn cache_stats(&self) -> (u64, u64) {
-        (self.cache_builds, self.cache_reuses)
-    }
+    // cache_stats was removed with cached batch machinery.
 
     /// Set the framebuffer clear color (canvas background). RGBA in [0,1].
     pub fn set_clear_color(&mut self, rgba: [f32; 4]) {
@@ -1174,10 +1130,13 @@ impl RenderState {
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
         self.size = new_size;
         self.configure_surface();
-        // Invalidate cached batches and clear pooled textures to avoid size/format mismatches
-        self.cached_batches = None;
-        self.last_retained_list = None;
+        // Clear pooled textures to avoid size/format mismatches
         self.texture_pool.clear();
+        // Drop persistent readback/offscreen so they are recreated at next render
+        self.offscreen_tex = None;
+        self.readback_buf = None;
+        self.readback_padded_bpr = 0;
+        self.readback_size = 0;
     }
 
     /// Clear any compositor layers; subsequent render() will use the single retained list if set.
@@ -1205,10 +1164,6 @@ impl RenderState {
     /// When set, render() will prefer drawing directly from the retained list
     /// (with clip support) rather than the immediate lists.
     pub fn set_retained_display_list(&mut self, list: DisplayList) {
-        // Invalidate cached batches only if the list has changed
-        if self.last_retained_list.as_ref() != Some(&list) {
-            self.cached_batches = None;
-        }
         // Using a single retained display list implies no layered compositing this frame.
         self.layers.clear();
         self.retained_display_list = Some(list);
@@ -1387,28 +1342,38 @@ impl RenderState {
 
     /// Render a frame and return the framebuffer RGBA bytes using the exact same drawing path.
     pub fn render_to_rgba(&mut self) -> Result<Vec<u8>, anyhow::Error> {
-        // Always render to an offscreen texture so we can COPY_SRC safely.
+        // Always render to an offscreen texture so we can COPY_SRC safely. Reuse across calls.
         let mut encoder = self.device.create_command_encoder(&Default::default());
 
-        let offscreen = self.device.create_texture(&TextureDescriptor {
-            label: Some("offscreen-target"),
-            size: Extent3d {
-                width: self.size.width,
-                height: self.size.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: self.render_format,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = offscreen.create_view(&TextureViewDescriptor {
-            format: Some(self.render_format),
-            ..Default::default()
-        });
-        self.record_draw_passes(&view, &mut encoder);
+        // (Re)create offscreen texture/view if missing
+        let need_offscreen = self.offscreen_tex.is_none();
+        if need_offscreen {
+            let tex = self.device.create_texture(&TextureDescriptor {
+                label: Some("offscreen-target"),
+                size: Extent3d {
+                    width: self.size.width,
+                    height: self.size.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: self.render_format,
+                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            self.offscreen_tex = Some(tex);
+        }
+        // Create a transient view from the cached offscreen texture to avoid borrowing self immutably
+        let tmp_view = self
+            .offscreen_tex
+            .as_ref()
+            .expect("offscreen tex available")
+            .create_view(&TextureViewDescriptor {
+                format: Some(self.render_format),
+                ..Default::default()
+            });
+        self.record_draw_passes(&tmp_view, &mut encoder);
 
         // Read back with 256-byte aligned rows
         let width = self.size.width;
@@ -1417,21 +1382,37 @@ impl RenderState {
         let row_bytes = width * bpp;
         let padded_bpr = row_bytes.div_ceil(256) * 256;
         let buffer_size = (padded_bpr as u64) * (height as u64);
-        let readback = self.device.create_buffer(&BufferDescriptor {
-            label: Some("render-readback"),
-            size: buffer_size,
-            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        // (Re)create readback buffer if missing or bytes-per-row changed or too small
+        let need_readback = self.readback_buf.is_none()
+            || self.readback_padded_bpr != padded_bpr
+            || self.readback_size < buffer_size;
+        if need_readback {
+            let buf = self.device.create_buffer(&BufferDescriptor {
+                label: Some("render-readback"),
+                size: buffer_size,
+                usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            self.readback_buf = Some(buf);
+            self.readback_padded_bpr = padded_bpr;
+            self.readback_size = buffer_size;
+        }
+        let readback = self
+            .readback_buf
+            .as_ref()
+            .expect("readback buffer available");
         encoder.copy_texture_to_buffer(
             TexelCopyTextureInfo {
-                texture: &offscreen,
+                texture: self
+                    .offscreen_tex
+                    .as_ref()
+                    .expect("offscreen tex available"),
                 mip_level: 0,
                 origin: Origin3d::ZERO,
                 aspect: TextureAspect::All,
             },
             TexelCopyBufferInfo {
-                buffer: &readback,
+                buffer: readback,
                 layout: TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bpr),
