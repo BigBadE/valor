@@ -64,7 +64,7 @@ This information is now integrated directly into the verbatim spec sections belo
 
 - Integration points:
   - Upstream: `ComputedStyle.opacity` consumed by painter for subtree alpha.
-  - Downstream: `wgpu_renderer::DisplayItem::Opacity` multiplies quad alpha; no offscreen surfaces yet.
+  - Downstream: `renderer::DisplayItem::Opacity` multiplies quad alpha; no offscreen surfaces yet.
 
 ## Edge cases and conformance nuances
 
@@ -74,7 +74,7 @@ This information is now integrated directly into the verbatim spec sections belo
   - Status: [Production]
   - Spec: CSS Overflow 3 (applies to clipping), interoperable behavior aligned with Chromium
   - Code:
-    - `page_handler::display::build_text_list` — computes content-box `left_x` and `width_px` and passes bounds to `wgpu_renderer::DrawText` when `overflow: hidden`.
+    - `page_handler::display::build_text_list` — computes content-box `left_x` and `width_px` and passes bounds to `renderer::DrawText` when `overflow: hidden`.
   - Fixtures: covered indirectly by Chromium layout comparisons; dedicated overflow text fixtures TBD.
 
 ## Testing and fixtures

@@ -5,13 +5,11 @@ use log::{error, info};
 use page_handler::config::ValorConfig;
 use page_handler::events::KeyMods;
 use page_handler::state::HtmlPage;
-use renderer::{DisplayItem, DisplayList, StackingContextBoundary};
+use renderer::{DisplayItem, DisplayList, Layer, RenderState};
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use url::Url;
 use valor::factory::create_chrome_and_content;
-use wgpu_backend::display_list as backend_dl;
-use wgpu_backend::state::{Layer, RenderState};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -38,80 +36,6 @@ struct App {
 }
 
 impl App {
-    #[inline]
-    fn to_backend_display_list(dl: DisplayList) -> backend_dl::DisplayList {
-        let items = dl
-            .items
-            .into_iter()
-            .map(|it| match it {
-                DisplayItem::Rect {
-                    x,
-                    y,
-                    width,
-                    height,
-                    color,
-                } => backend_dl::DisplayItem::Rect {
-                    x,
-                    y,
-                    width,
-                    height,
-                    color,
-                },
-                DisplayItem::Text {
-                    x,
-                    y,
-                    text,
-                    color,
-                    font_size,
-                    bounds,
-                } => backend_dl::DisplayItem::Text {
-                    x,
-                    y,
-                    text,
-                    color,
-                    font_size,
-                    bounds,
-                },
-                DisplayItem::BeginClip {
-                    x,
-                    y,
-                    width,
-                    height,
-                } => backend_dl::DisplayItem::BeginClip {
-                    x,
-                    y,
-                    width,
-                    height,
-                },
-                DisplayItem::EndClip => backend_dl::DisplayItem::EndClip,
-                DisplayItem::BeginStackingContext { boundary } => {
-                    let b = match boundary {
-                        StackingContextBoundary::Opacity { alpha } => {
-                            backend_dl::StackingContextBoundary::Opacity { alpha }
-                        }
-                        StackingContextBoundary::Transform { matrix } => {
-                            backend_dl::StackingContextBoundary::Transform { matrix }
-                        }
-                        StackingContextBoundary::Filter { filter_id } => {
-                            backend_dl::StackingContextBoundary::Filter { filter_id }
-                        }
-                        StackingContextBoundary::Isolation => {
-                            backend_dl::StackingContextBoundary::Isolation
-                        }
-                        StackingContextBoundary::ZIndex { z } => {
-                            backend_dl::StackingContextBoundary::ZIndex { z }
-                        }
-                    };
-                    backend_dl::DisplayItem::BeginStackingContext { boundary: b }
-                }
-                DisplayItem::EndStackingContext => backend_dl::DisplayItem::EndStackingContext,
-            })
-            .collect();
-        backend_dl::DisplayList {
-            items,
-            generation: dl.generation,
-        }
-    }
     #[inline]
     fn set_canvas_background_from_content(state: &mut AppState) {
         if let Some(p) = state.pages.get_mut(1) {
@@ -154,10 +78,9 @@ impl App {
     #[inline]
     fn push_layer_opt(state: &mut AppState, layer: Layer, dl_opt: Option<DisplayList>) {
         if let Some(dl) = dl_opt {
-            let bdl = Self::to_backend_display_list(dl);
             match layer {
-                Layer::Content(_) => state.render_state.push_layer(Layer::Content(bdl)),
-                Layer::Chrome(_) => state.render_state.push_layer(Layer::Chrome(bdl)),
+                Layer::Content(_) => state.render_state.push_layer(Layer::Content(dl)),
+                Layer::Chrome(_) => state.render_state.push_layer(Layer::Chrome(dl)),
                 Layer::Background => { /* not used with dl here */ }
             }
         }
@@ -175,23 +98,19 @@ impl App {
                 let mut items = Vec::with_capacity(dl.items.len() + 1);
                 items.push(rect);
                 items.extend(dl.items);
-                let bdl = Self::to_backend_display_list(DisplayList::from_items(items));
-                render_state.push_layer(Layer::Content(bdl));
+                render_state.push_layer(Layer::Content(DisplayList::from_items(items)));
             }
             (Some(rect), Layer::Chrome(_)) => {
                 let mut items = Vec::with_capacity(dl.items.len() + 1);
                 items.push(rect);
                 items.extend(dl.items);
-                let bdl = Self::to_backend_display_list(DisplayList::from_items(items));
-                render_state.push_layer(Layer::Chrome(bdl));
+                render_state.push_layer(Layer::Chrome(DisplayList::from_items(items)));
             }
             (None, Layer::Content(_)) => {
-                let bdl = Self::to_backend_display_list(dl);
-                render_state.push_layer(Layer::Content(bdl));
+                render_state.push_layer(Layer::Content(dl));
             }
             (None, Layer::Chrome(_)) => {
-                let bdl = Self::to_backend_display_list(dl);
-                render_state.push_layer(Layer::Chrome(bdl));
+                render_state.push_layer(Layer::Chrome(dl));
             }
             _ => {}
         }
@@ -227,7 +146,7 @@ impl App {
             };
             Self::push_layer_with_bg(
                 &mut state.render_state,
-                Layer::Content(backend_dl::DisplayList::new()),
+                Layer::Content(DisplayList::new()),
                 Some(bg),
                 dl,
             );
@@ -248,7 +167,7 @@ impl App {
             };
             Self::push_layer_with_bg(
                 &mut state.render_state,
-                Layer::Chrome(backend_dl::DisplayList::new()),
+                Layer::Chrome(DisplayList::new()),
                 Some(bg),
                 dl,
             );

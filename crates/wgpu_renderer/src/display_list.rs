@@ -5,7 +5,7 @@
 //! - Diff two lists and submit only minimal updates to the renderer, and
 //! - Keep a stable, engine-agnostic representation for later compositing.
 
-use crate::renderer::{DrawRect, DrawText};
+use ::renderer::renderer::{DrawRect, DrawText};
 
 /// Framebuffer pixel bounds for text (left, top, right, bottom).
 pub type TextBoundsPx = (i32, i32, i32, i32);

@@ -13,11 +13,10 @@ env_logger.workspace = true
 anyhow.workspace = true
 
 page_handler.workspace = true
-wgpu_backend.workspace = true
+renderer.workspace = true
 js.workspace = true
 css_core.workspace = true
 css.workspace = true
-renderer.workspace = true
 
 # Needed by layout compare bin/core
 html.workspace = true

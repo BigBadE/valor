@@ -1,6 +1,6 @@
 use page_handler::state::HtmlPage;
+use renderer::RenderState;
 use tokio::runtime::Runtime;
-use wgpu_backend::state::RenderState;
 
 /// Global application state owned by the winit ApplicationHandler.
 /// Holds the async runtime, renderer, and all active pages (index 0 = chrome, 1 = content).

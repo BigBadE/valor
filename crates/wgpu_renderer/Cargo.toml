@@ -13,3 +13,4 @@ glyphon.workspace = true
 tracing.workspace = true
 pollster = "0.3"
 log.workspace = true
+renderer = { path = "../renderer" }
