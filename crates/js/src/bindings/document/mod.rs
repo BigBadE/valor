@@ -17,11 +17,12 @@ use crate::NodeKey;
 
 pub use core::{
     build_append_child, build_append_style_text, build_create_element, build_create_text_node,
-    build_create_text_node_root, build_get_attribute, build_get_inner_html,
-    build_remove_attribute, build_remove_node, build_set_attribute, build_set_inner_html,
-    build_set_text_content,
+    build_create_text_node_root, build_get_inner_html, build_remove_node, build_set_inner_html,
 };
 pub use network::{build_net_request, build_net_request_poll};
+pub use query::{
+    build_get_attribute, build_remove_attribute, build_set_attribute, build_set_text_content,
+};
 pub use query::{
     build_get_child_index, build_get_children_keys, build_get_element_by_id,
     build_get_elements_by_class_name, build_get_elements_by_tag_name, build_get_parent_key,
