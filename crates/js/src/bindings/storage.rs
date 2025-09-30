@@ -10,7 +10,7 @@ pub struct StorageRegistry {
 impl StorageRegistry {
     #[inline]
     pub fn get_bucket_mut(&mut self, origin: &str) -> &mut BTreeMap<String, String> {
-        self.buckets.entry(origin.to_string()).or_default()
+        self.buckets.entry(origin.to_owned()).or_default()
     }
     #[inline]
     pub fn get_bucket(&self, origin: &str) -> Option<&BTreeMap<String, String>> {

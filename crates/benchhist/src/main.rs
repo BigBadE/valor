@@ -1,8 +1,10 @@
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+use serde_json::from_slice;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::time::Instant;
 
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
@@ -10,12 +12,15 @@ struct Snapshot {
     note: String,
 }
 
+/// Return the path to the benchmarks/history directory.
 fn history_dir() -> PathBuf {
-    let mut p = PathBuf::from("benchmarks");
-    p.push("history");
-    p
+    PathBuf::from("benchmarks").join("history")
 }
 
+/// Ensure the history directory exists, creating it if necessary.
+///
+/// # Errors
+/// Returns an error if the directory cannot be created.
 fn ensure_history_dir() -> Result<PathBuf> {
     let dir = history_dir();
     if !dir.exists() {
@@ -24,23 +29,29 @@ fn ensure_history_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Save a snapshot baseline with the given name.
+///
+/// # Errors
+/// Returns an error if the snapshot cannot be saved.
 fn cmd_save(name: &str) -> Result<()> {
     let dir = ensure_history_dir()?;
-    let mut path = dir;
-    path.push(format!("{name}.json"));
+    let path = dir.join(format!("{name}.json"));
     let snap = Snapshot {
-        timestamp_ms: std::time::Instant::now().elapsed().as_millis(),
-        note: "placeholder snapshot".to_string(),
+        timestamp_ms: Instant::now().elapsed().as_millis(),
+        note: "placeholder snapshot".to_owned(),
     };
     let data = serde_json::to_vec_pretty(&snap)?;
     fs::write(&path, data)?;
-    println!("Saved baseline to {}", path.display());
+    eprintln!("Saved baseline to {}", path.display());
     Ok(())
 }
 
+/// Compare current benchmarks against a saved baseline.
+///
+/// # Errors
+/// Returns an error if the baseline cannot be loaded or compared.
 fn cmd_compare(baseline: &str, _threshold: Option<f32>) -> Result<()> {
-    let mut path = history_dir();
-    path.push(format!("{baseline}.json"));
+    let path = history_dir().join(format!("{baseline}.json"));
     if !path.exists() {
         return Err(anyhow!(
             "baseline '{}' not found at {}",
@@ -49,18 +60,23 @@ fn cmd_compare(baseline: &str, _threshold: Option<f32>) -> Result<()> {
         ));
     }
     let data = fs::read(&path)?;
-    let _snap: Snapshot = serde_json::from_slice(&data)?;
+    let _snap: Snapshot = from_slice(&data)?;
     // Placeholder: always pass
-    println!("Comparison against baseline '{baseline}' passed (placeholder)");
+    eprintln!("Comparison against baseline '{baseline}' passed (placeholder)");
     Ok(())
 }
 
+/// Print usage information to stderr.
 fn print_usage() {
     eprintln!(
         "Usage:\n  benchhist save --name <BASELINE>\n  benchhist compare --baseline <BASELINE> [--threshold <PERCENT>]"
     );
 }
 
+/// Main entry point for the benchhist CLI tool.
+///
+/// # Errors
+/// Returns an error if command parsing or execution fails.
 fn main() -> Result<()> {
     let mut args: Vec<String> = env::args().skip(1).collect();
     if args.is_empty() {
@@ -71,19 +87,19 @@ fn main() -> Result<()> {
     match cmd.as_str() {
         "save" => {
             let mut name_opt: Option<String> = None;
-            let mut i = 0;
-            while i < args.len() {
-                match args[i].as_str() {
+            let mut index = 0;
+            while index < args.len() {
+                match args[index].as_str() {
                     "--name" => {
-                        if i + 1 < args.len() {
-                            name_opt = Some(args[i + 1].clone());
-                            i += 2;
+                        if index + 1 < args.len() {
+                            name_opt = Some(args[index + 1].clone());
+                            index += 2;
                         } else {
                             break;
                         }
                     }
                     _ => {
-                        i += 1;
+                        index += 1;
                     }
                 }
             }
@@ -93,27 +109,27 @@ fn main() -> Result<()> {
         "compare" => {
             let mut baseline_opt: Option<String> = None;
             let mut threshold_opt: Option<f32> = None;
-            let mut i = 0;
-            while i < args.len() {
-                match args[i].as_str() {
+            let mut index = 0;
+            while index < args.len() {
+                match args[index].as_str() {
                     "--baseline" => {
-                        if i + 1 < args.len() {
-                            baseline_opt = Some(args[i + 1].clone());
-                            i += 2;
+                        if index + 1 < args.len() {
+                            baseline_opt = Some(args[index + 1].clone());
+                            index += 2;
                         } else {
                             break;
                         }
                     }
                     "--threshold" => {
-                        if i + 1 < args.len() {
-                            threshold_opt = args[i + 1].parse::<f32>().ok();
-                            i += 2;
+                        if index + 1 < args.len() {
+                            threshold_opt = args[index + 1].parse::<f32>().ok();
+                            index += 2;
                         } else {
                             break;
                         }
                     }
                     _ => {
-                        i += 1;
+                        index += 1;
                     }
                 }
             }

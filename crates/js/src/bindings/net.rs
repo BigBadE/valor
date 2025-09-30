@@ -74,7 +74,7 @@ pub async fn fetch_http(
     if let Some(hs) = headers_json.as_ref() {
         req = apply_headers_from_json(req, hs);
     }
-    req = maybe_attach_body(req, &body_b64);
+    req = maybe_attach_body(req, body_b64.as_ref());
 
     let resp = req
         .send()
