@@ -6,7 +6,7 @@ edition.workspace = true
 html.workspace = true
 css.workspace = true
 css_core.workspace = true
-wgpu_renderer.workspace = true
+renderer.workspace = true
 js_engine_v8 = { workspace = true, default-features = false }
 js.workspace = true
 

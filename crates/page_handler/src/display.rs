@@ -4,9 +4,9 @@ use css::style_types::{BorderStyle, ComputedStyle, Overflow, Position};
 use css_core::{LayoutNodeKind, LayoutRect};
 use js::NodeKey;
 use log::{debug, warn};
+use renderer::StackingContextBoundary;
+use renderer::{DisplayItem, DisplayList};
 use std::collections::HashMap;
-use wgpu_renderer::display_list::StackingContextBoundary;
-use wgpu_renderer::{DisplayItem, DisplayList};
 
 // Text shaping imports for measuring and line breaking
 use glyphon::{
@@ -266,13 +266,13 @@ pub trait DisplayBuilder: Send + Sync {
         &self,
         rects: &HashMap<NodeKey, LayoutRect>,
         snapshot: SnapshotSlice,
-    ) -> Vec<wgpu_renderer::DrawRect>;
+    ) -> Vec<renderer::DrawRect>;
     fn build_text_list(
         &self,
         rects: &HashMap<NodeKey, LayoutRect>,
         snapshot: SnapshotSlice,
         computed_map: &HashMap<NodeKey, ComputedStyle>,
-    ) -> Vec<wgpu_renderer::DrawText>;
+    ) -> Vec<renderer::DrawText>;
 }
 
 pub struct DefaultDisplayBuilder;
@@ -285,7 +285,7 @@ impl DisplayBuilder for DefaultDisplayBuilder {
         &self,
         rects: &HashMap<NodeKey, LayoutRect>,
         snapshot: SnapshotSlice,
-    ) -> Vec<wgpu_renderer::DrawRect> {
+    ) -> Vec<renderer::DrawRect> {
         build_rect_list(rects, snapshot)
     }
     fn build_text_list(
@@ -293,7 +293,7 @@ impl DisplayBuilder for DefaultDisplayBuilder {
         rects: &HashMap<NodeKey, LayoutRect>,
         snapshot: SnapshotSlice,
         computed_map: &HashMap<NodeKey, ComputedStyle>,
-    ) -> Vec<wgpu_renderer::DrawText> {
+    ) -> Vec<renderer::DrawText> {
         build_text_list(rects, snapshot, computed_map)
     }
 }
@@ -301,14 +301,14 @@ impl DisplayBuilder for DefaultDisplayBuilder {
 pub fn build_rect_list(
     rects: &HashMap<NodeKey, LayoutRect>,
     snapshot: SnapshotSlice,
-) -> Vec<wgpu_renderer::DrawRect> {
-    let mut list: Vec<wgpu_renderer::DrawRect> = Vec::new();
+) -> Vec<renderer::DrawRect> {
+    let mut list: Vec<renderer::DrawRect> = Vec::new();
     for (node, kind, _children) in snapshot.iter() {
         if !matches!(kind, LayoutNodeKind::Block { .. }) {
             continue;
         }
         if let Some(rect) = rects.get(node) {
-            list.push(wgpu_renderer::DrawRect {
+            list.push(renderer::DrawRect {
                 x: rect.x,
                 y: rect.y,
                 width: rect.width,
@@ -324,8 +324,8 @@ pub fn build_text_list(
     rects: &HashMap<NodeKey, LayoutRect>,
     snapshot: SnapshotSlice,
     computed_map: &HashMap<NodeKey, ComputedStyle>,
-) -> Vec<wgpu_renderer::DrawText> {
-    let mut list: Vec<wgpu_renderer::DrawText> = Vec::new();
+) -> Vec<renderer::DrawText> {
+    let mut list: Vec<renderer::DrawText> = Vec::new();
     // Build a parent map so inline text can inherit from its element parent
     let mut parent_of: HashMap<NodeKey, NodeKey> = HashMap::new();
     for (parent, _kind, children) in snapshot.iter() {
@@ -418,7 +418,7 @@ pub fn build_text_list(
                     let top = line_top;
                     let bottom = line_top + line_height;
                     let bounds = Some((content_left_x, top, content_left_x + max_width_px, bottom));
-                    list.push(wgpu_renderer::DrawText {
+                    list.push(renderer::DrawText {
                         x: content_left_x as f32,
                         y: baseline_y as f32,
                         text: visual_line,

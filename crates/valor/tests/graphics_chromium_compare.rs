@@ -4,12 +4,12 @@ use headless_chrome::{
     Browser, LaunchOptionsBuilder, Tab, protocol::cdp::Page::CaptureScreenshotFormatOption,
 };
 use log::{debug, error, info, trace};
+use renderer::batch_display_list;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
-use wgpu_renderer::display_list::batch_display_list;
 use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
 #[cfg(target_os = "windows")]
@@ -23,6 +23,37 @@ use zstd::bulk::{compress as zstd_compress, decompress as zstd_decompress};
 
 fn target_artifacts_dir() -> PathBuf {
     common::artifacts_subdir("graphics_artifacts")
+}
+
+fn to_backend_display_list(dl: renderer::DisplayList) -> wgpu_backend::display_list::DisplayList {
+    let items = dl
+        .items
+        .into_iter()
+        .map(|it| match it {
+            renderer::DisplayItem::Rect { x, y, width, height, color } => {
+                wgpu_backend::display_list::DisplayItem::Rect { x, y, width, height, color }
+            }
+            renderer::DisplayItem::Text { x, y, text, color, font_size, bounds } => {
+                wgpu_backend::display_list::DisplayItem::Text { x, y, text, color, font_size, bounds }
+            }
+            renderer::DisplayItem::BeginClip { x, y, width, height } => {
+                wgpu_backend::display_list::DisplayItem::BeginClip { x, y, width, height }
+            }
+            renderer::DisplayItem::EndClip => wgpu_backend::display_list::DisplayItem::EndClip,
+            renderer::DisplayItem::BeginStackingContext { boundary } => {
+                let b = match boundary {
+                    renderer::StackingContextBoundary::Opacity { alpha } => wgpu_backend::display_list::StackingContextBoundary::Opacity { alpha },
+                    renderer::StackingContextBoundary::Transform { matrix } => wgpu_backend::display_list::StackingContextBoundary::Transform { matrix },
+                    renderer::StackingContextBoundary::Filter { filter_id } => wgpu_backend::display_list::StackingContextBoundary::Filter { filter_id },
+                    renderer::StackingContextBoundary::Isolation => wgpu_backend::display_list::StackingContextBoundary::Isolation,
+                    renderer::StackingContextBoundary::ZIndex { z } => wgpu_backend::display_list::StackingContextBoundary::ZIndex { z },
+                };
+                wgpu_backend::display_list::DisplayItem::BeginStackingContext { boundary: b }
+            }
+            renderer::DisplayItem::EndStackingContext => wgpu_backend::display_list::DisplayItem::EndStackingContext,
+        })
+        .collect();
+    wgpu_backend::display_list::DisplayList { items, generation: dl.generation }
 }
 
 fn safe_stem(p: &Path) -> String {
@@ -178,10 +209,10 @@ fn make_diff_image_masked(a: &[u8], b: &[u8], ctx: &DiffCtx<'_>) -> Vec<u8> {
     out
 }
 
-fn extract_text_masks(dl: &wgpu_renderer::DisplayList, width: u32, height: u32) -> Vec<TextMask> {
+fn extract_text_masks(dl: &renderer::DisplayList, width: u32, height: u32) -> Vec<TextMask> {
     let mut masks = Vec::new();
     for item in &dl.items {
-        if let wgpu_renderer::DisplayItem::Text {
+        if let renderer::DisplayItem::Text {
             bounds: Some((l, t, r, b)),
             ..
         } = item
@@ -217,7 +248,7 @@ fn build_valor_display_list_for(
     path: &Path,
     viewport_w: u32,
     viewport_h: u32,
-) -> Result<wgpu_renderer::DisplayList> {
+) -> Result<renderer::DisplayList> {
     // Drive Valor page to finished, then use the public display_list_retained_snapshot API
     let rt = tokio::runtime::Runtime::new()?;
     let url = common::to_file_url(path)?;
@@ -235,7 +266,7 @@ fn build_valor_display_list_for(
     // Prepend a full-viewport background using the same logic as the app
     let cc = page.background_rgba();
     let mut items = Vec::with_capacity(dl.items.len() + 1);
-    items.push(wgpu_renderer::DisplayItem::Rect {
+    items.push(renderer::DisplayItem::Rect {
         x: 0.0,
         y: 0.0,
         width: viewport_w as f32,
@@ -243,15 +274,15 @@ fn build_valor_display_list_for(
         color: cc,
     });
     items.extend(dl.items);
-    Ok(wgpu_renderer::DisplayList::from_items(items))
+    Ok(renderer::DisplayList::from_items(items))
 }
 
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-static RENDER_STATE: OnceLock<Mutex<wgpu_renderer::state::RenderState>> = OnceLock::new();
+static RENDER_STATE: OnceLock<Mutex<wgpu_backend::state::RenderState>> = OnceLock::new();
 static WINDOW: OnceLock<Arc<Window>> = OnceLock::new();
 
 fn rasterize_display_list_to_rgba(
-    dl: &wgpu_renderer::DisplayList,
+    dl: &renderer::DisplayList,
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>> {
@@ -278,14 +309,14 @@ fn rasterize_display_list_to_rgba(
         };
         let window = Arc::new(window);
         let _ = WINDOW.set(window.clone());
-        let state = rt.block_on(wgpu_renderer::state::RenderState::new(window));
+        let state = rt.block_on(wgpu_backend::state::RenderState::new(window));
         Mutex::new(state)
     });
 
     let mut state = state_mutex.lock().expect("lock render state");
     // Ensure size matches current request
     state.resize(PhysicalSize::new(width, height));
-    state.set_retained_display_list(dl.clone());
+    state.set_retained_display_list(to_backend_display_list(dl.clone()));
     state.render_to_rgba()
 }
 

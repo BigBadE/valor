@@ -27,12 +27,12 @@ use tokio::sync::mpsc::error::TryRecvError as UnboundedTryRecvError;
 // Type aliases to simplify frequent layout structure mappings
 type TagsByKey = HashMap<js::NodeKey, String>;
 type ElementChildren = HashMap<js::NodeKey, Vec<js::NodeKey>>;
+use renderer::{DrawRect, Renderer};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::StreamExt;
 use tracing::info_span;
 use url::Url;
-use wgpu_renderer::{DrawRect, Renderer};
 
 // Module-scoped type aliases to simplify complex types and avoid repetition
 type NodeKeyMap<T> = HashMap<js::NodeKey, T>;

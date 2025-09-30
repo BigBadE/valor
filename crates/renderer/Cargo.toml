@@ -1,0 +1,10 @@
+[package]
+name = "renderer"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+js.workspace = true
+indextree.workspace = true
+log.workspace = true

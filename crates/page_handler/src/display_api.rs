@@ -1,7 +1,7 @@
 use crate::state::HtmlPage;
 use anyhow::Error;
 use css_core::LayoutNodeKind;
-use wgpu_renderer::{DisplayList, DrawRect, DrawText};
+use renderer::{DisplayList, DrawRect, DrawText};
 
 impl HtmlPage {
     /// Build a simple display list of rectangles from the current layout geometry and styles.
