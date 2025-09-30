@@ -123,6 +123,10 @@ fn per_pixel_diff_masked(a: &[u8], b: &[u8], ctx: &DiffCtx<'_>) -> (u64, u64) {
                 continue;
             }
             let idx = ((y * ctx.width + x) * 4) as usize;
+            // Ensure we don't access beyond array bounds
+            if idx + 3 >= a.len() || idx + 3 >= b.len() {
+                continue;
+            }
             for c in 0..4 {
                 let da = a[idx + c] as i16 - b[idx + c] as i16;
                 let ad = da.unsigned_abs() as u8;
@@ -150,6 +154,10 @@ fn make_diff_image_masked(a: &[u8], b: &[u8], ctx: &DiffCtx<'_>) -> Vec<u8> {
                 }
             }
             if masked {
+                continue;
+            }
+            // Ensure we don't access beyond array bounds
+            if idx + 3 >= a.len() || idx + 3 >= b.len() || idx + 3 >= out.len() {
                 continue;
             }
             let mut maxc = 0u8;
@@ -246,7 +254,7 @@ fn rasterize_display_list_to_rgba(
     dl: &wgpu_renderer::DisplayList,
     width: u32,
     height: u32,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     // Initialize single runtime
     let rt = RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().expect("tokio runtime"));
 
@@ -278,7 +286,7 @@ fn rasterize_display_list_to_rgba(
     // Ensure size matches current request
     state.resize(PhysicalSize::new(width, height));
     state.set_retained_display_list(dl.clone());
-    state.render_to_rgba().expect("gpu render_to_rgba failed")
+    state.render_to_rgba()
 }
 
 #[test]
@@ -324,9 +332,9 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
         // Compute current fixture content hash and cleanup older-hash artifacts.
         let canon = fixture.canonicalize().unwrap_or_else(|_| fixture.clone());
         let current_hash = file_content_hash(&canon);
-        let hash_hex = format!("{:016x}", current_hash);
+        let hash_hex = format!("{current_hash:016x}");
         let path_hash = fnv1a64_bytes(canon.to_string_lossy().as_bytes());
-        let path_hash_hex = format!("{:016x}", path_hash);
+        let path_hash_hex = format!("{path_hash:016x}");
         cleanup_artifacts_for_hash(&name, &path_hash_hex, &out_dir, &failing_dir, &hash_hex)?;
 
         // Cached/stable decoded RGBA path with fast zstd compression (PNG is not cached)
@@ -372,6 +380,10 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
                 let t_decode = Instant::now();
                 let img = image::load_from_memory(&png_bytes)?.to_rgba8();
                 agg_png_decode += t_decode.elapsed();
+                log::debug!(
+                    "Chrome image decoded: width={}, height={}, buffer_size={}, expected_size={}",
+                    img.width(), img.height(), img.as_raw().len(), (784u32 * 453u32 * 4) as usize
+                );
                 // Compress and write RGBA cache
                 let level = 1; // fast
                 let compressed = zstd_compress(img.as_raw(), level).unwrap_or_default();
@@ -406,6 +418,10 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
             let t_decode = Instant::now();
             let img = image::load_from_memory(&png_bytes)?.to_rgba8();
             agg_png_decode += t_decode.elapsed();
+            log::debug!(
+                "Chrome image decoded: width={}, height={}, buffer_size={}, expected_size={}",
+                img.width(), img.height(), img.as_raw().len(), (784u32 * 453u32 * 4) as usize
+            );
             // Compress and write RGBA cache for future runs
             let level = 1; // fast
             let compressed = zstd_compress(img.as_raw(), level).unwrap_or_default();
@@ -441,7 +457,7 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
 
         // Rasterize Valor
         let t_rast = Instant::now();
-        let valor_img = rasterize_display_list_to_rgba(&dl, w, h);
+        let valor_img = rasterize_display_list_to_rgba(&dl, w, h)?;
         agg_raster += t_rast.elapsed();
 
         // chrome_img is already prepared above as an RGBA image (possibly from cache)
@@ -503,38 +519,18 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
                     diff_ratio * 100.0
                 );
             } else {
-                info!("[GRAPHICS] {} — exact match within masked regions", name);
+                info!("[GRAPHICS] {name} — exact match within masked regions");
             }
         }
 
         trace!(
-            "[GRAPHICS][TIMING] {}: cache_io={:?} chrome_capture={:?} build_dl={:?} batch_dbg={:?} raster={:?} png_decode={:?} equal_check={:?} masked_diff={:?} fail_write={:?} skipped_diff={}",
-            name,
-            agg_cache_io,
-            agg_chrome_capture,
-            agg_build_dl,
-            agg_batch_dbg,
-            agg_raster,
-            agg_png_decode,
-            agg_equal_check,
-            agg_masked_diff,
-            agg_fail_write,
-            skipped_diff
+            "[GRAPHICS][TIMING] {name}: cache_io={agg_cache_io:?} chrome_capture={agg_chrome_capture:?} build_dl={agg_build_dl:?} batch_dbg={agg_batch_dbg:?} raster={agg_raster:?} png_decode={agg_png_decode:?} equal_check={agg_equal_check:?} masked_diff={agg_masked_diff:?} fail_write={agg_fail_write:?} skipped_diff={skipped_diff}"
         );
     }
 
     // Aggregate timing summary across all fixtures
     info!(
-        "[GRAPHICS][TIMING][TOTALS] cache_io={:?} chrome_capture={:?} build_dl={:?} batch_dbg={:?} raster={:?} png_decode={:?} equal_check={:?} masked_diff={:?} fail_write={:?}",
-        agg_cache_io,
-        agg_chrome_capture,
-        agg_build_dl,
-        agg_batch_dbg,
-        agg_raster,
-        agg_png_decode,
-        agg_equal_check,
-        agg_masked_diff,
-        agg_fail_write
+        "[GRAPHICS][TIMING][TOTALS] cache_io={agg_cache_io:?} chrome_capture={agg_chrome_capture:?} build_dl={agg_build_dl:?} batch_dbg={agg_batch_dbg:?} raster={agg_raster:?} png_decode={agg_png_decode:?} equal_check={agg_equal_check:?} masked_diff={agg_masked_diff:?} fail_write={agg_fail_write:?}"
     );
 
     if any_failed {

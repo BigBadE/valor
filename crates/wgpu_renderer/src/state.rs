@@ -436,7 +436,7 @@ impl RenderState {
         let fut = self.device.pop_error_scope();
         let res = block_on(fut);
         if let Some(err) = res {
-            log::error!(target: "wgpu_renderer", "WGPU error (scoped): {:?}", err);
+            log::error!(target: "wgpu_renderer", "WGPU error (scoped): {err:?}");
             return Err(anyhow!("wgpu scoped error: {err:?}"));
         }
         Ok(())
@@ -988,7 +988,8 @@ impl RenderState {
         }
 
         let cb = encoder.finish();
-        self.submit_with_error_scope([cb])?;
+        // Submit immediately to avoid encoder conflicts with main render pass
+        self.queue.submit([cb]);
         // Decrease offscreen depth after finishing this offscreen render
         self.offscreen_depth = self.offscreen_depth.saturating_sub(1);
 
@@ -1260,7 +1261,7 @@ impl RenderState {
 
         // Log any uncaptured WGPU errors to help diagnose backend issues
         device.on_uncaptured_error(Box::new(|e| {
-            log::error!(target: "wgpu_renderer", "WGPU uncaptured error: {:?}", e);
+            log::error!(target: "wgpu_renderer", "WGPU uncaptured error: {e:?}");
         }));
 
         RenderState {
@@ -1578,6 +1579,17 @@ impl RenderState {
             });
         self.record_draw_passes(&tmp_view, &mut encoder)?;
 
+        // Submit the command buffer with error scope to catch WGPU errors
+        let command_buffer = encoder.finish();
+        self.submit_with_error_scope([command_buffer])?;
+
+        // Create a new encoder for the texture copy operation
+        let mut copy_encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("texture-copy-encoder"),
+            });
+
         // Read back with 256-byte aligned rows
         let width = self.size.width;
         let height = self.size.height;
@@ -1600,11 +1612,7 @@ impl RenderState {
             self.readback_padded_bpr = padded_bpr;
             self.readback_size = buffer_size;
         }
-        let readback = self
-            .readback_buf
-            .as_ref()
-            .expect("readback buffer available");
-        encoder.copy_texture_to_buffer(
+        copy_encoder.copy_texture_to_buffer(
             TexelCopyTextureInfo {
                 texture: self
                     .offscreen_tex
@@ -1615,7 +1623,10 @@ impl RenderState {
                 aspect: TextureAspect::All,
             },
             TexelCopyBufferInfo {
-                buffer: readback,
+                buffer: self
+                    .readback_buf
+                    .as_ref()
+                    .expect("readback buffer available"),
                 layout: TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bpr),
@@ -1628,7 +1639,16 @@ impl RenderState {
                 depth_or_array_layers: 1,
             },
         );
+
+        // Submit the copy command buffer with error scope
+        let copy_command_buffer = copy_encoder.finish();
+        self.submit_with_error_scope([copy_command_buffer])?;
+
         // Map and wait for the copy to be available
+        let readback = self
+            .readback_buf
+            .as_ref()
+            .expect("readback buffer available");
         let slice = readback.slice(..);
         let (sender, receiver) = std::sync::mpsc::channel();
         slice.map_async(MapMode::Read, move |res| {
@@ -1642,7 +1662,9 @@ impl RenderState {
             }
         }
         let mapped = slice.get_mapped_range();
-        let mut out = vec![0u8; (row_bytes as usize) * (height as usize)];
+        // Ensure we create a buffer of exactly the expected size
+        let expected_total_bytes = (width as usize) * (height as usize) * (bpp as usize);
+        let mut out = vec![0u8; expected_total_bytes];
         for row in 0..height as usize {
             let src_off = row * (padded_bpr as usize);
             let dst_off = row * (row_bytes as usize);

@@ -83,6 +83,19 @@ pub fn write_png_rgba_if_changed(
     width: u32,
     height: u32,
 ) -> Result<bool> {
+    let expected_size = (width as usize) * (height as usize) * 4;
+    log::debug!(
+        "write_png_rgba_if_changed: width={}, height={}, expected_size={}, actual_size={}, path={}",
+        width, height, expected_size, rgba.len(), path.display()
+    );
+    
+    if rgba.len() != expected_size {
+        return Err(anyhow::anyhow!(
+            "Invalid buffer length: expected {} got {} for {}x{} image",
+            expected_size, rgba.len(), width, height
+        ));
+    }
+    
     let mut buf = Vec::new();
     {
         let encoder = image::codecs::png::PngEncoder::new(&mut buf);

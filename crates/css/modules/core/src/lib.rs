@@ -332,7 +332,8 @@ pub(crate) const INITIAL_CONTAINING_BLOCK_WIDTH: i32 = 800;
 /// Fixed vertical scrollbar gutter used to approximate Chromium on Windows.
 /// This is subtracted from the initial containing block width when computing the
 /// root container metrics so the available inline size matches Chromium.
-pub(crate) const SCROLLBAR_GUTTER_PX: i32 = 16;
+/// Updated to 18px to match Chrome's consistent scrollbar width with scrollbar-gutter: stable.
+pub(crate) const SCROLLBAR_GUTTER_PX: i32 = 18;
 
 /// Last placed child info used to compute the parent's content bottom per §10.6.3.
 /// Tuple contents: (child key, rect bottom (y + height), effective outgoing margin-bottom).
