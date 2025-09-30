@@ -1,0 +1,66 @@
+//! Helper functions for document namespace operations.
+
+use crate::bindings::values::JSError;
+use crate::bindings::{CreatedNodeInfo, CreatedNodeKind, HostContext};
+use crate::NodeKey;
+use core::sync::atomic::Ordering;
+
+/// Find the <head> element in the DOM index, if present.
+///
+/// # Errors
+/// Returns an error if the DOM index mutex is poisoned.
+pub fn find_head_element(context: &HostContext) -> Result<Option<NodeKey>, JSError> {
+    let guard = context
+        .dom_index
+        .lock()
+        .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
+    let mut sorted_tags: Vec<(NodeKey, String)> = guard
+        .tag_by_key
+        .iter()
+        .map(|(key, value)| (*key, value.clone()))
+        .collect();
+    sorted_tags.sort_by_key(|item| item.0 .0);
+    for (key, tag) in sorted_tags {
+        if tag.eq_ignore_ascii_case("head") {
+            return Ok(Some(key));
+        }
+    }
+    Ok(None)
+}
+
+/// Create a new node key for a JS-created node.
+///
+/// # Errors
+/// Returns an error if the node keys mutex is poisoned.
+pub fn create_node_key(context: &HostContext) -> Result<NodeKey, JSError> {
+    let local_id = context.js_local_id_counter.fetch_add(1, Ordering::Relaxed) + 1;
+    let mut mgr = context
+        .js_node_keys
+        .lock()
+        .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
+    Ok(mgr.key_of(local_id))
+}
+
+/// Register a created element node.
+pub fn register_element_node(context: &HostContext, node_key: NodeKey, tag: String) {
+    if let Ok(mut map) = context.js_created_nodes.lock() {
+        map.insert(
+            node_key,
+            CreatedNodeInfo {
+                kind: CreatedNodeKind::Element { tag },
+            },
+        );
+    }
+}
+
+/// Register a created text node.
+pub fn register_text_node(context: &HostContext, node_key: NodeKey, text: String) {
+    if let Ok(mut map) = context.js_created_nodes.lock() {
+        map.insert(
+            node_key,
+            CreatedNodeInfo {
+                kind: CreatedNodeKind::Text { text },
+            },
+        );
+    }
+}

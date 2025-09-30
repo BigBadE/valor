@@ -31,6 +31,8 @@ use net::FetchRegistry;
 
 /// Document namespace builder with DOM manipulation functions.
 mod document;
+/// Helper functions for document namespace operations.
+mod document_helpers;
 /// DOM helper functions for HTML serialization and attribute indexing.
 mod dom;
 /// Storage registry for localStorage and sessionStorage.

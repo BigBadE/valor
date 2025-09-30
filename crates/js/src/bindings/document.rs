@@ -8,6 +8,9 @@
 //! - Content: setTextContent, getInnerHTML, setInnerHTML
 //! - Storage: localStorage, sessionStorage
 
+use crate::bindings::document_helpers::{
+    create_node_key, find_head_element, register_element_node, register_text_node,
+};
 use crate::bindings::dom::{
     apply_inner_html, remove_attr_index_sync, serialize_node, set_attr_index_sync,
 };
@@ -191,79 +194,22 @@ fn build_append_style_text() -> Arc<HostFnSync> {
                 JSValue::String(string_value) => string_value.clone(),
                 _ => return Err(JSError::TypeError(String::from("cssText must be string"))),
             };
-            // Resolve <head> key if present, otherwise attach to ROOT
-            let head_key_opt: Option<NodeKey> = {
-                let guard = context
-                    .dom_index
-                    .lock()
-                    .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
-                // Prefer first child of <html> with tag 'head'; else try any 'head' in index
-                let mut found: Option<NodeKey> = None;
-                let mut sorted_tags: Vec<(NodeKey, String)> = guard
-                    .tag_by_key
-                    .iter()
-                    .map(|(key, value)| (*key, value.clone()))
-                    .collect();
-                sorted_tags.sort_by_key(|item| item.0 .0);
-                for (key, tag) in sorted_tags {
-                    if tag.eq_ignore_ascii_case("head") {
-                        found = Some(key);
-                        break;
-                    }
-                }
-                found
-            };
-            let parent_key = head_key_opt.unwrap_or(NodeKey::ROOT);
 
-            // Mint element and text node keys
-            let style_key = {
-                let local_id = context.js_local_id_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                let mut mgr = context
-                    .js_node_keys
-                    .lock()
-                    .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
-                mgr.key_of(local_id)
-            };
-            if let Ok(mut map) = context.js_created_nodes.lock() {
-                map.insert(
-                    style_key,
-                    CreatedNodeInfo {
-                        kind: CreatedNodeKind::Element {
-                            tag: String::from("style"),
-                        },
-                    },
-                );
-            }
-            let text_key = {
-                let local_id = context.js_local_id_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                let mut mgr = context
-                    .js_node_keys
-                    .lock()
-                    .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
-                mgr.key_of(local_id)
-            };
-            if let Ok(mut map) = context.js_created_nodes.lock() {
-                map.insert(
-                    text_key,
-                    CreatedNodeInfo {
-                        kind: CreatedNodeKind::Text {
-                            text: css_text.clone(),
-                        },
-                    },
-                );
-            }
+            let parent_key = find_head_element(context)?.unwrap_or(NodeKey::ROOT);
+            let style_key = create_node_key(context)?;
+            register_element_node(context, style_key, String::from("style"));
+            let text_key = create_node_key(context)?;
+            register_text_node(context, text_key, css_text.clone());
+
             // Synchronously update DomIndex
             if let Ok(mut idx) = context.dom_index.lock() {
                 use crate::bindings::dom;
-                // Insert style under parent
                 dom::reparent_child(&mut idx, style_key, parent_key, usize::MAX);
                 idx.tag_by_key.insert(style_key, String::from("style"));
-                // Insert text under style at position 0
                 dom::reparent_child(&mut idx, text_key, style_key, 0);
                 idx.text_by_key.insert(text_key, css_text.clone());
             }
 
-            // Emit updates: InsertElement(style under parent) + SetAttr(data-valor-test-reset) + InsertText(text under style)
             let updates: Vec<DOMUpdate> = vec![
                 DOMUpdate::InsertElement {
                     parent: parent_key,
@@ -930,111 +876,62 @@ fn build_net_request() -> Arc<HostFnSync> {
             use std::env;
             use url::Url;
 
-            let method = if args.is_empty() {
-                String::from("GET")
-            } else {
-                match &args[0] {
-                    JSValue::String(string_value) => string_value.clone(),
-                    _ => String::from("GET"),
-                }
-            };
+            let method = args.first().and_then(|value| match value {
+                JSValue::String(string_val) => Some(string_val.clone()),
+                _ => None,
+            }).unwrap_or_else(|| String::from("GET"));
+            
             if args.len() < 2 {
                 return Err(JSError::TypeError(String::from(
                     "net_requestStart(method, url, [headersJson], [bodyBase64]) requires at least 2 arguments",
                 )));
             }
-            let url_str = match &args[1] {
-                JSValue::String(string_value) => string_value.clone(),
-                _ => return Err(JSError::TypeError(String::from("url must be a string"))),
-            };
+            let url_str = parse_string(&args[1], "url")?;
             let headers_json = args.get(2).and_then(|value| match value {
                 JSValue::String(string_val) => Some(string_val.clone()),
                 _ => None,
             });
+
             let body_b64 = args.get(3).and_then(|value| match value {
                 JSValue::String(string_val) => Some(string_val.clone()),
                 _ => None,
             });
 
-            // Same-origin allow-list check
-            let relaxed = env::var("VALOR_NET_RELAXED")
-                .ok()
-                .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
-            let parsed = Url::parse(&url_str)
-                .map_err(|_| JSError::TypeError(format!("invalid URL: {url_str}")))?;
-            let allowed = if relaxed {
-                true
-            } else {
-                match parsed.scheme() {
-                    "file" => true,
-                    "http" => parsed.host_str().is_some_and(|host| {
-                        host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1"
-                    }),
-                    _ => false,
-                }
-            };
+            let relaxed = env::var("VALOR_NET_RELAXED").ok().is_some_and(|val| val == "1" || val.eq_ignore_ascii_case("true"));
+            let parsed = Url::parse(&url_str).map_err(|_| JSError::TypeError(format!("invalid URL: {url_str}")))?;
+            let allowed = relaxed || matches!(parsed.scheme(), "file") || 
+                (parsed.scheme() == "http" && parsed.host_str().is_some_and(|host| host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1"));
+            let chrome_restricted = context.page_origin.starts_with("valor://chrome") && matches!(parsed.scheme(), "http" | "https");
 
-            // Allocate id and insert Pending
             let id = {
-                let mut reg = context
-                    .fetch_registry
-                    .lock()
-                    .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
+                let mut reg = context.fetch_registry.lock().map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
                 let id = reg.allocate_id();
                 reg.entries.insert(id, FetchEntry::Pending);
                 id
             };
 
             let reg_arc = Arc::clone(&context.fetch_registry);
-            let method_upper = method.to_ascii_uppercase();
-            let url_clone = url_str;
-            let chrome_restricted = context.page_origin.starts_with("valor://chrome")
-                && (parsed.scheme() == "http" || parsed.scheme() == "https");
-            let url_for_error = url_clone.clone();
+            let (method_upper, url_clone, url_for_error) = (method.to_ascii_uppercase(), url_str.clone(), url_str);
 
             context.tokio_handle.spawn({
-                let finalize_with = move |done: FetchDone| {
-                    if let Ok(mut reg) = reg_arc.lock() {
-                        reg.entries.insert(id, FetchEntry::Done(done));
-                    }
+                let finalize = move |done: FetchDone| {
+                    if let Ok(mut reg) = reg_arc.lock() { reg.entries.insert(id, FetchEntry::Done(done)); }
                 };
-
-                let error_response = move |error: String| FetchDone {
-                    status: 0,
-                    status_text: String::new(),
-                    is_ok: false,
-                    headers: Vec::new(),
-                    body_text: String::new(),
-                    body_b64: String::new(),
-                    url: url_for_error.clone(),
-                    error: Some(error),
+                let err_resp = move |error: String| FetchDone {
+                    status: 0, status_text: String::new(), is_ok: false, headers: Vec::new(),
+                    body_text: String::new(), body_b64: String::new(), url: url_for_error.clone(), error: Some(error),
                 };
-
                 async move {
-                    if !allowed {
-                        finalize_with(error_response(String::from("Disallowed by policy")));
+                    if !allowed || chrome_restricted {
+                        finalize(err_resp(String::from("Disallowed by policy")));
                         return;
                     }
-                    if chrome_restricted {
-                        finalize_with(error_response(String::from("Disallowed by policy")));
-                        return;
-                    }
-
-                    let scheme = parsed.scheme();
-                    match scheme {
-                        "file" => match fetch_file(&parsed, url_clone.clone()).await {
-                            Ok(done) => finalize_with(done),
-                            Err(err) => finalize_with(error_response(err)),
-                        },
-                        "http" | "https" => {
-                            match fetch_http(&method_upper, url_clone, headers_json, body_b64).await
-                            {
-                                Ok(done) => finalize_with(done),
-                                Err(err) => finalize_with(error_response(err)),
-                            }
-                        }
-                        _ => finalize_with(error_response(format!("Unsupported scheme: {scheme}"))),
-                    }
+                    let result = match parsed.scheme() {
+                        "file" => fetch_file(&parsed, url_clone.clone()).await,
+                        "http" | "https" => fetch_http(&method_upper, url_clone, headers_json, body_b64).await,
+                        scheme => Err(format!("Unsupported scheme: {scheme}")),
+                    };
+                    finalize(result.unwrap_or_else(err_resp));
                 }
             });
 

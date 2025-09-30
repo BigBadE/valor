@@ -211,13 +211,41 @@ struct ElementSpec<'element> {
     class_attr: Option<String>,
 }
 
+/// Update DOM index with id attribute.
+fn update_id_index(idx: &mut DomIndexState, node_key: NodeKey, id_value: &str) {
+    if !id_value.is_empty() {
+        if let Some(old) = idx.id_by_key.insert(node_key, id_value.to_owned()) {
+            if idx.id_index.get(&old).copied() == Some(node_key) {
+                idx.id_index.remove(&old);
+            }
+        }
+        idx.id_index.insert(id_value.to_owned(), node_key);
+    }
+}
+
+/// Update DOM index with class attribute.
+fn update_class_index(idx: &mut DomIndexState, node_key: NodeKey, class_value: &str) {
+    let mut set: HashSet<String> = HashSet::new();
+    for token in class_value.split_whitespace() {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lowercase = trimmed.to_ascii_lowercase();
+        set.insert(lowercase.clone());
+        idx.class_index.entry(lowercase).or_default().push(node_key);
+    }
+    if set.is_empty() {
+        idx.classes_by_key.remove(&node_key);
+    } else {
+        idx.classes_by_key.insert(node_key, set);
+    }
+}
+
 /// Insert an element into the DOM tree with the given spec.
 ///
 /// # Errors
 /// Returns an error if node creation fails, mutex is poisoned, or parent stack is empty.
-///
-/// # Panics
-/// This function does not panic as all potential panics are converted to errors.
 fn insert_element(
     context: &HostContext,
     idx: &mut DomIndexState,
@@ -256,32 +284,11 @@ fn insert_element(
         .entry(spec.tag.to_owned())
         .or_default()
         .push(node_key);
-    if let Some(idv) = spec.id_attr.clone() {
-        if !idv.is_empty() {
-            if let Some(old) = idx.id_by_key.insert(node_key, idv.clone()) {
-                if idx.id_index.get(&old).copied() == Some(node_key) {
-                    idx.id_index.remove(&old);
-                }
-            }
-            idx.id_index.insert(idv, node_key);
-        }
+    if let Some(idv) = &spec.id_attr {
+        update_id_index(idx, node_key, idv);
     }
-    if let Some(cls) = spec.class_attr.clone() {
-        let mut set: HashSet<String> = HashSet::new();
-        for token in cls.split_whitespace() {
-            let trimmed = token.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let lowercase = trimmed.to_ascii_lowercase();
-            set.insert(lowercase.clone());
-            idx.class_index.entry(lowercase).or_default().push(node_key);
-        }
-        if set.is_empty() {
-            idx.classes_by_key.remove(&node_key);
-        } else {
-            idx.classes_by_key.insert(node_key, set);
-        }
+    if let Some(cls) = &spec.class_attr {
+        update_class_index(idx, node_key, cls);
     }
     updates.push(DOMUpdate::InsertElement {
         parent: parent_now,
