@@ -1,5 +1,5 @@
-use std::error::Error;
-use std::fmt::{Display, Formatter, Result as FmtResult};
+use core::error::Error;
+use core::fmt::{Display, Formatter, Result as FmtResult};
 
 /// An engine-agnostic representation of JavaScript values.
 /// This is intentionally small for now; more variants can be added as needed.
@@ -27,15 +27,31 @@ pub enum JSError {
 }
 
 impl Display for JSError {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
-            JSError::TypeError(message) => write!(f, "TypeError: {message}"),
-            JSError::InternalError(message) => write!(f, "InternalError: {message}"),
+            Self::TypeError(message) => write!(f, "TypeError: {message}"),
+            Self::InternalError(message) => write!(f, "InternalError: {message}"),
         }
     }
 }
 
-impl Error for JSError {}
+impl Error for JSError {
+    #[inline]
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        None
+    }
+
+    #[inline]
+    fn description(&self) -> &'static str {
+        "JSError"
+    }
+
+    #[inline]
+    fn cause(&self) -> Option<&dyn Error> {
+        self.source()
+    }
+}
 
 /// Log severity levels understood by the host logger.
 #[derive(Copy, Clone, Debug)]

@@ -2,13 +2,13 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use reqwest::RequestBuilder;
 use reqwest::Response;
-use serde_json::Value;
+use serde_json::{from_str, Value};
 
 /// Apply HTTP headers from a JSON string to a request builder.
 /// Supports both object format `{"key": "value"}` and array format `[["key", "value"]]`.
 #[inline]
 pub fn apply_headers_from_json(mut req: RequestBuilder, headers_json: &str) -> RequestBuilder {
-    if let Ok(val) = serde_json::from_str::<Value>(headers_json) {
+    if let Ok(val) = from_str::<Value>(headers_json) {
         if let Some(map) = val.as_object() {
             for (key, value) in map {
                 if let Some(string_value) = value.as_str() {

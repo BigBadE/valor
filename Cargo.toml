@@ -160,6 +160,7 @@ map_err_ignore = { level = "allow", priority = 1 }
 indexing_slicing = { level = "allow", priority = 1 }
 significant_drop_tightening = { level = "allow", priority = 1 }
 arithmetic_side_effects = { level = "allow", priority = 1 }
+missing-trait-methods = { level = "allow", priority = 1 }
 float_arithmetic = { level = "allow", priority = 1 }
 pub_use = { level = "allow", priority = 1 }
 must_use_candidate = { level = "allow", priority = 1 }

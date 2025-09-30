@@ -68,7 +68,7 @@ impl NodeKey {
     /// Pack epoch+shard+counter into a single 64-bit key.
     #[inline]
     pub fn pack(epoch: u16, shard: u8, counter: u64) -> Self {
-        let counter_masked = counter & ((1_u64 << 40_i32) - 1);
+        let counter_masked = counter & ((1u64 << 40i32) - 1);
         Self((u64::from(epoch) << 48) | (u64::from(shard) << 40) | counter_masked)
     }
     /// Extract epoch from the key.
@@ -84,7 +84,7 @@ impl NodeKey {
     /// Extract counter from the key.
     #[inline]
     pub const fn counter(self) -> u64 {
-        self.0 & ((1_u64 << 40_i32) - 1)
+        self.0 & ((1u64 << 40i32) - 1)
     }
 }
 

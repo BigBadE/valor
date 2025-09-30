@@ -14,10 +14,13 @@ use crate::bindings::dom::{
 use crate::bindings::values::{JSError, JSValue};
 use crate::bindings::{CreatedNodeInfo, CreatedNodeKind, HostContext, HostFnSync, HostNamespace};
 use crate::{DOMUpdate, NodeKey};
-use std::sync::atomic::Ordering;
+use core::sync::atomic::Ordering;
 use std::sync::Arc;
 
-/// Helper to parse a string argument from JSValue.
+/// Helper to parse a string argument from `JSValue`.
+///
+/// # Errors
+/// Returns an error if the value is not a string.
 #[inline]
 fn parse_string(value: &JSValue, name: &str) -> Result<String, JSError> {
     match value {
@@ -26,7 +29,10 @@ fn parse_string(value: &JSValue, name: &str) -> Result<String, JSError> {
     }
 }
 
-/// Helper to parse a NodeKey from a decimal string JSValue.
+/// Helper to parse a `NodeKey` from a decimal string `JSValue`.
+///
+/// # Errors
+/// Returns an error if the value is not a string or cannot be parsed as u64.
 #[inline]
 fn parse_key(value: &JSValue, name: &str) -> Result<NodeKey, JSError> {
     match value {
@@ -42,11 +48,11 @@ fn parse_key(value: &JSValue, name: &str) -> Result<NodeKey, JSError> {
     }
 }
 
-/// Helper to parse an optional usize from a number JSValue.
+/// Helper to parse an optional usize from a number `JSValue`.
 #[inline]
 fn parse_usize(value: &JSValue) -> Option<usize> {
     match value {
-        JSValue::Number(number) if *number >= 0.0_f64 => Some(*number as usize),
+        JSValue::Number(number) if *number >= 0.0f64 => Some(*number as usize),
         _ => None,
     }
 }
@@ -193,9 +199,15 @@ fn build_append_style_text() -> Arc<HostFnSync> {
                     .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
                 // Prefer first child of <html> with tag 'head'; else try any 'head' in index
                 let mut found: Option<NodeKey> = None;
-                for (key, tag) in &guard.tag_by_key {
+                let mut sorted_tags: Vec<(NodeKey, String)> = guard
+                    .tag_by_key
+                    .iter()
+                    .map(|(key, value)| (*key, value.clone()))
+                    .collect();
+                sorted_tags.sort_by_key(|item| item.0 .0);
+                for (key, tag) in sorted_tags {
                     if tag.eq_ignore_ascii_case("head") {
-                        found = Some(*key);
+                        found = Some(key);
                         break;
                     }
                 }
@@ -585,8 +597,6 @@ fn build_get_attribute() -> Arc<HostFnSync> {
                             .join(" ")
                     })
                     .unwrap_or_default()
-            } else if name_lc.starts_with("data-") {
-                String::new()
             } else {
                 String::new()
             };
@@ -768,7 +778,7 @@ fn build_get_child_index() -> Arc<HostFnSync> {
                 .children_by_parent
                 .get(&parent_key)
                 .and_then(|children| children.iter().position(|key| *key == child_key));
-            let index_number = index_opt.map_or(-1.0_f64, |index| index as f64);
+            let index_number = index_opt.map_or(-1.0f64, |index| index as f64);
             Ok(JSValue::Number(index_number))
         },
     )
@@ -912,7 +922,7 @@ fn build_set_inner_html() -> Arc<HostFnSync> {
     )
 }
 
-/// Build net_request function - starts an async network request.
+/// Build `net_request` function - starts an async network request.
 fn build_net_request() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -937,12 +947,12 @@ fn build_net_request() -> Arc<HostFnSync> {
                 JSValue::String(string_value) => string_value.clone(),
                 _ => return Err(JSError::TypeError(String::from("url must be a string"))),
             };
-            let headers_json = args.get(2).and_then(|v| match v {
-                JSValue::String(s) => Some(s.clone()),
+            let headers_json = args.get(2).and_then(|value| match value {
+                JSValue::String(string_val) => Some(string_val.clone()),
                 _ => None,
             });
-            let body_b64 = args.get(3).and_then(|v| match v {
-                JSValue::String(s) => Some(s.clone()),
+            let body_b64 = args.get(3).and_then(|value| match value {
+                JSValue::String(string_val) => Some(string_val.clone()),
                 _ => None,
             });
 
@@ -992,7 +1002,7 @@ fn build_net_request() -> Arc<HostFnSync> {
                 let error_response = move |error: String| FetchDone {
                     status: 0,
                     status_text: String::new(),
-                    ok: false,
+                    is_ok: false,
                     headers: Vec::new(),
                     body_text: String::new(),
                     body_b64: String::new(),
@@ -1033,7 +1043,7 @@ fn build_net_request() -> Arc<HostFnSync> {
     )
 }
 
-/// Build net_requestPoll function - polls the status of an async network request.
+/// Build `net_requestPoll` function - polls the status of an async network request.
 fn build_net_request_poll() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -1061,7 +1071,7 @@ fn build_net_request_poll() -> Arc<HostFnSync> {
                     "state":"done",
                     "status": done.status,
                     "statusText": done.status_text,
-                    "ok": done.ok,
+                    "ok": done.is_ok,
                     "headers": done.headers,
                     "bodyText": done.body_text,
                     "bodyBase64": done.body_b64,
@@ -1075,7 +1085,7 @@ fn build_net_request_poll() -> Arc<HostFnSync> {
     )
 }
 
-/// Build storage_getItem function.
+/// Build `storage_getItem` function.
 fn build_storage_get_item() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -1115,7 +1125,7 @@ fn build_storage_get_item() -> Arc<HostFnSync> {
     )
 }
 
-/// Build storage_setItem function.
+/// Build `storage_setItem` function.
 fn build_storage_set_item() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -1159,7 +1169,7 @@ fn build_storage_set_item() -> Arc<HostFnSync> {
     )
 }
 
-/// Build storage_removeItem function.
+/// Build `storage_removeItem` function.
 fn build_storage_remove_item() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -1199,7 +1209,7 @@ fn build_storage_remove_item() -> Arc<HostFnSync> {
     )
 }
 
-/// Build storage_clear function.
+/// Build `storage_clear` function.
 fn build_storage_clear() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -1235,7 +1245,7 @@ fn build_storage_clear() -> Arc<HostFnSync> {
     )
 }
 
-/// Build storage_keys function.
+/// Build `storage_keys` function.
 fn build_storage_keys() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {

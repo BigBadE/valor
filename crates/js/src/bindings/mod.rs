@@ -5,38 +5,43 @@
 //! Valor to install host-provided namespaces (for example, `console`) into
 //! any JavaScript engine adapter without depending on engine-specific APIs.
 
-#![allow(clippy::cast_sign_loss)]
+#![allow(
+    clippy::cast_sign_loss,
+    reason = "NodeKey conversions require casting from signed to unsigned"
+)]
 
-use crate::{DOMUpdate, NodeKey};
+use crate::dom_index::DomIndexState;
+use crate::{DOMUpdate, NodeKey, NodeKeyManager};
 use anyhow::Result;
-// serde_json used via fully qualified calls (serde_json::json)
+use core::sync::atomic::AtomicU64;
 use std::collections::{BTreeMap, HashMap};
-use std::env;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tokio::sync::mpsc::UnboundedSender;
-use url::Url;
+use tokio::runtime::Handle as TokioHandle;
+use tokio::sync::mpsc::{Sender as MpscSender, UnboundedSender};
+/// JavaScript value and error types for host bindings.
 mod values;
 pub use values::{JSError, JSValue, LogLevel};
+/// Logger trait and implementations for host functions.
 mod logger;
 pub use logger::HostLogger;
+/// Network fetch functionality for HTTP and file:// URLs.
 mod net;
-use net::{fetch_file, fetch_http, FetchDone, FetchEntry, FetchRegistry};
+use net::FetchRegistry;
 
 /// Document namespace builder with DOM manipulation functions.
 mod document;
+/// DOM helper functions for HTML serialization and attribute indexing.
 mod dom;
 /// Storage registry for localStorage and sessionStorage.
 mod storage;
 /// Utility functions for HTTP headers and body encoding.
 mod util;
 pub use document::build_document_namespace;
-use dom::{apply_inner_html, remove_attr_index_sync, serialize_node, set_attr_index_sync};
 pub use storage::StorageRegistry;
 
 /// Shorthand for the created nodes registry to keep field types simple.
-type CreatedNodeMap = HashMap<crate::NodeKey, CreatedNodeInfo>;
+type CreatedNodeMap = HashMap<NodeKey, CreatedNodeInfo>;
 
 // DOM helpers moved to dom.rs
 
@@ -48,17 +53,17 @@ pub struct HostContext {
     /// Logger used by host functions such as `console.*`.
     pub logger: Arc<dyn HostLogger>,
     /// Channel for posting DOM updates from host functions (document namespace).
-    pub dom_sender: tokio::sync::mpsc::Sender<Vec<crate::DOMUpdate>>,
-    /// NodeKey manager for minting stable keys for JS-created nodes (shared via Arc+Mutex).
-    pub js_node_keys: Arc<Mutex<crate::NodeKeyManager<u64>>>,
+    pub dom_sender: MpscSender<Vec<DOMUpdate>>,
+    /// `NodeKey` manager for minting stable keys for JS-created nodes (shared via `Arc`+`Mutex`).
+    pub js_node_keys: Arc<Mutex<NodeKeyManager<u64>>>,
     /// Monotonic local id counter used with `js_node_keys.key_of(local_id)`.
     pub js_local_id_counter: Arc<AtomicU64>,
     /// Map of JS-created nodes to their kind and metadata to support appendChild.
     pub js_created_nodes: Arc<Mutex<CreatedNodeMap>>,
     /// Shared DOM index for element lookup functions (e.g., getElementById).
-    pub dom_index: Arc<Mutex<crate::dom_index::DomIndexState>>,
+    pub dom_index: Arc<Mutex<DomIndexState>>,
     /// Tokio runtime handle for spawning async network tasks.
-    pub tokio_handle: tokio::runtime::Handle,
+    pub tokio_handle: TokioHandle,
     /// Origin of the current page (scheme+host+port minimal string) for same-origin checks.
     pub page_origin: String,
     /// Shared network request registry to communicate between host and JS fetch/XHR polyfills.
@@ -70,7 +75,7 @@ pub struct HostContext {
     /// Session storage buckets per origin (per page session, separate from local).
     pub storage_session: Arc<Mutex<StorageRegistry>>,
     /// Optional command channel exposed only to the privileged `<valor://chrome>` origin for controlling the host app.
-    pub chrome_host_tx: Option<tokio::sync::mpsc::UnboundedSender<ChromeHostCommand>>,
+    pub chrome_host_tx: Option<UnboundedSender<ChromeHostCommand>>,
 }
 
 /// A synchronous host function signature.
@@ -198,6 +203,10 @@ pub struct CreatedNodeInfo {
 }
 
 /// Internal helper to build a console logging function for a given level.
+#[allow(
+    dead_code,
+    reason = "Reserved for future use when console namespace needs dynamic log level functions"
+)]
 fn make_log_fn(level: LogLevel) -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, arguments: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -249,7 +258,10 @@ pub fn build_default_bindings() -> HostBindings {
 /// Build the `chromeHost` namespace. Functions are gated to `<valor://chrome>` origin
 /// and require an attached host command channel in `HostContext`.
 #[inline]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Chrome host namespace requires many navigation and tab management functions"
+)]
 pub fn build_chrome_host_namespace() -> HostNamespace {
     // Helper to check privilege and get sender
     let get_sender =
@@ -385,9 +397,11 @@ pub fn build_performance_namespace() -> HostNamespace {
     let now_fn = Arc::new(
         move |context: &HostContext, _args: Vec<JSValue>| -> Result<JSValue, JSError> {
             let elapsed = Instant::now().duration_since(context.performance_start);
-            let milliseconds = elapsed.as_secs_f64() * 1_000.0_f64;
+            let milliseconds = elapsed.as_secs_f64() * 1_000.0f64;
             Ok(JSValue::Number(milliseconds))
         },
     );
-    HostNamespace::new().with_sync_fn("now", now_fn)
+    HostNamespace::new()
+        .with_sync_fn("now", now_fn)
+        .with_property("timeOrigin", JSValue::Number(0.0f64))
 }

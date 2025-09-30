@@ -1,14 +1,22 @@
+//! Benchmark history tracking tool for Valor project.
+//!
+//! This tool saves and compares benchmark snapshots to track performance over time.
+
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
-use serde_json::from_slice;
+use serde_json::{from_slice, to_vec_pretty};
 use std::env;
-use std::fs;
+use std::fs::{create_dir_all, read, write};
+use std::io::{Write as _, stderr};
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// Snapshot of benchmark results with timestamp.
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
+    /// Timestamp in milliseconds since epoch.
     timestamp_ms: u128,
+    /// Optional note describing this snapshot.
     note: String,
 }
 
@@ -24,7 +32,7 @@ fn history_dir() -> PathBuf {
 fn ensure_history_dir() -> Result<PathBuf> {
     let dir = history_dir();
     if !dir.exists() {
-        fs::create_dir_all(&dir)?;
+        create_dir_all(&dir)?;
     }
     Ok(dir)
 }
@@ -40,9 +48,9 @@ fn cmd_save(name: &str) -> Result<()> {
         timestamp_ms: Instant::now().elapsed().as_millis(),
         note: "placeholder snapshot".to_owned(),
     };
-    let data = serde_json::to_vec_pretty(&snap)?;
-    fs::write(&path, data)?;
-    eprintln!("Saved baseline to {}", path.display());
+    let data = to_vec_pretty(&snap)?;
+    write(&path, data)?;
+    writeln!(stderr(), "Saved baseline to {}", path.display())?;
     Ok(())
 }
 
@@ -59,18 +67,22 @@ fn cmd_compare(baseline: &str, _threshold: Option<f32>) -> Result<()> {
             path.display()
         ));
     }
-    let data = fs::read(&path)?;
+    let data = read(&path)?;
     let _snap: Snapshot = from_slice(&data)?;
     // Placeholder: always pass
-    eprintln!("Comparison against baseline '{baseline}' passed (placeholder)");
+    writeln!(
+        stderr(),
+        "Comparison against baseline '{baseline}' passed (placeholder)"
+    )?;
     Ok(())
 }
 
 /// Print usage information to stderr.
 fn print_usage() {
-    eprintln!(
-        "Usage:\n  benchhist save --name <BASELINE>\n  benchhist compare --baseline <BASELINE> [--threshold <PERCENT>]"
-    );
+    drop(writeln!(
+        stderr(),
+        "Usage:\\n  benchhist save --name <BASELINE>\\n  benchhist compare --baseline <BASELINE> [--threshold <PERCENT>]"
+    ));
 }
 
 /// Main entry point for the benchhist CLI tool.
