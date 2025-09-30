@@ -80,36 +80,29 @@ benchhist = { path = "crates/benchhist" }
 css_orchestrator = { path = "crates/css/orchestrator" }
 css_syntax = { path = "crates/css/modules/syntax" }
 css_selectors = { path = "crates/css/modules/selectors" }
-#css_style_attr = { path = "crates/css/modules/style_attr" }
-#css_media_queries = { path = "crates/css/modules/media_queries" }
-#css_conditional_rules = { path = "crates/css/modules/conditional_rules" }
-#css_selectors = { path = "crates/css/modules/selectors" }
-#css_namespaces = { path = "crates/css/modules/namespaces" }
-#css_cascade = { path = "crates/css/modules/cascade" }
-#css_values_units = { path = "crates/css/modules/values_units" }
-#css_variables = { path = "crates/css/modules/variables" }
+css_style_attr = { path = "crates/css/modules/style_attr" }
+css_media_queries = { path = "crates/css/modules/media_queries" }
+css_conditional_rules = { path = "crates/css/modules/conditional_rules" }
+css_namespaces = { path = "crates/css/modules/namespaces" }
+css_cascade = { path = "crates/css/modules/cascade" }
+css_values_units = { path = "crates/css/modules/values_units" }
+css_variables = { path = "crates/css/modules/variables" }
 css_display = { path = "crates/css/modules/display" }
 css_box = { path = "crates/css/modules/box" }
-#css_color = { path = "crates/css/modules/color" }
-#css_backgrounds_borders = { path = "crates/css/modules/backgrounds_borders" }
-#css_images = { path = "crates/css/modules/images" }
-#css_fonts = { path = "crates/css/modules/fonts" }
-#css_writing_modes = { path = "crates/css/modules/writing_modes" }
+css_color = { path = "crates/css/modules/color" }
+css_backgrounds_borders = { path = "crates/css/modules/backgrounds_borders" }
+css_images = { path = "crates/css/modules/images" }
+css_fonts = { path = "crates/css/modules/fonts" }
+css_writing_modes = { path = "crates/css/modules/writing_modes" }
 css_flexbox = { path = "crates/css/modules/flexbox" }
-#css_ui = { path = "crates/css/modules/ui" }
-#css_transforms = { path = "crates/css/modules/transforms" }
-#css_position = { path = "crates/css/modules/position" }
-#css_sizing = { path = "crates/css/modules/sizing" }
-#css_text = { path = "crates/css/modules/text" }
-#css_text_decoration = { path = "crates/css/modules/text_decoration" }
+css_ui = { path = "crates/css/modules/ui" }
+css_transforms = { path = "crates/css/modules/transforms" }
+css_position = { path = "crates/css/modules/position" }
+css_sizing = { path = "crates/css/modules/sizing" }
+css_text = { path = "crates/css/modules/text" }
+css_text_decoration = { path = "crates/css/modules/text_decoration" }
 # Layouter was renamed to css_core
 css_core = { path = "crates/css/modules/core" }
-css_text = { path = "crates/css/modules/text" }
-
-# Orchestrator dependencies used as workspace deps
-css_style_attr = { path = "crates/css/modules/style_attr" }
-css_variables = { path = "crates/css/modules/variables" }
-css_color = { path = "crates/css/modules/color" }
 
 [profile.dev]
 opt-level = 1

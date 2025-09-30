@@ -1,14 +1,48 @@
-#![allow(dead_code)]
 #![allow(
+    dead_code,
     clippy::excessive_nesting,
-    reason = "diagnostic-only helper code in test harness"
+    clippy::min_ident_chars,
+    clippy::too_many_lines,
+    clippy::let_underscore_untyped,
+    clippy::absolute_paths,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::std_instead_of_core,
+    clippy::cast_lossless,
+    clippy::missing_errors_doc,
+    clippy::missing_const_for_fn,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::useless_let_if_seq,
+    clippy::needless_for_each,
+    clippy::shadow_unrelated,
+    clippy::map_unwrap_or,
+    clippy::explicit_iter_loop,
+    clippy::iter_over_hash_type,
+    clippy::ref_option,
+    clippy::option_if_let_else,
+    clippy::str_to_string,
+    clippy::let_underscore_must_use,
+    clippy::semicolon_outside_block,
+    clippy::redundant_closure_for_method_calls,
+    clippy::ignored_unit_patterns,
+    clippy::panic,
+    clippy::explicit_into_iter_loop,
+    clippy::default_numeric_fallback,
+    clippy::items_after_statements,
+    clippy::tests_outside_test_module,
+    clippy::non_ascii_literal,
+    clippy::missing_panics_doc,
+    clippy::cognitive_complexity,
+    clippy::panic_in_result_fn,
+    let_underscore_drop,
+    reason = "Test harness with diagnostic helper code"
 )]
 use anyhow::Error;
 use css::style_types::{AlignItems, BorderWidths, ComputedStyle, Display, Edges};
 use css_core::LayoutRect;
 use css_core::{LayoutNodeKind, Layouter};
 use headless_chrome::{Browser, LaunchOptionsBuilder};
-use js::DOMSubscriber;
+use js::DOMSubscriber as _;
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
 use js::NodeKey;
 use log::{debug, error, info};
@@ -105,7 +139,7 @@ fn run_chromium_layouts() -> Result<(), Error> {
         None
     }
     let focus = cli_layout_filter();
-    if let Some(ref f) = focus {
+    if let Some(f) = &focus {
         info!("[LAYOUT] focusing fixtures containing (CLI): {f}");
     }
     info!("[LAYOUT] discovered {} fixtures", all.len());
@@ -262,7 +296,6 @@ fn run_chromium_layouts() -> Result<(), Error> {
                     let msg = format!("JS assertion failed: {name} - {details}");
                     error!("[LAYOUT] {display_name} ... FAILED: {msg}");
                     failed.push((display_name.clone(), msg));
-                    continue;
                 }
             }
         }
@@ -332,7 +365,7 @@ fn run_chromium_layouts() -> Result<(), Error> {
     Ok(())
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, reason = "Test helper function")]
 fn our_layout_json(
     layouter: &Layouter,
     rects: &HashMap<NodeKey, LayoutRect>,
@@ -395,23 +428,114 @@ fn our_layout_json(
     }
 }
 
-#[allow(dead_code)]
-struct LayoutCtx<'a> {
-    kind_by_key: &'a HashMap<NodeKey, LayoutNodeKind>,
-    children_by_key: &'a HashMap<NodeKey, Vec<NodeKey>>,
-    attrs_by_key: &'a HashMap<NodeKey, HashMap<String, String>>,
-    rects: &'a HashMap<NodeKey, LayoutRect>,
-    computed: &'a HashMap<NodeKey, ComputedStyle>,
+#[allow(dead_code, reason = "Test helper struct")]
+struct LayoutCtx<'ctx> {
+    kind_by_key: &'ctx HashMap<NodeKey, LayoutNodeKind>,
+    children_by_key: &'ctx HashMap<NodeKey, Vec<NodeKey>>,
+    attrs_by_key: &'ctx HashMap<NodeKey, HashMap<String, String>>,
+    rects: &'ctx HashMap<NodeKey, LayoutRect>,
+    computed: &'ctx HashMap<NodeKey, ComputedStyle>,
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, reason = "Test helper function")]
 fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
     // NOTE: The rect serialized here is the border-box rect from the layouter.
     // Chromium's side uses getBoundingClientRect(), which is also border-box.
     fn is_non_rendering_tag(tag: &str) -> bool {
         matches!(
             tag,
-            "head" | "meta" | "title" | "link" | "style" | "script" | "base"
+            "head"
+                | "meta"
+                | "title"
+                | "link"
+                | "style"
+                | "script"
+                | "base"
+                | "template"
+                | "slot"
+                | "iframe"
+                | "picture"
+                | "audio"
+                | "video"
+                | "canvas"
+                | "svg"
+                | "math"
+                | "object"
+                | "embed"
+                | "applet"
+                | "map"
+                | "area"
+                | "param"
+                | "source"
+                | "track"
+                | "wbr"
+                | "menuitem"
+                | "keygen"
+                | "datalist"
+                | "output"
+                | "progress"
+                | "meter"
+                | "fieldset"
+                | "legend"
+                | "label"
+                | "optgroup"
+                | "option"
+                | "select"
+                | "textarea"
+                | "button"
+                | "acronym"
+                | "abbr"
+                | "address"
+                | "article"
+                | "aside"
+                | "blockquote"
+                | "details"
+                | "figcaption"
+                | "figure"
+                | "footer"
+                | "header"
+                | "hgroup"
+                | "main"
+                | "nav"
+                | "section"
+                | "summary"
+                | "time"
+                | "dd"
+                | "div"
+                | "dl"
+                | "dt"
+                | "li"
+                | "ol"
+                | "p"
+                | "ul"
+                | "a"
+                | "b"
+                | "bdi"
+                | "bdo"
+                | "br"
+                | "cite"
+                | "code"
+                | "data"
+                | "dfn"
+                | "em"
+                | "i"
+                | "kbd"
+                | "mark"
+                | "q"
+                | "rb"
+                | "rp"
+                | "rt"
+                | "rtc"
+                | "ruby"
+                | "s"
+                | "samp"
+                | "small"
+                | "span"
+                | "strong"
+                | "sub"
+                | "sup"
+                | "u"
+                | "var"
         )
     }
 
@@ -543,7 +667,7 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
                 }
                 obj
             }
-            Some(LayoutNodeKind::Document) | Some(LayoutNodeKind::InlineText { .. }) | None => {
+            Some(LayoutNodeKind::Document | LayoutNodeKind::InlineText { .. }) | None => {
                 // For document or text nodes, dive into children to find first element
                 if let Some(children) = ctx.children_by_key.get(&key)
                     && let Some(first_block) = children.iter().find(|c| {
@@ -560,7 +684,16 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
     recurse(ctx, key)
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    clippy::too_many_lines,
+    clippy::absolute_paths,
+    clippy::min_ident_chars,
+    clippy::let_underscore_untyped,
+    clippy::needless_raw_strings,
+    clippy::needless_raw_string_hashes,
+    reason = "Dead code test function with JavaScript in raw string"
+)]
 fn chromium_layout_json_in_tab(tab: &headless_chrome::Tab, path: &Path) -> anyhow::Result<Value> {
     // Convert the file path to a file:// URL
     let url = common::to_file_url(path)?;
@@ -573,7 +706,7 @@ fn chromium_layout_json_in_tab(tab: &headless_chrome::Tab, path: &Path) -> anyho
     // Inject CSS Reset for consistent defaults
     let _ = tab.evaluate(common::css_reset_injection_script(), false)?;
 
-    let script = r#"(function() {
+    let script = r"(function() {
         function shouldSkip(el) {
             if (!el || !el.tagName) return false;
             var tag = String(el.tagName).toLowerCase();
@@ -644,7 +777,7 @@ fn chromium_layout_json_in_tab(tab: &headless_chrome::Tab, path: &Path) -> anyho
         var layout = ser(root);
         var asserts = Array.isArray(window._valorResults) ? window._valorResults : [];
         return JSON.stringify({ layout: layout, asserts: asserts });
-    })()"#;
+    })()";
     let result = tab.evaluate(script, true)?;
     let value = result
         .value

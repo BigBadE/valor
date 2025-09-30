@@ -1,6 +1,24 @@
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    clippy::redundant_closure_for_method_calls,
+    clippy::map_unwrap_or,
+    clippy::ignored_unit_patterns,
+    clippy::explicit_iter_loop,
+    clippy::missing_const_for_fn,
+    let_underscore_drop,
+    clippy::doc_markdown,
+    clippy::return_and_then,
+    clippy::semicolon_outside_block,
+    clippy::or_fun_call,
+    clippy::print_stderr,
+    clippy::integer_division_remainder_used,
+    clippy::if_not_else,
+    clippy::same_name_method,
+    clippy::unused_trait_names,
+    reason = "Test support utilities with diagnostic helpers"
+)]
 use anyhow::{Result, anyhow};
-use image::ImageEncoder;
+use image::ImageEncoder as _;
 use log::info;
 use page_handler::config::ValorConfig;
 use page_handler::state::HtmlPage;
@@ -135,7 +153,7 @@ pub fn clear_valor_layout_cache_if_harness_changed(harness_src: &str) -> Result<
 }
 
 fn checksum_u64(s: &str) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a 64-bit
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a 64-bit
     for b in s.as_bytes() {
         hash ^= *b as u64;
         hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
@@ -522,10 +540,10 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
             &mut Vec<StdString>,
             &mut Vec<(serde_json::Value, serde_json::Value)>,
         ) -> Result<(), StdString>;
-        struct CmpState<'a> {
+        struct CmpState<'cmp> {
             eps: f64,
-            path: &'a mut Vec<StdString>,
-            elem_stack: &'a mut Vec<(serde_json::Value, serde_json::Value)>,
+            path: &'cmp mut Vec<StdString>,
+            elem_stack: &'cmp mut Vec<(serde_json::Value, serde_json::Value)>,
         }
         #[inline]
         fn call_with_elem_ctx(
@@ -677,7 +695,10 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
         }
     }
 
-    #[allow(clippy::excessive_nesting)]
+    #[allow(
+        clippy::excessive_nesting,
+        reason = "Complex nested JSON comparison logic"
+    )]
     fn build_err(
         kind: &str,
         detail: &str,

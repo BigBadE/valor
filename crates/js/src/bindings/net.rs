@@ -30,7 +30,7 @@ pub struct FetchDone {
 }
 
 /// Registry for tracking async network fetch requests.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct FetchRegistry {
     /// Next ID to allocate for a fetch request.
     pub next_id: u64,

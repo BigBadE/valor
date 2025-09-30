@@ -58,7 +58,7 @@ mod real {
     use core::convert::TryFrom as _;
     use core::ffi::c_void;
     use js::Console;
-    use js::runtime::runtime_prelude;
+    use js::runtime::RUNTIME_PRELUDE;
     use js::{HostBindings, HostContext, HostFnKind, HostNamespace, JSValue, JsEngine};
     use rusty_v8::{
         Boolean, Context, ContextScope, CreateParams, External, Function,
@@ -363,7 +363,7 @@ mod real {
                 return Ok(());
             }
             // Evaluate the engine-agnostic runtime prelude provided by the js crate.
-            let prelude = runtime_prelude();
+            let prelude = RUNTIME_PRELUDE;
             self.run_script_internal(prelude, "valor://runtime_prelude")?;
             self.stubs_installed = true;
             Ok(())

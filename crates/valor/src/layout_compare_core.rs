@@ -1,24 +1,30 @@
-use anyhow::Error;
+use anyhow::{Error, Result as AnyhowResult, anyhow};
+use core::time::Duration;
 use css::style_types::{AlignItems, BoxSizing, ComputedStyle, Display, Overflow};
 use css_core::LayoutRect;
 use css_core::{LayoutNodeKind, Layouter};
-use headless_chrome::{Browser, LaunchOptionsBuilder};
-use js::DOMSubscriber;
-use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
-use js::NodeKey;
+use env_logger::{Builder as EnvLoggerBuilder, Env as EnvLoggerEnv};
+use headless_chrome::{Browser, LaunchOptionsBuilder, Tab};
+use js::{
+    DOMSubscriber as _,
+    DOMUpdate::{EndOfDocument, InsertElement, SetAttr},
+    NodeKey,
+};
 use log::{debug, error, info};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
 use tokio::runtime::Runtime;
+use url::Url;
 
-use crate::test_support as common;
+use crate::test_support::{self as common, css_reset_injection_script};
 
+/// Apply basic attributes (id, class, style) to a layout node.
 fn apply_basic_attrs(lay: &mut Layouter, node: NodeKey, map: &HashMap<String, String>) {
     for key_name in ["id", "class", "style"] {
         if let Some(val) = map.get(key_name) {
-            let _ = lay.apply_update(SetAttr {
+            let _attr_result: Result<(), _> = lay.apply_update(SetAttr {
                 node,
                 name: key_name.to_owned(),
                 value: val.clone(),
@@ -27,15 +33,29 @@ fn apply_basic_attrs(lay: &mut Layouter, node: NodeKey, map: &HashMap<String, St
     }
 }
 
-pub fn run(filter: Option<String>) -> Result<usize, Error> {
-    let _ = env_logger::Builder::from_env(env_logger::Env::default().filter_or("RUST_LOG", "warn"))
-        .is_test(false)
-        .try_init();
+/// Run layout comparison tests against Chromium.
+///
+/// # Errors
+/// Returns an error if tests fail or setup fails.
+///
+/// # Panics
+/// May panic if browser launch fails.
+#[inline]
+#[allow(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "Test harness function with complex test logic"
+)]
+pub fn run(filter: Option<&str>) -> Result<usize, Error> {
+    let _log_init: Result<(), _> =
+        EnvLoggerBuilder::from_env(EnvLoggerEnv::default().filter_or("RUST_LOG", "warn"))
+            .is_test(false)
+            .try_init();
 
     let launch_opts = LaunchOptionsBuilder::default()
         .headless(true)
         .window_size(Some((800, 600)))
-        .idle_browser_timeout(std::time::Duration::from_secs(300))
+        .idle_browser_timeout(Duration::from_secs(300))
         .args(vec![
             OsStr::new("--force-device-scale-factor=1"),
             OsStr::new("--disable-features=OverlayScrollbar"),
@@ -50,48 +70,54 @@ pub fn run(filter: Option<String>) -> Result<usize, Error> {
             OsStr::new("--blink-settings=imagesEnabled=false"),
         ])
         .build()
-        .expect("Failed to build LaunchOptions for headless_chrome");
-    let browser = Browser::new(launch_opts).expect("Failed to launch headless Chrome browser");
+        .map_err(|err| anyhow!("Failed to build LaunchOptions: {err}"))?;
+    let browser = Browser::new(launch_opts)
+        .map_err(|err| anyhow!("Failed to launch headless Chrome browser: {err}"))?;
     let tab = browser.new_tab()?;
 
     let mut failed: Vec<(String, String)> = Vec::new();
-    let rt = Runtime::new()?;
+    let runtime = Runtime::new()?;
     let all = common::fixture_html_files()?;
 
-    if let Some(ref f) = filter {
-        info!("[LAYOUT] focusing fixtures containing (CLI/bin): {f}");
+    if let Some(filter_str) = filter {
+        info!("[LAYOUT] focusing fixtures containing (CLI/bin): {filter_str}");
     }
     info!("[LAYOUT] discovered {} fixtures", all.len());
 
     let mut ran = 0usize;
     for input_path in all {
-        if let Some(ref f) = filter {
+        if let Some(filter_str) = filter {
             let display_name = input_path.display().to_string();
-            if !display_name.contains(f) {
+            if !display_name.contains(filter_str) {
                 continue;
             }
         }
         let display_name = input_path.display().to_string();
         let url = common::to_file_url(&input_path)?;
-        let mut page = common::create_page(&rt, url)?;
-        page.eval_js(common::css_reset_injection_script())?;
+        let mut page = common::create_page(&runtime, url)?;
+        page.eval_js(css_reset_injection_script())?;
         let mut layouter_mirror = page.create_mirror(Layouter::new());
 
-        let finished = common::update_until_finished(&rt, &mut page, |_| {
+        let finished = common::update_until_finished(&runtime, &mut page, |_page| {
             layouter_mirror.try_update_sync()?;
             Ok(())
         })?;
         if !finished {
-            let msg = "Parsing did not finish".to_string();
+            let msg = "Parsing did not finish".to_owned();
             error!("[LAYOUT] {display_name} ... FAILED: {msg}");
             failed.push((display_name.clone(), msg));
             continue;
         }
-        let _ = rt.block_on(page.update());
+        let _update_result: Result<(), _> = runtime.block_on(page.update());
         layouter_mirror.try_update_sync()?;
 
         let (tags_by_key, element_children) = page.layout_structure_snapshot();
         let attrs_map = page.layouter_attrs_map();
+
+        #[allow(
+            clippy::items_after_statements,
+            reason = "Helper function for test logic"
+        )]
         fn replay_into_layouter(
             lay: &mut Layouter,
             tags_by_key: &HashMap<NodeKey, String>,
@@ -107,7 +133,7 @@ pub fn run(filter: Option<String>) -> Result<usize, Error> {
                     .get(child)
                     .cloned()
                     .unwrap_or_else(|| "div".to_owned());
-                let _ = lay.apply_update(InsertElement {
+                let _insert_result: Result<(), _> = lay.apply_update(InsertElement {
                     parent,
                     node: *child,
                     tag,
@@ -119,26 +145,24 @@ pub fn run(filter: Option<String>) -> Result<usize, Error> {
                 replay_into_layouter(lay, tags_by_key, element_children, attrs, *child);
             }
         }
-        {
-            let lay = layouter_mirror.mirror_mut();
-            replay_into_layouter(
-                lay,
-                &tags_by_key,
-                &element_children,
-                &attrs_map,
-                NodeKey::ROOT,
-            );
-            let _ = lay.apply_update(EndOfDocument);
-            let updates_applied = lay.perf_updates_applied();
-            let snap_tmp = lay.snapshot();
-            let blocks_count = snap_tmp
-                .iter()
-                .filter(|(_, kind, _)| matches!(kind, LayoutNodeKind::Block { .. }))
-                .count();
-            debug!(
-                "[LAYOUT][DIAG] external layouter after replay: updates_applied={updates_applied}, blocks_in_snapshot={blocks_count}"
-            );
-        }
+        let lay = layouter_mirror.mirror_mut();
+        replay_into_layouter(
+            lay,
+            &tags_by_key,
+            &element_children,
+            &attrs_map,
+            NodeKey::ROOT,
+        );
+        let _eod_result: Result<(), _> = lay.apply_update(EndOfDocument);
+        let replay_updates_applied = lay.perf_updates_applied();
+        let replay_snap = lay.snapshot();
+        let replay_blocks_count = replay_snap
+            .iter()
+            .filter(|(_, kind, _)| matches!(kind, LayoutNodeKind::Block { .. }))
+            .count();
+        debug!(
+            "[LAYOUT][DIAG] external layouter after replay: updates_applied={replay_updates_applied}, blocks_in_snapshot={replay_blocks_count}"
+        );
 
         let computed = page.computed_styles_snapshot()?;
         let computed_for_serialization = computed.clone();
@@ -147,27 +171,28 @@ pub fn run(filter: Option<String>) -> Result<usize, Error> {
         layouter.set_stylesheet(sheet_for_layout);
         layouter.set_computed_styles(computed);
         let _count = layouter.compute_layout();
-        let updates_applied = layouter.perf_updates_applied();
-        let snap_tmp = layouter.snapshot();
-        let blocks_count = snap_tmp
+        let layout_updates_applied = layouter.perf_updates_applied();
+        let layout_snap = layouter.snapshot();
+        let layout_blocks_count = layout_snap
             .iter()
             .filter(|(_, kind, _)| matches!(kind, LayoutNodeKind::Block { .. }))
             .count();
         debug!(
-            "[LAYOUT][DIAG] external layouter after replay: updates_applied={updates_applied}, blocks_in_snapshot={blocks_count}"
+            "[LAYOUT][DIAG] external layouter after layout: updates_applied={layout_updates_applied}, blocks_in_snapshot={layout_blocks_count}"
         );
         let rects_external = layouter.compute_layout_geometry();
 
         let our_json = our_layout_json(layouter, &rects_external, &computed_for_serialization);
         let harness_src = include_str!("../tests/layouter_chromium_compare.rs");
-        let ch_json =
-            if let Some(v) = common::read_cached_json_for_fixture(&input_path, harness_src) {
-                v
-            } else {
-                let value = chromium_layout_json_in_tab(&tab, &input_path)?;
-                common::write_cached_json_for_fixture(&input_path, harness_src, &value)?;
-                value
-            };
+        let ch_json = if let Some(cached_value) =
+            common::read_cached_json_for_fixture(&input_path, harness_src)
+        {
+            cached_value
+        } else {
+            let value = chromium_layout_json_in_tab(&tab, &input_path)?;
+            common::write_cached_json_for_fixture(&input_path, harness_src, &value)?;
+            value
+        };
         common::write_named_json_for_fixture(&input_path, harness_src, "chromium", &ch_json)?;
         common::write_named_json_for_fixture(&input_path, harness_src, "valor", &our_json)?;
 
@@ -184,34 +209,33 @@ pub fn run(filter: Option<String>) -> Result<usize, Error> {
             && let Some(arr) = asserts.as_array()
         {
             for entry in arr {
-                let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let ok = entry.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-                let details = entry.get("details").and_then(|v| v.as_str()).unwrap_or("");
-                if !ok {
+                let name = entry.get("name").and_then(Value::as_str).unwrap_or("");
+                let assert_ok = entry.get("ok").and_then(Value::as_bool).unwrap_or(false);
+                let details = entry.get("details").and_then(Value::as_str).unwrap_or("");
+                if !assert_ok {
                     let msg = format!("JS assertion failed: {name} - {details}");
                     error!("[LAYOUT] {display_name} ... FAILED: {msg}");
                     failed.push((display_name.clone(), msg));
-                    continue;
                 }
             }
         }
-        let eps = f32::EPSILON as f64 * 3.0;
+        let eps = f64::from(f32::EPSILON) * 3.0f64;
         match common::compare_json_with_epsilon(&our_json, &ch_layout_json, eps) {
-            Ok(_) => {
+            Ok(()) => {
                 info!("[LAYOUT] {display_name} ... ok");
                 ran += 1;
             }
             Err(msg) => {
                 let layouter_ref = layouter_mirror.mirror_mut();
                 let snapshot_diag = layouter_ref.snapshot();
-                let attrs_map = layouter_ref.attrs_map();
+                let diag_attrs_map = layouter_ref.attrs_map();
                 let mut blocks = 0usize;
                 let mut root_children = Vec::new();
-                for (k, kind, children) in snapshot_diag.iter().cloned() {
+                for (node_key, kind, children) in snapshot_diag.iter().cloned() {
                     if matches!(kind, LayoutNodeKind::Block { .. }) {
                         blocks += 1;
                     }
-                    if k == NodeKey::ROOT {
+                    if node_key == NodeKey::ROOT {
                         root_children = children;
                     }
                 }
@@ -219,12 +243,12 @@ pub fn run(filter: Option<String>) -> Result<usize, Error> {
                     "[LAYOUT][DIAG] blocks={}, root_children_count={}, attrs_nodes={}",
                     blocks,
                     root_children.len(),
-                    attrs_map.len()
+                    diag_attrs_map.len()
                 );
                 let mut first_elem: Option<NodeKey> = None;
                 for child in &root_children {
-                    let is_block = snapshot_diag.iter().any(|(k, kind, _)| {
-                        *k == *child && matches!(kind, LayoutNodeKind::Block { .. })
+                    let is_block = snapshot_diag.iter().any(|(node_key, kind, _)| {
+                        *node_key == *child && matches!(kind, LayoutNodeKind::Block { .. })
                     });
                     if is_block {
                         first_elem = Some(*child);
@@ -232,10 +256,14 @@ pub fn run(filter: Option<String>) -> Result<usize, Error> {
                     }
                 }
                 if let Some(elem) = first_elem {
-                    let mut child_count = 0usize;
-                    if let Some((_, _, kids)) = snapshot_diag.iter().find(|(k, _, _)| *k == elem) {
-                        child_count = kids.len();
-                    }
+                    let child_count = if let Some((_, _, kids)) = snapshot_diag
+                        .iter()
+                        .find(|(node_key, _, _)| *node_key == elem)
+                    {
+                        kids.len()
+                    } else {
+                        0usize
+                    };
                     debug!(
                         "[LAYOUT][DIAG] first element child under ROOT has {child_count} children"
                     );
@@ -259,6 +287,11 @@ pub fn run(filter: Option<String>) -> Result<usize, Error> {
     Ok(ran)
 }
 
+/// Generate layout JSON from our layouter for comparison.
+#[allow(
+    clippy::iter_over_hash_type,
+    reason = "Test comparison logic, order not critical"
+)]
 fn our_layout_json(
     layouter: &Layouter,
     rects: &HashMap<NodeKey, LayoutRect>,
@@ -267,21 +300,21 @@ fn our_layout_json(
     let snapshot = layouter.snapshot();
     let mut kind_by_key = HashMap::new();
     let mut children_by_key = HashMap::new();
-    for (k, kind, children) in snapshot.into_iter() {
-        kind_by_key.insert(k, kind);
-        children_by_key.insert(k, children);
+    for (node_key, kind, children) in snapshot {
+        kind_by_key.insert(node_key, kind);
+        children_by_key.insert(node_key, children);
     }
     let attrs_by_key = layouter.attrs_map();
     let mut body_key: Option<NodeKey> = None;
     let mut html_key: Option<NodeKey> = None;
-    for (k, kind) in kind_by_key.iter() {
+    for (node_key, kind) in &kind_by_key {
         if let LayoutNodeKind::Block { tag } = kind {
             if tag.eq_ignore_ascii_case("body") {
-                body_key = Some(*k);
+                body_key = Some(*node_key);
                 break;
             }
             if tag.eq_ignore_ascii_case("html") && html_key.is_none() {
-                html_key = Some(*k);
+                html_key = Some(*node_key);
             }
         }
     }
@@ -296,9 +329,9 @@ fn our_layout_json(
             }
         }
         if root_elem.is_none() {
-            for (k, kind) in kind_by_key.iter() {
+            for (node_key, kind) in &kind_by_key {
                 if matches!(kind, LayoutNodeKind::Block { .. }) {
-                    root_elem = Some(*k);
+                    root_elem = Some(*node_key);
                     break;
                 }
             }
@@ -315,14 +348,22 @@ fn our_layout_json(
     serialize_element_subtree(&ctx, root_key)
 }
 
-struct LayoutCtx<'a> {
-    kind_by_key: &'a HashMap<NodeKey, LayoutNodeKind>,
-    children_by_key: &'a HashMap<NodeKey, Vec<NodeKey>>,
-    attrs_by_key: &'a HashMap<NodeKey, HashMap<String, String>>,
-    rects: &'a HashMap<NodeKey, LayoutRect>,
-    computed: &'a HashMap<NodeKey, ComputedStyle>,
+/// Context for serializing layout tree.
+struct LayoutCtx<'ctx> {
+    /// Map of node keys to their layout kinds.
+    kind_by_key: &'ctx HashMap<NodeKey, LayoutNodeKind>,
+    /// Map of node keys to their children.
+    children_by_key: &'ctx HashMap<NodeKey, Vec<NodeKey>>,
+    /// Map of node keys to their attributes.
+    attrs_by_key: &'ctx HashMap<NodeKey, HashMap<String, String>>,
+    /// Map of node keys to their layout rects.
+    rects: &'ctx HashMap<NodeKey, LayoutRect>,
+    /// Map of node keys to their computed styles.
+    computed: &'ctx HashMap<NodeKey, ComputedStyle>,
 }
 
+/// Serialize an element subtree to JSON for comparison.
+#[allow(clippy::too_many_lines, reason = "Test serialization logic")]
 fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
     fn is_non_rendering_tag(tag: &str) -> bool {
         matches!(
@@ -331,17 +372,16 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
         )
     }
     // Flex basis formatting not needed for core compare; use a placeholder for now.
-    fn flex_basis_str() -> &'static str {
+    const fn flex_basis_str() -> &'static str {
         "auto"
     }
-    fn effective_display(d: &Display) -> &'static str {
-        match d {
+    const fn effective_display(display: Display) -> &'static str {
+        match display {
             Display::Inline => "inline",
-            Display::Block => "block",
+            Display::Block | Display::Contents => "block",
             Display::Flex => "flex",
             Display::InlineFlex => "inline-flex",
             Display::None => "none",
-            Display::Contents => "block",
         }
     }
     let mut out = json!({});
@@ -349,12 +389,12 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
         if is_non_rendering_tag(tag) {
             return json!({});
         }
-        let rect = ctx.rects.get(&key).cloned().unwrap_or_default();
-        let display_tag = tag.to_string();
+        let rect = ctx.rects.get(&key).copied().unwrap_or_default();
+        let display_tag = tag.clone();
         let id = ctx
             .attrs_by_key
             .get(&key)
-            .and_then(|m| m.get("id"))
+            .and_then(|attr_map| attr_map.get("id"))
             .cloned()
             .unwrap_or_default();
         let computed = ctx.computed.get(&key).cloned().unwrap_or_default();
@@ -362,17 +402,17 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
             "tag": display_tag,
             "id": id,
             "rect": {
-                "x": rect.x as f64,
-                "y": rect.y as f64,
-                "width": rect.width as f64,
-                "height": rect.height as f64,
+                "x": f64::from(rect.x),
+                "y": f64::from(rect.y),
+                "width": f64::from(rect.width),
+                "height": f64::from(rect.height),
             },
             "style": {
-                "display": effective_display(&computed.display),
+                "display": effective_display(computed.display),
                 "boxSizing": match computed.box_sizing { BoxSizing::BorderBox => "border-box", BoxSizing::ContentBox => "content-box" },
                 "flexBasis": flex_basis_str(),
-                "flexGrow": computed.flex_grow as f64,
-                "flexShrink": computed.flex_shrink as f64,
+                "flexGrow": f64::from(computed.flex_grow),
+                "flexShrink": f64::from(computed.flex_shrink),
                 "alignItems": match computed.align_items {
                     AlignItems::FlexStart => "flex-start",
                     AlignItems::Center => "center",
@@ -412,20 +452,28 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> Value {
             }
         }
         if let Some(obj) = out.as_object_mut() {
-            obj.insert("children".to_string(), Value::Array(kids_json));
+            obj.insert("children".to_owned(), Value::Array(kids_json));
         }
     }
     out
 }
 
-fn chromium_layout_json_in_tab(tab: &headless_chrome::Tab, path: &Path) -> anyhow::Result<Value> {
-    let url = url::Url::from_file_path(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
-        .map_err(|_| anyhow::anyhow!("Invalid fixture path for Chrome: {}", path.display()))?;
+/// Extract layout JSON from Chromium for a given fixture.
+///
+/// # Errors
+/// Returns an error if navigation or evaluation fails.
+fn chromium_layout_json_in_tab(tab: &Tab, path: &Path) -> AnyhowResult<Value> {
+    let url = Url::from_file_path(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
+        .map_err(|()| anyhow!("Invalid fixture path for Chrome: {}", path.display()))?;
     tab.navigate_to(url.as_str())?;
     tab.wait_until_navigated()?;
     // Ensure consistent baseline styles inside Chrome like the test harness
-    let _ = tab.evaluate(crate::test_support::css_reset_injection_script(), false);
-    let script = r#"
+    let _eval_result: Result<_, _> = tab.evaluate(css_reset_injection_script(), false);
+    #[allow(
+        clippy::needless_raw_strings,
+        reason = "JavaScript code with single quotes"
+    )]
+    let script = r"
       (function(){
         try {
           var out = { layout: {}, asserts: window._valorResults || [] };
@@ -464,13 +512,15 @@ fn chromium_layout_json_in_tab(tab: &headless_chrome::Tab, path: &Path) -> anyho
           return { error: String(e && (e.stack || e.message) || e) };
         }
       })();
-    "#;
+    ";
     let result = tab.evaluate(script, true)?;
-    match result.value {
-        Some(value) => Ok(value),
-        None => Err(anyhow::anyhow!(
-            "Chromium evaluation returned no value (null) for {}",
-            url
-        )),
-    }
+    result.value.map_or_else(
+        || {
+            Err(anyhow!(
+                "Chromium evaluation returned no value (null) for {}",
+                url
+            ))
+        },
+        Ok,
+    )
 }

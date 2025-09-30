@@ -1,9 +1,17 @@
-use std::fmt;
+#![allow(
+    clippy::items_after_statements,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::too_many_lines,
+    reason = "Helper functions for DOM printing are organized inline"
+)]
+
+use core::fmt;
 
 use super::{DOM, DOMNode, NodeKind};
 use indextree::NodeId;
-
 use serde_json::{Map, Value, json};
+use smallvec::SmallVec;
 
 // -----------------------
 // Module-scope helpers
@@ -39,7 +47,7 @@ fn coalesce_children(dom: &DOM, id: NodeId) -> Vec<Value> {
     children
 }
 
-fn node_to_json(dom: &DOM, id: NodeId) -> Value {
+pub(super) fn node_to_json(dom: &DOM, id: NodeId) -> Value {
     let node_ref = dom
         .dom
         .get(id)
@@ -52,7 +60,7 @@ fn node_to_json(dom: &DOM, id: NodeId) -> Value {
             let mut pairs: Vec<(String, String)> = attrs.iter().cloned().collect();
             pairs.sort_by(|a, b| a.0.cmp(&b.0));
             let mut attrs_obj = Map::new();
-            for (k, v) in pairs.into_iter() {
+            for (k, v) in pairs {
                 attrs_obj.insert(k, Value::String(v));
             }
             let children = coalesce_children(dom, id);
@@ -128,14 +136,14 @@ impl fmt::Debug for DOM {
             // Small helper to write sorted attributes
             fn write_attrs(
                 f: &mut fmt::Formatter<'_>,
-                attrs: &smallvec::SmallVec<(String, String), 4>,
+                attrs: &SmallVec<(String, String), 4>,
             ) -> fmt::Result {
                 if attrs.is_empty() {
                     return Ok(());
                 }
                 let mut pairs: Vec<(String, String)> = attrs.iter().cloned().collect();
                 pairs.sort_by(|a, b| a.0.cmp(&b.0));
-                for (k, v) in pairs.into_iter() {
+                for (k, v) in pairs {
                     write!(f, " {}=\"{}\"", k, escape_text(&v))?;
                 }
                 Ok(())
@@ -158,7 +166,7 @@ impl fmt::Debug for DOM {
                 }
                 NodeKind::Text { text } => {
                     // Skip pure-whitespace text nodes in the printer for cleaner output
-                    if text.chars().all(|c| c.is_whitespace()) {
+                    if text.chars().all(char::is_whitespace) {
                         return Ok(());
                     }
                     write_indent(f, depth)?;
@@ -172,21 +180,4 @@ impl fmt::Debug for DOM {
     }
 }
 
-impl DOM {
-    /// Build a deterministic JSON representation of the DOM.
-    /// Schema:
-    /// - Document: { "type":"document", "children":[ ... ] }
-    /// - Element: { "type":"element", "tag": "div", "attrs": {..}, "children":[ ... ] }
-    /// - Text: { "type":"text", "text":"..." }
-    pub fn to_json_value(&self) -> Value {
-        node_to_json(self, self.root)
-    }
-
-    /// Pretty JSON string for snapshots and test comparisons.
-    pub fn to_json_string(&self) -> String {
-        match serde_json::to_string_pretty(&self.to_json_value()) {
-            Ok(s) => s,
-            Err(_) => String::from("{}"),
-        }
-    }
-}
+// DOM printing methods moved to mod.rs to avoid multiple impl blocks

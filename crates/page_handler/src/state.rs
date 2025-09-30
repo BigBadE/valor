@@ -587,7 +587,7 @@ impl HtmlPage {
         rt.tick_timers_once(self);
 
         // Apply any pending DOM updates
-        self.dom.update().await?;
+        self.dom.update()?;
         // Keep the DOM index mirror in sync before any JS queries (e.g., getElementById)
         self.dom_index_mirror.try_update_sync()?;
         // Execute pending scripts and DOMContentLoaded sequencing via runtime after DOM drained

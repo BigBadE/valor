@@ -6,6 +6,7 @@
 //! - Keep a stable, engine-agnostic representation for later compositing.
 
 use crate::renderer::{DrawRect, DrawText};
+use core::mem::take;
 
 /// Framebuffer pixel bounds for text (left, top, right, bottom).
 pub type TextBoundsPx = (i32, i32, i32, i32);
@@ -91,7 +92,7 @@ pub struct DisplayList {
 
 impl DisplayList {
     /// Create an empty display list.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             items: Vec::new(),
             generation: 0,
@@ -106,7 +107,7 @@ impl DisplayList {
     }
 
     /// Bump the generation counter and return the new value.
-    pub fn bump_generation(&mut self) -> u64 {
+    pub const fn bump_generation(&mut self) -> u64 {
         self.generation = self.generation.wrapping_add(1);
         self.generation
     }
@@ -121,7 +122,7 @@ impl DisplayList {
     /// MVP strategy: if the lists are exactly equal, return NoChange; otherwise
     /// request a ReplaceAll with the target items. This keeps the API stable for
     /// future fine-grained diffs without overengineering now.
-    pub fn diff(&self, other: &DisplayList) -> DisplayListDiff {
+    pub fn diff(&self, other: &Self) -> DisplayListDiff {
         if self == other {
             DisplayListDiff::NoChange
         } else {
@@ -151,7 +152,7 @@ impl DisplayList {
                         width: *width,
                         height: *height,
                         color: rgb,
-                    })
+                    });
                 }
                 DisplayItem::Text {
                     x,
@@ -209,6 +210,13 @@ pub struct Batch {
 /// Compute batches from a DisplayList by segmenting on clip stack boundaries.
 /// - Returns batches each carrying a list of quads and an optional scissor rect in framebuffer pixels.
 /// - Applies Opacity by multiplying per-quad alpha (no offscreen compositing yet).
+#[allow(
+    clippy::too_many_lines,
+    clippy::default_numeric_fallback,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    reason = "Display list batching function uses complex geometric calculations"
+)]
 pub fn batch_display_list(
     list: &DisplayList,
     framebuffer_width: u32,
@@ -241,16 +249,20 @@ pub fn batch_display_list(
         let sh = sh.clamp(0, max_h) as u32;
         (sx as u32, sy as u32, sw, sh)
     };
+    #[allow(
+        clippy::min_ident_chars,
+        reason = "Geometric functions use standard short names"
+    )]
     let intersect = |a: Scissor, b: Scissor| -> Scissor {
         let (ax, ay, aw, ah) = a;
         let (bx, by, bw, bh) = b;
-        let x0 = ax.max(bx);
-        let y0 = ay.max(by);
-        let x1 = (ax + aw).min(bx + bw);
-        let y1 = (ay + ah).min(by + bh);
-        let w = x1.saturating_sub(x0);
-        let h = y1.saturating_sub(y0);
-        (x0, y0, w, h)
+        let left = ax.max(bx);
+        let top = ay.max(by);
+        let right = (ax + aw).min(bx + bw);
+        let bottom = (ay + ah).min(by + bh);
+        let width = right.saturating_sub(left);
+        let height = bottom.saturating_sub(top);
+        (left, top, width, height)
     };
 
     for item in &list.items {
@@ -283,14 +295,12 @@ pub fn batch_display_list(
                 if !current_quads.is_empty() {
                     batches.push(Batch {
                         scissor: current_scissor,
-                        quads: std::mem::take(&mut current_quads),
+                        quads: take(&mut current_quads),
                     });
                 }
                 let new_sc = rect_to_scissor(*x, *y, *width, *height);
-                let effective = match current_scissor {
-                    Some(sc) => intersect(sc, new_sc),
-                    None => new_sc,
-                };
+                let effective =
+                    current_scissor.map_or(new_sc, |scissor| intersect(scissor, new_sc));
                 scissor_stack.push(new_sc);
                 current_scissor = Some(effective);
             }
@@ -299,16 +309,17 @@ pub fn batch_display_list(
                 if !current_quads.is_empty() {
                     batches.push(Batch {
                         scissor: current_scissor,
-                        quads: std::mem::take(&mut current_quads),
+                        quads: take(&mut current_quads),
                     });
                 }
-                let _ = scissor_stack.pop();
-                current_scissor = scissor_stack.iter().cloned().reduce(intersect);
+                let _: Option<Scissor> = scissor_stack.pop();
+                current_scissor = scissor_stack.iter().copied().reduce(intersect);
             }
-            DisplayItem::BeginStackingContext { .. } | DisplayItem::EndStackingContext => {
-                /* handled at a higher level by stacking context processor */
+            DisplayItem::BeginStackingContext { .. }
+            | DisplayItem::EndStackingContext
+            | DisplayItem::Text { .. } => {
+                /* handled at a higher level by stacking context processor or text subsystem */
             }
-            DisplayItem::Text { .. } => { /* handled separately by text subsystem */ }
         }
     }
     if !current_quads.is_empty() {

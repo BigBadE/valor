@@ -1,3 +1,5 @@
+//! Valor browser integration and test utilities.
+
 pub mod factory;
 
 pub mod test_support;

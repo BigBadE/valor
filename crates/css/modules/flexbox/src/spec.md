@@ -1,195 +1,8 @@
-# CSS Flexible Box Layout — Spec Coverage Map (Level 1)
+# flexbox Module - Chapter Specification
 
-Primary spec: https://www.w3.org/TR/css-flexbox-1/
-
-## Scope and maturity
-
-- Status:
-  - [Production] §§2–4 (terminology, container detection, item collection)
-  - [Production] §§7–9: axes resolution; single-line and multi-line main-axis layout; per-line justify-content (start/center/end/space-between/around/evenly); CSS gaps; cross-axis align-items (stretch/center/flex-start/flex-end); wrapping with cross-axis packing by align-content (start/center/end/space-between/around/evenly; stretch)
-- Notes:
-  - [Heuristic] Cross-axis Stretch applies when item cross-size is auto/unspecified (≤ 0); otherwise we preserve the item’s cross-size.
-  - [Production] Align-content: stretch expands line boxes to absorb remaining cross-space, accounting for cross-axis gaps between lines.
-  - [Production] Baseline alignment integrates Core (§10.6.3) inline baseline estimation sourced from `css_text` + `display` inline context. Real shaping metrics will evolve as text shaping lands.
-  - [Production] Min/max constraints enforced during hypothetical sizing and flex grow/shrink; items saturate at min/max and redistribution occurs.
-  - [Production] CSS gaps: supports both px and percentage gaps. Percentages are parsed in Orchestrator and resolved in Core against the container’s main/cross sizes.
-  - [Production] Overflow Hidden: content-height clamp to container cross-size and painter clipping at padding box.
-  - [TODO] Overflow Scroll/Auto (scroll container behaviors beyond clip); advanced writing modes.
-  - [Production] Auto margins: main-axis distribution for single-line and multi-line containers (per-line equal share per auto margin slot; overrides `justify-content` on that line).
-  - Out of scope (for now): fragmentation.
-
-## One-to-one spec mapping
-
-Per-section mapping to concrete code symbols. Keep aligned with code changes.
-
-- §7 Axes
-  - Code: `css_flexbox::resolve_axes`
-  - File: `crates/css/modules/flexbox/src/7_axis_and_order/mod.rs`
-  - Status: [Production]
-
-- §8 Cross-axis alignment (single-line)
-  - Code: `css_flexbox::align_single_line_cross`, `css_flexbox::align_cross_for_items`
-  - File: `crates/css/modules/flexbox/src/8_single_line_layout/mod.rs`
-  - Status: [Production] — stretch heuristic as noted; baseline alignment integrates Core baseline estimation (first/last baseline via default line-height × line count) pending shaping.
-  - Status: [Production] — stretch heuristic as noted; baseline alignment integrates Core baseline estimation (first/last baseline). Further refinement will come with shaping/metrics, but behavior is production-grade.
-
-- §9 Main-axis layout (single-line and multi-line)
-  - Code: `css_flexbox::layout_single_line`, `css_flexbox::layout_single_line_with_cross`, `css_flexbox::layout_multi_line_with_cross`
-  - Helpers: `css_flexbox::justify_params`, `css_flexbox::accumulate_main_offsets`, `css_flexbox::align_content_params` (lines), `css_flexbox::break_into_lines`, `css_flexbox::per_line_main_and_cross`, `css_flexbox::stretch_line_crosses`, `css_flexbox::pack_lines_and_build`
-  - Types: `css_flexbox::FlexContainerInputs`, `css_flexbox::FlexChild`, `css_flexbox::FlexPlacement`, `css_flexbox::JustifyContent`, `css_flexbox::AlignItems`, `css_flexbox::AlignContent`, `css_flexbox::CrossContext` (with `cross_gap`)
-  - File: `crates/css/modules/flexbox/src/8_single_line_layout/mod.rs`
-  - Status: [Production] — single-line main-axis layout plus multi-line wrapping. Lines are packed by `align-content` (start/center/end/space-between/around/evenly). Stretch implemented (line box expansion). Cross-axis gaps (row-gap/column-gap) applied between lines. Auto margins: main-axis distribution for single-line and multi-line (per-line equal-share auto margin absorption; overrides `justify-content` on that line). Baseline alignment integrates Core inline baseline estimation (from `css_text` + `display` inline context). Percentage gaps are supported (resolved upstream and in Core). Overflow Hidden handled via content-height clamp + padding-box clip in painter.
-
-- §9.10 Absolutely-positioned flex children (scope)
-  - Code: Excluded from flex item collection: `css_flexbox::collect_flex_items` skips out-of-flow children.
-  - Placement: Core positioned layout handles abspos. Minimal placement relative to flex container padding box added in Core for integration testing.
-  - Files: `crates/css/modules/flexbox/src/6_flex_items/mod.rs`, `crates/css/modules/core/src/10_visual_details/part_10_6_3_height_of_blocks.rs`.
-  - Status: [Production] (exclusion), [MVP] (minimal placement in Core).
-  - Notes: Percentage offsets supported for abspos children within flex padding box; static position computed via one-item flex solve. Writing-mode mapping plumbed.
-
-## Algorithms and data flow
-
-- Entry points:
-  - `css_flexbox::flex_context::establishes_flex_formatting_context(display)`
-  - `css_flexbox::flex_items::collect_flex_items(children)`
-  - `css_flexbox::resolve_axes(direction, writing_mode)`
-  - `css_flexbox::order_key(order, original_index)` / `css_flexbox::sort_items_by_order_stable(items)`
-  - `css_flexbox::layout_single_line(container_inputs, justify_content, items)`
-  - `css_flexbox::layout_single_line_with_cross(container_inputs, justify_content, cross_ctx, items, cross_inputs)`
-  - `css_flexbox::layout_multi_line_with_cross(container_inputs, justify_content, cross_ctx, items, cross_inputs)`
-  - `css_flexbox::align_single_line_cross(align_items, container_cross, item_cross, min_cross, max_cross)`
-- Helpers:
-  - Axis tuple resolution (main/cross, start/end)
-  - Simple item filter for in-flow flex items
-  - Subpixel quantization for justify/spacing (1/64 px) and fixed-point accumulation to match Chromium
-- Invariants:
-  - A node establishes a flex formatting context iff `display` is `flex` or `inline-flex`. See §4 and §5.
-
-## Parsing/inputs (if applicable)
-
-- Inputs are computed styles and normalized child lists produced by Display and Cascade modules. No direct token parsing here.
-- Orchestrator parsing:
-  - `flex-direction`, `flex-wrap`, `justify-content`, `align-items`, `align-content`
-  - Code: `crates/css/orchestrator/src/style.rs` (`apply_flex_alignment` and helpers)
-  - Types: `crates/css/orchestrator/src/style_model.rs` (`FlexDirection`, `FlexWrap`, `JustifyContent` including `space-around`/`space-evenly`, `AlignItems`, `AlignContent`, `ComputedStyle.align_content`, `ComputedStyle.row_gap`, `ComputedStyle.column_gap`)
-
-## Integration
-
-- Upstream:
-  - Display 3 normalization for `display` values; Writing Modes for axis mapping (plumbed from `style_model::ComputedStyle.writing_mode`).
-- Downstream (Core §10.6.3 entry points and flex integration):
-  - `css_core::compute_child_content_height` flex branch
-    - File: `crates/css/modules/core/src/10_visual_details/part_10_6_3_height_of_blocks.rs`
-  - `css_core::container_layout_context` (origin, axes, container main size, gap)
-  - `css_core::build_flex_item_inputs` (maps computed styles → `FlexChild`, cross constraints, baseline metrics via inline baseline estimation via `try_inline_baselines()`)
-  - `css_core::justify_align_context` (maps `ComputedStyle` → `JustifyContent`, `AlignItems`, `AlignContent`, container cross size)
-  - `css_core::flex_child_content_height` constructs `CrossContext` with `cross_gap` (row-gap/column-gap per direction)
-  - `css_core::write_pairs_and_measure` (applies `FlexPlacement`/`CrossPlacement` to rects)
-  - Overflow Hidden integration: `clamped_content_height_for_overflow` and painter `BeginClip/EndClip` at padding box
-
-## Edge cases
-
-- `display: contents` descendants are not flex items (handled during item collection by only including element block nodes; see `collect_item_shells` in Core integration).
-- No pre-gap at main-start for `justify-content: start` and `space-between` on non-reverse axes; invariant enforced post-accumulation.
-- Direction reversal flips accumulation order; unit tests cover reverse/center behavior.
-- Align-content Stretch heuristic only when item cross-size is auto/unspecified (≤ 0).
-- Subpixel: fixed-point quantization at 1/64 px for justify/spacing; float rects emitted end-to-end.
-
-## Testing and fixtures
-
-- Fixtures path: `crates/css/modules/flexbox/tests/fixtures/layout/`
-- Harness: Chromium compare runner (headless) via `valor` test; epsilon tolerance ≈ `3*EPSILON`.
-- Current pass status (green):
-  - `flex/gap.html` — `justify-content: start` with `column-gap`
-  - `flex/14_justify_space_between.html` — `justify-content: space-between`
-  - `flex/11_align_items_center.html` — cross-axis center alignment
-  - `flex/13_wrap_basic.html` — wrapping into two lines (start packing)
-  - `flex/17_wrap_justify.html` — per-line `justify-content` with wrapping
-  - `flex/18_wrap_cross_align_content.html` — cross-axis packing with `align-content`
-  - `flex/19_wrap_align_content_center.html` — wrapping + `align-content: center`
-  - `flex/20_wrap_align_content_end.html` — wrapping + `align-content: flex-end`
-  - `flex/21_wrap_align_content_space_around.html` — wrapping + `align-content: space-around`
-  - `flex/22_wrap_align_content_space_evenly.html` — wrapping + `align-content: space-evenly`
-  - `flex/23_wrap_column_align_content_center.html` — column-direction wrap + `align-content: center`
-  - `flex/24_wrap_align_content_space_between.html` — wrapping + `align-content: space-between`
-  - `flex/35_wrap_column_justify_start.html` — column-direction wrap + per-line `justify-content: flex-start`
-  - `flex/36_wrap_column_justify_end.html` — column-direction wrap + per-line `justify-content: flex-end`
-  - `flex/37_wrap_column_justify_center.html` — column-direction wrap + per-line `justify-content: center`
-  - `flex/38_wrap_column_justify_space_between.html` — column-direction wrap + per-line `justify-content: space-between`
-  - `flex/39_wrap_column_justify_space_around.html` — column-direction wrap + per-line `justify-content: space-around`
-  - `flex/40_wrap_column_justify_space_evenly.html` — column-direction wrap + per-line `justify-content: space-evenly`
-- Planned fixtures:
-  - Baseline alignment fixtures (after baseline work)
-
-### Fixtures Matrix
-
-- Wrap + align-content (row direction)
-  - center (19) ✓; flex-end (20) ✓; space-around (21) ✓; space-evenly (22) ✓; space-between (24) ✓
-
-- Wrap + align-content (column direction)
-  - center (23) ✓; flex-end (25) ✓; space-between (26) ✓; space-around (27) ✓; space-evenly (28) ✓
-
-- Wrap + per-line justify-content (row direction)
-  - space-around (17) ✓; flex-start (30) ✓; flex-end (31) ✓; center (32) ✓; space-between (33) ✓; space-evenly (34) ✓
-
-- Wrap + per-line justify-content (column direction)
-  - flex-start (35) ✓; flex-end (36) ✓; center (37) ✓; space-between (38) ✓; space-around (39) ✓; space-evenly (40) ✓
-
-- Planned
-  - Baseline alignment fixtures (after baseline work)
-  - 41_row_baseline.fail; 42_row_last_baseline.fail; 43_wrap_multi_line_baseline.fail
-  - Auto margins across lines
-    - 44_wrap_auto_margins_across_lines.fail
-  - Min/max constraints with flexing
-    - 45_flex_min_max_constraints.fail
-  - Absolutely-positioned flex children (§4.1)
-    - 46_abspos_flex_child.fail
-  - Advanced writing modes / RTL
-    - 47_writing_modes_vertical_rtl.fail
-  - Percentage gaps resolution
-    - 48_percentage_gaps.fail
-  - Overflow Hidden (clip + clamp)
-    - 50_overflow_hidden_clamp.html ✓
-
-## Documentation and coding standards
-
-- Doc comments include spec links; modules mirror spec chapters; imports at top; functions short and focused.
-
-## Future work
-
-- [x] Baseline alignment (§8, §9): shared baseline groups and first/last baseline alignment.
-- [ ] Auto margins in main-axis distribution (§9.4): absorb free space and interaction with justify modes (within and across lines).
-- [ ] Min/max and preferred-size constraints interactions with flexing (CSS Sizing): clamp during grow/shrink; finalize constraints.
-- [ ] Overflow handling and scroll containers in flex context.
-- [ ] Advanced writing modes (vertical, rtl) and axis resolution generalization.
-- [ ] Percentage gaps and sizes beyond trivial cases; resolution against container sizes.
-- [ ] Absolutely-positioned flex children: static-position behaviors and alignment container handling.
-
----
-
-## Verbatim Spec (integrated)
-
-Legal notice (required when embedding spec text):
-
-```
-$valor: https://github.com/BigBadE/valor
-Copyright © [2025] World Wide Web Consortium. All Rights Reserved. This work is distributed under the W3C® Software and Document License [1] in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-[1] https://www.w3.org/Consortium/Legal/copyright-software
-```
-
-Begin embedded normative mapping below. Keep chapters in spec order and exclude non-normative front matter. Each section inserts a status/mapping block, followed by a details block for verbatim text.
-
-<!-- BEGIN VERBATIM SPEC: DO NOT EDIT BELOW. This block is auto-generated by scripts/vendor_display_spec.ps1 -->
+<!-- BEGIN VERBATIM SPEC: DO NOT EDIT BELOW. This block is auto-generated by scripts/vendor_css_spec.sh -->
 
 <h2 class="heading settled" data-level="2" id="box-model"><span class="secno">2. </span><span class="content"> Flex Layout Box Model and Terminology</span><a class="self-link" href="#box-model"></a></h2>
-<div data-valor-status="box-model">
-  <p><strong>Status:</strong> [Production]</p>
-  <p><strong>Code:</strong> <code>css_flexbox::FlexDirection</code>, <code>css_flexbox::FlexWrap</code></p>
-  <p><strong>Fixtures:</strong> <em>None</em></p>
-  <p><strong>Notes:</strong> Terminology mapping scaffolding only; axis resolution and sizing hooks to be added.</p>
-  <p><strong>Spec:</strong> <a href="https://www.w3.org/TR/css-flexbox-1/#box-model">§2 Box Model and Terminology</a></p>
-</div>
-
 <details class="valor-spec" data-level="2">
   <summary>Show spec text</summary>
 
@@ -257,14 +70,6 @@ Begin embedded normative mapping below. Keep chapters in spec order and exclude 
 
 </details>
 <h2 class="heading settled" data-level="3" id="flex-containers"><span class="secno">3. </span><span class="content"> Flex Containers: the <a class="css" data-link-type="maybe" href="#valdef-display-flex" id="ref-for-valdef-display-flex①">flex</a> and <a class="css" data-link-type="maybe" href="#valdef-display-inline-flex" id="ref-for-valdef-display-inline-flex①">inline-flex</a> <a class="property" data-link-type="propdesc" href="https://www.w3.org/TR/css-display-3/#propdef-display" id="ref-for-propdef-display②">display</a> values</span><a class="self-link" href="#flex-containers"></a></h2>
-<div data-valor-status="flex-containers">
-  <p><strong>Status:</strong> [Production]</p>
-  <p><strong>Code:</strong> <code>css_flexbox::establishes_flex_formatting_context</code>, <code>css_flexbox::FlexDirection</code>, <code>css_flexbox::FlexWrap</code></p>
-  <p><strong>Fixtures:</strong> <em>None</em></p>
-  <p><strong>Notes:</strong> Detects <code>display:flex</code>/<code>inline-flex</code> and models container properties.</p>
-  <p><strong>Spec:</strong> <a href="https://www.w3.org/TR/css-flexbox-1/#flex-containers">§3 Flex Containers</a></p>
-</div>
-
 <details class="valor-spec" data-level="2">
   <summary>Show spec text</summary>
 
@@ -311,14 +116,6 @@ and <a data-link-type="dfn" href="#flex-container" id="ref-for-flex-container⑧
 
 </details>
 <h2 class="heading settled" data-level="4" id="flex-items"><span class="secno">4. </span><span class="content"> Flex Items</span><a class="self-link" href="#flex-items"></a></h2>
-<div data-valor-status="flex-items">
-  <p><strong>Status:</strong> [Production]</p>
-  <p><strong>Code:</strong> <code>css_flexbox::collect_flex_items</code></p>
-  <p><strong>Fixtures:</strong> <em>None</em></p>
-  <p><strong>Notes:</strong> Filters in-flow children to items; excludes <code>display:none</code> and out-of-flow.</p>
-  <p><strong>Spec:</strong> <a href="https://www.w3.org/TR/css-flexbox-1/#flex-items">§4 Flex Items</a></p>
-</div>
-
 <details class="valor-spec" data-level="2">
   <summary>Show spec text</summary>
 
@@ -390,25 +187,6 @@ and <a data-link-type="dfn" href="#flex-container" id="ref-for-flex-container⑧
 
 </details>
 <h3 class="heading settled" data-level="4.1" id="abspos-items"><span class="secno">4.1. </span><span class="content"> Absolutely-Positioned Flex Children</span><a class="self-link" href="#abspos-items"></a></h3>
-<div data-valor-status="abspos-items">
-  <p><strong>Status:</strong> [Production] (exclusion & placement)</p>
-  <p><strong>Code:</strong>
-    <br/>• <code>css_flexbox::6_flex_items::is_flex_item</code>
-    <br/>• <code>css_flexbox::6_flex_items::collect_flex_items</code>
-    <br/>• <code>css_core::10_visual_details::part_10_6_3_height_of_blocks::compute_abs_rect</code>
-    <br/>• <code>css_core::10_visual_details::part_10_6_3_height_of_blocks::static_position_xy</code>
-    <br/>• <code>css_core::10_visual_details::part_10_6_3_height_of_blocks::place_absolute_children</code>
-  </p>
-  <p><strong>Fixtures:</strong>
-    <br/>• <code>crates/css/modules/flexbox/tests/fixtures/layout/flex/04_flex_items_collection.html</code>
-    <br/>• <code>crates/css/modules/flexbox/tests/fixtures/layout/flex/46_abspos_flex_child.html</code>
-    <br/>• <code>crates/css/modules/flexbox/tests/fixtures/layout/flex/49_abspos_percent_offsets.html</code>
-  </p>
-  <p><strong>Notes:</strong>
-    Absolutely-positioned children are excluded from flex item collection. Placement is relative to the flex container’s padding box. When left/top are auto and the opposite edges are auto, the static position is computed <em>as if the child were the sole flex item</em> in the container, honoring the container’s <code>flex-direction</code>, <code>justify-content</code>, and <code>align-items</code>. Supported offsets: px and percentages (resolved against inline/block sizes by resolved axes). Auto sizing: when both opposite offsets are specified and the corresponding size is auto, used size is the remaining space.</p>
-  <p><strong>Spec:</strong> <a href="https://www.w3.org/TR/css-flexbox-1/#abspos-items">§4.1 Absolutely-Positioned Flex Children</a></p>
-</div>
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -439,14 +217,6 @@ and <a data-link-type="dfn" href="#flex-container" id="ref-for-flex-container⑧
 
 </details>
 <h3 class="heading settled" data-level="4.2" id="item-margins"><span class="secno">4.2. </span><span class="content"> Flex Item Margins and Paddings</span><a class="self-link" href="#item-margins"></a></h3>
-<div data-valor-status="item-margins">
-  <p><strong>Status:</strong> [MVP]</p>
-  <p><strong>Code:</strong> <code>css_flexbox::outer_sizes_and_sum</code>, <code>css_flexbox::break_into_lines</code></p>
-  <p><strong>Fixtures:</strong> <em>None</em></p>
-  <p><strong>Notes:</strong> Adjacent flex item margins do not collapse. Percentage margin/padding resolution is delegated to upstream computed-size resolution; main-axis outer sizes (including margins) are accounted for during item sizing and line breaking.</p>
-  <p><strong>Spec:</strong> <a href="https://www.w3.org/TR/css-flexbox-1/#item-margins">§4.2 Flex Item Margins and Paddings</a></p>
-</div>
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -463,8 +233,6 @@ and <a data-link-type="dfn" href="#flex-container" id="ref-for-flex-container⑧
 
 </details>
 <h3 class="heading settled" data-level="4.3" id="painting"><span class="secno">4.3. </span><span class="content"> Flex Item Z-Ordering</span><a class="self-link" href="#painting"></a></h3>
-<!--__VALOR_STATUS:painting__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -477,8 +245,6 @@ and <a data-link-type="dfn" href="#flex-container" id="ref-for-flex-container⑧
 
 </details>
 <h3 class="heading settled" data-level="4.4" id="visibility-collapse"><span class="secno">4.4. </span><span class="content"> Collapsed Items</span><a class="self-link" href="#visibility-collapse"></a></h3>
-<!--__VALOR_STATUS:visibility-collapse__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -595,8 +361,6 @@ nav > ul > li:not(:target):not(:hover) > ul {
 
 </details>
 <h3 class="heading settled" data-level="4.5" id="min-size-auto"><span class="secno">4.5. </span><span class="content"> Automatic Minimum Size of Flex Items</span><a class="self-link" href="#min-size-auto"></a></h3>
-<!--__VALOR_STATUS:min-size-auto__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -662,14 +426,6 @@ nav > ul > li:not(:target):not(:hover) > ul {
 
 </details>
 <h2 class="heading settled" data-level="5" id="flow-order"><span class="secno">5. </span><span class="content"> Ordering and Orientation</span><a class="self-link" href="#flow-order"></a></h2>
-<div data-valor-status="flow-order">
-  <p><strong>Status:</strong> [Production] (helpers only)</p>
-  <p><strong>Code:</strong> <code>css_flexbox::FlexDirection</code>, <code>css_flexbox::resolve_axes</code>, <code>css_flexbox::WritingMode</code></p>
-  <p><strong>Fixtures:</strong> <em>Doc-only</em> (no geometry assertions yet)</p>
-  <p><strong>Notes:</strong> Resolves main/cross axes and reverse based on <code>flex-direction</code> and writing mode.</p>
-  <p><strong>Spec:</strong> <a href="https://www.w3.org/TR/css-flexbox-1/#flow-order">§5 Ordering and Orientation</a></p>
-</div>
-
 <details class="valor-spec" data-level="2">
   <summary>Show spec text</summary>
 
@@ -689,8 +445,6 @@ nav > ul > li:not(:target):not(:hover) > ul {
 
 </details>
 <h3 class="heading settled" data-level="5.1" id="flex-direction-property"><span class="secno">5.1. </span><span class="content"> Flex Flow Direction: the <a class="property" data-link-type="propdesc" href="#propdef-flex-direction" id="ref-for-propdef-flex-direction②">flex-direction</a> property</span><a class="self-link" href="#flex-direction-property"></a></h3>
-<!--__VALOR_STATUS:flex-direction-property__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -751,8 +505,6 @@ nav > ul > li:not(:target):not(:hover) > ul {
 
 </details>
 <h3 class="heading settled" data-level="5.2" id="flex-wrap-property"><span class="secno">5.2. </span><span class="content"> Flex Line Wrapping: the <a class="property" data-link-type="propdesc" href="#propdef-flex-wrap" id="ref-for-propdef-flex-wrap①">flex-wrap</a> property</span><a class="self-link" href="#flex-wrap-property"></a></h3>
-<!--__VALOR_STATUS:flex-wrap-property__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -807,8 +559,6 @@ nav > ul > li:not(:target):not(:hover) > ul {
 
 </details>
 <h3 class="heading settled" data-level="5.3" id="flex-flow-property"><span class="secno">5.3. </span><span class="content"> Flex Direction and Wrap: the <a class="property" data-link-type="propdesc" href="#propdef-flex-flow" id="ref-for-propdef-flex-flow②">flex-flow</a> shorthand</span><a class="self-link" href="#flex-flow-property"></a></h3>
-<!--__VALOR_STATUS:flex-flow-property__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -895,14 +645,6 @@ nav > ul > li:not(:target):not(:hover) > ul {
 
 </details>
 <h3 class="heading settled" data-level="5.4" id="order-property"><span class="secno">5.4. </span><span class="content"> Display Order: the <a class="property" data-link-type="propdesc" href="#propdef-order" id="ref-for-propdef-order⑤">order</a> property</span><a class="self-link" href="#order-property"></a></h3>
-<div data-valor-status="order-property">
-  <p><strong>Status:</strong> [Production]</p>
-  <p><strong>Code:</strong> <code>css_flexbox::order_key</code>, <code>css_flexbox::sort_items_by_order_stable</code></p>
-  <p><strong>Fixtures:</strong> <em>Doc-only</em> (visual order effects will assert once layout lands)</p>
-  <p><strong>Notes:</strong> Stable sort by <code>order</code> with DOM-order tie-breaking.</p>
-  <p><strong>Spec:</strong> <a href="https://www.w3.org/TR/css-flexbox-1/#order-property">§5.4 order</a></p>
-</div>
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -1059,8 +801,6 @@ nav > ul > li:not(:target):not(:hover) > ul {
 
 </details>
 <h2 class="heading settled" data-level="6" id="flex-lines"><span class="secno">6. </span><span class="content"> Flex Lines</span><a class="self-link" href="#flex-lines"></a></h2>
-<!--__VALOR_STATUS:flex-lines__-->
-
 <details class="valor-spec" data-level="2">
   <summary>Show spec text</summary>
 
@@ -1142,8 +882,6 @@ unless the flex container itself is completely empty.</p>
 
 </details>
 <h2 class="heading settled" data-level="7" id="flexibility"><span class="secno">7. </span><span class="content"> Flexibility</span><a class="self-link" href="#flexibility"></a></h2>
-<!--__VALOR_STATUS:flexibility__-->
-
 <details class="valor-spec" data-level="2">
   <summary>Show spec text</summary>
 
@@ -1157,8 +895,6 @@ unless the flex container itself is completely empty.</p>
 
 </details>
 <h3 class="heading settled" data-level="7.1" id="flex-property"><span class="secno">7.1. </span><span class="content"> The <a class="property" data-link-type="propdesc" href="#propdef-flex" id="ref-for-propdef-flex④">flex</a> Shorthand</span><a class="self-link" href="#flex-property"></a></h3>
-<!--__VALOR_STATUS:flex-property__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -1339,8 +1075,6 @@ unless the flex container itself is completely empty.</p>
 
 </details>
 <h3 class="heading settled" data-level="7.2" id="flex-components"><span class="secno">7.2. </span><span class="content"> Components of Flexibility</span><a class="self-link" href="#flex-components"></a></h3>
-<!--__VALOR_STATUS:flex-components__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -1473,14 +1207,6 @@ unless the flex container itself is completely empty.</p>
 
 </details>
 <h2 class="heading settled" data-level="8" id="alignment"><span class="secno">8. </span><span class="content"> Alignment</span><a class="self-link" href="#alignment"></a></h2>
-<div data-valor-status="alignment">
-  <p><strong>Status:</strong> [MVP]</p>
-  <p><strong>Code:</strong> <code>css_flexbox::align_single_line_cross</code>, <code>css_flexbox::align_cross_for_items</code>, <code>css_flexbox::layout_single_line_with_cross</code>, <code>css_flexbox::layout_single_line</code> (justify)</p>
-  <p><strong>Fixtures:</strong> <code>layout/flex/11_align_items_center.html</code>, <code>layout/flex/12_justify_content_center.html</code>, <code>layout/flex/14_justify_space_between.html</code>, <code>layout/flex/gap.html</code></p>
-  <p><strong>Notes:</strong> Single-line only; baseline and multi-line alignment not yet implemented. <span class="css">gap</span> asserted via geometry; fonts neutralized to avoid flakiness.</p>
-  <p><strong>Spec:</strong> <a href="https://www.w3.org/TR/css-flexbox-1/#alignment">§8 Alignment</a></p>
-</div>
-
 <details class="valor-spec" data-level="2">
   <summary>Show spec text</summary>
 
@@ -1505,8 +1231,6 @@ unless the flex container itself is completely empty.</p>
 
 </details>
 <h3 class="heading settled" data-level="8.1" id="auto-margins"><span class="secno">8.1. </span><span class="content"> Aligning with <a class="css" data-link-type="value">auto</a> margins</span><a class="self-link" href="#auto-margins"></a></h3>
-<!--__VALOR_STATUS:auto-margins__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -1588,8 +1312,6 @@ any positive free space is distributed to auto margins in that dimension.</p>
 
 </details>
 <h3 class="heading settled" data-level="8.2" id="justify-content-property"><span class="secno">8.2. </span><span class="content"> Axis Alignment: the <a class="property" data-link-type="propdesc" href="#propdef-justify-content" id="ref-for-propdef-justify-content③">justify-content</a> property</span><a class="self-link" href="#justify-content-property"></a></h3>
-<!--__VALOR_STATUS:justify-content-property__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -1677,8 +1399,6 @@ any positive free space is distributed to auto margins in that dimension.</p>
 
 </details>
 <h3 class="heading settled" data-level="8.3" id="align-items-property"><span class="secno">8.3. </span><span class="content"> Cross-axis Alignment: the <a class="property" data-link-type="propdesc" href="#propdef-align-items" id="ref-for-propdef-align-items②">align-items</a> and <a class="property" data-link-type="propdesc" href="#propdef-align-self" id="ref-for-propdef-align-self①⓪">align-self</a> properties</span><a class="self-link" href="#align-items-property"></a></h3>
-<!--__VALOR_STATUS:align-items-property__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -1787,8 +1507,6 @@ any positive free space is distributed to auto margins in that dimension.</p>
 
 </details>
 <h3 class="heading settled" data-level="8.4" id="align-content-property"><span class="secno">8.4. </span><span class="content"> Packing Flex Lines: the <a class="property" data-link-type="propdesc" href="#propdef-align-content" id="ref-for-propdef-align-content③">align-content</a> property</span><a class="self-link" href="#align-content-property"></a></h3>
-<!--__VALOR_STATUS:align-content-property__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -1888,8 +1606,6 @@ any positive free space is distributed to auto margins in that dimension.</p>
 
 </details>
 <h3 class="heading settled" data-level="8.5" id="flex-baselines"><span class="secno">8.5. </span><span class="content"> Flex Container Baselines</span><a class="self-link" href="#flex-baselines"></a></h3>
-<!--__VALOR_STATUS:flex-baselines__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -1947,8 +1663,6 @@ according to the rules of its <a data-link-type="dfn" href="https://www.w3.org/T
 
 </details>
 <h2 class="heading settled" data-level="9" id="layout-algorithm"><span class="secno">9. </span><span class="content"> Flex Layout Algorithm</span><a class="self-link" href="#layout-algorithm"></a></h2>
-<!--__VALOR_STATUS:layout-algorithm__-->
-
 <details class="valor-spec" data-level="2">
   <summary>Show spec text</summary>
 
@@ -1967,8 +1681,6 @@ according to the rules of its <a data-link-type="dfn" href="https://www.w3.org/T
 
 </details>
 <h3 class="heading settled" data-level="9.1" id="box-manip"><span class="secno">9.1. </span><span class="content"> Initial Setup</span><a class="self-link" href="#box-manip"></a></h3>
-<!--__VALOR_STATUS:box-manip__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -1978,8 +1690,6 @@ according to the rules of its <a data-link-type="dfn" href="https://www.w3.org/T
 
 </details>
 <h3 class="heading settled" data-level="9.2" id="line-sizing"><span class="secno">9.2. </span><span class="content"> Line Length Determination</span><a class="self-link" href="#line-sizing"></a></h3>
-<!--__VALOR_STATUS:line-sizing__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -2051,8 +1761,6 @@ according to the rules of its <a data-link-type="dfn" href="https://www.w3.org/T
 
 </details>
 <h3 class="heading settled" data-level="9.3" id="main-sizing"><span class="secno">9.3. </span><span class="content"> Main Size Determination</span><a class="self-link" href="#main-sizing"></a></h3>
-<!--__VALOR_STATUS:main-sizing__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -2085,8 +1793,6 @@ according to the rules of its <a data-link-type="dfn" href="https://www.w3.org/T
 
 </details>
 <h3 class="heading settled" data-level="9.4" id="cross-sizing"><span class="secno">9.4. </span><span class="content"> Cross Size Determination</span><a class="self-link" href="#cross-sizing"></a></h3>
-<!--__VALOR_STATUS:cross-sizing__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -2152,8 +1858,6 @@ according to the rules of its <a data-link-type="dfn" href="https://www.w3.org/T
 
 </details>
 <h3 class="heading settled" data-level="9.5" id="main-alignment"><span class="secno">9.5. </span><span class="content"> Main-Axis Alignment</span><a class="self-link" href="#main-alignment"></a></h3>
-<!--__VALOR_STATUS:main-alignment__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -2171,8 +1875,6 @@ according to the rules of its <a data-link-type="dfn" href="https://www.w3.org/T
 
 </details>
 <h3 class="heading settled" data-level="9.6" id="cross-alignment"><span class="secno">9.6. </span><span class="content"> Cross-Axis Alignment</span><a class="self-link" href="#cross-alignment"></a></h3>
-<!--__VALOR_STATUS:cross-alignment__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -2208,8 +1910,6 @@ according to the rules of its <a data-link-type="dfn" href="https://www.w3.org/T
 
 </details>
 <h3 class="heading settled" data-level="9.7" id="resolve-flexible-lengths"><span class="secno">9.7. </span><span class="content"> Resolving Flexible Lengths</span><a class="self-link" href="#resolve-flexible-lengths"></a></h3>
-<!--__VALOR_STATUS:resolve-flexible-lengths__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -2288,8 +1988,6 @@ according to the rules of its <a data-link-type="dfn" href="https://www.w3.org/T
 
 </details>
 <h3 class="heading settled" data-level="9.8" id="definite-sizes"><span class="secno">9.8. </span><span class="content"> Definite and Indefinite Sizes</span><a class="self-link" href="#definite-sizes"></a></h3>
-<!--__VALOR_STATUS:definite-sizes__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -2311,8 +2009,6 @@ according to the rules of its <a data-link-type="dfn" href="https://www.w3.org/T
 
 </details>
 <h3 class="heading settled" data-level="9.9" id="intrinsic-sizes"><span class="secno">9.9. </span><span class="content"> Intrinsic Sizes</span><a class="self-link" href="#intrinsic-sizes"></a></h3>
-<!--__VALOR_STATUS:intrinsic-sizes__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -2407,8 +2103,6 @@ as determined by its flexibility).</p>
 
 </details>
 <h2 class="heading settled" data-level="10" id="pagination"><span class="secno">10. </span><span class="content"> Fragmenting Flex Layout</span><a class="self-link" href="#pagination"></a></h2>
-<!--__VALOR_STATUS:pagination__-->
-
 <details class="valor-spec" data-level="2">
   <summary>Show spec text</summary>
 
@@ -2473,8 +2167,6 @@ as determined by its flexibility).</p>
 
 </details>
 <h3 class="heading settled" data-level="10.1" id="pagination-algo"><span class="secno">10.1. </span><span class="content"> Sample Flex Fragmentation Algorithm</span><a class="self-link" href="#pagination-algo"></a></h3>
-<!--__VALOR_STATUS:pagination-algo__-->
-
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -2634,8 +2326,6 @@ as determined by its flexibility).</p>
 
 </details>
 <h2 class="no-num heading settled" id="axis-mapping"><span class="content"> Appendix A: Axis Mappings</span><a class="self-link" href="#axis-mapping"></a></h2>
-<!--__VALOR_STATUS:axis-mapping__-->
-
 <details class="valor-spec" data-level="2">
   <summary>Show spec text</summary>
 
@@ -2823,3 +2513,32 @@ as determined by its flexibility).</p>
 
 </details>
 <!-- END VERBATIM SPEC: DO NOT EDIT ABOVE. -->
+
+---
+
+## Implementation Status
+
+**Status:** [TODO]
+
+**Code locations:**
+- TBD
+
+**Test fixtures:**
+- TBD
+
+**Notes:**
+- Implementation notes go here
+
+**Spec URL:** https://www.w3.org/TR/css-flexbox-1/
+
+---
+
+## Legal Notice
+
+Legal notice (required for embedded spec text):
+
+```
+Valor Browser Engine: https://github.com/valor-software/valor
+Copyright © 2025 World Wide Web Consortium. All Rights Reserved. This work is distributed under the W3C® Software and Document License [1] in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+[1] https://www.w3.org/Consortium/Legal/copyright-software
+```

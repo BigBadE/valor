@@ -13,27 +13,31 @@ pub struct ChromeInit {
     pub chrome_host_rx: UnboundedReceiver<ChromeHostCommand>,
 }
 
-/// Create the chrome page (valor://chrome/index.html) and an initial content page,
+/// Create the chrome page (<valor://chrome/index.html>) and an initial content page,
 /// and wire the privileged chromeHost channel to the chrome page.
-pub fn create_chrome_and_content(rt: &Runtime, initial_content_url: Url) -> Result<ChromeInit> {
+///
+/// # Errors
+/// Returns an error if page creation or URL parsing fails.
+#[inline]
+pub fn create_chrome_and_content(
+    runtime: &Runtime,
+    initial_content_url: Url,
+) -> Result<ChromeInit> {
     // Create chrome page
     let config = ValorConfig::from_env();
-    let mut chrome_page = rt.block_on(HtmlPage::new(
-        rt.handle(),
+    let mut chrome_page = runtime.block_on(HtmlPage::new(
+        runtime.handle(),
         Url::parse("valor://chrome/index.html")?,
         config.clone(),
     ))?;
 
     // Create content page
-    let content_page = rt.block_on(HtmlPage::new(
-        rt.handle(),
-        initial_content_url,
-        config.clone(),
-    ))?;
+    let content_page =
+        runtime.block_on(HtmlPage::new(runtime.handle(), initial_content_url, config))?;
 
     // Wire privileged chromeHost channel for the chrome page
     let (chrome_tx, chrome_rx) = unbounded_channel::<ChromeHostCommand>();
-    let _ = chrome_page.attach_chrome_host(chrome_tx);
+    let _attach_result: Result<(), _> = chrome_page.attach_chrome_host(chrome_tx);
 
     Ok(ChromeInit {
         chrome_page,

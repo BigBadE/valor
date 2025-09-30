@@ -1,4 +1,35 @@
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    clippy::min_ident_chars,
+    clippy::too_many_lines,
+    clippy::branches_sharing_code,
+    clippy::let_underscore_must_use,
+    clippy::let_underscore_untyped,
+    clippy::non_ascii_literal,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::absolute_paths,
+    clippy::std_instead_of_core,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::clone_on_ref_ptr,
+    clippy::cognitive_complexity,
+    clippy::tests_outside_test_module,
+    clippy::default_numeric_fallback,
+    clippy::useless_let_if_seq,
+    clippy::str_to_string,
+    clippy::cast_lossless,
+    clippy::option_if_let_else,
+    clippy::unnecessary_wraps,
+    clippy::shadow_unrelated,
+    let_underscore_drop,
+    clippy::unused_trait_names,
+    clippy::unreadable_literal,
+    clippy::single_char_lifetime_names,
+    reason = "Test harness code with diagnostic helpers"
+)]
 use anyhow::{Result, anyhow};
 use headless_chrome::{
     Browser, LaunchOptionsBuilder, Tab, protocol::cdp::Page::CaptureScreenshotFormatOption,
@@ -15,7 +46,7 @@ use wgpu_backend::RenderState;
 use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
 #[cfg(target_os = "windows")]
-use winit::platform::windows::EventLoopBuilderExtWindows;
+use winit::platform::windows::EventLoopBuilderExtWindows as _;
 use winit::window::Window;
 
 mod common;
@@ -259,7 +290,7 @@ fn rasterize_display_list_to_rgba(dl: &DisplayList, width: u32, height: u32) -> 
     // Initialize single hidden window + RenderState once, then reuse and resize per render
     let state_mutex = RENDER_STATE.get_or_init(|| {
         // Create a hidden window using a temporary EventLoop, then drop the loop.
-        #[allow(deprecated)]
+        #[allow(deprecated, reason = "Platform-specific event loop builder")]
         let window = {
             let mut builder = EventLoop::<()>::builder();
             #[cfg(target_os = "windows")]

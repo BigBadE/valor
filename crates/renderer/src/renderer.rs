@@ -1,5 +1,6 @@
 use crate::display_list::TextBoundsPx;
 use anyhow::Error;
+use core::mem;
 use js::{DOMSubscriber, DOMUpdate, NodeKey};
 use std::collections::HashMap;
 
@@ -18,6 +19,7 @@ pub struct DrawRect {
 }
 
 impl Default for Renderer {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
@@ -36,7 +38,7 @@ pub struct DrawText {
     pub bounds: Option<TextBoundsPx>,
 }
 
-/// RenderNodeKind represents the minimal kinds of nodes a renderer cares about
+/// `RenderNodeKind` represents the minimal kinds of nodes a renderer cares about
 /// when mirroring the DOM: a document root, elements (by tag), and text nodes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderNodeKind {
@@ -45,7 +47,7 @@ pub enum RenderNodeKind {
     Text { text: String },
 }
 
-/// RenderNode is a simple scene-graph node that mirrors the DOM structure.
+/// `RenderNode` is a simple scene-graph node that mirrors the DOM structure.
 /// Attributes are preserved to enable later style-to-render mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderNode {
@@ -89,9 +91,11 @@ impl RenderNode {
 
 /// Renderer mirrors DOM updates into a lightweight scene graph suitable for
 /// translation into GPU-ready draw lists. It does not perform GPU work itself;
-/// RenderState or another backend can consume its snapshots.
+/// `RenderState` or another backend can consume its snapshots.
 pub struct Renderer {
+    /// Map of node keys to render nodes.
     nodes: HashMap<NodeKey, RenderNode>,
+    /// Root node key.
     root: NodeKey,
     /// Dirty rectangles provided by the layouter for partial redraw.
     dirty_rects: Vec<DrawRect>,
@@ -99,6 +103,7 @@ pub struct Renderer {
 
 impl Renderer {
     /// Create a new, empty renderer with a seeded root document node.
+    #[inline]
     pub fn new() -> Self {
         let mut nodes = HashMap::new();
         nodes.insert(NodeKey::ROOT, RenderNode::new_document());
@@ -110,13 +115,18 @@ impl Renderer {
     }
 
     /// Returns the root node key of the scene graph.
-    pub fn root(&self) -> NodeKey {
+    #[inline]
+    pub const fn root(&self) -> NodeKey {
         self.root
     }
 
-    /// Apply a single DOMUpdate to the renderer's scene graph.
-    fn apply_update_impl(&mut self, update: DOMUpdate) -> Result<(), Error> {
-        use DOMUpdate::*;
+    /// Apply a single `DOMUpdate` to the renderer's scene graph.
+    /// Apply a DOM update to the renderer.
+    ///
+    /// # Errors
+    /// Returns an error if the update fails.
+    fn apply_update_impl(&mut self, update: DOMUpdate) {
+        use DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr};
         match update {
             InsertElement {
                 parent,
@@ -125,14 +135,12 @@ impl Renderer {
                 pos,
             } => {
                 self.ensure_parent_exists(parent);
-                {
-                    let entry = self
-                        .nodes
-                        .entry(node)
-                        .or_insert_with(|| RenderNode::new_element(tag.clone(), Some(parent)));
-                    entry.kind = RenderNodeKind::Element { tag };
-                    entry.parent = Some(parent);
-                }
+                let entry = self
+                    .nodes
+                    .entry(node)
+                    .or_insert_with(|| RenderNode::new_element(tag.clone(), Some(parent)));
+                entry.kind = RenderNodeKind::Element { tag };
+                entry.parent = Some(parent);
                 self.insert_child_at(parent, node, pos);
             }
             InsertText {
@@ -142,14 +150,11 @@ impl Renderer {
                 pos,
             } => {
                 self.ensure_parent_exists(parent);
-                {
-                    let entry = self
-                        .nodes
-                        .entry(node)
-                        .or_insert_with(|| RenderNode::new_text(text.clone(), Some(parent)));
-                    entry.kind = RenderNodeKind::Text { text };
-                    entry.parent = Some(parent);
-                }
+                let entry = self
+                    .nodes
+                    .entry(node)
+                    .or_insert_with(|| RenderNode::new_text(text.clone(), Some(parent)));
+                entry.parent = Some(parent);
                 self.insert_child_at(parent, node, pos);
             }
             SetAttr { node, name, value } => {
@@ -166,7 +171,6 @@ impl Renderer {
                 // No-op for now; a backend could trigger finalize hooks here.
             }
         }
-        Ok(())
     }
 
     /// Insert a child under a parent at the given position, appending if pos is beyond the end.
@@ -195,7 +199,7 @@ impl Renderer {
             if let Some(parent_key) = node_entry.parent
                 && let Some(parent_node) = self.nodes.get_mut(&parent_key)
             {
-                parent_node.children.retain(|c| *c != node);
+                parent_node.children.retain(|child| *child != node);
             }
             node_entry
                 .children
@@ -205,32 +209,41 @@ impl Renderer {
     }
 
     /// Returns a stable snapshot of the scene graph as tuples of (key, kind, children).
+    #[inline]
     pub fn snapshot(&self) -> Vec<SnapshotEntry> {
         let mut out: Vec<SnapshotEntry> = self
             .nodes
             .iter()
             .map(|(key, node)| (*key, node.kind.clone(), node.children.clone()))
             .collect();
-        out.sort_by_key(|(k, _, _)| k.0);
+        out.sort_by_key(|(key, _, _)| key.0);
         out
     }
 
     /// Replace the current set of dirty rectangles to be used for partial redraws.
+    #[inline]
     pub fn set_dirty_rects(&mut self, rects: Vec<DrawRect>) {
         self.dirty_rects = rects;
     }
 
     /// Drain and return the current dirty rectangles (for testing/integration).
+    #[inline]
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "May need interior mutability in future"
+    )]
     pub fn take_dirty_rects(&mut self) -> Vec<DrawRect> {
         let mut out = Vec::new();
-        std::mem::swap(&mut out, &mut self.dirty_rects);
+        mem::swap(&mut out, &mut self.dirty_rects);
         out
     }
 }
 
 impl DOMSubscriber for Renderer {
-    /// Apply a DOMUpdate dispatched by the DOM runtime to keep the render scene in sync.
+    /// Apply a `DOMUpdate` dispatched by the DOM runtime to keep the render scene in sync.
+    #[inline]
     fn apply_update(&mut self, update: DOMUpdate) -> Result<(), Error> {
-        self.apply_update_impl(update)
+        self.apply_update_impl(update);
+        Ok(())
     }
 }

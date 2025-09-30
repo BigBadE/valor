@@ -1,110 +1,8 @@
-# CSS Display — Spec Coverage Map (CSS Display 3)
+# display Module - Chapter Specification
 
-Primary spec: <https://www.w3.org/TR/css-display-3/>
-
-## Scope and maturity
-
-- Status: [Production] for box generation and display tree normalization; [MVP] for anonymous blocks and IFC.
-- Non-production items:
-  - [MVP] Anonymous block synthesis for inline runs.
-  - [MVP] Inline formatting context (line boxes) and inline sizing from shaped text.
-  - [TODO] Integration with block/inline formatting contexts across BFC boundaries.
-
-## One-to-one spec mapping
-
-This information is now integrated directly into the verbatim spec sections below. See the status/mapping blocks placed immediately after each relevant spec heading (e.g., §2.1, §2.2, §2.3, §2.5, §2.7, §3, §4).
-
-- Inline Formatting Context (RFC; CSS 2.2 §9.4.2)
-  - Status: [MVP]
-  - Spec: https://www.w3.org/TR/CSS22/visuren.html#inline-formatting
-  - Code:
-    - `css_display::build_inline_context`, `css_display::inline_context::build_inline_context_with_filter`
-    - `css_display::build_anonymous_block_runs`
-  - Notes: Groups inline runs into line boxes; whitespace collapsing and shaping are deferred to text/layout modules.
-
-- Display Order (CSS Display 3 §3)
-  - Status: [MVP]
-  - Spec: https://www.w3.org/TR/css-display-3/#order
-  - Code:
-    - `page_handler::display::z_key_for_child`
-    - `page_handler::display::build_retained::order_children`
-  - Fixtures: TBD
-  - Notes: Implements sibling ordering by stacking buckets and z-index within bucket with DOM order tiebreakers. Full stacking context creation for opacity/transform is tracked.
-
-- Visibility (CSS Display 3 §4) — Opacity handling
-  - Status: [MVP]
-  - Spec: https://www.w3.org/TR/css-display-3/#visibility; `opacity` per CSS Color (applied here as subtree alpha multiply)
-  - Code:
-    - `css_orchestrator::style::apply_effects` — parses `opacity` into `ComputedStyle.opacity`
-    - `css_orchestrator::style_model::ComputedStyle.opacity`
-    - `page_handler::display::build_retained` — emits `DisplayItem::Opacity { alpha }` before subtree and resets to 1.0 after
-  - Fixtures: TBD
-  - Notes: MVP multiplies alpha for subsequent items; no offscreen compositing or true stacking context isolation yet.
-
-## Algorithms and data flow
-
-- Entry points (planned):
-  - `display::normalize_children()` — perform display tree normalization (display: none/contents). Anonymous blocks to be added here.
-  - `display::build_inline_context()` — produce line boxes and inline fragments.
-- Integration:
-  - Upstream: `style_engine::ComputedStyle`.
-  - Downstream: `layouter` consumes normalized tree via `box_tree::flatten_display_children()` and inline fragments for layout passes.
-
-- Painter ordering (implemented):
-  - Status: [MVP]
-  - Spec: CSS 2.2 stacking order; CSS Display 3 overview of display order
-  - Code:
-    - `page_handler::display::z_key_for_child` — computes a 3-key sort tuple: (bucket, z-index value, DOM order)
-    - `page_handler::display::build_retained::order_children` — sorts children by bucket: negative z-index positioned → normal flow → positioned auto/0 → positive z-index; within buckets sorts by z-index, then DOM order
-  - Notes: Stacking contexts from opacity/transform and absolute/fixed integration are tracked separately.
-
-- Parsing/inputs (implemented):
-  - `css_orchestrator::style::apply_effects` — parses `opacity: <number | %>` into `ComputedStyle.opacity`
-  - `css_orchestrator::style::apply_layout_keywords` — parses `display`, `position`, `overflow`, `z-index`
-
-- Integration points:
-  - Upstream: `ComputedStyle.opacity` consumed by painter for subtree alpha.
-  - Downstream: `renderer::DisplayItem::Opacity` multiplies quad alpha; no offscreen surfaces yet.
-
-## Edge cases and conformance nuances
-
-- `display: contents` and anonymous block interactions with margin collapsing and BFC boundaries.
-- Whitespace collapsing within inline formatting context (to be implemented here, not in layouter).
-- Overflow clipping width for text: When `overflow: hidden`, text layout and clipping use the content-box width (border and padding excluded) for bounds and wrapping.
-  - Status: [Production]
-  - Spec: CSS Overflow 3 (applies to clipping), interoperable behavior aligned with Chromium
-  - Code:
-    - `page_handler::display::build_text_list` — computes content-box `left_x` and `width_px` and passes bounds to `renderer::DrawText` when `overflow: hidden`.
-  - Fixtures: covered indirectly by Chromium layout comparisons; dedicated overflow text fixtures TBD.
-
-## Testing and fixtures
-
-- Fixtures under: `crates/css/modules/display/tests/fixtures/layout/inline/**`.
-- To ignore a fixture (expected failure), rename it with the `.fail` extension. The harness only runs `.html` fixtures; `.fail` files are skipped by discovery.
-
----
-
-# Verbatim Spec (CSS Display Level 3)
-
-Legal notice (required for embedded spec text):
-
-```
-Valor: https://github.com/BigBadE/Valor
-Copyright © [2025] World Wide Web Consortium. All Rights Reserved. This work is distributed under the W3C® Software and Document License [1] in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-[1] https://www.w3.org/Consortium/Legal/copyright-software
-```
-
-Note: Each top-level section below MUST begin with a status marker and be followed by a mapping block. The embedded content is sourced directly from the W3C CSS Display Module Level 3 specification.
-
-<!-- BEGIN VERBATIM SPEC: DO NOT EDIT BELOW. This block is auto-generated by scripts/vendor_display_spec.ps1 -->
+<!-- BEGIN VERBATIM SPEC: DO NOT EDIT BELOW. This block is auto-generated by scripts/vendor_css_spec.sh -->
 
 <h2 class="heading settled" data-level="2" id="the-display-properties"><span class="secno">2. </span><span class="content"> Box Layout Modes: the <a class="property css" data-link-type="property" href="#propdef-display" id="ref-for-propdef-display①⓪">display</a> property</span><a class="self-link" href="#the-display-properties"></a></h2>
-<div data-valor-status="the-display-properties">
- <p><strong>Status:</strong> [MVP]</p>
- <p><strong>Code:</strong> <em>Overview only</em></p>
- <p><strong>Fixtures:</strong> <em>None</em></p>
- <p><strong>Notes:</strong> Run-in/table/grid/ruby semantics are delegated to their respective modules; overview anchors used to scope §2 sub-sections.</p>
-</div>
 <details class="valor-spec" data-level="2">
   <summary>Show spec text</summary>
 
@@ -263,12 +161,6 @@ which dictates how the <a data-link-type="dfn" href="#principal-box" id="ref-for
 
 </details>
 <h3 class="heading settled" data-level="2.1" id="outer-role"><span class="secno">2.1. </span><span class="content"> Outer Display Roles for Flow Layout: the <a class="css" data-link-type="maybe" href="#valdef-display-block" id="ref-for-valdef-display-block①">block</a>, <a class="css" data-link-type="maybe" href="#valdef-display-inline" id="ref-for-valdef-display-inline①">inline</a>, and <a class="css" data-link-type="maybe" href="#valdef-display-run-in" id="ref-for-valdef-display-run-in②">run-in</a> keywords</span><a class="self-link" href="#outer-role"></a></h3>
-<div data-valor-status="outer-role">
- <p><strong>Status:</strong> [MVP]</p>
- <p><strong>Code:</strong> <code>css_display::chapter2::part_2_1_outer_inner::is_block_level_outer</code></p>
- <p><strong>Fixtures:</strong> <em>None</em></p>
- <p><strong>Notes:</strong> Public <code>Display</code> omits run-in/table/grid/ruby for now.</p>
-</div>
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -291,11 +183,6 @@ which dictates how the <a data-link-type="dfn" href="#principal-box" id="ref-for
 
 </details>
 <h3 class="heading settled" data-level="2.2" id="inner-model"><span class="secno">2.2. </span><span class="content"> Inner Display Layout Models: the <a class="css" data-link-type="maybe" href="#valdef-display-flow" id="ref-for-valdef-display-flow①">flow</a>, <a class="css" data-link-type="maybe" href="#valdef-display-flow-root" id="ref-for-valdef-display-flow-root①">flow-root</a>, <a class="css" data-link-type="maybe" href="#valdef-display-table" id="ref-for-valdef-display-table①">table</a>, <a class="css" data-link-type="maybe" href="#valdef-display-flex" id="ref-for-valdef-display-flex①">flex</a>, <a class="css" data-link-type="maybe" href="#valdef-display-grid" id="ref-for-valdef-display-grid①">grid</a>, and <a class="css" data-link-type="maybe" href="#valdef-display-ruby" id="ref-for-valdef-display-ruby①">ruby</a> keywords</span><a class="self-link" href="#inner-model"></a></h3>
-<div data-valor-status="inner-model">
- <p><strong>Status:</strong> [MVP]</p>
- <p><strong>Code:</strong> <code>css_display::chapter2::part_2_1_outer_inner::is_block_level_outer</code></p>
- <p><strong>Fixtures:</strong> <em>None</em></p>
-</div>
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -344,12 +231,6 @@ which dictates how the <a data-link-type="dfn" href="#principal-box" id="ref-for
 
 </details>
 <h3 class="heading settled" data-level="2.3" id="list-items"><span class="secno">2.3. </span><span class="content"> Generating Marker Boxes: the <a class="css" data-link-type="maybe" href="#valdef-display-list-item" id="ref-for-valdef-display-list-item③">list-item</a> keyword</span><a class="self-link" href="#list-items"></a></h3>
-<div data-valor-status="list-items">
- <p><strong>Status:</strong> [TODO]</p>
- <p><strong>Code:</strong> <code>css_display::chapter2::part_2_3_list_items::maybe_list_item_child</code></p>
- <p><strong>Fixtures:</strong> <em>None</em></p>
- <p><strong>Notes:</strong> Returns false until style engine exposes <code>list-item</code> and marker/counter plumbing is available.</p>
-</div>
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -446,12 +327,6 @@ which dictates how the <a data-link-type="dfn" href="#principal-box" id="ref-for
 
 </details>
 <h3 class="heading settled" data-level="2.5" id="box-generation"><span class="secno">2.5. </span><span class="content"> Box Generation: the <a class="css" data-link-type="maybe" href="#valdef-display-none" id="ref-for-valdef-display-none④">none</a> and <a class="css" data-link-type="maybe" href="#valdef-display-contents" id="ref-for-valdef-display-contents②">contents</a> keywords</span><a class="self-link" href="#box-generation"></a></h3>
-<div data-valor-status="box-generation">
- <p><strong>Status:</strong> [Production]</p>
- <p><strong>Code:</strong> <code>css_display::chapter2::part_2_5_box_generation::normalize_children</code></p>
- <p><strong>Fixtures:</strong> <em>None</em></p>
- <p><strong>Notes:</strong> Integrates §3 tree-abiding ordering and §4 visibility hook.</p>
-</div>
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -530,11 +405,6 @@ which dictates how the <a data-link-type="dfn" href="#principal-box" id="ref-for
 
 </details>
 <h3 class="heading settled" data-level="2.7" id="transformations"><span class="secno">2.7. </span><span class="content"> Automatic Box Type Transformations</span><a class="self-link" href="#transformations"></a></h3>
-<div data-valor-status="transformations">
- <p><strong>Status:</strong> [MVP]</p>
- <p><strong>Code:</strong> <code>css_display::chapter2::part_2_7_transformations::used_display_for_child</code></p>
- <p><strong>Fixtures:</strong> <em>None</em></p>
-</div>
 <details class="valor-spec" data-level="3">
   <summary>Show spec text</summary>
 
@@ -747,12 +617,6 @@ article.sale-item > img <c- p>{</c->
 
 </details>
 <h2 class="heading settled" data-level="4" id="visibility"><span class="secno">4. </span><span class="content"> Invisibility: the <a class="property css" data-link-type="property" href="#propdef-visibility" id="ref-for-propdef-visibility">visibility</a> property</span><a class="self-link" href="#visibility"></a></h2>
-<div data-valor-status="visibility">
- <p><strong>Status:</strong> [MVP]</p>
- <p><strong>Code:</strong> <code>css_display::chapter4::is_visible_for_layout</code></p>
- <p><strong>Fixtures:</strong> <em>None</em></p>
- <p><strong>Notes:</strong> Style engine does not yet expose a visibility property; helper is a paint-time seam (no-op for now).</p>
-</div>
 <details class="valor-spec" data-level="2">
   <summary>Show spec text</summary>
 
@@ -1086,11 +950,31 @@ or otherwise change their box type to one that can establish an <span id="ref-fo
 </details>
 <!-- END VERBATIM SPEC: DO NOT EDIT ABOVE. -->
 
+---
 
-## Documentation and coding standards
+## Implementation Status
 
+**Status:** [TODO]
 
-- All public functions must include spec links with exact section anchors.
-- Modules mirror spec chapters (`anonymous_blocks.rs`, `inline_formatting.rs`, etc.).
-- Files kept under ~500 lines; imports at the top; avoid fully qualified paths (use imports/aliases).
-- Mark non-production behavior `[MVP]`, `[Approximation]`, or `[Heuristic]` and link back here.
+**Code locations:**
+- TBD
+
+**Test fixtures:**
+- TBD
+
+**Notes:**
+- Implementation notes go here
+
+**Spec URL:** https://www.w3.org/TR/css-display-3/
+
+---
+
+## Legal Notice
+
+Legal notice (required for embedded spec text):
+
+```
+Valor Browser Engine: https://github.com/valor-software/valor
+Copyright © 2025 World Wide Web Consortium. All Rights Reserved. This work is distributed under the W3C® Software and Document License [1] in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+[1] https://www.w3.org/Consortium/Legal/copyright-software
+```

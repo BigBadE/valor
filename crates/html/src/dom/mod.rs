@@ -1,11 +1,20 @@
+#![allow(
+    clippy::single_match_else,
+    clippy::option_if_let_else,
+    clippy::absolute_paths,
+    clippy::missing_errors_doc,
+    reason = "DOM mirror uses standard patterns and JSON serialization"
+)]
+
 mod printing;
 
 use anyhow::Error;
-use indextree::{Arena, NodeId};
+use core::hash::Hash;
+use indextree::{Arena, Node, NodeId};
 use js::{DOMUpdate, KeySpace, NodeKey, NodeKeyManager};
+use serde_json::Value;
 use smallvec::SmallVec;
 use std::collections::HashMap;
-use std::hash::Hash;
 use tokio::sync::{broadcast, mpsc};
 
 #[derive(Debug, Clone, Default)]
@@ -31,6 +40,20 @@ pub struct DOM {
 }
 
 impl DOM {
+    /// Build a deterministic JSON representation of the DOM.
+    /// Schema:
+    /// - Document: { "type":"document", "children":[ ... ] }
+    /// - Element: { "type":"element", "tag": "div", "attrs": {..}, "children":[ ... ] }
+    /// - Text: { "type":"text", "text":"..." }
+    pub fn to_json_value(&self) -> Value {
+        printing::node_to_json(self, self.root)
+    }
+
+    /// Pretty JSON string for snapshots and test comparisons.
+    pub fn to_json_string(&self) -> String {
+        serde_json::to_string_pretty(&self.to_json_value()).unwrap_or_else(|_| String::from("{}"))
+    }
+
     pub fn new(
         out_updater: broadcast::Sender<Vec<DOMUpdate>>,
         in_receiver: mpsc::Receiver<Vec<DOMUpdate>>,
@@ -58,7 +81,7 @@ impl DOM {
         self.keyspace.register_manager()
     }
 
-    pub async fn update(&mut self) -> Result<(), Error> {
+    pub fn update(&mut self) -> Result<(), Error> {
         while let Ok(batch) = self.in_receiver.try_recv() {
             // Apply and collect simple counts for test-printing diagnostics
             let mut insert_element_count = 0usize;
@@ -87,7 +110,7 @@ impl DOM {
                 end_of_document_count
             );
             // Send update to mirrors, ignoring it if there's no listeners.
-            let _ = self.out_updater.send(batch);
+            drop(self.out_updater.send(batch));
         }
         Ok(())
     }
@@ -132,7 +155,7 @@ impl DOM {
     }
 
     fn apply_update(&mut self, update: &DOMUpdate) {
-        use DOMUpdate::*;
+        use DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr};
 
         match update {
             InsertElement {
@@ -145,7 +168,7 @@ impl DOM {
                 let child_rt =
                     self.ensure_node(*node, Some(NodeKind::Element { tag: tag.clone() }));
                 // If child is already attached somewhere, detach first
-                if self.dom.get(child_rt).and_then(|n| n.parent()).is_some() {
+                if self.dom.get(child_rt).and_then(Node::parent).is_some() {
                     child_rt.detach(&mut self.dom);
                 }
                 // Insert at position among parent's children
@@ -167,12 +190,12 @@ impl DOM {
                 let parent_rt = self.map_parent(*parent);
                 let child_rt = self.ensure_node(*node, Some(NodeKind::Text { text: text.clone() }));
                 // Update text content if node existed already
-                if let Some(n) = self.dom.get_mut(child_rt)
-                    && let NodeKind::Text { text: t } = &mut n.get_mut().kind
+                if let Some(node_ref) = self.dom.get_mut(child_rt)
+                    && let NodeKind::Text { text: text_ref } = &mut node_ref.get_mut().kind
                 {
-                    *t = text.clone();
+                    text_ref.clone_from(text);
                 }
-                if self.dom.get(child_rt).and_then(|n| n.parent()).is_some() {
+                if self.dom.get(child_rt).and_then(Node::parent).is_some() {
                     child_rt.detach(&mut self.dom);
                 }
                 let count = parent_rt.children(&self.dom).count();
@@ -185,20 +208,20 @@ impl DOM {
                 }
             }
             SetAttr { node, name, value } => {
-                let rt = self.ensure_node(*node, None);
-                if let Some(n) = self.dom.get_mut(rt) {
-                    let attrs = &mut n.get_mut().attrs;
-                    if let Some((_, v)) = attrs.iter_mut().find(|(k, _)| k == name) {
-                        *v = value.clone();
+                let runtime_id = self.ensure_node(*node, None);
+                if let Some(node_ref) = self.dom.get_mut(runtime_id) {
+                    let attrs = &mut node_ref.get_mut().attrs;
+                    if let Some((_, val)) = attrs.iter_mut().find(|(key, _)| key == name) {
+                        val.clone_from(value);
                     } else {
                         attrs.push((name.clone(), value.clone()));
                     }
                 }
             }
             RemoveNode { node } => {
-                if let Some(&rt) = self.id_map.get(node) {
+                if let Some(&runtime_id) = self.id_map.get(node) {
                     // Detach from parent if attached
-                    rt.detach(&mut self.dom);
+                    runtime_id.detach(&mut self.dom);
                     // Keep mapping for potential future references; minimal change.
                 }
             }
