@@ -382,7 +382,10 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
                 agg_png_decode += t_decode.elapsed();
                 log::debug!(
                     "Chrome image decoded: width={}, height={}, buffer_size={}, expected_size={}",
-                    img.width(), img.height(), img.as_raw().len(), (784u32 * 453u32 * 4) as usize
+                    img.width(),
+                    img.height(),
+                    img.as_raw().len(),
+                    (784u32 * 453u32 * 4) as usize
                 );
                 // Compress and write RGBA cache
                 let level = 1; // fast
@@ -420,7 +423,10 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
             agg_png_decode += t_decode.elapsed();
             log::debug!(
                 "Chrome image decoded: width={}, height={}, buffer_size={}, expected_size={}",
-                img.width(), img.height(), img.as_raw().len(), (784u32 * 453u32 * 4) as usize
+                img.width(),
+                img.height(),
+                img.as_raw().len(),
+                (784u32 * 453u32 * 4) as usize
             );
             // Compress and write RGBA cache for future runs
             let level = 1; // fast

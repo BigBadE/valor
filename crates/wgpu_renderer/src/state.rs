@@ -1,14 +1,11 @@
-use crate::display_list::{
-    DisplayItem, DisplayList, Scissor, StackingContextBoundary, batch_display_list,
-};
+use crate::display_list::{DisplayItem, DisplayList, StackingContextBoundary, batch_display_list};
+use crate::error::submit_with_validation;
+use crate::pipelines::{Vertex, build_pipeline_and_buffers, build_texture_pipeline};
 use crate::renderer::{DrawRect, DrawText};
-use anyhow::{Result as AnyResult, anyhow};
-use glyphon::{
-    Attrs, Buffer as GlyphonBuffer, Cache, Color as GlyphonColor, FontSystem, Metrics, Resolution,
-    Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
-};
+use crate::text::{batch_layer_texts_with_scissor, batch_texts_with_scissor, map_text_item};
+use anyhow::Result as AnyResult;
+use glyphon::{Cache, FontSystem, Resolution, SwashCache, TextAtlas, TextRenderer, Viewport};
 use log::debug;
-use std::borrow::Cow;
 use std::sync::Arc;
 use tracing::info_span;
 use wgpu::util::DeviceExt;
@@ -16,245 +13,18 @@ use wgpu::*;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
-// pollster is used to synchronously await wgpu error scopes in a non-async context.
-use pollster::block_on;
-
-#[inline]
-fn batch_texts_with_scissor(
-    dl: &DisplayList,
-    framebuffer_w: u32,
-    framebuffer_h: u32,
-) -> Vec<TextBatch> {
-    use crate::display_list::DisplayItem;
-    let mut out: Vec<TextBatch> = Vec::new();
-    let mut stack: Vec<Scissor> = Vec::new();
-    let mut current_scissor: Option<Scissor> = None;
-    let mut current_texts: Vec<DrawText> = Vec::new();
-    let mut sc_stack_is_opacity: Vec<bool> = Vec::new();
-    let mut opacity_depth: usize = 0;
-    for item in &dl.items {
-        match item {
-            DisplayItem::BeginClip {
-                x,
-                y,
-                width,
-                height,
-            } => {
-                if !current_texts.is_empty() {
-                    out.push((current_scissor, std::mem::take(&mut current_texts)));
-                }
-                let new_sc =
-                    rect_to_scissor((framebuffer_w, framebuffer_h), *x, *y, *width, *height);
-                let effective = match current_scissor {
-                    Some(sc) => intersect_scissor(sc, new_sc),
-                    None => new_sc,
-                };
-                stack.push(new_sc);
-                current_scissor = Some(effective);
-            }
-            DisplayItem::EndClip => {
-                if !current_texts.is_empty() {
-                    out.push((current_scissor, std::mem::take(&mut current_texts)));
-                }
-                let _ = stack.pop();
-                current_scissor = stack.iter().cloned().reduce(intersect_scissor);
-            }
-            DisplayItem::BeginStackingContext { boundary } => {
-                let is_opacity =
-                    matches!(boundary, StackingContextBoundary::Opacity { alpha } if *alpha < 1.0);
-                sc_stack_is_opacity.push(is_opacity);
-                if is_opacity {
-                    opacity_depth += 1;
-                }
-            }
-            DisplayItem::EndStackingContext => {
-                if sc_stack_is_opacity.pop().unwrap_or(false) && opacity_depth > 0 {
-                    opacity_depth -= 1;
-                }
-            }
-            DisplayItem::Text {
-                x,
-                y,
-                text,
-                color,
-                font_size,
-                bounds,
-            } => {
-                if opacity_depth == 0 {
-                    current_texts.push(DrawText {
-                        x: *x,
-                        y: *y,
-                        text: text.clone(),
-                        color: *color,
-                        font_size: *font_size,
-                        bounds: *bounds,
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if !current_texts.is_empty() {
-        out.push((current_scissor, current_texts));
-    }
-    out
-}
-
-type TextBatch = (Option<Scissor>, Vec<DrawText>);
+// pollster is used via crate::error helpers.
 
 // Composite info for a pre-rendered opacity group.
 // (start_index, end_index, texture, texture_view, tex_w, tex_h, alpha, bounds)
-type OpacityComposite = (usize, usize, Texture, TextureView, u32, u32, f32, Bounds);
+pub(crate) type OpacityComposite = (usize, usize, Texture, TextureView, u32, u32, f32, Bounds);
 
 // Result payload for offscreen renders: (texture, view, width, height)
-type OffscreenRender = (Texture, TextureView, u32, u32);
+pub(crate) type OffscreenRender = (Texture, TextureView, u32, u32);
 
-#[inline]
-fn rect_to_scissor(framebuffer: (u32, u32), x: f32, y: f32, w: f32, h: f32) -> Scissor {
-    let framebuffer_w = framebuffer.0.max(1);
-    let framebuffer_h = framebuffer.1.max(1);
-    let mut sx = x.max(0.0).floor() as i32;
-    let mut sy = y.max(0.0).floor() as i32;
-    let mut sw = w.max(0.0).ceil() as i32;
-    let mut sh = h.max(0.0).ceil() as i32;
-    if sx < 0 {
-        sw += sx;
-        sx = 0;
-    }
-    if sy < 0 {
-        sh += sy;
-        sy = 0;
-    }
-    let max_w = framebuffer_w as i32 - sx;
-    let max_h = framebuffer_h as i32 - sy;
-    let sw = sw.clamp(0, max_w) as u32;
-    let sh = sh.clamp(0, max_h) as u32;
-    (sx as u32, sy as u32, sw, sh)
-}
-
-#[inline]
-fn intersect_scissor(a: Scissor, b: Scissor) -> Scissor {
-    let (ax, ay, aw, ah) = a;
-    let (bx, by, bw, bh) = b;
-    let x0 = ax.max(bx);
-    let y0 = ay.max(by);
-    let x1 = (ax + aw).min(bx + bw);
-    let y1 = (ay + ah).min(by + bh);
-    let w = x1.saturating_sub(x0);
-    let h = y1.saturating_sub(y0);
-    (x0, y0, w, h)
-}
-
-#[inline]
-fn batch_layer_texts_with_scissor(
-    layers: &[Layer],
-    framebuffer_w: u32,
-    framebuffer_h: u32,
-) -> Vec<TextBatch> {
-    use crate::display_list::DisplayItem;
-    let mut out: Vec<TextBatch> = Vec::new();
-    for layer in layers {
-        let dl = match layer {
-            Layer::Content(dl) | Layer::Chrome(dl) => dl,
-            Layer::Background => continue,
-        };
-        let mut stack: Vec<Scissor> = Vec::new();
-        let mut current_scissor: Option<Scissor> = None;
-        let mut current_texts: Vec<DrawText> = Vec::new();
-        let mut sc_stack_is_opacity: Vec<bool> = Vec::new();
-        let mut opacity_depth: usize = 0;
-        for item in &dl.items {
-            match item {
-                DisplayItem::BeginClip {
-                    x,
-                    y,
-                    width,
-                    height,
-                } => {
-                    if !current_texts.is_empty() {
-                        out.push((current_scissor, std::mem::take(&mut current_texts)));
-                    }
-                    let new_sc =
-                        rect_to_scissor((framebuffer_w, framebuffer_h), *x, *y, *width, *height);
-                    let effective = match current_scissor {
-                        Some(sc) => intersect_scissor(sc, new_sc),
-                        None => new_sc,
-                    };
-                    stack.push(new_sc);
-                    current_scissor = Some(effective);
-                }
-                DisplayItem::EndClip => {
-                    if !current_texts.is_empty() {
-                        out.push((current_scissor, std::mem::take(&mut current_texts)));
-                    }
-                    let _ = stack.pop();
-                    current_scissor = stack.iter().cloned().reduce(intersect_scissor);
-                }
-                DisplayItem::BeginStackingContext { boundary } => {
-                    let is_opacity = matches!(boundary, StackingContextBoundary::Opacity { alpha } if *alpha < 1.0);
-                    sc_stack_is_opacity.push(is_opacity);
-                    if is_opacity {
-                        opacity_depth += 1;
-                    }
-                }
-                DisplayItem::EndStackingContext => {
-                    if sc_stack_is_opacity.pop().unwrap_or(false) && opacity_depth > 0 {
-                        opacity_depth -= 1;
-                    }
-                }
-                DisplayItem::Text {
-                    x,
-                    y,
-                    text,
-                    color,
-                    font_size,
-                    bounds,
-                } => {
-                    // Map to DrawText, keeping bounds and color as-is
-                    if opacity_depth == 0 {
-                        current_texts.push(DrawText {
-                            x: *x,
-                            y: *y,
-                            text: text.clone(),
-                            color: *color,
-                            font_size: *font_size,
-                            bounds: *bounds,
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-        if !current_texts.is_empty() {
-            out.push((current_scissor, current_texts));
-        }
-    }
-    out
-}
-
-#[inline]
-fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
-    if let DisplayItem::Text {
-        x,
-        y,
-        text,
-        color,
-        font_size,
-        bounds,
-    } = item
-    {
-        return Some(DrawText {
-            x: *x,
-            y: *y,
-            text: text.clone(),
-            color: *color,
-            font_size: *font_size,
-            bounds: *bounds,
-        });
-    }
-    None
-}
+// Compact representation for preprocessed layer data: either no content
+// or (items, composites, excluded ranges).
+pub(crate) type LayerEntry = Option<(Vec<DisplayItem>, Vec<OpacityComposite>, Vec<(usize, usize)>)>;
 
 #[derive(Debug, Clone)]
 pub enum Layer {
@@ -263,76 +33,12 @@ pub enum Layer {
     Chrome(DisplayList),
 }
 
-/// Texture pool for efficient reuse of offscreen textures in opacity groups.
-/// Spec: Performance optimization for stacking context rendering
-#[derive(Debug)]
-struct TexturePool {
-    /// Available textures: (width, height, texture)
-    available: Vec<(u32, u32, Texture)>,
-}
-
-impl TexturePool {
-    /// Create a new texture pool
-    fn new() -> Self {
-        Self {
-            available: Vec::new(),
-        }
-    }
-
-    /// Get or create a texture with the specified dimensions and format
-    /// Spec: Reuse textures to minimize GPU memory allocation overhead
-    fn get_or_create(
-        &mut self,
-        device: &Device,
-        width: u32,
-        height: u32,
-        format: TextureFormat,
-    ) -> Texture {
-        // Find suitable existing texture (allow up to 25% larger to improve reuse)
-        let max_width = width + width / 4;
-        let max_height = height + height / 4;
-
-        if let Some(pos) = self.available.iter().position(|(w, h, _)| {
-            *w >= width && *h >= height && *w <= max_width && *h <= max_height
-        }) {
-            let (_w, _h, texture) = self.available.remove(pos);
-            return texture;
-        }
-
-        // Create new texture with tight bounds
-        device.create_texture(&TextureDescriptor {
-            label: Some("opacity-group-texture"),
-            size: Extent3d {
-                width: width.max(1),
-                height: height.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        })
-    }
-
-    /// Return a texture to the pool for reuse
-    fn return_texture(&mut self, texture: Texture, width: u32, height: u32) {
-        self.available.push((width.max(1), height.max(1), texture));
-    }
-
-    /// Clear all textures from the pool (called on resize)
-    fn clear(&mut self) {
-        self.available.clear();
-    }
-}
-
 /// RenderState owns the GPU device/surface and a minimal pipeline to draw rectangles from layout.
 pub struct RenderState {
-    window: Arc<Window>,
-    device: Device,
-    queue: Queue,
-    size: PhysicalSize<u32>,
+    pub(crate) window: Arc<Window>,
+    pub(crate) device: Device,
+    pub(crate) queue: Queue,
+    pub(crate) size: PhysicalSize<u32>,
     surface: Option<Surface<'static>>,
     surface_format: TextureFormat,
     render_format: TextureFormat,
@@ -343,25 +49,22 @@ pub struct RenderState {
     vertex_buffer: Buffer,
     vertex_count: u32,
     display_list: Vec<DrawRect>,
-    text_list: Vec<crate::renderer::DrawText>,
+    pub(crate) text_list: Vec<crate::renderer::DrawText>,
     /// Retained display list for Phase 6. When set via set_retained_display_list,
     /// it becomes the source of truth and is flattened into the immediate lists.
     retained_display_list: Option<DisplayList>,
     // Glyphon text rendering state
-    font_system: FontSystem,
-    swash_cache: SwashCache,
-    text_atlas: TextAtlas,
-    text_renderer: TextRenderer,
+    pub(crate) font_system: FontSystem,
+    pub(crate) swash_cache: SwashCache,
+    pub(crate) text_atlas: TextAtlas,
+    pub(crate) text_renderer: TextRenderer,
     #[allow(dead_code)]
-    glyphon_cache: Cache,
-    viewport: Viewport,
+    pub(crate) glyphon_cache: Cache,
+    pub(crate) viewport: Viewport,
     /// Optional layers for multi-DL compositing; when non-empty, render() draws these instead of the single retained list.
     layers: Vec<Layer>,
     /// Clear color for the framebuffer (canvas background). RGBA in [0,1].
     clear_color: [f32; 4],
-    /// Texture pool for efficient offscreen texture reuse
-    texture_pool: TexturePool,
-    /// Tracks nesting of offscreen group renders to prevent nested encoders.
     offscreen_depth: u32,
     /// Persistent offscreen render target for readback-based renders
     offscreen_tex: Option<Texture>,
@@ -373,8 +76,25 @@ pub struct RenderState {
 
 impl RenderState {
     #[inline]
+    fn preprocess_layer_with_encoder(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        layer: &Layer,
+    ) -> AnyResult<LayerEntry> {
+        match layer {
+            Layer::Background => Ok(None),
+            Layer::Content(dl) | Layer::Chrome(dl) => {
+                let items: Vec<DisplayItem> = dl.items.clone();
+                let comps = self.collect_opacity_composites(encoder, &items)?;
+                let ranges = self.build_exclude_ranges(&comps);
+                Ok(Some((items, comps, ranges)))
+            }
+        }
+    }
+    #[inline]
     fn collect_opacity_composites(
         &mut self,
+        encoder: &mut CommandEncoder,
         items: &[DisplayItem],
     ) -> AnyResult<Vec<OpacityComposite>> {
         let mut out: Vec<OpacityComposite> = Vec::new();
@@ -389,7 +109,7 @@ impl RenderState {
                     .compute_items_bounds(group_items)
                     .unwrap_or((0.0, 0.0, 1.0, 1.0));
                 let (tex, view, tw, th) =
-                    self.render_items_to_offscreen_bounded(group_items, bounds)?;
+                    self.render_items_to_offscreen_bounded(encoder, group_items, bounds)?;
                 let alpha = match boundary {
                     StackingContextBoundary::Opacity { alpha } => *alpha,
                     _ => 1.0,
@@ -427,22 +147,6 @@ impl RenderState {
     }
 
     #[inline]
-    fn submit_with_error_scope<I>(&mut self, submissions: I) -> AnyResult<()>
-    where
-        I: IntoIterator<Item = CommandBuffer>,
-    {
-        self.device.push_error_scope(ErrorFilter::Validation);
-        self.queue.submit(submissions);
-        let fut = self.device.pop_error_scope();
-        let res = block_on(fut);
-        if let Some(err) = res {
-            log::error!(target: "wgpu_renderer", "WGPU error (scoped): {err:?}");
-            return Err(anyhow!("wgpu scoped error: {err:?}"));
-        }
-        Ok(())
-    }
-
-    #[inline]
     fn build_exclude_ranges(&self, comps: &[OpacityComposite]) -> Vec<(usize, usize)> {
         let mut ranges = Vec::with_capacity(comps.len());
         for (s, e, ..) in comps.iter() {
@@ -453,9 +157,8 @@ impl RenderState {
 
     #[inline]
     fn composite_groups(&mut self, pass: &mut RenderPass<'_>, comps: Vec<OpacityComposite>) {
-        for (_s, _e, tex, view, tw, th, alpha, bounds) in comps.into_iter() {
+        for (_s, _e, _tex, view, _tw, _th, alpha, bounds) in comps.into_iter() {
             self.draw_texture_quad(pass, &view, alpha, bounds);
-            self.texture_pool.return_texture(tex, tw, th);
         }
     }
 
@@ -466,53 +169,14 @@ impl RenderState {
         group_items: &[DisplayItem],
         alpha: f32,
     ) -> AnyResult<()> {
-        if self.offscreen_depth != 0 {
-            // Inside offscreen already: avoid nested encoders; draw directly
-            self.draw_items_batched(pass, group_items);
-            return Ok(());
-        }
-        // Render opacity group to offscreen texture with tight bounds
-        let bounds = self
-            .compute_items_bounds(group_items)
-            .unwrap_or((0.0, 0.0, 1.0, 1.0));
-        let (tex, view, tex_w, tex_h) =
-            self.render_items_to_offscreen_bounded(group_items, bounds)?;
-        self.draw_texture_quad(pass, &view, alpha, bounds);
-        // Return texture to pool for reuse
-        self.texture_pool.return_texture(tex, tex_w, tex_h);
+        // Offscreen opacity compositing is handled by record_draw_passes() using pre-collected
+        // composites before opening the main pass. For any other contexts (including offscreen
+        // renders), simply draw the group's items directly here.
+        let _ = alpha; // alpha handled in higher-level compositing when applicable
+        self.draw_items_batched(pass, group_items);
         Ok(())
     }
-    #[inline]
-    fn draw_text_batch(
-        &mut self,
-        pass: &mut RenderPass<'_>,
-        items: &[DrawText],
-        scissor_opt: Option<Scissor>,
-    ) {
-        self.glyphon_prepare_for(items);
-        pass.set_viewport(
-            0.0,
-            0.0,
-            self.size.width as f32,
-            self.size.height as f32,
-            0.0,
-            1.0,
-        );
-        match scissor_opt {
-            Some((x, y, w, h)) => pass.set_scissor_rect(x, y, w, h),
-            None => pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1)),
-        }
-        let _ = self
-            .text_renderer
-            .render(&self.text_atlas, &self.viewport, pass);
-    }
 
-    #[inline]
-    fn draw_text_batches(&mut self, pass: &mut RenderPass<'_>, batches: Vec<TextBatch>) {
-        for (scissor_opt, items) in batches.into_iter().filter(|(_, it)| !it.is_empty()) {
-            self.draw_text_batch(pass, &items, scissor_opt);
-        }
-    }
     /// Record all render passes (rectangles + text) into the provided texture view.
     /// This uses the exact same code paths as `render()`.
     fn record_draw_passes(
@@ -538,6 +202,7 @@ impl RenderState {
         {
             // Always clear first to the background color, then drop pass to allow offscreen pre-renders.
             {
+                debug!(target: "wgpu_renderer", "start clear-pass");
                 let _clear_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                     label: Some("clear-pass"),
                     color_attachments: &[Some(RenderPassColorAttachment {
@@ -558,10 +223,20 @@ impl RenderState {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
+                debug!(target: "wgpu_renderer", "end clear-pass");
             }
 
             if use_layers {
-                // Layers path unchanged: open a fresh main pass and draw layers.
+                // Pre-collect opacity composites for each layer BEFORE opening the main pass
+                // to avoid creating encoders while a render pass is in progress.
+                let per_layer: Vec<LayerEntry> = self
+                    .layers
+                    .clone()
+                    .iter()
+                    .map(|l| self.preprocess_layer_with_encoder(encoder, l))
+                    .collect::<AnyResult<Vec<_>>>()?;
+
+                // Open the main pass and draw layers: non-group items first, then composite groups
                 let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                     label: Some("main-pass"),
                     color_attachments: &[Some(RenderPassColorAttachment {
@@ -577,18 +252,19 @@ impl RenderState {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
+                debug!(target: "wgpu_renderer", "start main-pass");
                 pass.set_pipeline(&self.pipeline);
-                for layer in self.layers.clone().iter() {
-                    match layer {
-                        Layer::Background => continue,
-                        Layer::Content(dl) | Layer::Chrome(dl) => self.draw_layer(&mut pass, dl)?,
-                    }
+
+                for (items, comps, ranges) in per_layer.into_iter().flatten() {
+                    self.draw_items_excluding_ranges(&mut pass, &items, &ranges);
+                    self.composite_groups(&mut pass, comps);
                 }
+                debug!(target: "wgpu_renderer", "end main-pass");
             } else if use_retained {
                 if let Some(dl) = self.retained_display_list.clone() {
                     let items: Vec<DisplayItem> = dl.items;
                     // Pre-render opacity groups offscreen before opening the main pass, avoiding nested encoders.
-                    let comps = self.collect_opacity_composites(&items)?;
+                    let comps = self.collect_opacity_composites(encoder, &items)?;
                     // Open main pass and draw non-group items, then composite groups in order.
                     let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                         label: Some("main-pass"),
@@ -605,13 +281,13 @@ impl RenderState {
                         timestamp_writes: None,
                         occlusion_query_set: None,
                     });
+                    debug!(target: "wgpu_renderer", "start main-pass");
                     pass.set_pipeline(&self.pipeline);
 
-                    // Draw normal items excluding group ranges
                     let ranges = self.build_exclude_ranges(&comps);
                     self.draw_items_excluding_ranges(&mut pass, &items, &ranges);
-                    // Composite groups in order
                     self.composite_groups(&mut pass, comps);
+                    debug!(target: "wgpu_renderer", "end main-pass");
                 }
             } else {
                 // Immediate path: batch all rects into one draw call as before
@@ -647,11 +323,13 @@ impl RenderState {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
+                debug!(target: "wgpu_renderer", "start main-pass");
                 pass.set_pipeline(&self.pipeline);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 if self.vertex_count > 0 {
                     pass.draw(0..self.vertex_count, 0..1);
                 }
+                debug!(target: "wgpu_renderer", "end main-pass");
             }
         }
 
@@ -664,7 +342,6 @@ impl RenderState {
                     depth_slice: None,
                     resolve_target: None,
                     ops: Operations {
-                        // Keep rects, draw text on top
                         load: LoadOp::Load,
                         store: StoreOp::Store,
                     },
@@ -673,32 +350,16 @@ impl RenderState {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-
+            debug!(target: "wgpu_renderer", "start text-pass");
             if use_layers {
                 let batches =
                     batch_layer_texts_with_scissor(&self.layers, self.size.width, self.size.height);
                 self.draw_text_batches(&mut pass, batches);
-            } else if use_retained {
-                if let Some(dl) = &self.retained_display_list {
-                    let batches = batch_texts_with_scissor(dl, self.size.width, self.size.height);
-                    self.draw_text_batches(&mut pass, batches);
-                }
-            } else {
-                // Immediate path: use whatever self.text_list was set to externally
-                self.glyphon_prepare();
-                pass.set_viewport(
-                    0.0,
-                    0.0,
-                    self.size.width as f32,
-                    self.size.height as f32,
-                    0.0,
-                    1.0,
-                );
-                pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
-                let _ = self
-                    .text_renderer
-                    .render(&self.text_atlas, &self.viewport, &mut pass);
+            } else if use_retained && let Some(dl) = &self.retained_display_list {
+                let batches = batch_texts_with_scissor(dl, self.size.width, self.size.height);
+                self.draw_text_batches(&mut pass, batches);
             }
+            debug!(target: "wgpu_renderer", "end text-pass");
         }
         Ok(())
     }
@@ -743,10 +404,6 @@ impl RenderState {
                 color: c,
             },
         ]);
-    }
-
-    fn draw_layer(&mut self, pass: &mut RenderPass<'_>, dl: &DisplayList) -> AnyResult<()> {
-        self.draw_items_with_groups(pass, &dl.items)
     }
 
     /// Draw display items with proper stacking context handling
@@ -857,6 +514,7 @@ impl RenderState {
     /// Spec: CSS Compositing Level 1 §3.1 - Stacking context rendering optimization
     fn render_items_to_offscreen_bounded(
         &mut self,
+        encoder: &mut CommandEncoder,
         items: &[DisplayItem],
         bounds: (f32, f32, f32, f32),
     ) -> AnyResult<OffscreenRender> {
@@ -868,23 +526,29 @@ impl RenderState {
         let offscreen_format = self.render_format;
 
         // Get texture from pool or create new one with tight bounds
-        let texture =
-            self.texture_pool
-                .get_or_create(&self.device, tex_width, tex_height, offscreen_format);
-
-        // For internally-created textures, leave view format as None to use the texture's own format.
+        let texture = self.device.create_texture(&TextureDescriptor {
+            label: Some("offscreen-target"),
+            size: Extent3d {
+                width: tex_width,
+                height: tex_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: offscreen_format,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        // Use an explicit view format matching the render pipeline to avoid backend mismatches.
         let view = texture.create_view(&TextureViewDescriptor {
-            format: None,
+            format: Some(self.render_format),
             ..Default::default()
         });
 
         // Increase offscreen depth to disable nested offscreen compositing
         self.offscreen_depth = self.offscreen_depth.saturating_add(1);
-        let mut encoder = self
-            .device
-            .create_command_encoder(&CommandEncoderDescriptor {
-                label: Some("opacity-group-encoder"),
-            });
+        // Use the provided encoder to avoid creating a nested encoder while passes are active.
 
         {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -987,9 +651,7 @@ impl RenderState {
             }
         }
 
-        let cb = encoder.finish();
-        // Submit immediately to avoid encoder conflicts with main render pass
-        self.queue.submit([cb]);
+        // Do not finish/submit here; caller will submit the shared encoder
         // Decrease offscreen depth after finishing this offscreen render
         self.offscreen_depth = self.offscreen_depth.saturating_sub(1);
 
@@ -1290,7 +952,6 @@ impl RenderState {
             viewport: viewport_local,
             layers: Vec::new(),
             clear_color: [1.0, 1.0, 1.0, 1.0],
-            texture_pool: TexturePool::new(), // Pool initialized; reuse capacity managed internally
             offscreen_depth: 0,
             offscreen_tex: None,
             readback_buf: None,
@@ -1303,8 +964,6 @@ impl RenderState {
     pub fn get_window(&self) -> &Window {
         &self.window
     }
-
-    // cache_stats was removed with cached batch machinery.
 
     /// Set the framebuffer clear color (canvas background). RGBA in [0,1].
     pub fn set_clear_color(&mut self, rgba: [f32; 4]) {
@@ -1334,7 +993,6 @@ impl RenderState {
         self.size = new_size;
         self.configure_surface();
         // Clear pooled textures to avoid size/format mismatches
-        self.texture_pool.clear();
         // Drop persistent readback/offscreen so they are recreated at next render
         self.offscreen_tex = None;
         self.readback_buf = None;
@@ -1375,154 +1033,6 @@ impl RenderState {
         self.text_list.clear();
     }
 
-    /// Prepare glyphon buffers for the current text list and upload glyphs into the atlas.
-    fn glyphon_prepare(&mut self) {
-        let _span = info_span!("renderer.glyphon_prepare").entered();
-        let start = std::time::Instant::now();
-        let framebuffer_width = self.size.width;
-        let framebuffer_height = self.size.height;
-        let scale: f32 = self.window.scale_factor() as f32;
-        // Build buffers first
-        let mut buffers: Vec<GlyphonBuffer> = Vec::with_capacity(self.text_list.len());
-        for item in &self.text_list {
-            let mut buffer = GlyphonBuffer::new(
-                &mut self.font_system,
-                Metrics::new(item.font_size * scale, item.font_size * scale),
-            );
-            let attrs = Attrs::new();
-            buffer.set_text(&mut self.font_system, &item.text, &attrs, Shaping::Advanced);
-            buffers.push(buffer);
-        }
-        // Build areas referencing buffers
-        let mut areas: Vec<TextArea> = Vec::with_capacity(self.text_list.len());
-        for (index, item) in self.text_list.iter().enumerate() {
-            // Visible on white: use opaque black (ARGB alpha-highest)
-            let color = GlyphonColor(0xFF00_0000);
-            let bounds = match item.bounds {
-                Some((l, t, r, b)) => TextBounds {
-                    left: (l as f32 * scale).round() as i32,
-                    top: (t as f32 * scale).round() as i32,
-                    right: (r as f32 * scale).round() as i32,
-                    bottom: (b as f32 * scale).round() as i32,
-                },
-                None => TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: framebuffer_width as i32,
-                    bottom: framebuffer_height as i32,
-                },
-            };
-            let buffer_ref = &buffers[index];
-            areas.push(TextArea {
-                buffer: buffer_ref,
-                left: item.x * scale,
-                top: item.y * scale,
-                scale: 1.0,
-                bounds,
-                default_color: color,
-                custom_glyphs: &[],
-            });
-        }
-        // Prepare text (atlas upload + layout)
-        self.viewport.update(
-            &self.queue,
-            Resolution {
-                width: framebuffer_width,
-                height: framebuffer_height,
-            },
-        );
-        let areas_count = areas.len();
-        let prep_res = self.text_renderer.prepare(
-            &self.device,
-            &self.queue,
-            &mut self.font_system,
-            &mut self.text_atlas,
-            &self.viewport,
-            areas,
-            &mut self.swash_cache,
-        );
-        debug!(
-            target: "wgpu_renderer",
-            "glyphon_prepare: areas={areas_count} viewport={framebuffer_width}x{framebuffer_height} result={prep_res:?}"
-        );
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-        debug!(
-            target: "wgpu_renderer",
-            "glyphon_prepare: text_items={} time_ms={elapsed_ms}",
-            self.text_list.len()
-        );
-    }
-
-    fn glyphon_prepare_for(&mut self, items: &[DrawText]) {
-        let framebuffer_width = self.size.width;
-        let framebuffer_height = self.size.height;
-        let scale: f32 = self.window.scale_factor() as f32;
-        let mut buffers: Vec<GlyphonBuffer> = Vec::with_capacity(items.len());
-        for item in items.iter() {
-            let mut buffer = GlyphonBuffer::new(
-                &mut self.font_system,
-                Metrics::new(item.font_size * scale, item.font_size * scale),
-            );
-            let attrs = Attrs::new();
-            buffer.set_text(&mut self.font_system, &item.text, &attrs, Shaping::Advanced);
-            buffers.push(buffer);
-        }
-        let mut areas: Vec<TextArea> = Vec::with_capacity(items.len());
-        for (index, item) in items.iter().enumerate() {
-            let color = GlyphonColor(0xFF00_0000);
-            let bounds = match item.bounds {
-                Some((l, t, r, b)) => TextBounds {
-                    left: (l as f32 * scale).round() as i32,
-                    top: (t as f32 * scale).round() as i32,
-                    right: (r as f32 * scale).round() as i32,
-                    bottom: (b as f32 * scale).round() as i32,
-                },
-                None => TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: framebuffer_width as i32,
-                    bottom: framebuffer_height as i32,
-                },
-            };
-            let buffer_ref = &buffers[index];
-            areas.push(TextArea {
-                buffer: buffer_ref,
-                left: item.x * scale,
-                top: item.y * scale,
-                scale: 1.0,
-                bounds,
-                default_color: color,
-                custom_glyphs: &[],
-            });
-        }
-        self.viewport.update(
-            &self.queue,
-            Resolution {
-                width: framebuffer_width,
-                height: framebuffer_height,
-            },
-        );
-        let areas_len = areas.len();
-        let prep_res = self.text_renderer.prepare(
-            &self.device,
-            &self.queue,
-            &mut self.font_system,
-            &mut self.text_atlas,
-            &self.viewport,
-            areas,
-            &mut self.swash_cache,
-        );
-        debug!(
-            target: "wgpu_renderer",
-            "glyphon_prepare_for: items={} areas={} viewport={}x{} result={:?}",
-            items.len(),
-            areas_len,
-            framebuffer_width,
-            framebuffer_height,
-            prep_res
-        );
-    }
-
     /// Render a frame by clearing and drawing quads from the current display list.
     pub fn render(&mut self) -> Result<(), anyhow::Error> {
         let _span = info_span!("renderer.render").entered();
@@ -1538,7 +1048,7 @@ impl RenderState {
         let mut encoder = self.device.create_command_encoder(&Default::default());
         self.record_draw_passes(&texture_view, &mut encoder)?;
         let cb = encoder.finish();
-        self.submit_with_error_scope([cb])?;
+        submit_with_validation(&self.device, &self.queue, [cb])?;
         self.window.pre_present_notify();
         surface_texture.present();
         Ok(())
@@ -1581,7 +1091,7 @@ impl RenderState {
 
         // Submit the command buffer with error scope to catch WGPU errors
         let command_buffer = encoder.finish();
-        self.submit_with_error_scope([command_buffer])?;
+        submit_with_validation(&self.device, &self.queue, [command_buffer])?;
 
         // Create a new encoder for the texture copy operation
         let mut copy_encoder = self
@@ -1642,7 +1152,7 @@ impl RenderState {
 
         // Submit the copy command buffer with error scope
         let copy_command_buffer = copy_encoder.finish();
-        self.submit_with_error_scope([copy_command_buffer])?;
+        submit_with_validation(&self.device, &self.queue, [copy_command_buffer])?;
 
         // Map and wait for the copy to be available
         let readback = self
@@ -1689,278 +1199,5 @@ impl RenderState {
     }
 }
 
-fn build_pipeline_and_buffers(
-    device: &Device,
-    render_format: TextureFormat,
-) -> (RenderPipeline, Buffer, u32) {
-    let shader = device.create_shader_module(ShaderModuleDescriptor {
-        label: Some("basic-shader"),
-        source: ShaderSource::Wgsl(Cow::Borrowed(SHADER_WGSL)),
-    });
-
-    let vertex_buffers = [VertexBufferLayout {
-        array_stride: std::mem::size_of::<Vertex>() as BufferAddress,
-        step_mode: VertexStepMode::Vertex,
-        attributes: &[
-            // position (vec2<f32>)
-            VertexAttribute {
-                format: VertexFormat::Float32x2,
-                offset: 0,
-                shader_location: 0,
-            },
-            // color (vec4<f32>)
-            VertexAttribute {
-                format: VertexFormat::Float32x4,
-                offset: 8,
-                shader_location: 1,
-            },
-        ],
-    }];
-
-    let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-        label: Some("pipeline-layout"),
-        bind_group_layouts: &[],
-        push_constant_ranges: &[],
-    });
-
-    let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-        label: Some("basic-pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            buffers: &vertex_buffers,
-            compilation_options: Default::default(),
-        },
-        primitive: PrimitiveState {
-            topology: PrimitiveTopology::TriangleList,
-            ..Default::default()
-        },
-        depth_stencil: None,
-        multisample: MultisampleState::default(),
-        fragment: Some(FragmentState {
-            module: &shader,
-            entry_point: Some("fs_main"),
-            targets: &[Some(ColorTargetState {
-                format: render_format,
-                // Premultiplied alpha blending; shader outputs premultiplied color
-                blend: Some(BlendState {
-                    color: BlendComponent {
-                        src_factor: BlendFactor::One,
-                        dst_factor: BlendFactor::OneMinusSrcAlpha,
-                        operation: BlendOperation::Add,
-                    },
-                    alpha: BlendComponent {
-                        src_factor: BlendFactor::One,
-                        dst_factor: BlendFactor::OneMinusSrcAlpha,
-                        operation: BlendOperation::Add,
-                    },
-                }),
-                write_mask: ColorWrites::ALL,
-            })],
-            compilation_options: Default::default(),
-        }),
-        multiview: None,
-        cache: None,
-    });
-
-    let vertices: [Vertex; 3] = [
-        Vertex {
-            position: [-0.5, -0.5],
-            color: [1.0, 0.2, 0.2, 1.0],
-        },
-        Vertex {
-            position: [0.5, -0.5],
-            color: [0.2, 1.0, 0.2, 1.0],
-        },
-        Vertex {
-            position: [0.0, 0.5],
-            color: [0.2, 0.4, 1.0, 1.0],
-        },
-    ];
-    let vertex_bytes = bytemuck::cast_slice(&vertices);
-    let vertex_buffer = device.create_buffer_init(&util::BufferInitDescriptor {
-        label: Some("triangle-vertices"),
-        contents: vertex_bytes,
-        usage: BufferUsages::VERTEX,
-    });
-
-    (pipeline, vertex_buffer, vertices.len() as u32)
-}
-
-fn build_texture_pipeline(
-    device: &Device,
-    render_format: TextureFormat,
-) -> (RenderPipeline, BindGroupLayout, Sampler) {
-    let shader = device.create_shader_module(ShaderModuleDescriptor {
-        label: Some("texture-shader"),
-        source: ShaderSource::Wgsl(Cow::Borrowed(TEX_SHADER_WGSL)),
-    });
-    let bind_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        label: Some("tex-bind-layout"),
-        entries: &[
-            BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Texture {
-                    sample_type: TextureSampleType::Float { filterable: true },
-                    view_dimension: TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 1,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Sampler(SamplerBindingType::Filtering),
-                count: None,
-            },
-            BindGroupLayoutEntry {
-                binding: 2,
-                visibility: ShaderStages::FRAGMENT,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-    let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-        label: Some("tex-pipeline-layout"),
-        bind_group_layouts: &[&bind_layout],
-        push_constant_ranges: &[],
-    });
-    let vbuf = [VertexBufferLayout {
-        array_stride: (std::mem::size_of::<f32>() as BufferAddress) * 4,
-        step_mode: VertexStepMode::Vertex,
-        attributes: &[
-            VertexAttribute {
-                format: VertexFormat::Float32x2,
-                offset: 0,
-                shader_location: 0,
-            },
-            VertexAttribute {
-                format: VertexFormat::Float32x2,
-                offset: 8,
-                shader_location: 1,
-            },
-        ],
-    }];
-    let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-        label: Some("texture-pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            buffers: &vbuf,
-            compilation_options: Default::default(),
-        },
-        primitive: PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: MultisampleState::default(),
-        fragment: Some(FragmentState {
-            module: &shader,
-            entry_point: Some("fs_main"),
-            targets: &[Some(ColorTargetState {
-                format: render_format,
-                blend: Some(BlendState {
-                    color: BlendComponent {
-                        src_factor: BlendFactor::SrcAlpha,
-                        dst_factor: BlendFactor::OneMinusSrcAlpha,
-                        operation: BlendOperation::Add,
-                    },
-                    alpha: BlendComponent {
-                        src_factor: BlendFactor::One,
-                        dst_factor: BlendFactor::OneMinusSrcAlpha,
-                        operation: BlendOperation::Add,
-                    },
-                }),
-                write_mask: ColorWrites::ALL,
-            })],
-            compilation_options: Default::default(),
-        }),
-        multiview: None,
-        cache: None,
-    });
-    let sampler = device.create_sampler(&SamplerDescriptor {
-        label: Some("linear-sampler"),
-        mag_filter: FilterMode::Linear,
-        min_filter: FilterMode::Linear,
-        mipmap_filter: FilterMode::Nearest,
-        address_mode_u: AddressMode::ClampToEdge,
-        address_mode_v: AddressMode::ClampToEdge,
-        address_mode_w: AddressMode::ClampToEdge,
-        ..Default::default()
-    });
-    (pipeline, bind_layout, sampler)
-}
-
-/// Vertex data used by the simple pipeline.
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    color: [f32; 4],
-}
-
 /// Pixel bounds (x, y, width, height)
-type Bounds = (f32, f32, f32, f32);
-
-/// Minimal WGSL shader that converts sRGB vertex colors to linear for correct blending into an sRGB target.
-const SHADER_WGSL: &str = r#"
-struct VertexOut {
-    @builtin(position) pos: vec4<f32>,
-    @location(0) color: vec4<f32>,
-};
-
-@vertex
-fn vs_main(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> VertexOut {
-    var out: VertexOut;
-    out.pos = vec4<f32>(position, 0.0, 1.0);
-    out.color = color;
-    return out;
-}
-
-@fragment
-fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    // Convert sRGB -> linear for correct blending when render target is *Srgb
-    let c = in.color;
-    let rgb = c.xyz;
-    let lo = rgb / 12.92;
-    let hi = pow((rgb + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
-    let t = step(vec3<f32>(0.04045), rgb);
-    let linear_rgb = mix(lo, hi, t);
-    return vec4<f32>(linear_rgb, c.w);
-}
-"#;
-
-/// WGSL for textured quad with external alpha multiplier.
-const TEX_SHADER_WGSL: &str = r#"
-struct VsOut {
-    @builtin(position) pos: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
-
-@group(0) @binding(0) var t_color: texture_2d<f32>;
-@group(0) @binding(1) var t_sampler: sampler;
-struct Params { alpha: f32, _pad0: vec3<f32> };
-@group(0) @binding(2) var<uniform> u_params: Params;
-
-@vertex
-fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>) -> VsOut {
-    var out: VsOut;
-    out.pos = vec4<f32>(pos, 0.0, 1.0);
-    out.uv = uv;
-    return out;
-}
-
-@fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(t_color, t_sampler, in.uv);
-    let a = u_params.alpha;
-    // Preserve per-pixel alpha: scale color by group alpha and scale alpha by group alpha.
-    return vec4<f32>(c.rgb * a, c.a * a);
-}
-"#;
+pub(crate) type Bounds = (f32, f32, f32, f32);
