@@ -1,12 +1,14 @@
-use crate::display_list::{DisplayItem, DisplayList, StackingContextBoundary, batch_display_list};
 use crate::error::submit_with_validation;
 use crate::pipelines::{Vertex, build_pipeline_and_buffers, build_texture_pipeline};
 use crate::text::{batch_layer_texts_with_scissor, batch_texts_with_scissor, map_text_item};
-use ::renderer::renderer::{DrawRect, DrawText};
 use anyhow::Result as AnyResult;
 use anyhow::anyhow;
 use glyphon::{Cache, FontSystem, Resolution, SwashCache, TextAtlas, TextRenderer, Viewport};
 use log::debug;
+use renderer::display_list::{
+    DisplayItem, DisplayList, StackingContextBoundary, batch_display_list,
+};
+use renderer::renderer::{DrawRect, DrawText};
 use std::sync::Arc;
 use tracing::info_span;
 use wgpu::util::DeviceExt;

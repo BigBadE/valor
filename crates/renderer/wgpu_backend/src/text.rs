@@ -1,10 +1,10 @@
-use crate::display_list::{DisplayItem, DisplayList, Scissor, StackingContextBoundary};
-use crate::renderer::DrawText;
 use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Color as GlyphonColor, Metrics, Resolution, Shaping, TextArea,
     TextBounds,
 };
 use log::debug;
+use renderer::display_list::{DisplayItem, DisplayList, Scissor, StackingContextBoundary};
+use renderer::renderer::DrawText;
 
 pub(crate) type TextBatch = (Option<Scissor>, Vec<DrawText>);
 
@@ -233,7 +233,7 @@ fn intersect_scissor(a: Scissor, b: Scissor) -> Scissor {
     (x0, y0, w, h)
 }
 
-use super::state::{Layer, RenderState};
+use crate::state::{Layer, RenderState};
 
 impl RenderState {
     /// Prepare glyphon buffers for the current text list and upload glyphs into the atlas.

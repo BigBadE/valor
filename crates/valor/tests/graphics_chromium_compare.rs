@@ -4,7 +4,6 @@ use headless_chrome::{
     Browser, LaunchOptionsBuilder, Tab, protocol::cdp::Page::CaptureScreenshotFormatOption,
 };
 use log::{debug, error, info, trace};
-use renderer::RenderState;
 use renderer::batch_display_list;
 use renderer::{DisplayItem, DisplayList};
 use std::ffi::OsStr;
@@ -12,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
+use wgpu_backend::RenderState;
 use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
 #[cfg(target_os = "windows")]

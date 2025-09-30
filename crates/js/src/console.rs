@@ -13,30 +13,35 @@ pub struct Console;
 
 impl Console {
     /// Print a generic log line to stdout.
-    pub fn log(message: impl AsRef<str>) {
+    #[inline]
+    pub fn log<M: AsRef<str>>(message: M) {
         info!("[JS]: {}", message.as_ref());
     }
 
     /// Print an informational line to stdout.
-    pub fn info(message: impl AsRef<str>) {
+    #[inline]
+    pub fn info<M: AsRef<str>>(message: M) {
         info!("[JS]: {}", message.as_ref());
     }
 
     /// Print a warning line to stdout.
-    pub fn warn(message: impl AsRef<str>) {
+    #[inline]
+    pub fn warn<M: AsRef<str>>(message: M) {
         warn!("[JS]: {}", message.as_ref());
     }
 
     /// Print an error line to stdout.
-    pub fn error(message: impl AsRef<str>) {
+    #[inline]
+    pub fn error<M: AsRef<str>>(message: M) {
         error!("[JS]: {}", message.as_ref());
     }
 
     /// Print an exception with optional stack trace to stdout.
-    pub fn exception(message: impl AsRef<str>, stack: Option<&str>) {
+    #[inline]
+    pub fn exception<M: AsRef<str>>(message: M, stack: Option<&str>) {
         match stack {
-            Some(s) if !s.is_empty() => {
-                error!("[JS]: {}\n{}", message.as_ref(), s);
+            Some(stack_trace) if !stack_trace.is_empty() => {
+                error!("[JS]: {}\n{}", message.as_ref(), stack_trace);
             }
             _ => {
                 error!("[JS]: {}", message.as_ref());
@@ -45,10 +50,11 @@ impl Console {
     }
 }
 
-/// A HostLogger implementation that routes to the Console helpers.
+/// A `HostLogger` implementation that routes to the `Console` helpers.
 pub struct ConsoleLogger;
 
 impl HostLogger for ConsoleLogger {
+    #[inline]
     fn log(&self, level: LogLevel, message: &str) {
         match level {
             LogLevel::Trace | LogLevel::Debug | LogLevel::Info => Console::info(message),
@@ -60,11 +66,12 @@ impl HostLogger for ConsoleLogger {
 
 /// Return a small JavaScript snippet that defines a console object which forwards
 /// calls to the host via `__valor_host_post`. The message protocol is:
-///   console|<level>|<joined-args>
-/// where <level> is one of log, info, warn, error and <joined-args> is a space-
-/// joined String() representation of the arguments.
-pub fn console_shim_js() -> &'static str {
-    r#"
+///   `console|<level>|<joined-args>`
+/// where `<level>` is one of log, info, warn, error and `<joined-args>` is a space-
+/// joined `String()` representation of the arguments.
+#[inline]
+pub const fn console_shim_js() -> &'static str {
+    "
     (function(){
       if (typeof globalThis.console === 'undefined') {
         globalThis.console = {};
@@ -89,5 +96,5 @@ pub fn console_shim_js() -> &'static str {
       define('warn');
       define('error');
     })();
-    "#
+    "
 }

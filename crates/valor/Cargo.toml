@@ -2,6 +2,9 @@
 name = "valor"
 edition.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio.workspace = true
 winit.workspace = true
@@ -14,6 +17,7 @@ anyhow.workspace = true
 
 page_handler.workspace = true
 renderer.workspace = true
+wgpu_backend.workspace = true
 js.workspace = true
 css_core.workspace = true
 css.workspace = true
@@ -30,7 +34,7 @@ image.workspace = true
 
 [dev-dependencies]
 js.workspace = true
-zstd = "0.12"
+zstd.workspace = true
 
 [features]
 # Default to V8 so existing behavior remains unchanged

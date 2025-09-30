@@ -3,14 +3,16 @@ name = "wgpu_backend"
 edition.workspace = true
 version.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
-renderer = { path = "../renderer" }
+renderer.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 anyhow.workspace = true
 bytemuck.workspace = true
 glyphon.workspace = true
 tracing.workspace = true
-pollster = "0.3"
+pollster.workspace = true
 log.workspace = true
-wgpu_renderer = { path = "../wgpu_renderer" }

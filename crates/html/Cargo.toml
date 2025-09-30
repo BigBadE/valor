@@ -2,22 +2,25 @@
 name = "html"
 edition.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 html5ever.workspace = true
 js.workspace = true
 
- tokio.workspace = true
- tokio-stream.workspace = true
- 
- bytes.workspace = true
- lasso.workspace = true
- indextree.workspace = true
- smallvec.workspace = true
- 
- log.workspace = true
- anyhow.workspace = true
- serde.workspace = true
- serde_json.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+
+bytes.workspace = true
+lasso.workspace = true
+indextree.workspace = true
+smallvec.workspace = true
+
+log.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 url.workspace = true
- 
- [features]
+
+[features]

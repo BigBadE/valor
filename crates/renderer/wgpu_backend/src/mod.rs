@@ -1,12 +1,12 @@
-//! WGPU backend implementation for the renderer crate.
+//! WGPU backend implementation module.
 //! This module contains all WGPU-specific rendering code.
 
-pub mod error;
-pub mod offscreen;
-pub mod pipelines;
+mod error;
+mod offscreen;
+mod pipelines;
 pub mod state;
-pub(crate) mod text;
-pub mod texture_pool;
+mod text;
+mod texture_pool;
 
 pub use error::{submit_with_validation, with_validation_scope};
 pub use offscreen::render_display_list_to_rgba;

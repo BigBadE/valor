@@ -3,14 +3,11 @@ name = "renderer"
 edition.workspace = true
 version.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow.workspace = true
 js.workspace = true
 indextree.workspace = true
 log.workspace = true
-wgpu.workspace = true
-winit.workspace = true
-bytemuck.workspace = true
-glyphon.workspace = true
-tracing.workspace = true
-pollster = "0.3"

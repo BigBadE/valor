@@ -5,6 +5,9 @@
 //! Valor to install host-provided namespaces (for example, `console`) into
 //! any JavaScript engine adapter without depending on engine-specific APIs.
 
+#![allow(clippy::cast_sign_loss)]
+
+use crate::{DOMUpdate, NodeKey};
 use anyhow::Result;
 // serde_json used via fully qualified calls (serde_json::json)
 use std::collections::{BTreeMap, HashMap};
@@ -12,6 +15,8 @@ use std::env;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tokio::sync::mpsc::UnboundedSender;
+use url::Url;
 mod values;
 pub use values::{JSError, JSValue, LogLevel};
 mod logger;
@@ -106,6 +111,7 @@ impl HostNamespace {
 }
 
 impl Default for HostNamespace {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
@@ -123,7 +129,7 @@ pub struct HostBindings {
     pub namespaces: BTreeMap<String, HostNamespace>,
 }
 
-/// Commands emitted by privileged chrome pages (valor://chrome) to control the host app.
+/// Commands emitted by privileged chrome pages (`<valor://chrome>`) to control the host app.
 #[derive(Clone, Debug)]
 pub enum ChromeHostCommand {
     /// Navigate the primary content page to the given URL string.
@@ -142,20 +148,24 @@ pub enum ChromeHostCommand {
 
 impl HostBindings {
     /// Create empty bindings.
-    pub fn new() -> Self {
+    #[inline]
+    pub const fn new() -> Self {
         Self {
             namespaces: BTreeMap::new(),
         }
     }
 
     /// Add or replace a namespace.
+    #[inline]
+    #[must_use]
     pub fn with_namespace(mut self, name: &str, namespace: HostNamespace) -> Self {
-        self.namespaces.insert(name.to_string(), namespace);
+        self.namespaces.insert(name.to_owned(), namespace);
         self
     }
 }
 
 impl Default for HostBindings {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
@@ -189,6 +199,7 @@ fn make_log_fn(level: LogLevel) -> Arc<HostFnSync> {
 }
 
 /// Build the `console` namespace with standard logging methods.
+#[inline]
 pub fn build_console_namespace() -> HostNamespace {
     let methods: [(&str, LogLevel); 4] = [
         ("log", LogLevel::Info),
@@ -199,15 +210,22 @@ pub fn build_console_namespace() -> HostNamespace {
 
     methods
         .iter()
-        .fold(HostNamespace::new(), |ns, (name, level)| {
-            ns.with_sync_fn(name, make_log_fn(*level))
+        .fold(HostNamespace::new(), |namespace, (name, level)| {
+            let console_fn = Arc::new(
+                move |context: &HostContext, arguments: Vec<JSValue>| -> Result<JSValue, JSError> {
+                    let message = stringify_arguments(arguments);
+                    context.logger.log(*level, &message);
+                    Ok(JSValue::Undefined)
+                },
+            );
+            namespace.with_sync_fn(name, console_fn)
         })
 }
 
 /// Build the `document` namespace with minimal DOM manipulation functions.
 /// Functions:
-/// - createElement(tag: string) -> string (opaque decimal NodeKey id)
-/// - createTextNode(text: string) -> string (opaque decimal NodeKey id)
+/// - createElement(tag: string) -> string (opaque decimal `NodeKey` id)
+/// - createTextNode(text: string) -> string (opaque decimal `NodeKey` id)
 /// - appendChild(parentKey: string, childKey: string, pos?: number) -> undefined
 /// - setAttribute(nodeKey: string, name: string, value: string) -> undefined
 /// - removeNode(nodeKey: string) -> undefined
@@ -216,14 +234,14 @@ pub fn build_document_namespace() -> HostNamespace {
     // Helpers
     let parse_string = |value: &JSValue, name: &str| -> Result<String, JSError> {
         match value {
-            JSValue::String(s) => Ok(s.clone()),
+            JSValue::String(string_value) => Ok(string_value.clone()),
             _ => Err(JSError::TypeError(format!("{name} must be a string"))),
         }
     };
     let parse_key = |value: &JSValue, name: &str| -> Result<NodeKey, JSError> {
         match value {
-            JSValue::String(s) => {
-                let parsed = s.parse::<u64>().map_err(|_| {
+            JSValue::String(string_value) => {
+                let parsed = string_value.parse::<u64>().map_err(|_| {
                     JSError::TypeError(format!("{name} must be a decimal string (NodeKey)"))
                 })?;
                 Ok(NodeKey(parsed))
@@ -235,7 +253,7 @@ pub fn build_document_namespace() -> HostNamespace {
     };
     let parse_usize = |value: &JSValue| -> Option<usize> {
         match value {
-            JSValue::Number(n) if *n >= 0.0 => Some(*n as usize),
+            JSValue::Number(number) if *number >= 0.0_f64 => Some(*number as usize),
             _ => None,
         }
     };
@@ -245,7 +263,7 @@ pub fn build_document_namespace() -> HostNamespace {
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
             if args.is_empty() {
                 return Err(JSError::TypeError(String::from(
-                    "createElement(tag) requires 1 argument",
+                    "createElement(tag) requires exactly 1 argument",
                 )));
             }
             let tag = parse_string(&args[0], "tag")?;
@@ -273,10 +291,9 @@ pub fn build_document_namespace() -> HostNamespace {
                 tag: tag.clone(),
                 pos: usize::MAX,
             };
-            context
-                .dom_sender
-                .try_send(vec![update])
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
+            context.dom_sender.try_send(vec![update]).map_err(|error| {
+                JSError::InternalError(format!("failed to send DOM update: {error}"))
+            })?;
             // Synchronously update DomIndex for immediate queries
             if let Ok(mut idx) = context.dom_index.lock() {
                 let entry = idx.children_by_parent.entry(NodeKey::ROOT).or_default();
@@ -284,9 +301,9 @@ pub fn build_document_namespace() -> HostNamespace {
                     entry.push(node_key);
                 }
                 idx.parent_by_child.insert(node_key, NodeKey::ROOT);
-                let lc = tag.to_ascii_lowercase();
-                idx.tag_by_key.insert(node_key, lc.clone());
-                let list = idx.tag_index.entry(lc).or_default();
+                let lowercase_tag = tag.to_ascii_lowercase();
+                idx.tag_by_key.insert(node_key, lowercase_tag.clone());
+                let list = idx.tag_index.entry(lowercase_tag).or_default();
                 if !list.contains(&node_key) {
                     list.push(node_key);
                 }
@@ -304,10 +321,9 @@ pub fn build_document_namespace() -> HostNamespace {
                 )));
             }
             let css_text = match &args[0] {
-                JSValue::String(s) => s.clone(),
+                JSValue::String(string_value) => string_value.clone(),
                 _ => return Err(JSError::TypeError(String::from("cssText must be string"))),
             };
-            use crate::{DOMUpdate as DU, NodeKey};
             // Resolve <head> key if present, otherwise attach to ROOT
             let head_key_opt: Option<NodeKey> = {
                 let guard = context
@@ -316,9 +332,9 @@ pub fn build_document_namespace() -> HostNamespace {
                     .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
                 // Prefer first child of <html> with tag 'head'; else try any 'head' in index
                 let mut found: Option<NodeKey> = None;
-                for (k, tag) in guard.tag_by_key.iter() {
+                for (key, tag) in &guard.tag_by_key {
                     if tag.eq_ignore_ascii_case("head") {
-                        found = Some(*k);
+                        found = Some(*key);
                         break;
                     }
                 }
@@ -328,7 +344,10 @@ pub fn build_document_namespace() -> HostNamespace {
 
             // Mint element and text node keys
             let style_key = {
-                let local_id = context.js_local_id_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                let local_id = context
+                    .js_local_id_counter
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1);
                 let mut mgr = context
                     .js_node_keys
                     .lock()
@@ -346,7 +365,10 @@ pub fn build_document_namespace() -> HostNamespace {
                 );
             }
             let text_key = {
-                let local_id = context.js_local_id_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                let local_id = context
+                    .js_local_id_counter
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1);
                 let mut mgr = context
                     .js_node_keys
                     .lock()
@@ -375,29 +397,28 @@ pub fn build_document_namespace() -> HostNamespace {
             }
 
             // Emit updates: InsertElement(style under parent) + SetAttr(data-valor-test-reset) + InsertText(text under style)
-            let updates: Vec<DU> = vec![
-                DU::InsertElement {
+            let updates: Vec<DOMUpdate> = vec![
+                DOMUpdate::InsertElement {
                     parent: parent_key,
                     node: style_key,
                     tag: String::from("style"),
                     pos: usize::MAX,
                 },
-                DU::SetAttr {
+                DOMUpdate::SetAttr {
                     node: style_key,
                     name: String::from("data-valor-test-reset"),
                     value: String::from("1"),
                 },
-                DU::InsertText {
+                DOMUpdate::InsertText {
                     parent: style_key,
                     node: text_key,
                     text: css_text,
                     pos: 0,
                 },
             ];
-            context
-                .dom_sender
-                .try_send(updates)
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
+            context.dom_sender.try_send(updates).map_err(|error| {
+                JSError::InternalError(format!("failed to send DOM update: {error}"))
+            })?;
             Ok(JSValue::Undefined)
         },
     );
@@ -413,8 +434,8 @@ pub fn build_document_namespace() -> HostNamespace {
             let text = parse_string(&args[0], "text")?;
             let local_id = context
                 .js_local_id_counter
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                + 1;
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1);
             let node_key = {
                 let mut mgr = context
                     .js_node_keys
@@ -436,10 +457,9 @@ pub fn build_document_namespace() -> HostNamespace {
                 text: text.clone(),
                 pos: usize::MAX,
             };
-            context
-                .dom_sender
-                .try_send(vec![update])
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
+            context.dom_sender.try_send(vec![update]).map_err(|error| {
+                JSError::InternalError(format!("failed to send DOM update: {error}"))
+            })?;
             // Synchronously update DomIndex for immediate queries
             if let Ok(mut idx) = context.dom_index.lock() {
                 let entry = idx.children_by_parent.entry(NodeKey::ROOT).or_default();
@@ -447,7 +467,7 @@ pub fn build_document_namespace() -> HostNamespace {
                     entry.push(node_key);
                 }
                 idx.parent_by_child.insert(node_key, NodeKey::ROOT);
-                idx.text_by_key.insert(node_key, text.clone());
+                idx.text_by_key.insert(node_key, text);
             }
             Ok(JSValue::String(node_key.0.to_string()))
         },
@@ -470,30 +490,30 @@ pub fn build_document_namespace() -> HostNamespace {
                 .lock()
                 .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
             if let Some(info) = meta.get(&child_key) {
-                use crate::DOMUpdate as DU;
+                use crate::DOMUpdate;
                 match &info.kind {
                     CreatedNodeKind::Element { tag } => {
-                        let update = DU::InsertElement {
+                        let update = DOMUpdate::InsertElement {
                             parent: parent_key,
                             node: child_key,
                             tag: tag.clone(),
                             pos: position,
                         };
                         drop(meta);
-                        context.dom_sender.try_send(vec![update]).map_err(|e| {
-                            JSError::InternalError(format!("failed to send DOM update: {e}"))
+                        context.dom_sender.try_send(vec![update]).map_err(|error| {
+                            JSError::InternalError(format!("failed to send DOM update: {error}"))
                         })?;
                     }
                     CreatedNodeKind::Text { text } => {
-                        let update = DU::InsertText {
+                        let update = DOMUpdate::InsertText {
                             parent: parent_key,
                             node: child_key,
                             text: text.clone(),
                             pos: position,
                         };
                         drop(meta);
-                        context.dom_sender.try_send(vec![update]).map_err(|e| {
-                            JSError::InternalError(format!("failed to send DOM update: {e}"))
+                        context.dom_sender.try_send(vec![update]).map_err(|error| {
+                            JSError::InternalError(format!("failed to send DOM update: {error}"))
                         })?;
                     }
                 }
@@ -526,10 +546,9 @@ pub fn build_document_namespace() -> HostNamespace {
                 name: name.clone(),
                 value: value.clone(),
             };
-            context
-                .dom_sender
-                .try_send(vec![update])
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
+            context.dom_sender.try_send(vec![update]).map_err(|error| {
+                JSError::InternalError(format!("failed to send DOM update: {error}"))
+            })?;
             // Synchronously update DomIndex for immediate queries (id/class)
             if let Ok(mut idx) = context.dom_index.lock() {
                 let name_lc = name.to_ascii_lowercase();
@@ -549,10 +568,9 @@ pub fn build_document_namespace() -> HostNamespace {
             }
             let node_key = parse_key(&args[0], "nodeKey")?;
             let update = DOMUpdate::RemoveNode { node: node_key };
-            context
-                .dom_sender
-                .try_send(vec![update])
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
+            context.dom_sender.try_send(vec![update]).map_err(|error| {
+                JSError::InternalError(format!("failed to send DOM update: {error}"))
+            })?;
             // Synchronously update DomIndex for immediate queries
             if let Ok(mut idx) = context.dom_index.lock() {
                 idx.remove_node_and_descendants(node_key);
@@ -574,20 +592,23 @@ pub fn build_document_namespace() -> HostNamespace {
                 .dom_index
                 .lock()
                 .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
-            if let Some(key) = guard.get_element_by_id(&id) {
-                // Test printing: log the resolved NodeKey for this id
-                context.logger.log(
-                    LogLevel::Info,
-                    &format!("JS: getElementById('{id}') -> NodeKey={}", key.0),
-                );
-                Ok(JSValue::String(key.0.to_string()))
-            } else {
-                context.logger.log(
-                    LogLevel::Info,
-                    &format!("JS: getElementById('{id}') -> null"),
-                );
-                Ok(JSValue::Null)
-            }
+            guard.get_element_by_id(&id).map_or_else(
+                || {
+                    context.logger.log(
+                        LogLevel::Info,
+                        &format!("JS: getElementById('{id}') -> null"),
+                    );
+                    Ok(JSValue::Null)
+                },
+                |key| {
+                    // Test printing: log the resolved NodeKey for this id
+                    context.logger.log(
+                        LogLevel::Info,
+                        &format!("JS: getElementById('{id}') -> NodeKey={}", key.0),
+                    );
+                    Ok(JSValue::String(key.0.to_string()))
+                },
+            )
         },
     );
 
@@ -624,8 +645,8 @@ pub fn build_document_namespace() -> HostNamespace {
             // Mint a fresh text node key and remember it
             let local_id = context
                 .js_local_id_counter
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                + 1;
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1);
             let text_key = {
                 let mut mgr = context
                     .js_node_keys
@@ -661,7 +682,7 @@ pub fn build_document_namespace() -> HostNamespace {
             updates.push(DOMUpdate::InsertText {
                 parent: element_key,
                 node: text_key,
-                text: text.clone(),
+                text,
                 pos: 0,
             });
             // Test printing: log what we're about to send to the DOM
@@ -672,10 +693,9 @@ pub fn build_document_namespace() -> HostNamespace {
                 text_key.0, element_key.0
             ),
         );
-            context
-                .dom_sender
-                .try_send(updates)
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
+            context.dom_sender.try_send(updates).map_err(|error| {
+                JSError::InternalError(format!("failed to send DOM update: {error}"))
+            })?;
             Ok(JSValue::Undefined)
         },
     );
@@ -720,9 +740,13 @@ pub fn build_document_namespace() -> HostNamespace {
                     .classes_by_key
                     .get(&node_key)
                     .map(|set| {
-                        let mut v: Vec<&String> = set.iter().collect();
-                        v.sort();
-                        v.into_iter().cloned().collect::<Vec<String>>().join(" ")
+                        let mut sorted_classes: Vec<&String> = set.iter().collect();
+                        sorted_classes.sort();
+                        sorted_classes
+                            .into_iter()
+                            .cloned()
+                            .collect::<Vec<String>>()
+                            .join(" ")
                     })
                     .unwrap_or_default()
             } else if name_lc.starts_with("data-") {
@@ -750,10 +774,9 @@ pub fn build_document_namespace() -> HostNamespace {
                 name: name.clone(),
                 value: String::new(),
             };
-            context
-                .dom_sender
-                .try_send(vec![update])
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
+            context.dom_sender.try_send(vec![update]).map_err(|error| {
+                JSError::InternalError(format!("failed to send DOM update: {error}"))
+            })?;
             // Synchronously update DomIndex for immediate queries
             if let Ok(mut idx) = context.dom_index.lock() {
                 let name_lc = name.to_ascii_lowercase();
@@ -777,12 +800,12 @@ pub fn build_document_namespace() -> HostNamespace {
                 .lock()
                 .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
             let nodes = guard.get_elements_by_class_name(&name);
-            let s = nodes
+            let result_string = nodes
                 .into_iter()
-                .map(|k| k.0.to_string())
+                .map(|key| key.0.to_string())
                 .collect::<Vec<_>>()
                 .join(" ");
-            Ok(JSValue::String(s))
+            Ok(JSValue::String(result_string))
         },
     );
 
@@ -800,12 +823,12 @@ pub fn build_document_namespace() -> HostNamespace {
                 .lock()
                 .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
             let nodes = guard.get_elements_by_tag_name(&name);
-            let s = nodes
+            let result_string = nodes
                 .into_iter()
-                .map(|k| k.0.to_string())
+                .map(|key| key.0.to_string())
                 .collect::<Vec<_>>()
                 .join(" ");
-            Ok(JSValue::String(s))
+            Ok(JSValue::String(result_string))
         },
     );
 
@@ -822,25 +845,30 @@ pub fn build_document_namespace() -> HostNamespace {
                 .dom_index
                 .lock()
                 .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
-            let out: Option<String> = if let Some(id) = selector.strip_prefix('#') {
-                guard.get_element_by_id(id).map(|k| k.0.to_string())
-            } else if let Some(class) = selector.strip_prefix('.') {
-                guard
-                    .get_elements_by_class_name(class)
-                    .into_iter()
-                    .next()
-                    .map(|k| k.0.to_string())
-            } else {
-                guard
-                    .get_elements_by_tag_name(&selector)
-                    .into_iter()
-                    .next()
-                    .map(|k| k.0.to_string())
-            };
-            match out {
-                Some(s) => Ok(JSValue::String(s)),
-                None => Ok(JSValue::Null),
-            }
+            let out: Option<String> = selector.strip_prefix('#').map_or_else(
+                || {
+                    selector.strip_prefix('.').map_or_else(
+                        || {
+                            guard
+                                .get_elements_by_tag_name(&selector)
+                                .into_iter()
+                                .next()
+                                .map(|key| key.0.to_string())
+                        },
+                        |class| {
+                            guard
+                                .get_elements_by_class_name(class)
+                                .into_iter()
+                                .next()
+                                .map(|key| key.0.to_string())
+                        },
+                    )
+                },
+                |id| guard.get_element_by_id(id).map(|key| key.0.to_string()),
+            );
+            out.map_or(Ok(JSValue::Null), |result_string| {
+                Ok(JSValue::String(result_string))
+            })
         },
     );
 
@@ -857,19 +885,21 @@ pub fn build_document_namespace() -> HostNamespace {
                 .dom_index
                 .lock()
                 .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
-            let nodes = if let Some(id) = selector.strip_prefix('#') {
-                guard.get_element_by_id(id).into_iter().collect::<Vec<_>>()
-            } else if let Some(class) = selector.strip_prefix('.') {
-                guard.get_elements_by_class_name(class)
-            } else {
-                guard.get_elements_by_tag_name(&selector)
-            };
-            let s = nodes
+            let nodes = selector.strip_prefix('#').map_or_else(
+                || {
+                    selector.strip_prefix('.').map_or_else(
+                        || guard.get_elements_by_tag_name(&selector),
+                        |class| guard.get_elements_by_class_name(class),
+                    )
+                },
+                |id| guard.get_element_by_id(id).into_iter().collect::<Vec<_>>(),
+            );
+            let result_string = nodes
                 .into_iter()
-                .map(|k| k.0.to_string())
+                .map(|key| key.0.to_string())
                 .collect::<Vec<_>>()
                 .join(" ");
-            Ok(JSValue::String(s))
+            Ok(JSValue::String(result_string))
         },
     );
 
@@ -890,9 +920,9 @@ pub fn build_document_namespace() -> HostNamespace {
             let index_opt = guard
                 .children_by_parent
                 .get(&parent_key)
-                .and_then(|v| v.iter().position(|k| *k == child_key));
-            let n = index_opt.map(|i| i as f64).unwrap_or(-1.0);
-            Ok(JSValue::Number(n))
+                .and_then(|children| children.iter().position(|key| *key == child_key));
+            let index_number = index_opt.map_or(-1.0_f64, |index| index as f64);
+            Ok(JSValue::Number(index_number))
         },
     );
 
@@ -909,16 +939,16 @@ pub fn build_document_namespace() -> HostNamespace {
                 .dom_index
                 .lock()
                 .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
-            let s = guard
+            let result_string = guard
                 .children_by_parent
                 .get(&parent_key)
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
-                .map(|k| k.0.to_string())
+                .map(|key| key.0.to_string())
                 .collect::<Vec<_>>()
                 .join(" ");
-            Ok(JSValue::String(s))
+            Ok(JSValue::String(result_string))
         },
     );
 
@@ -953,11 +983,10 @@ pub fn build_document_namespace() -> HostNamespace {
                 .dom_index
                 .lock()
                 .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?;
-            if let Some(parent) = guard.parent_by_child.get(&node_key).copied() {
-                Ok(JSValue::String(parent.0.to_string()))
-            } else {
-                Ok(JSValue::String(String::new()))
-            }
+            guard.parent_by_child.get(&node_key).copied().map_or_else(
+                || Ok(JSValue::String(String::new())),
+                |parent| Ok(JSValue::String(parent.0.to_string())),
+            )
         },
     );
 
@@ -990,7 +1019,7 @@ pub fn build_document_namespace() -> HostNamespace {
             let parent_key = parse_key(&args[0], "nodeKey")?;
             let html = parse_string(&args[1], "html")?;
             // Collect existing children for removals
-            let existing_children: Vec<crate::NodeKey> = {
+            let existing_children: Vec<NodeKey> = {
                 let guard = context
                     .dom_index
                     .lock()
@@ -1001,7 +1030,7 @@ pub fn build_document_namespace() -> HostNamespace {
                     .cloned()
                     .unwrap_or_default()
             };
-            let mut updates: Vec<crate::DOMUpdate> = Vec::new();
+            let mut updates: Vec<DOMUpdate> = Vec::new();
             // Mirror removals into DomIndex eagerly
             if let Ok(mut idx) = context.dom_index.lock() {
                 for child in &existing_children {
@@ -1009,16 +1038,18 @@ pub fn build_document_namespace() -> HostNamespace {
                 }
                 apply_inner_html(context, &mut idx, parent_key, &html, &mut updates)?;
             }
-            let mut final_updates: Vec<crate::DOMUpdate> =
+            let mut final_updates: Vec<DOMUpdate> =
                 Vec::with_capacity(existing_children.len() + updates.len());
             for child in existing_children {
-                final_updates.push(crate::DOMUpdate::RemoveNode { node: child });
+                final_updates.push(DOMUpdate::RemoveNode { node: child });
             }
             final_updates.extend(updates);
             context
                 .dom_sender
                 .try_send(final_updates)
-                .map_err(|e| JSError::InternalError(format!("failed to send DOM update: {e}")))?;
+                .map_err(|error| {
+                    JSError::InternalError(format!("failed to send DOM update: {error}"))
+                })?;
             Ok(JSValue::Undefined)
         },
     );
@@ -1029,49 +1060,44 @@ pub fn build_document_namespace() -> HostNamespace {
     let net_request_start = Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
             // Args: method, url, headersJson (optional), bodyBase64 (optional)
-            let method = if !args.is_empty() {
+            let method = if args.is_empty() {
+                String::from("GET")
+            } else {
                 match &args[0] {
-                    JSValue::String(s) => s.clone(),
+                    JSValue::String(string_value) => string_value.clone(),
                     _ => String::from("GET"),
                 }
-            } else {
-                String::from("GET")
             };
             if args.len() < 2 {
                 return Err(JSError::TypeError(String::from("net_requestStart(method, url, [headersJson], [bodyBase64]) requires at least 2 arguments")));
             }
             let url_str = match &args[1] {
-                JSValue::String(s) => s.clone(),
+                JSValue::String(string_value) => string_value.clone(),
                 _ => return Err(JSError::TypeError(String::from("url must be a string"))),
             };
             let headers_json = match args.get(2) {
-                Some(JSValue::String(s)) => Some(s.clone()),
+                Some(JSValue::String(string_value)) => Some(string_value.clone()),
                 _ => None,
             };
             let body_b64 = match args.get(3) {
-                Some(JSValue::String(s)) => Some(s.clone()),
+                Some(JSValue::String(string_value)) => Some(string_value.clone()),
                 _ => None,
             };
 
             // Same-origin allow-list check: file:// and http://localhost (and 127.0.0.1)
             let relaxed = env::var("VALOR_NET_RELAXED")
                 .ok()
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
-            let parsed = url::Url::parse(&url_str)
+                .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+            let parsed = Url::parse(&url_str)
                 .map_err(|_| JSError::TypeError(format!("invalid URL: {url_str}")))?;
             let allowed = if relaxed {
                 true
             } else {
                 match parsed.scheme() {
                     "file" => true,
-                    "http" => {
-                        if let Some(host) = parsed.host_str() {
-                            host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1"
-                        } else {
-                            false
-                        }
-                    }
+                    "http" => parsed.host_str().is_some_and(|host| {
+                        host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1"
+                    }),
                     _ => false,
                 }
             };
@@ -1087,11 +1113,11 @@ pub fn build_document_namespace() -> HostNamespace {
                 id
             };
 
-            let reg_arc = context.fetch_registry.clone();
+            let reg_arc = Arc::clone(&context.fetch_registry);
             let method_upper = method.to_ascii_uppercase();
-            let url_clone = url_str.clone();
-            let headers_json_clone = headers_json.clone();
-            let body_b64_clone = body_b64.clone();
+            let url_clone = url_str;
+            let headers_json_clone = headers_json;
+            let body_b64_clone = body_b64;
             // Precompute flags and values to avoid borrowing `context` inside async
             let chrome_restricted = context.page_origin.starts_with("valor://chrome")
                 && (parsed.scheme() == "http" || parsed.scheme() == "https");
@@ -1166,7 +1192,7 @@ pub fn build_document_namespace() -> HostNamespace {
                 )));
             }
             let id: u64 = match &args[0] {
-                JSValue::String(s) => s
+                JSValue::String(string_value) => string_value
                     .parse::<u64>()
                     .map_err(|_| JSError::TypeError(String::from("invalid id")))?,
                 _ => return Err(JSError::TypeError(String::from("id must be string"))),
@@ -1206,11 +1232,11 @@ pub fn build_document_namespace() -> HostNamespace {
                 )));
             }
             let kind = match &args[0] {
-                JSValue::String(s) => s.as_str(),
+                JSValue::String(string_value) => string_value.as_str(),
                 _ => return Err(JSError::TypeError(String::from("kind must be string"))),
             };
             let key = match &args[1] {
-                JSValue::String(s) => s.clone(),
+                JSValue::String(string_value) => string_value.clone(),
                 _ => return Err(JSError::TypeError(String::from("key must be string"))),
             };
             let origin = context.page_origin.clone();
@@ -1220,14 +1246,14 @@ pub fn build_document_namespace() -> HostNamespace {
                     .lock()
                     .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?
                     .get_bucket(&origin)
-                    .and_then(|b| b.get(&key).cloned())
+                    .and_then(|bucket| bucket.get(&key).cloned())
                     .unwrap_or_default(),
                 "session" => context
                     .storage_session
                     .lock()
                     .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?
                     .get_bucket(&origin)
-                    .and_then(|b| b.get(&key).cloned())
+                    .and_then(|bucket| bucket.get(&key).cloned())
                     .unwrap_or_default(),
                 _ => String::new(),
             };
@@ -1242,11 +1268,11 @@ pub fn build_document_namespace() -> HostNamespace {
                 )));
             }
             let kind = match &args[0] {
-                JSValue::String(s) => s.as_str(),
+                JSValue::String(string_value) => string_value.as_str(),
                 _ => return Err(JSError::TypeError(String::from("kind must be string"))),
             };
             let key = match &args[1] {
-                JSValue::String(s) => s.clone(),
+                JSValue::String(string_value) => string_value.clone(),
                 _ => return Err(JSError::TypeError(String::from("key must be string"))),
             };
             let origin = context.page_origin.clone();
@@ -1256,15 +1282,13 @@ pub fn build_document_namespace() -> HostNamespace {
                     .lock()
                     .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?
                     .get_bucket(&origin)
-                    .map(|b| b.contains_key(&key))
-                    .unwrap_or(false),
+                    .is_some_and(|bucket| bucket.contains_key(&key)),
                 "session" => context
                     .storage_session
                     .lock()
                     .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?
                     .get_bucket(&origin)
-                    .map(|b| b.contains_key(&key))
-                    .unwrap_or(false),
+                    .is_some_and(|bucket| bucket.contains_key(&key)),
                 _ => false,
             };
             Ok(JSValue::Boolean(exists))
@@ -1278,15 +1302,15 @@ pub fn build_document_namespace() -> HostNamespace {
                 )));
             }
             let kind = match &args[0] {
-                JSValue::String(s) => s.as_str(),
+                JSValue::String(string_value) => string_value.as_str(),
                 _ => return Err(JSError::TypeError(String::from("kind must be string"))),
             };
             let key = match &args[1] {
-                JSValue::String(s) => s.clone(),
+                JSValue::String(string_value) => string_value.clone(),
                 _ => return Err(JSError::TypeError(String::from("key must be string"))),
             };
             let value = match &args[2] {
-                JSValue::String(s) => s.clone(),
+                JSValue::String(string_value) => string_value.clone(),
                 _ => return Err(JSError::TypeError(String::from("value must be string"))),
             };
             let origin = context.page_origin.clone();
@@ -1318,11 +1342,11 @@ pub fn build_document_namespace() -> HostNamespace {
                 )));
             }
             let kind = match &args[0] {
-                JSValue::String(s) => s.as_str(),
+                JSValue::String(string_value) => string_value.as_str(),
                 _ => return Err(JSError::TypeError(String::from("kind must be string"))),
             };
             let key = match &args[1] {
-                JSValue::String(s) => s.clone(),
+                JSValue::String(string_value) => string_value.clone(),
                 _ => return Err(JSError::TypeError(String::from("key must be string"))),
             };
             let origin = context.page_origin.clone();
@@ -1354,7 +1378,7 @@ pub fn build_document_namespace() -> HostNamespace {
                 )));
             }
             let kind = match &args[0] {
-                JSValue::String(s) => s.as_str(),
+                JSValue::String(string_value) => string_value.as_str(),
                 _ => return Err(JSError::TypeError(String::from("kind must be string"))),
             };
             let origin = context.page_origin.clone();
@@ -1386,7 +1410,7 @@ pub fn build_document_namespace() -> HostNamespace {
                 )));
             }
             let kind = match &args[0] {
-                JSValue::String(s) => s.as_str(),
+                JSValue::String(string_value) => string_value.as_str(),
                 _ => return Err(JSError::TypeError(String::from("kind must be string"))),
             };
             let origin = context.page_origin.clone();
@@ -1396,14 +1420,14 @@ pub fn build_document_namespace() -> HostNamespace {
                     .lock()
                     .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?
                     .get_bucket(&origin)
-                    .map(|b| b.keys().cloned().collect())
+                    .map(|bucket| bucket.keys().cloned().collect())
                     .unwrap_or_default(),
                 "session" => context
                     .storage_session
                     .lock()
                     .map_err(|_| JSError::InternalError(String::from("mutex poisoned")))?
                     .get_bucket(&origin)
-                    .map(|b| b.keys().cloned().collect())
+                    .map(|bucket| bucket.keys().cloned().collect())
                     .unwrap_or_default(),
                 _ => Vec::new(),
             };
@@ -1446,6 +1470,7 @@ pub fn build_document_namespace() -> HostNamespace {
 /// Build the default set of host bindings to install into a JS engine.
 /// Currently includes:
 /// - `console` namespace with logging methods.
+#[inline]
 pub fn build_default_bindings() -> HostBindings {
     HostBindings::new()
         .with_namespace("console", build_console_namespace())
@@ -1453,84 +1478,104 @@ pub fn build_default_bindings() -> HostBindings {
         .with_namespace("performance", build_performance_namespace())
 }
 
-/// Build the `chromeHost` namespace. Functions are gated to valor://chrome origin
-/// and require an attached host command channel in HostContext.
+/// Build the `chromeHost` namespace. Functions are gated to `<valor://chrome>` origin
+/// and require an attached host command channel in `HostContext`.
+#[inline]
+#[allow(clippy::too_many_lines)]
 pub fn build_chrome_host_namespace() -> HostNamespace {
     // Helper to check privilege and get sender
-    let get_tx = |context: &HostContext| -> Result<tokio::sync::mpsc::UnboundedSender<ChromeHostCommand>, JSError> {
-        if !context.page_origin.starts_with("valor://chrome") {
-            return Err(JSError::TypeError(String::from("chromeHost is not available")));
-        }
-        context.chrome_host_tx.clone().ok_or_else(|| JSError::TypeError(String::from("chromeHost is not available")))
-    };
+    let get_sender =
+        |context: &HostContext| -> Result<UnboundedSender<ChromeHostCommand>, JSError> {
+            if !context.page_origin.starts_with("valor://chrome") {
+                return Err(JSError::TypeError(String::from(
+                    "chromeHost is not available",
+                )));
+            }
+            context
+                .chrome_host_tx
+                .clone()
+                .ok_or_else(|| JSError::TypeError(String::from("chromeHost is not available")))
+        };
 
     let navigate_fn = Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-            let tx = get_tx(context)?;
+            let sender = get_sender(context)?;
             if args.is_empty() {
                 return Err(JSError::TypeError(String::from(
                     "navigate(url) requires 1 argument",
                 )));
             }
             let url = match &args[0] {
-                JSValue::String(s) => s.clone(),
+                JSValue::String(string_value) => string_value.clone(),
                 _ => return Err(JSError::TypeError(String::from("url must be a string"))),
             };
-            tx.send(ChromeHostCommand::Navigate(url))
-                .map_err(|e| JSError::InternalError(format!("failed to send navigate: {e}")))?;
+            sender
+                .send(ChromeHostCommand::Navigate(url))
+                .map_err(|error| {
+                    JSError::InternalError(format!("failed to send navigate: {error}"))
+                })?;
             Ok(JSValue::Undefined)
         },
     );
 
     let back_fn = Arc::new(
         move |context: &HostContext, _args: Vec<JSValue>| -> Result<JSValue, JSError> {
-            let tx = get_tx(context)?;
-            tx.send(ChromeHostCommand::Back)
-                .map_err(|e| JSError::InternalError(format!("failed to send back: {e}")))?;
+            let sender = get_sender(context)?;
+            sender
+                .send(ChromeHostCommand::Back)
+                .map_err(|error| JSError::InternalError(format!("failed to send back: {error}")))?;
             Ok(JSValue::Undefined)
         },
     );
 
     let forward_fn = Arc::new(
         move |context: &HostContext, _args: Vec<JSValue>| -> Result<JSValue, JSError> {
-            let tx = get_tx(context)?;
-            tx.send(ChromeHostCommand::Forward)
-                .map_err(|e| JSError::InternalError(format!("failed to send forward: {e}")))?;
+            let sender = get_sender(context)?;
+            sender.send(ChromeHostCommand::Forward).map_err(|error| {
+                JSError::InternalError(format!("failed to send forward: {error}"))
+            })?;
             Ok(JSValue::Undefined)
         },
     );
 
     let reload_fn = Arc::new(
         move |context: &HostContext, _args: Vec<JSValue>| -> Result<JSValue, JSError> {
-            let tx = get_tx(context)?;
-            tx.send(ChromeHostCommand::Reload)
-                .map_err(|e| JSError::InternalError(format!("failed to send reload: {e}")))?;
+            let sender = get_sender(context)?;
+            sender.send(ChromeHostCommand::Reload).map_err(|error| {
+                JSError::InternalError(format!("failed to send reload: {error}"))
+            })?;
             Ok(JSValue::Undefined)
         },
     );
 
     let open_tab_fn = Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-            let tx = get_tx(context)?;
+            let sender = get_sender(context)?;
             let url_opt = match args.first() {
-                Some(JSValue::String(s)) => Some(s.clone()),
+                Some(JSValue::String(string_value)) => Some(string_value.clone()),
                 _ => None,
             };
-            tx.send(ChromeHostCommand::OpenTab(url_opt))
-                .map_err(|e| JSError::InternalError(format!("failed to send openTab: {e}")))?;
+            sender
+                .send(ChromeHostCommand::OpenTab(url_opt))
+                .map_err(|error| {
+                    JSError::InternalError(format!("failed to send openTab: {error}"))
+                })?;
             Ok(JSValue::Undefined)
         },
     );
 
     let close_tab_fn = Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-            let tx = get_tx(context)?;
+            let sender = get_sender(context)?;
             let id_opt = match args.first() {
-                Some(JSValue::Number(n)) => Some(*n as u64),
+                Some(JSValue::Number(number_value)) => Some(*number_value as u64),
                 _ => None,
             };
-            tx.send(ChromeHostCommand::CloseTab(id_opt))
-                .map_err(|e| JSError::InternalError(format!("failed to send closeTab: {e}")))?;
+            sender
+                .send(ChromeHostCommand::CloseTab(id_opt))
+                .map_err(|error| {
+                    JSError::InternalError(format!("failed to send closeTab: {error}"))
+                })?;
             Ok(JSValue::Undefined)
         },
     );
@@ -1544,12 +1589,14 @@ pub fn build_chrome_host_namespace() -> HostNamespace {
         .with_sync_fn("closeTab", close_tab_fn)
 }
 
-/// HostBindings bundle containing only the `chromeHost` namespace.
+/// `HostBindings` bundle containing only the `chromeHost` namespace.
+#[inline]
 pub fn build_chrome_host_bindings() -> HostBindings {
     HostBindings::new().with_namespace("chromeHost", build_chrome_host_namespace())
 }
 
-/// Convert a vector of JSValue to a space-separated string.
+/// Convert a vector of `JSValue` to a space-separated string.
+#[inline]
 pub fn stringify_arguments(arguments: Vec<JSValue>) -> String {
     arguments
         .into_iter()
@@ -1564,13 +1611,14 @@ pub fn stringify_arguments(arguments: Vec<JSValue>) -> String {
         .join(" ")
 }
 
-/// Build the `performance` namespace with a high-resolution now() function.
+/// Build the `performance` namespace with a high-resolution `now()` function.
+#[inline]
 pub fn build_performance_namespace() -> HostNamespace {
     let now_fn = Arc::new(
         move |context: &HostContext, _args: Vec<JSValue>| -> Result<JSValue, JSError> {
             let elapsed = Instant::now().duration_since(context.performance_start);
-            let ms = elapsed.as_secs_f64() * 1000.0;
-            Ok(JSValue::Number(ms))
+            let milliseconds = elapsed.as_secs_f64() * 1_000.0_f64;
+            Ok(JSValue::Number(milliseconds))
         },
     );
     HostNamespace::new().with_sync_fn("now", now_fn)

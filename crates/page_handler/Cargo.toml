@@ -2,6 +2,9 @@
 name = "page_handler"
 edition.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 html.workspace = true
 css.workspace = true

@@ -6,4 +6,4 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-csscolorparser = "0.6"
+csscolorparser.workspace = true

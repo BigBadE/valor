@@ -182,8 +182,8 @@ pub fn reparent_child(
     idx.parent_by_child.insert(child_key, parent_key);
 }
 
-struct ElementSpec<'a> {
-    tag: &'a str,
+struct ElementSpec<'element> {
+    tag: &'element str,
     id_attr: Option<String>,
     class_attr: Option<String>,
 }

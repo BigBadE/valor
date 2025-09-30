@@ -1,10 +1,10 @@
-use crate::display_list::{DisplayItem, DisplayList, batch_display_list};
-use crate::renderer::DrawText;
 use glyphon::{
     Attrs as GlyphonAttrs, Buffer as GlyphonBuffer, Cache as GlyphonCache, Color as GlyphonColor,
     Metrics as GlyphonMetrics, Resolution, Shaping as GlyphonShaping, SwashCache, TextArea,
     TextAtlas, TextRenderer, Viewport,
 };
+use renderer::display_list::{DisplayItem, DisplayList, batch_display_list};
+use renderer::renderer::DrawText;
 use std::borrow::Cow;
 use std::num::NonZeroU32;
 use wgpu::util::DeviceExt;

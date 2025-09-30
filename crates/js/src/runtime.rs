@@ -16,12 +16,12 @@
 //! must not embed behavior beyond evaluating this prelude and installing host
 //! bindings.
 
-/// Return the JavaScript source for the runtime prelude.
+/// JavaScript source for the runtime prelude.
 ///
 /// Engines should evaluate this once per context before running page scripts.
-pub fn runtime_prelude() -> &'static str {
-    // Note: keep this idempotent; guards and hidden markers prevent double work.
-    r#"
+///
+/// Note: keep this idempotent; guards and hidden markers prevent double work.
+pub const RUNTIME_PRELUDE: &str = r"
     (function(){
       // window/document shims
       if (typeof globalThis.window === 'undefined') { globalThis.window = globalThis; }
@@ -959,5 +959,4 @@ pub fn runtime_prelude() -> &'static str {
         }
       })();
     })();
-    "#
-}
+    ";
