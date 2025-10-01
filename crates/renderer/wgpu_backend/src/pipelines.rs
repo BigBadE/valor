@@ -1,5 +1,7 @@
+use bytemuck::cast_slice;
+use core::mem::size_of;
 use std::borrow::Cow;
-use wgpu::util::DeviceExt;
+use wgpu::util::DeviceExt as _;
 use wgpu::*;
 
 /// Vertex data used by the simple pipeline.
@@ -83,7 +85,7 @@ pub fn build_pipeline_and_buffers(
     });
 
     let vertex_buffers = [VertexBufferLayout {
-        array_stride: std::mem::size_of::<Vertex>() as BufferAddress,
+        array_stride: size_of::<Vertex>() as BufferAddress,
         step_mode: VertexStepMode::Vertex,
         attributes: &[
             // position (vec2<f32>)
@@ -114,7 +116,7 @@ pub fn build_pipeline_and_buffers(
             module: &shader,
             entry_point: Some("vs_main"),
             buffers: &vertex_buffers,
-            compilation_options: Default::default(),
+            compilation_options: PipelineCompilationOptions::default(),
         },
         primitive: PrimitiveState {
             topology: PrimitiveTopology::TriangleList,
@@ -142,7 +144,7 @@ pub fn build_pipeline_and_buffers(
                 }),
                 write_mask: ColorWrites::ALL,
             })],
-            compilation_options: Default::default(),
+            compilation_options: PipelineCompilationOptions::default(),
         }),
         multiview: None,
         cache: None,
@@ -162,7 +164,7 @@ pub fn build_pipeline_and_buffers(
             color: [0.2, 0.4, 1.0, 1.0],
         },
     ];
-    let vertex_bytes = bytemuck::cast_slice(&vertices);
+    let vertex_bytes = cast_slice(&vertices);
     let vertex_buffer = device.create_buffer_init(&util::BufferInitDescriptor {
         label: Some("triangle-vertices"),
         contents: vertex_bytes,
@@ -217,7 +219,7 @@ pub fn build_texture_pipeline(
         push_constant_ranges: &[],
     });
     let vbuf = [VertexBufferLayout {
-        array_stride: (std::mem::size_of::<f32>() as BufferAddress) * 4,
+        array_stride: (size_of::<f32>() as BufferAddress) * 4,
         step_mode: VertexStepMode::Vertex,
         attributes: &[
             VertexAttribute {
@@ -239,7 +241,7 @@ pub fn build_texture_pipeline(
             module: &shader,
             entry_point: Some("vs_main"),
             buffers: &vbuf,
-            compilation_options: Default::default(),
+            compilation_options: PipelineCompilationOptions::default(),
         },
         primitive: PrimitiveState::default(),
         depth_stencil: None,
@@ -264,7 +266,7 @@ pub fn build_texture_pipeline(
                 }),
                 write_mask: ColorWrites::ALL,
             })],
-            compilation_options: Default::default(),
+            compilation_options: PipelineCompilationOptions::default(),
         }),
         multiview: None,
         cache: None,

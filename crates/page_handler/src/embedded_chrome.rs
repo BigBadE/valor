@@ -41,5 +41,5 @@ fn normalize_path(input: &str) -> String {
         .or_else(|| input.strip_prefix("valor://chrome"))
         .unwrap_or(input);
     // Ensure we have either "index.html" or "/index.html"-style outputs.
-    trimmed.to_string()
+    trimmed.to_owned()
 }

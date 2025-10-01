@@ -234,7 +234,7 @@ impl App {
         let runtime = Runtime::new()?;
 
         // Create renderer
-        let render_state = runtime.block_on(RenderState::new(Arc::clone(&window)));
+        let render_state = runtime.block_on(RenderState::new(Arc::clone(&window)))?;
 
         // Create chrome and initial content pages via shared factory
         let init = create_chrome_and_content(&runtime, Url::parse("https://example.com/")?)?;

@@ -1,4 +1,5 @@
 use crate::snapshots::{IRect, SnapshotSlice};
+use core::hash::BuildHasher;
 use css_core::{LayoutNodeKind, LayoutRect};
 use js::NodeKey;
 use std::collections::HashMap;
@@ -20,7 +21,7 @@ use std::collections::HashMap;
 /// A vector of `LayoutRect` representing the intersection areas between
 /// the selection and visible text nodes.
 #[must_use]
-pub fn selection_rects<S: ::std::hash::BuildHasher>(
+pub fn selection_rects<S: BuildHasher>(
     rects: &HashMap<NodeKey, LayoutRect, S>,
     snapshot: SnapshotSlice,
     sel: IRect,
@@ -29,8 +30,8 @@ pub fn selection_rects<S: ::std::hash::BuildHasher>(
     let sel_x = x0.min(x1) as f32;
     let sel_y = y0.min(y1) as f32;
 
-    let sel_w = (x0.max(x1) - sel_x.round() as i32).max(0) as f32;
-    let sel_h = (y0.max(y1) - sel_y.round() as i32).max(0) as f32;
+    let sel_w = (x0.max(x1) - sel_x.round() as i32).max(0i32) as f32;
+    let sel_h = (y0.max(y1) - sel_y.round() as i32).max(0i32) as f32;
     let selection = LayoutRect {
         x: sel_x,
         y: sel_y,
@@ -83,7 +84,7 @@ pub fn selection_rects<S: ::std::hash::BuildHasher>(
 /// A 1px-wide `LayoutRect` representing the caret position, or `None` if
 /// no suitable text node is found.
 #[must_use]
-pub fn caret_at<S: ::std::hash::BuildHasher>(
+pub fn caret_at<S: BuildHasher>(
     rects: &HashMap<NodeKey, LayoutRect, S>,
     snapshot: SnapshotSlice,
     x_coord: i32,

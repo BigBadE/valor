@@ -772,17 +772,130 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
     }
     // Parent map for inheritance fallbacks
     let mut parent_map: HashMap<NodeKey, NodeKey> = HashMap::new();
+
     for (parent, children) in &children_map {
         for &child in children {
             parent_map.insert(child, *parent);
         }
     }
 
+    // Helper: Process a block node with a rect (background, borders, clip, stacking context)
+    fn process_block_with_rect(
+        list: &mut DisplayList,
+        node: NodeKey,
+        rect: &LayoutRect,
+        computed_style_opt: Option<&ComputedStyle>,
+        ctx: &WalkCtx<'_>,
+    ) {
+        let mut opened_ctx = false;
+        let boundary_opt = computed_style_opt.and_then(stacking_boundary_for);
+        if let Some(boundary) = boundary_opt {
+            list.push(DisplayItem::BeginStackingContext { boundary });
+            opened_ctx = true;
+        }
+        // Background fill
+        let fill_rgba_opt = computed_style_opt.map(|computed_style| {
+            let background = computed_style.background_color;
+            [
+                f32::from(background.red) / 255.0,
+                f32::from(background.green) / 255.0,
+                f32::from(background.blue) / 255.0,
+                f32::from(background.alpha) / 255.0,
+            ]
+        });
+        if let Some(fill_rgba) = fill_rgba_opt.filter(|rgba| rgba[3] > 0.0) {
+            list.push(DisplayItem::Rect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+                color: fill_rgba,
+            });
+        }
+        // Borders
+        if let Some(computed_style) = computed_style_opt {
+            push_border_items(list, rect, computed_style);
+        }
+        // Overflow clip
+        let style_for_node = computed_style_opt.or_else(|| {
+            nearest_style(
+                node,
+                ctx.parent_map,
+                ctx.computed_map,
+                ctx.computed_fallback,
+                ctx.computed_robust.as_ref(),
+            )
+        });
+        let opened_clip = if let Some(computed_style) = style_for_node
+            && matches!(
+                computed_style.overflow,
+                Overflow::Hidden | Overflow::Clip | Overflow::Auto | Overflow::Scroll
+            ) {
+            let pad_left = computed_style.padding.left.max(0.0);
+            let pad_top = computed_style.padding.top.max(0.0);
+            let pad_right = computed_style.padding.right.max(0.0);
+            let pad_bottom = computed_style.padding.bottom.max(0.0);
+            let border_left = computed_style.border_width.left.max(0.0);
+            let border_top = computed_style.border_width.top.max(0.0);
+            let border_right = computed_style.border_width.right.max(0.0);
+            let border_bottom = computed_style.border_width.bottom.max(0.0);
+            let clip_x = rect.x + border_left + pad_left;
+            let clip_y = rect.y + border_top + pad_top;
+            let clip_width =
+                (rect.width - (border_left + pad_left + pad_right + border_right)).max(0.0);
+            let clip_height =
+                (rect.height - (border_top + pad_top + pad_bottom + border_bottom)).max(0.0);
+            list.push(DisplayItem::BeginClip {
+                x: clip_x,
+                y: clip_y,
+                width: clip_width,
+                height: clip_height,
+            });
+            true
+        } else {
+            false
+        };
+        process_children(list, node, ctx);
+        if opened_clip {
+            list.push(DisplayItem::EndClip);
+        }
+        if opened_ctx {
+            list.push(DisplayItem::EndStackingContext);
+        }
+    }
+
+    // Helper: Process a block node without a rect
+    fn process_block_without_rect(
+        list: &mut DisplayList,
+        node: NodeKey,
+        computed_style_opt: Option<&ComputedStyle>,
+        ctx: &WalkCtx<'_>,
+    ) {
+        let style_for_node_ctx = computed_style_opt.or_else(|| {
+            nearest_style(
+                node,
+                ctx.parent_map,
+                ctx.computed_map,
+                ctx.computed_fallback,
+                ctx.computed_robust.as_ref(),
+            )
+        });
+        let mut opened_ctx = false;
+        let boundary_opt = style_for_node_ctx.and_then(stacking_boundary_for);
+        if let Some(boundary) = boundary_opt {
+            list.push(DisplayItem::BeginStackingContext { boundary });
+            opened_ctx = true;
+        }
+        process_children(list, node, ctx);
+        if opened_ctx {
+            list.push(DisplayItem::EndStackingContext);
+        }
+    }
+
     // Recursive tree walker that emits display items for each node.
     fn recurse(list: &mut DisplayList, node: NodeKey, ctx: &WalkCtx<'_>) {
-        let kind = match ctx.kind_map.get(&node) {
-            Some(layout_kind) => layout_kind,
-            None => return,
+        let Some(kind) = ctx.kind_map.get(&node) else {
+            return;
         };
         match kind {
             LayoutNodeKind::Document => {
@@ -793,7 +906,6 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                 }
             }
             LayoutNodeKind::Block { .. } => {
-                // Background/border/clip only if we have a rect for this node
                 let rect_opt = ctx.rects.get(&node);
                 let computed_style_opt = ctx
                     .computed_robust
@@ -802,112 +914,9 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     .or_else(|| ctx.computed_fallback.get(&node))
                     .or_else(|| ctx.computed_map.get(&node));
                 if let Some(rect) = rect_opt {
-                    // Determine if this node establishes a stacking context.
-                    // Preference order: Opacity < 1.0, otherwise positioned with non-auto z-index.
-                    let style_for_node_ctx = computed_style_opt;
-                    let mut opened_ctx = false;
-                    let boundary_opt = style_for_node_ctx.and_then(stacking_boundary_for);
-                    if let Some(boundary) = boundary_opt {
-                        list.push(DisplayItem::BeginStackingContext { boundary });
-                        opened_ctx = true;
-                    }
-                    // Background fill from computed styles; only paint if non-transparent
-                    let fill_rgba_opt = computed_style_opt.map(|computed_style| {
-                        let background = computed_style.background_color;
-                        [
-                            f32::from(background.red) / 255.0,
-                            f32::from(background.green) / 255.0,
-                            f32::from(background.blue) / 255.0,
-                            f32::from(background.alpha) / 255.0,
-                        ]
-                    });
-                    if let Some(fill_rgba) = fill_rgba_opt.filter(|rgba| rgba[3] > 0.0) {
-                        list.push(DisplayItem::Rect {
-                            x: rect.x,
-                            y: rect.y,
-                            width: rect.width,
-                            height: rect.height,
-                            color: fill_rgba,
-                        });
-                    }
-                    // Borders
-                    if let Some(computed_style) = computed_style_opt {
-                        push_border_items(list, rect, computed_style);
-                    }
-                    // overflow clip
-                    let style_for_node = computed_style_opt.or_else(|| {
-                        nearest_style(
-                            node,
-                            ctx.parent_map,
-                            ctx.computed_map,
-                            ctx.computed_fallback,
-                            ctx.computed_robust.as_ref(),
-                        )
-                    });
-                    let mut opened_clip = false;
-                    if let Some(computed_style) = style_for_node
-                        && matches!(
-                            computed_style.overflow,
-                            Overflow::Hidden | Overflow::Clip | Overflow::Auto | Overflow::Scroll
-                        )
-                    {
-                        // Clip at the padding box per CSS Overflow spec. Compute padding-box
-                        // from the border-box rect and the border widths.
-                        let pad_left = computed_style.padding.left.max(0.0);
-                        let pad_top = computed_style.padding.top.max(0.0);
-                        let pad_right = computed_style.padding.right.max(0.0);
-                        let pad_bottom = computed_style.padding.bottom.max(0.0);
-                        let border_left = computed_style.border_width.left.max(0.0);
-                        let border_top = computed_style.border_width.top.max(0.0);
-                        let border_right = computed_style.border_width.right.max(0.0);
-                        let border_bottom = computed_style.border_width.bottom.max(0.0);
-                        let clip_x = rect.x + border_left + pad_left;
-                        let clip_y = rect.y + border_top + pad_top;
-                        let clip_width = (rect.width
-                            - (border_left + pad_left + pad_right + border_right))
-                            .max(0.0);
-                        let clip_height = (rect.height
-                            - (border_top + pad_top + pad_bottom + border_bottom))
-                            .max(0.0);
-                        list.push(DisplayItem::BeginClip {
-                            x: clip_x,
-                            y: clip_y,
-                            width: clip_width,
-                            height: clip_height,
-                        });
-                        opened_clip = true;
-                    }
-                    process_children(list, node, ctx);
-                    // If a clip was opened inside this node, it must be closed
-                    // before the stacking context ends so the clip applies to
-                    // the entire context's painted content.
-                    if opened_clip {
-                        list.push(DisplayItem::EndClip);
-                    }
-                    if opened_ctx {
-                        list.push(DisplayItem::EndStackingContext);
-                    }
+                    process_block_with_rect(list, node, rect, computed_style_opt, ctx);
                 } else {
-                    // No rect for this block: still recurse into children; apply stacking context if present
-                    let style_for_node_ctx = computed_style_opt.or_else(|| {
-                        nearest_style(
-                            node,
-                            ctx.parent_map,
-                            ctx.computed_map,
-                            ctx.computed_fallback,
-                            ctx.computed_robust.as_ref(),
-                        )
-                    });
-                    let mut opened_ctx = false;
-                    let boundary_opt = style_for_node_ctx.and_then(stacking_boundary_for);
-                    if let Some(boundary) = boundary_opt {
-                        list.push(DisplayItem::BeginStackingContext { boundary });
-                        opened_ctx = true;
-                    }
-                    process_children(list, node, ctx);
-                    if opened_ctx {
-                        list.push(DisplayItem::EndStackingContext);
-                    }
+                    process_block_without_rect(list, node, computed_style_opt, ctx);
                 }
             }
             LayoutNodeKind::InlineText { text } => {
@@ -959,15 +968,18 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
     if let Some((x0_coord, y0_coord, x1_coord, y1_coord)) = selection_overlay {
         let selection_x = x0_coord.min(x1_coord) as f32;
         let selection_y = y0_coord.min(y1_coord) as f32;
-        let selection_width = (x0_coord.max(x1_coord) - selection_x.round() as i32).max(0) as f32;
-        let selection_height = (y0_coord.max(y1_coord) - selection_y.round() as i32).max(0) as f32;
+        let selection_width =
+            (x0_coord.max(x1_coord) - selection_x.round() as i32).max(0i32) as f32;
+        let selection_height =
+            (y0_coord.max(y1_coord) - selection_y.round() as i32).max(0i32) as f32;
         let selection = LayoutRect {
             x: selection_x,
             y: selection_y,
             width: selection_width,
             height: selection_height,
         };
-        for (_node_key, rect) in &rects {
+        #[allow(clippy::iter_over_hash_type)]
+        for rect in rects.values() {
             let intersect_x = rect.x.max(selection.x);
             let intersect_y = rect.y.max(selection.y);
             let intersect_right = (rect.x + rect.width).min(selection.x + selection.width);

@@ -316,7 +316,9 @@ fn rasterize_display_list_to_rgba(dl: &DisplayList, width: u32, height: u32) -> 
         };
         let window = Arc::new(window);
         let _ = WINDOW.set(window.clone());
-        let state = rt.block_on(RenderState::new(window));
+        let state = rt
+            .block_on(RenderState::new(window))
+            .expect("failed to create render state");
         Mutex::new(state)
     });
 

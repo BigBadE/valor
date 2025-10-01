@@ -27,7 +27,7 @@ mod logger;
 pub use logger::HostLogger;
 /// Network fetch functionality for HTTP and file:// URLs.
 mod net;
-use net::FetchRegistry;
+pub use net::FetchRegistry;
 
 /// Document namespace builder with DOM manipulation functions.
 pub mod document;

@@ -1,22 +1,52 @@
+use anyhow::Result as AnyhowResult;
+use bytemuck::cast_slice;
 use glyphon::{
     Attrs as GlyphonAttrs, Buffer as GlyphonBuffer, Cache as GlyphonCache, Color as GlyphonColor,
-    Metrics as GlyphonMetrics, Resolution, Shaping as GlyphonShaping, SwashCache, TextArea,
-    TextAtlas, TextRenderer, Viewport,
+    FontSystem, Metrics as GlyphonMetrics, Resolution, Shaping as GlyphonShaping, SwashCache,
+    TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
+use pollster::block_on;
 use renderer::display_list::{DisplayItem, DisplayList, batch_display_list};
 use renderer::renderer::DrawText;
+
+fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
+    if let DisplayItem::Text {
+        x,
+        y,
+        text,
+        color,
+        font_size,
+        bounds,
+    } = item
+    {
+        Some(DrawText {
+            x: *x,
+            y: *y,
+            text: text.clone(),
+            color: *color,
+            font_size: *font_size,
+            bounds: *bounds,
+        })
+    } else {
+        None
+    }
+}
 use std::borrow::Cow;
-use std::num::NonZeroU32;
+use std::sync::mpsc::channel;
 use wgpu::util::DeviceExt;
 use wgpu::*;
 
+/// Vertex structure for offscreen rendering.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
+    /// Position in NDC coordinates.
     position: [f32; 2],
+    /// RGBA color.
     color: [f32; 4],
 }
 
+/// WGSL shader source for offscreen rendering.
 const SHADER_WGSL: &str = "
 struct VertexOut {
     @builtin(position) pos: vec4<f32>,
@@ -35,6 +65,7 @@ fn vs_main(@location(0) pos: vec2<f32>, @location(1) color: vec4<f32>) -> Vertex
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> { return in.color; }
 ";
 
+/// Build the rendering pipeline for offscreen rendering.
 fn build_pipeline(device: &Device, render_format: TextureFormat) -> RenderPipeline {
     let shader = device.create_shader_module(ShaderModuleDescriptor {
         label: Some("offscreen-shader"),
@@ -88,6 +119,7 @@ fn build_pipeline(device: &Device, render_format: TextureFormat) -> RenderPipeli
     })
 }
 
+/// Push rectangle vertices in NDC coordinates to the vertex buffer.
 fn push_rect_vertices_ndc(
     out: &mut Vec<Vertex>,
     fw: u32,
@@ -134,15 +166,15 @@ fn push_rect_vertices_ndc(
 }
 
 pub fn render_display_list_to_rgba(
-    dl: &DisplayList,
+    display_list: &DisplayList,
     width: u32,
     height: u32,
-) -> anyhow::Result<Vec<u8>> {
+) -> AnyhowResult<Vec<u8>> {
     // Initialize wgpu device and queue
     let instance = Instance::new(&InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&RequestAdapterOptions::default()))
-        .expect("wgpu adapter not found");
-    let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor::default()))?;
+    let adapter = block_on(instance.request_adapter(&RequestAdapterOptions::default()))
+        .map_err(|err| anyhow::anyhow!("wgpu adapter not found: {err}"))?;
+    let (device, queue) = block_on(adapter.request_device(&DeviceDescriptor::default()))?;
 
     // Offscreen color target
     let render_format = TextureFormat::Rgba8UnormSrgb;
@@ -166,7 +198,7 @@ pub fn render_display_list_to_rgba(
     let pipeline = build_pipeline(&device, render_format);
 
     // Glyphon text state
-    let mut font_system = glyphon::FontSystem::new();
+    let mut font_system = FontSystem::new();
     font_system.db_mut().load_system_fonts();
     let glyphon_cache = GlyphonCache::new(&device);
     let mut text_atlas = TextAtlas::new(&device, &queue, &glyphon_cache, render_format);
@@ -176,32 +208,11 @@ pub fn render_display_list_to_rgba(
     viewport.update(&queue, Resolution { width, height });
     let mut swash_cache = SwashCache::new();
 
-    // Prepare text from DL
-    let texts: Vec<DrawText> = dl
+    // Prepare text from display_list
+    let texts: Vec<DrawText> = display_list
         .items
         .iter()
-        .filter_map(|item| {
-            if let DisplayItem::Text {
-                x,
-                y,
-                text,
-                color,
-                font_size,
-                bounds,
-            } = item
-            {
-                Some(DrawText {
-                    x: *x,
-                    y: *y,
-                    text: text.clone(),
-                    color: *color,
-                    font_size: *font_size,
-                    bounds: *bounds,
-                })
-            } else {
-                None
-            }
-        })
+        .filter_map(map_text_item)
         .collect();
     // Build glyphon buffers
     let mut buffers: Vec<GlyphonBuffer> = Vec::with_capacity(texts.len());
@@ -224,17 +235,17 @@ pub fn render_display_list_to_rgba(
     for (index, item) in texts.iter().enumerate() {
         let color = GlyphonColor(0xFF00_0000); // opaque black
         let bounds = match item.bounds {
-            Some((l, t, r, b)) => glyphon::TextBounds {
-                left: l,
-                top: t,
-                right: r,
-                bottom: b,
+            Some((left, top, right, bottom)) => TextBounds {
+                left,
+                top,
+                right,
+                bottom,
             },
-            None => glyphon::TextBounds {
+            None => TextBounds {
                 left: 0,
                 top: 0,
-                right: width as i32,
-                bottom: height as i32,
+                right: i32::try_from(width).unwrap_or(i32::MAX),
+                bottom: i32::try_from(height).unwrap_or(i32::MAX),
             },
         };
         areas.push(TextArea {
@@ -248,7 +259,7 @@ pub fn render_display_list_to_rgba(
         });
     }
     // Prepare text
-    let _ = text_renderer.prepare(
+    let _unused = text_renderer.prepare(
         &device,
         &queue,
         &mut font_system,
@@ -259,7 +270,7 @@ pub fn render_display_list_to_rgba(
     );
 
     // Encode rendering passes
-    let mut encoder = device.create_command_encoder(&Default::default());
+    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
     {
         // Rectangles pass
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -283,23 +294,23 @@ pub fn render_display_list_to_rgba(
             occlusion_query_set: None,
         });
         pass.set_pipeline(&pipeline);
-        let batches = batch_display_list(dl, width, height);
-        for b in batches.into_iter() {
-            let mut vertices: Vec<Vertex> = Vec::with_capacity(b.quads.len() * 6);
-            for q in b.quads.iter() {
-                let rgba = [q.color[0], q.color[1], q.color[2], q.color[3]];
+        let batches = batch_display_list(display_list, width, height);
+        for batch in batches {
+            let mut vertices: Vec<Vertex> = Vec::with_capacity(batch.quads.len() * 6);
+            for quad in &batch.quads {
+                let rgba = [quad.color[0], quad.color[1], quad.color[2], quad.color[3]];
                 push_rect_vertices_ndc(
                     &mut vertices,
                     width,
                     height,
-                    [q.x, q.y, q.width, q.height],
+                    [quad.x, quad.y, quad.width, quad.height],
                     rgba,
                 );
             }
             if vertices.is_empty() {
                 continue;
             }
-            let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
+            let vertex_bytes = cast_slice(vertices.as_slice());
             let vertex_buffer = device.create_buffer_init(&util::BufferInitDescriptor {
                 label: Some("offscreen-rect-vertices"),
                 contents: vertex_bytes,
@@ -328,15 +339,15 @@ pub fn render_display_list_to_rgba(
         });
         pass.set_viewport(0.0, 0.0, width as f32, height as f32, 0.0, 1.0);
         pass.set_scissor_rect(0, 0, width.max(1), height.max(1));
-        let _ = text_renderer.render(&text_atlas, &viewport, &mut pass);
-    }
+        let _unused = text_renderer.render(&text_atlas, &viewport, &mut pass);
+    };
 
     // Read back texture to CPU buffer using 256-byte aligned rows
     let bytes_per_pixel: u32 = 4;
     let row_bytes: u32 = width * bytes_per_pixel;
     let align: u32 = 256;
     let padded_bpr: u32 = row_bytes.div_ceil(align) * align; // ceil to 256
-    let buffer_size = (padded_bpr as u64) * (height as u64);
+    let buffer_size = u64::from(padded_bpr) * u64::from(height);
     let readback = device.create_buffer(&BufferDescriptor {
         label: Some("offscreen-readback"),
         size: buffer_size,
@@ -354,8 +365,8 @@ pub fn render_display_list_to_rgba(
             buffer: &readback,
             layout: TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(NonZeroU32::new(padded_bpr).unwrap().into()),
-                rows_per_image: Some(NonZeroU32::new(height).unwrap().into()),
+                bytes_per_row: Some(padded_bpr),
+                rows_per_image: Some(height),
             },
         },
         Extent3d {
@@ -369,13 +380,13 @@ pub fn render_display_list_to_rgba(
     // Map and read
     let slice = readback.slice(..);
     // Map asynchronously with a callback, then block the device until mapping completes.
-    let (sender, receiver) = std::sync::mpsc::channel();
+    let (sender, receiver) = channel();
     slice.map_async(MapMode::Read, move |res| {
-        let _ = sender.send(res);
+        drop(sender.send(res));
     });
     // Drive the device until the mapping completes
     loop {
-        let _ = device.poll(wgpu::PollType::Wait);
+        drop(device.poll(PollType::Wait));
         if let Ok(res) = receiver.try_recv() {
             res?;
             break;

@@ -3,13 +3,14 @@ use crate::config::ValorConfig;
 use crate::display::{DefaultDisplayBuilder, DisplayBuilder};
 use crate::embedded_chrome::get_embedded_chrome_asset;
 use crate::events::KeyMods;
-use crate::runtime::{DefaultJsRuntime, JsRuntime};
+use crate::runtime::{DefaultJsRuntime, JsRuntime as _};
 use crate::scheduler::FrameScheduler;
 use crate::snapshots::{IRect, Snapshot};
 use crate::telemetry::PerfCounters;
 use crate::url::stream_url;
 use crate::{focus as focus_mod, selection, telemetry as telemetry_mod};
 use anyhow::{Error, anyhow};
+use core::sync::atomic::AtomicU64;
 use css::style_types::ComputedStyle;
 use css::types::Stylesheet;
 use css::{CSSMirror, Orchestrator};
@@ -17,32 +18,35 @@ use css_core::{LayoutNodeKind, LayoutRect, Layouter};
 use html::dom::DOM;
 use html::parser::{HTMLParser, ParseInputs, ScriptJob, ScriptKind};
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
-use js::bindings::StorageRegistry;
+use js::bindings::{FetchRegistry, StorageRegistry};
 use js::{
     ChromeHostCommand, ConsoleLogger, DOMMirror, DOMSubscriber, DOMUpdate, DomIndex, HostContext,
-    JsEngine, ModuleResolver, NodeKey, SharedDomIndex, SimpleFileModuleResolver,
-    build_chrome_host_bindings, build_default_bindings,
+    JsEngine as _, ModuleResolver, NodeKey, NodeKeyManager, SharedDomIndex,
+    SimpleFileModuleResolver, build_chrome_host_bindings, build_default_bindings,
 };
 use js_engine_v8::V8Engine;
 use log::{info, trace};
-use net::FetchRegistry;
 use renderer::{DisplayList, DrawRect, Renderer};
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::{broadcast, mpsc};
-use tokio_stream::StreamExt;
+use tokio_stream::StreamExt as _;
 use tracing::info_span;
 use url::Url;
 
 // Module-scoped type aliases to simplify complex types and avoid repetition
+/// Map from `NodeKey` to a generic value type.
 type NodeKeyMap<T> = HashMap<NodeKey, T>;
+/// Map from `NodeKey` to a vector of child `NodeKeys`.
 type NodeKeyVecMap = HashMap<NodeKey, Vec<NodeKey>>;
+/// Map from `NodeKey` to tag name.
 type TagsByKey = HashMap<NodeKey, String>;
+/// Map from `NodeKey` to element children.
 type ElementChildren = HashMap<NodeKey, Vec<NodeKey>>;
+/// Snapshot of layout maps: (`tags_by_key`, `element_children`, `raw_children`, `text_by_key`).
 type LayoutMapsSnapshot = (
     NodeKeyMap<String>,
     NodeKeyVecMap,
@@ -53,26 +57,34 @@ type LayoutMapsSnapshot = (
 /// Note: `FrameScheduler` has moved to `scheduler.rs`.
 /// Structured outcome of a single `update()` tick. Extend as needed.
 pub struct UpdateOutcome {
-    pub needs_redraw: bool,
+    pub redraw_needed: bool,
 }
+
+// TODO: Refactor HtmlPage to use a state machine or enums instead of multiple bools
+// to reduce the number of boolean fields (currently 5: hud_enabled, dom_content_loaded_fired,
+// style_nodes_rebuilt_after_load, needs_redraw, telemetry_enabled)
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "TODO: Refactor to use state machine or enums"
+)]
 pub struct HtmlPage {
     /// Optional currently focused node for focus management.
-    focused_node: Option<js::NodeKey>,
+    focused_node: Option<NodeKey>,
     /// Optional active selection rectangle in viewport coordinates for highlight overlay (text selection highlight).
     selection_overlay: Option<IRect>,
-    // If none, loading is finished. If some, still streaming.
+    /// HTML parser for streaming content; None when loading is finished.
     loader: Option<HTMLParser>,
-    // The DOM of the page.
+    /// The DOM of the page.
     dom: DOM,
-    // Mirror that collects CSS from the DOM stream.
+    /// Mirror that collects CSS from the DOM stream.
     css_mirror: DOMMirror<CSSMirror>,
-    // Orchestrator mirror that computes styles using the css engine.
+    /// Orchestrator mirror that computes styles using the css engine.
     orchestrator_mirror: DOMMirror<Orchestrator>,
-    // Layouter mirror that maintains a layout tree from DOM updates.
+    /// Layouter mirror that maintains a layout tree from DOM updates.
     layouter_mirror: DOMMirror<Layouter>,
-    // Renderer mirror that maintains a scene graph from DOM updates.
+    /// Renderer mirror that maintains a scene graph from DOM updates.
     renderer_mirror: DOMMirror<Renderer>,
-    // DOM index mirror for JS document.getElement* queries.
+    /// DOM index mirror for JS document.getElement* queries.
     dom_index_mirror: DOMMirror<DomIndex>,
     /// Shared state for DOM index to support synchronous lookups (e.g., getElementById).
     dom_index_shared: SharedDomIndex,
@@ -99,7 +111,7 @@ pub struct HtmlPage {
     hud_enabled: bool,
     /// Diagnostics: number of nodes restyled in the last tick.
     last_style_restyled_nodes: u64,
-    /// Whether we've dispatched DOMContentLoaded to JS listeners.
+    /// Whether we've dispatched `DOMContentLoaded` to JS listeners.
     dom_content_loaded_fired: bool,
     /// One-time post-load guard to rebuild the `StyleEngine`'s node inventory from the Layouter
     /// for deterministic style resolution in the normal update path.
@@ -110,68 +122,62 @@ pub struct HtmlPage {
     telemetry_enabled: bool,
 }
 
+/// Helper to create DOM mirrors for the page.
+struct DomMirrors {
+    /// CSS mirror for observing DOM updates.
+    css_mirror: DOMMirror<CSSMirror>,
+    /// Orchestrator mirror for style computation.
+    orchestrator_mirror: DOMMirror<Orchestrator>,
+    /// Layouter mirror for layout tree management.
+    layouter_mirror: DOMMirror<Layouter>,
+    /// Renderer mirror for scene graph management.
+    renderer_mirror: DOMMirror<Renderer>,
+    /// DOM index mirror for JS queries.
+    dom_index_mirror: DOMMirror<DomIndex>,
+    /// Shared DOM index for synchronous lookups.
+    dom_index_shared: SharedDomIndex,
+}
+
+/// Helper to create JS engine context.
+struct JsContext {
+    /// JavaScript engine instance.
+    js_engine: V8Engine,
+    /// Host context for JS bindings.
+    host_context: HostContext,
+}
+
 impl HtmlPage {
-    /// Create a new `HtmlPage` by streaming the content from the given URL
-    /// Create a new `HtmlPage` by streaming content from the given URL.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if page initialization fails.
-    pub async fn new(handle: &Handle, url: Url, config: ValorConfig) -> Result<Self, Error> {
-        // For updates from the DOM to subcomponents
-        let (out_updater, out_receiver) = broadcast::channel(128);
-
-        // For updates from subcomponents to the DOM
-        let (in_updater, in_receiver) = mpsc::channel(128);
-
-        // Create DOM first so it can assign a producer shard for NodeKey generation
-        let mut dom = DOM::new(out_updater, in_receiver);
-        let keyman = dom.register_parser_manager();
-        // Register a NodeKey manager shard for JS-created nodes too
-        let js_keyman = dom.register_manager::<u64>();
-
-        // Channel for inline script execution requests from the parser
-        let (script_tx, script_rx) = unbounded_channel::<ScriptJob>();
-        let inputs = ParseInputs {
-            in_updater: in_updater.clone(),
-            keyman,
-            byte_stream: stream_url(&url).await?,
-            dom_updates: out_receiver,
-            script_tx,
-            base_url: url.clone(),
-        };
-        let loader = HTMLParser::parse(handle, inputs);
-
-        // Create and attach the CSS mirror to observe DOM updates
+    /// Create DOM mirrors for observing DOM updates.
+    fn create_dom_mirrors(
+        in_updater: &mpsc::Sender<Vec<DOMUpdate>>,
+        dom: &DOM,
+        url: &Url,
+    ) -> DomMirrors {
         let css_mirror = DOMMirror::new(
             in_updater.clone(),
             dom.subscribe(),
             CSSMirror::with_base(url.clone()),
         );
-        // Create and attach the Orchestrator mirror to observe DOM updates
         let orchestrator_mirror =
             DOMMirror::new(in_updater.clone(), dom.subscribe(), Orchestrator::new());
-        // Create and attach the Layouter mirror to observe DOM updates
         let layouter_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), Layouter::new());
-        // Create and attach the Renderer mirror to observe DOM updates
         let renderer_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), Renderer::new());
-        // Create and attach a lightweight DOM index for JS getElement* functions
         let (dom_index_sub, dom_index_shared) = DomIndex::new();
         let dom_index_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), dom_index_sub);
 
-        // Debouncing removed in favor of single frame budget policy
+        DomMirrors {
+            css_mirror,
+            orchestrator_mirror,
+            layouter_mirror,
+            renderer_mirror,
+            dom_index_mirror,
+            dom_index_shared,
+        }
+    }
 
-        // Create the JS engine
-        let mut js_engine =
-            V8Engine::new().map_err(|err| anyhow!("failed to init V8Engine: {}", err))?;
-        // Install direct host bindings (e.g., console + document) from the js crate
-        let logger = Arc::new(ConsoleLogger);
-        // Prepare JS context wiring for DOM manipulation functions
-        let js_node_keys = Arc::new(Mutex::new(js_keyman));
-        let js_local_id_counter = Arc::new(AtomicU64::new(0));
-        let js_created_nodes = Arc::new(Mutex::new(HashMap::new()));
-        // Build page origin string for same-origin checks
-        let page_origin = if url.scheme() == "file" {
+    /// Build page origin string for same-origin checks.
+    fn build_page_origin(url: &Url) -> String {
+        if url.scheme() == "file" {
             String::from("file://")
         } else {
             let host = url.host_str().unwrap_or("");
@@ -180,10 +186,29 @@ impl HtmlPage {
                 .map(|port| format!(":{port}"))
                 .unwrap_or_default();
             format!("{}://{}{}", url.scheme(), host, port)
-        };
-        // Establish a high-resolution time origin for performance.now and timers
+        }
+    }
+
+    /// Create and initialize the JS engine with host context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS engine initialization fails.
+    fn create_js_context(
+        in_updater: &mpsc::Sender<Vec<DOMUpdate>>,
+        js_keyman: NodeKeyManager<u64>,
+        dom_index_shared: &SharedDomIndex,
+        handle: &Handle,
+        url: &Url,
+    ) -> Result<JsContext, Error> {
+        let mut js_engine =
+            V8Engine::new().map_err(|err| anyhow!("failed to init V8Engine: {}", err))?;
+        let logger = Arc::new(ConsoleLogger);
+        let js_node_keys = Arc::new(Mutex::new(js_keyman));
+        let js_local_id_counter = Arc::new(AtomicU64::new(0));
+        let js_created_nodes = Arc::new(Mutex::new(HashMap::new()));
+        let page_origin = Self::build_page_origin(url);
         let start_instant = Instant::now();
-        // Initialize per-origin storage registries (in-memory for this page/session)
         let storage_local = Arc::new(Mutex::new(StorageRegistry::default()));
         let storage_session = Arc::new(Mutex::new(StorageRegistry::default()));
 
@@ -194,7 +219,7 @@ impl HtmlPage {
             js_node_keys,
             js_local_id_counter,
             js_created_nodes,
-            dom_index: Arc::clone(&dom_index_shared),
+            dom_index: Arc::clone(dom_index_shared),
             tokio_handle: handle.clone(),
             page_origin,
             fetch_registry: Arc::new(Mutex::new(FetchRegistry::default())),
@@ -206,7 +231,44 @@ impl HtmlPage {
         let bindings = build_default_bindings();
         let _unused = js_engine.install_bindings(&host_context, &bindings);
 
-        // Frame scheduler budget (ms) from ValorConfig
+        Ok(JsContext {
+            js_engine,
+            host_context,
+        })
+    }
+    /// Create a new `HtmlPage` by streaming the content from the given URL
+    /// Create a new `HtmlPage` by streaming content from the given URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if page initialization fails.
+    pub async fn new(handle: &Handle, url: Url, config: ValorConfig) -> Result<Self, Error> {
+        let (out_updater, out_receiver) = broadcast::channel(128);
+        let (in_updater, in_receiver) = mpsc::channel(128);
+
+        let mut dom = DOM::new(out_updater, in_receiver);
+        let keyman = dom.register_parser_manager();
+        let js_keyman = dom.register_manager::<u64>();
+
+        let (script_tx, script_rx) = unbounded_channel::<ScriptJob>();
+        let inputs = ParseInputs {
+            in_updater: in_updater.clone(),
+            keyman,
+            byte_stream: stream_url(&url).await?,
+            dom_updates: out_receiver,
+            script_tx,
+            base_url: url.clone(),
+        };
+        let loader = HTMLParser::parse(handle, inputs);
+
+        let mirrors = Self::create_dom_mirrors(&in_updater, &dom, &url);
+        let js_ctx = Self::create_js_context(
+            &in_updater,
+            js_keyman,
+            &mirrors.dom_index_shared,
+            handle,
+            &url,
+        )?;
         let frame_scheduler = FrameScheduler::new(config.frame_budget());
 
         Ok(Self {
@@ -214,15 +276,15 @@ impl HtmlPage {
             selection_overlay: None,
             loader: Some(loader),
             dom,
-            css_mirror,
-            orchestrator_mirror,
-            layouter_mirror,
-            renderer_mirror,
-            dom_index_mirror,
-            dom_index_shared,
+            css_mirror: mirrors.css_mirror,
+            orchestrator_mirror: mirrors.orchestrator_mirror,
+            layouter_mirror: mirrors.layouter_mirror,
+            renderer_mirror: mirrors.renderer_mirror,
+            dom_index_mirror: mirrors.dom_index_mirror,
+            dom_index_shared: mirrors.dom_index_shared,
             in_updater,
-            js_engine,
-            host_context,
+            js_engine: js_ctx.js_engine,
+            host_context: js_ctx.host_context,
             script_rx,
             script_counter: 0,
             url: url.clone(),
@@ -444,7 +506,7 @@ impl HtmlPage {
         text_by_key: &HashMap<NodeKey, String>,
     ) -> String {
         let mut inline_style_css = String::new();
-        let tags_vec: Vec<_> = tags_by_key.into_iter().collect();
+        let tags_vec: Vec<_> = tags_by_key.iter().collect();
         for (node, tag) in tags_vec {
             if !tag.eq_ignore_ascii_case("style") {
                 continue;
@@ -632,7 +694,7 @@ impl HtmlPage {
         // Emit optional production telemetry for this tick per config
         self.emit_perf_telemetry_if_enabled();
         let outcome = UpdateOutcome {
-            needs_redraw: self.needs_redraw,
+            redraw_needed: self.needs_redraw,
         };
         Ok(outcome)
     }
@@ -877,11 +939,8 @@ impl HtmlPage {
     /// Returns an error if CSS mirror synchronization fails.
     pub fn discovered_stylesheets_snapshot(&mut self) -> Result<Vec<String>, Error> {
         self.css_mirror.try_update_sync()?;
-        Ok(self
-            .css_mirror
-            .mirror_mut()
-            .discovered_stylesheets()
-            .clone())
+        let sheets = self.css_mirror.mirror_mut().discovered_stylesheets();
+        Ok(sheets.clone())
     }
 
     /// Return a JSON string with key performance counters from the layouter to aid diagnostics (Phase 8).

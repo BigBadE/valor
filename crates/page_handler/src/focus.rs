@@ -1,7 +1,11 @@
 use crate::snapshots::SnapshotSlice;
+use core::hash::BuildHasher;
 use css_core::LayoutNodeKind;
 use js::NodeKey;
 use std::collections::HashMap;
+
+/// Type alias for attribute maps to reduce complexity.
+type AttrsMap<S, S2> = HashMap<NodeKey, HashMap<String, String, S2>, S>;
 
 /// Computes the next focusable element in tab order.
 ///
@@ -13,9 +17,9 @@ use std::collections::HashMap;
 ///
 /// Returns `Some(NodeKey)` for the next focusable element, or `None` if no focusable elements exist.
 #[must_use]
-pub fn next<S: ::std::hash::BuildHasher, S2: ::std::hash::BuildHasher>(
+pub fn next<S: BuildHasher, S2: BuildHasher>(
     snapshot: SnapshotSlice,
-    attrs: &HashMap<NodeKey, HashMap<String, String, S2>, S>,
+    attrs: &AttrsMap<S, S2>,
     current: Option<NodeKey>,
 ) -> Option<NodeKey> {
     let mut focusables: Vec<(i32, NodeKey)> = Vec::new();
@@ -47,9 +51,9 @@ pub fn next<S: ::std::hash::BuildHasher, S2: ::std::hash::BuildHasher>(
     if order.is_empty() {
         return None;
     }
-    Some(match current {
-        None => order[0],
-        Some(current_key) => {
+    Some(current.map_or_else(
+        || order[0],
+        |current_key| {
             let pos = order
                 .iter()
                 .position(|key| *key == current_key)
@@ -60,8 +64,8 @@ pub fn next<S: ::std::hash::BuildHasher, S2: ::std::hash::BuildHasher>(
                 pos + 1
             };
             order[idx]
-        }
-    })
+        },
+    ))
 }
 
 /// Computes the previous focusable element in tab order.
@@ -74,9 +78,9 @@ pub fn next<S: ::std::hash::BuildHasher, S2: ::std::hash::BuildHasher>(
 ///
 /// Returns `Some(NodeKey)` for the previous focusable element, or `None` if no focusable elements exist.
 #[must_use]
-pub fn prev<S: ::std::hash::BuildHasher, S2: ::std::hash::BuildHasher>(
+pub fn prev<S: BuildHasher, S2: BuildHasher>(
     snapshot: SnapshotSlice,
-    attrs: &HashMap<NodeKey, HashMap<String, String, S2>, S>,
+    attrs: &AttrsMap<S, S2>,
     current: Option<NodeKey>,
 ) -> Option<NodeKey> {
     let mut focusables: Vec<(i32, NodeKey)> = Vec::new();
@@ -108,9 +112,9 @@ pub fn prev<S: ::std::hash::BuildHasher, S2: ::std::hash::BuildHasher>(
     if order.is_empty() {
         return None;
     }
-    Some(match current {
-        None => order[order.len() - 1],
-        Some(current_key) => {
+    Some(current.map_or_else(
+        || order[order.len() - 1],
+        |current_key| {
             let pos = order
                 .iter()
                 .position(|key| *key == current_key)
@@ -121,6 +125,6 @@ pub fn prev<S: ::std::hash::BuildHasher, S2: ::std::hash::BuildHasher>(
                 pos - 1
             };
             order[idx]
-        }
-    })
+        },
+    ))
 }

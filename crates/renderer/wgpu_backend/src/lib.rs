@@ -2,10 +2,15 @@
 //! This crate contains all WGPU-specific rendering code and depends on the renderer crate
 //! for backend-agnostic types like DisplayList and DrawText.
 
+/// Error handling utilities for WGPU operations.
 mod error;
+/// Logical encoder for command recording.
 mod logical_encoder;
+/// Offscreen rendering utilities.
 mod offscreen;
+/// Pipeline creation and vertex buffer management.
 mod pipelines;
+/// Main rendering state and implementation.
 pub mod state;
 
 /// Text rendering utilities for batching and scissoring.

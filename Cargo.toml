@@ -142,6 +142,7 @@ multiple_crate_versions = { level = "allow", priority = 1 }
 module_name_repetitions = { level = "allow", priority = 1 }
 mod_module_files = { level = "allow", priority = 1 }
 blanket_clippy_restriction_lints = { level = "allow", priority = 1 }
+iter_over_hash_type = { level = "allow", priority = 1 }
 cargo_common_metadata = { level = "allow", priority = 1 }
 cast_possible_truncation = { level = "allow", priority = 1 }
 cast_sign_loss = { level = "allow", priority = 1 }
@@ -169,3 +170,4 @@ single_call_fn = { level = "allow", priority = 1 }
 question_mark_used = { level = "allow", priority = 1 }
 wildcard_imports = { level = "allow", priority = 1 }
 wildcard_enum_match_arm = { level = "allow", priority = 1 }
+implicit_hasher = { level = "allow", priority = 1 }
