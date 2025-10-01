@@ -66,9 +66,10 @@ fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>) -> VsOut {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let c = textureSample(t_color, t_sampler, in.uv);
-    // Texture already contains premultiplied RGB, just apply alpha multiplier
-    let final_alpha = c.a * u_params.alpha;
-    return vec4<f32>(c.rgb * u_params.alpha, final_alpha);
+    // Texture already contains premultiplied RGB (rgb * alpha).
+    // To apply additional opacity, multiply the entire premultiplied color by the opacity factor.
+    // This correctly scales both the premultiplied RGB and alpha channels.
+    return c * u_params.alpha;
 }
 "#;
 
