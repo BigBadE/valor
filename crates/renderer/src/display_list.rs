@@ -259,7 +259,6 @@ fn intersect_scissors(scissor_a: Scissor, scissor_b: Scissor) -> Scissor {
 /// Compute batches from a `DisplayList` by segmenting on clip stack boundaries.
 /// - Returns batches each carrying a list of quads and an optional scissor rect in framebuffer pixels.
 /// - Applies Opacity by multiplying per-quad alpha (no offscreen compositing yet).
-#[inline]
 pub fn batch_display_list(
     list: &DisplayList,
     framebuffer_width: u32,

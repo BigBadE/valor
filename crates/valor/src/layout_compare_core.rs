@@ -40,7 +40,6 @@ fn apply_basic_attrs(lay: &mut Layouter, node: NodeKey, map: &HashMap<String, St
 ///
 /// # Panics
 /// May panic if browser launch fails.
-#[inline]
 #[allow(
     clippy::cognitive_complexity,
     clippy::too_many_lines,
@@ -288,10 +287,6 @@ pub fn run(filter: Option<&str>) -> Result<usize, Error> {
 }
 
 /// Generate layout JSON from our layouter for comparison.
-#[allow(
-    clippy::iter_over_hash_type,
-    reason = "Test comparison logic, order not critical"
-)]
 fn our_layout_json(
     layouter: &Layouter,
     rects: &HashMap<NodeKey, LayoutRect>,

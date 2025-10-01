@@ -5,7 +5,6 @@ use css_orchestrator::style_model::ComputedStyle;
 
 /// Collapse ASCII whitespace runs to a single space and trim.
 /// A simplified approximation of CSS white-space collapsing for inline layout.
-#[inline]
 pub fn collapse_whitespace(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut in_whitespace = false;
@@ -24,14 +23,12 @@ pub fn collapse_whitespace(input: &str) -> String {
 }
 
 /// Return the UA default font-size in pixels when not specified by author CSS.
-#[inline]
 pub const fn default_font_size_px() -> i32 {
     16
 }
 
 /// Compute a default line-height in pixels for a given style.
 /// CSS initial `line-height` is `normal`, commonly ~1.2× font-size.
-#[inline]
 pub fn default_line_height_px(style: &ComputedStyle) -> i32 {
     let font_size_px: f32 = if style.font_size > 0.0 {
         style.font_size

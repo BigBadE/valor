@@ -17,7 +17,6 @@ pub type CustomProperties = HashMap<String, String>;
 /// custom properties environment for `var()` resolution.
 ///
 /// Spec: <https://www.w3.org/TR/css-variables-1/#custom-properties>
-#[inline]
 pub fn extract_custom_properties<S: BuildHasher + Default>(
     declarations: &HashMap<String, String, S>,
 ) -> CustomProperties {
@@ -53,7 +52,6 @@ pub fn extract_custom_properties<S: BuildHasher + Default>(
 /// resolver later without changing the signature.
 ///
 /// Spec: <https://www.w3.org/TR/css-variables-1/#using-variables>
-#[inline]
 pub fn resolve_vars_in_value(
     value_text: &str,
     current: &CustomProperties,
@@ -69,7 +67,6 @@ pub fn resolve_vars_in_value(
 /// resolution recurses separately.
 ///
 /// Spec: <https://www.w3.org/TR/css-variables-1/#cycles>
-#[inline]
 fn resolve_vars_internal(
     value_text: &str,
     current: &CustomProperties,
@@ -92,7 +89,6 @@ fn resolve_vars_internal(
 /// Returns the resolved string, possibly expanding nested vars.
 ///
 /// Spec: <https://www.w3.org/TR/css-variables-1/#using-variables>
-#[inline]
 fn resolve_single_var(
     args_text: &str,
     current: &CustomProperties,

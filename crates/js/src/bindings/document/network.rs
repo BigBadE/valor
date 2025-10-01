@@ -5,7 +5,6 @@ use crate::bindings::values::{JSError, JSValue};
 use crate::bindings::{HostContext, HostFnSync};
 use std::sync::Arc;
 /// Build `net_request` function - starts an async network request.
-#[inline]
 pub fn build_net_request() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -81,7 +80,6 @@ pub fn build_net_request() -> Arc<HostFnSync> {
 }
 
 /// Build `net_requestPoll` function - polls the status of an async network request.
-#[inline]
 pub fn build_net_request_poll() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {

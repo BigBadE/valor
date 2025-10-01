@@ -31,7 +31,6 @@ struct HorizInputs {
     right_auto: bool,
 }
 
-#[inline]
 fn compute_collapsed_top_for_child(
     ctx: &ChildLayoutCtx,
     margin_top_eff: i32,
@@ -48,7 +47,6 @@ fn compute_collapsed_top_for_child(
 
 /// Composite: compute collapsed top and initial position info for a child.
 /// Bridges §8.3.1 (collapsed top), §10.1 (parent origin), §10.3.3 (horizontal), and §9.4.3 (relative offsets).
-#[inline]
 pub fn compute_collapsed_and_position_public(
     layouter: &Layouter,
     child_key: NodeKey,
@@ -131,7 +129,6 @@ pub fn compute_collapsed_and_position_public(
 }
 
 /// Sum horizontal paddings and borders in pixels (clamped to >= 0 per side).
-#[inline]
 fn sum_horizontal(style: &ComputedStyle) -> i32 {
     let pad = style.padding.left.max(0.0f32) + style.padding.right.max(0.0f32);
     let border = style.border_width.left.max(0.0f32) + style.border_width.right.max(0.0f32);
@@ -140,7 +137,6 @@ fn sum_horizontal(style: &ComputedStyle) -> i32 {
 
 /// Box-sizing aware used border-box width computation.
 /// Spec: CSS 2.2 §10.3.3 + Box Sizing L3 (non-normative for conversion logic)
-#[inline]
 pub fn used_border_box_width(style: &ComputedStyle, fill_available_border_box_width: i32) -> i32 {
     let extras = sum_horizontal(style);
     let specified_bb_opt: Option<i32> = match style.box_sizing {
@@ -209,7 +205,6 @@ struct AutoHorizCtx {
 
 /// Compute width constraints converted to border-box space based on the element's box-sizing.
 /// Spec: CSS 2.2 §10.3.3 (constraints) — content-box vs border-box adjustments.
-#[inline]
 pub fn compute_width_constraints(style: &ComputedStyle, sides: &BoxSides) -> WidthConstraints {
     let extras = sides
         .padding_left
@@ -239,7 +234,6 @@ pub fn compute_width_constraints(style: &ComputedStyle, sides: &BoxSides) -> Wid
 
 /// Clamp a width value in border-box space using optional min/max constraints.
 /// Spec: CSS 2.2 §10.4 (min/max) — applied to the used width result.
-#[inline]
 pub fn clamp_width_to_min_max(
     width_value: i32,
     min_bb_opt: Option<i32>,
@@ -257,7 +251,6 @@ pub fn clamp_width_to_min_max(
 
 /// Spec: §10.3.3 — Compute horizontal placement with float bands applied.
 /// Returns `(used_border_box_width, child_x, resolved_margin_left)`.
-#[inline]
 pub fn compute_horizontal_position_public(
     style: &ComputedStyle,
     sides: &BoxSides,
@@ -313,7 +306,6 @@ pub fn compute_horizontal_position_public(
 
 /// Solve used border-box width and horizontal margins together for a non-replaced block in normal flow.
 /// Implements CSS 2.2 §10.3.3 for horizontal dimensions.
-#[inline]
 pub fn solve_block_horizontal(
     style: &ComputedStyle,
     sides: &BoxSides,
@@ -454,7 +446,6 @@ fn resolve_auto_width(mut ctx: AutoHorizCtx) -> (i32, i32, i32) {
 }
 
 /// Compute `lhs - rhs` allowing negative results using saturating ops.
-#[inline]
 const fn diff_i32(lhs: i32, rhs: i32) -> i32 {
     if lhs >= rhs {
         lhs.saturating_sub(rhs)
@@ -464,7 +455,6 @@ const fn diff_i32(lhs: i32, rhs: i32) -> i32 {
 }
 
 /// Log a single horizontal solve step for diagnostics.
-#[inline]
 fn log_horiz(path: &str, inputs: &HorizInputs, width_in: i32, out: (i32, i32, i32)) {
     debug!(
         "[HORIZ {path}] cont_w={} extras(pl,pr,bl,br)=({},{},{},{}) in(ml={},mr={}) auto(l={},r={}) width_in={} -> out(width={}, ml={}, mr={})",

@@ -8,7 +8,6 @@ use crate::{DOMUpdate, NodeKey};
 use core::sync::atomic::Ordering;
 use std::sync::Arc;
 /// Build getElementById(id) function.
-#[inline]
 pub fn build_get_element_by_id() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -44,7 +43,6 @@ pub fn build_get_element_by_id() -> Arc<HostFnSync> {
 }
 
 /// Build setTextContent(nodeKey, text) function.
-#[inline]
 pub fn build_set_text_content() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -122,7 +120,6 @@ pub fn build_set_text_content() -> Arc<HostFnSync> {
 }
 
 /// Build setAttribute(nodeKey, name, value) function.
-#[inline]
 pub fn build_set_attribute() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -153,7 +150,6 @@ pub fn build_set_attribute() -> Arc<HostFnSync> {
 }
 
 /// Build getAttribute(nodeKey, name) function.
-#[inline]
 pub fn build_get_attribute() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -194,7 +190,6 @@ pub fn build_get_attribute() -> Arc<HostFnSync> {
 }
 
 /// Build removeAttribute(nodeKey, name) function.
-#[inline]
 pub fn build_remove_attribute() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -224,7 +219,6 @@ pub fn build_remove_attribute() -> Arc<HostFnSync> {
 }
 
 /// Build getElementsByClassName(name) function.
-#[inline]
 pub fn build_get_elements_by_class_name() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -250,7 +244,6 @@ pub fn build_get_elements_by_class_name() -> Arc<HostFnSync> {
 }
 
 /// Build getElementsByTagName(name) function.
-#[inline]
 pub fn build_get_elements_by_tag_name() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -276,7 +269,6 @@ pub fn build_get_elements_by_tag_name() -> Arc<HostFnSync> {
 }
 
 /// Build querySelector(selector) function - basic support for #id, .class, tag.
-#[inline]
 pub fn build_query_selector() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -319,7 +311,6 @@ pub fn build_query_selector() -> Arc<HostFnSync> {
 }
 
 /// Build querySelectorAll(selector) function - basic support for #id, .class, tag.
-#[inline]
 pub fn build_query_selector_all() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -353,7 +344,6 @@ pub fn build_query_selector_all() -> Arc<HostFnSync> {
 }
 
 /// Build getChildIndex(parentKey, childKey) function.
-#[inline]
 pub fn build_get_child_index() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -379,7 +369,6 @@ pub fn build_get_child_index() -> Arc<HostFnSync> {
 }
 
 /// Build getChildrenKeys(parentKey) function.
-#[inline]
 pub fn build_get_children_keys() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -408,7 +397,6 @@ pub fn build_get_children_keys() -> Arc<HostFnSync> {
 }
 
 /// Build getTagName(nodeKey) function.
-#[inline]
 pub fn build_get_tag_name() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -429,7 +417,6 @@ pub fn build_get_tag_name() -> Arc<HostFnSync> {
 }
 
 /// Build getParentKey(nodeKey) function.
-#[inline]
 pub fn build_get_parent_key() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {

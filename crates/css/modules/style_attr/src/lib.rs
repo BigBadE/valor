@@ -29,7 +29,6 @@ pub struct Declaration {
 /// tokenizer-backed implementation in the css `syntax` module later.
 ///
 /// Spec: <https://www.w3.org/TR/css-style-attr/#interpreting>
-#[inline]
 pub fn parse_style_attribute(input: &str) -> Vec<Declaration> {
     if input.is_empty() {
         return Vec::new();
@@ -62,7 +61,6 @@ pub fn parse_style_attribute(input: &str) -> Vec<Declaration> {
 /// source-order behavior for duplicate declarations within the same block.
 ///
 /// Spec: <https://www.w3.org/TR/css-style-attr/#interpreting>
-#[inline]
 pub fn parse_style_attribute_into_map(input: &str) -> HashMap<String, String> {
     let mut map: HashMap<String, String> = HashMap::new();
     for decl in parse_style_attribute(input) {
@@ -74,7 +72,6 @@ pub fn parse_style_attribute_into_map(input: &str) -> HashMap<String, String> {
 /// ASCII whitespace per CSS Syntax (TAB, LF, FF, CR, SPACE).
 ///
 /// Spec: <https://www.w3.org/TR/css-syntax-3/#whitespace>
-#[inline]
 const fn is_ascii_whitespace(character: char) -> bool {
     matches!(
         character,
@@ -87,7 +84,6 @@ const fn is_ascii_whitespace(character: char) -> bool {
 /// This keeps behavior simple and predictable for property names.
 ///
 /// Spec: <https://www.w3.org/TR/css-style-attr/#interpreting>
-#[inline]
 fn to_ascii_lowercase(text: &str) -> String {
     // Avoid allocation if already lowercase ASCII
     let mut needs_lowercase = false;
@@ -111,7 +107,6 @@ fn to_ascii_lowercase(text: &str) -> String {
 /// of each property. This is a simple helper useful for tests.
 ///
 /// Spec: <https://www.w3.org/TR/css-style-attr/#interpreting>
-#[inline]
 pub fn normalize_style_attribute(input: &str) -> Vec<Declaration> {
     let mut last_index_for_property: HashMap<String, usize> = HashMap::new();
     let declarations = parse_style_attribute(input);

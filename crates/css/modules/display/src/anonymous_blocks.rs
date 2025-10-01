@@ -29,7 +29,6 @@ pub struct AnonymousChildRun {
     pub kind: AnonymousRunKind,
 }
 
-#[inline]
 /// Compute anonymous block candidate runs from a flattened list of child nodes.
 /// This is a pure analysis pass: it does not synthesize nodes.
 ///

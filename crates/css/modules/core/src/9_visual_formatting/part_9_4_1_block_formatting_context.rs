@@ -4,7 +4,6 @@
 use css_orchestrator::style_model::{ComputedStyle, Display, Float, Overflow, Position};
 
 /// Spec: §9.4.1 — Whether a given style establishes a new BFC.
-#[inline]
 pub const fn establishes_block_formatting_context(style: &ComputedStyle) -> bool {
     // Common BFC triggers:
     // - Float is not none

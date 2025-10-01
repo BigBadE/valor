@@ -162,7 +162,7 @@ impl App {
             // Prepend full-viewport bg
             let clear_color = state
                 .pages
-                .get_mut(1)
+                .get(1)
                 .map_or([1.0, 1.0, 1.0, 1.0], HtmlPage::background_rgba);
             let background = DisplayItem::Rect {
                 x: 0.0,
@@ -182,7 +182,7 @@ impl App {
             // Prepend chrome strip bg
             let clear_color = state
                 .pages
-                .get_mut(0)
+                .first()
                 .map_or([1.0, 1.0, 1.0, 1.0], HtmlPage::background_rgba);
             let background = DisplayItem::Rect {
                 x: 0.0,

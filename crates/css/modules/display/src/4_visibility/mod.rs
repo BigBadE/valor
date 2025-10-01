@@ -3,7 +3,6 @@
 //
 use css_orchestrator::style_model::ComputedStyle;
 
-#[inline]
 /// Determine whether a box should be considered visible for layout purposes.
 ///
 /// Spec: CSS Display 3 — §4 Visibility

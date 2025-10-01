@@ -16,7 +16,6 @@ pub enum DisplayKeyword {
 /// Returns true when the element establishes a Flex Formatting Context (FFC).
 ///
 /// Spec: <https://www.w3.org/TR/css-flexbox-1/#flex-containers>
-#[inline]
 pub const fn establishes_flex_formatting_context(display: DisplayKeyword) -> bool {
     matches!(display, DisplayKeyword::Flex | DisplayKeyword::InlineFlex)
 }

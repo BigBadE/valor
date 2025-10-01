@@ -69,7 +69,6 @@ impl HostLogger for ConsoleLogger {
 ///   `console|<level>|<joined-args>`
 /// where `<level>` is one of log, info, warn, error and `<joined-args>` is a space-
 /// joined `String()` representation of the arguments.
-#[inline]
 pub const fn console_shim_js() -> &'static str {
     "
     (function(){

@@ -17,7 +17,6 @@
     clippy::shadow_unrelated,
     clippy::map_unwrap_or,
     clippy::explicit_iter_loop,
-    clippy::iter_over_hash_type,
     clippy::ref_option,
     clippy::option_if_let_else,
     clippy::str_to_string,

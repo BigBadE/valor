@@ -27,7 +27,6 @@ static BASELINE_PROVIDER: OnceCell<Arc<dyn InlineBaselineProvider>> = OnceCell::
 /// Register a global inline baseline provider.
 /// Returns true on first successful registration; false if a provider was already set.
 /// Call this from your inline/text engine initialization.
-#[inline]
 pub fn set_inline_baseline_provider<P>(provider: P) -> bool
 where
     P: InlineBaselineProvider + 'static,
@@ -36,7 +35,6 @@ where
 }
 
 /// Get the registered baseline provider, if any.
-#[inline]
 pub fn get_inline_baseline_provider() -> Option<Arc<dyn InlineBaselineProvider>> {
     BASELINE_PROVIDER.get().cloned()
 }
@@ -83,7 +81,6 @@ impl InlineBaselineProvider for DefaultTextBaselineProvider {
 }
 
 /// Register the default text baseline provider if none is set yet. Returns true if registration is active.
-#[inline]
 pub fn register_default_text_baseline_provider() -> bool {
     if get_inline_baseline_provider().is_some() {
         return true;

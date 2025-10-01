@@ -10,7 +10,6 @@ use csscolorparser::Color;
 /// Spec: <https://www.w3.org/TR/css-color-4/#typedef-color>
 /// Spec: <https://www.w3.org/TR/css-color-4/#legacy-color-values>
 pub type Rgba8Tuple = (u8, u8, u8, u8);
-#[inline]
 pub fn parse_css_color(input: &str) -> Option<Rgba8Tuple> {
     let parsed: Color = input.parse().ok()?;
     let channels = parsed.to_rgba8();

@@ -1,4 +1,4 @@
-use crate::snapshots::IRect;
+use crate::snapshots::{IRect, SnapshotItem, SnapshotSlice};
 use css::layout_helpers::{collapse_whitespace, reorder_bidi_for_display};
 use css::style_types::{BorderStyle, ComputedStyle, Overflow, Position};
 use css_core::{LayoutNodeKind, LayoutRect};
@@ -13,59 +13,102 @@ use glyphon::{
     Attrs as GlyphonAttrs, Buffer as GlyphonBuffer, FontSystem as GlyphonFontSystem,
     Metrics as GlyphonMetrics, Shaping as GlyphonShaping,
 };
-use once_cell::sync::Lazy;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 
-// Module-scoped aliases to simplify complex tuple types
-type SnapshotItem = (NodeKey, LayoutNodeKind, Vec<NodeKey>);
-type SnapshotSlice<'a> = &'a [SnapshotItem];
+/// Walker context bundling borrowed maps for shallow recursion helpers.
+///
+/// This struct aggregates all the state needed during display list generation
+/// to avoid passing many individual parameters through recursive calls.
+struct WalkCtx<'context> {
+    /// Maps node keys to their layout kind (`Document`, `Block`, `InlineText`).
+    kind_map: &'context HashMap<NodeKey, LayoutNodeKind>,
 
-// Walker context bundling borrowed maps for shallow recursion helpers
-struct WalkCtx<'a> {
-    kind_map: &'a HashMap<NodeKey, LayoutNodeKind>,
-    children_map: &'a HashMap<NodeKey, Vec<NodeKey>>,
-    rects: &'a HashMap<NodeKey, LayoutRect>,
-    computed_map: &'a HashMap<NodeKey, ComputedStyle>,
-    computed_fallback: &'a HashMap<NodeKey, ComputedStyle>,
-    computed_robust: &'a Option<HashMap<NodeKey, ComputedStyle>>,
-    parent_map: &'a HashMap<NodeKey, NodeKey>,
+    /// Maps parent node keys to their children.
+    children_map: &'context HashMap<NodeKey, Vec<NodeKey>>,
+
+    /// Maps node keys to their computed layout rectangles.
+    rects: &'context HashMap<NodeKey, LayoutRect>,
+
+    /// Primary map of computed styles from the CSS engine.
+    computed_map: &'context HashMap<NodeKey, ComputedStyle>,
+
+    /// Fallback computed styles for nodes missing primary styles.
+    computed_fallback: &'context HashMap<NodeKey, ComputedStyle>,
+
+    /// Optional robust computed styles (third-tier fallback).
+    computed_robust: &'context Option<HashMap<NodeKey, ComputedStyle>>,
+
+    /// Maps child node keys to their parent for upward traversal.
+    parent_map: &'context HashMap<NodeKey, NodeKey>,
 }
 
-#[inline]
-fn stacking_boundary_for(cs: &ComputedStyle) -> Option<StackingContextBoundary> {
-    if let Some(alpha) = cs.opacity
+/// Determines if a computed style establishes a stacking context boundary.
+///
+/// Returns `Some` with the appropriate boundary type if the style creates
+/// a stacking context via opacity or positioned z-index.
+#[must_use]
+fn stacking_boundary_for(computed_style: &ComputedStyle) -> Option<StackingContextBoundary> {
+    if let Some(alpha) = computed_style.opacity
         && alpha < 1.0
     {
         return Some(StackingContextBoundary::Opacity { alpha });
     }
-    if !matches!(cs.position, Position::Static)
-        && let Some(z) = cs.z_index
+    if !matches!(computed_style.position, Position::Static)
+        && let Some(z_index) = computed_style.z_index
     {
-        return Some(StackingContextBoundary::ZIndex { z_index: z });
+        return Some(StackingContextBoundary::ZIndex { z_index });
     }
     None
 }
 
+/// Input data retained between frames for incremental display list generation.
+///
+/// This structure aggregates all the state needed to build a display list,
+/// including layout rectangles, computed styles, and UI overlays.
 pub struct RetainedInputs {
+    /// Layout rectangles for each node in the tree.
     pub rects: HashMap<NodeKey, LayoutRect>,
+
+    /// Snapshot of the layout tree structure.
     pub snapshot: Vec<SnapshotItem>,
+
+    /// Primary computed styles from the CSS engine.
     pub computed_map: HashMap<NodeKey, ComputedStyle>,
+
+    /// Fallback computed styles for nodes missing primary styles.
     pub computed_fallback: HashMap<NodeKey, ComputedStyle>,
+
+    /// Optional robust computed styles (third-tier fallback).
     pub computed_robust: Option<HashMap<NodeKey, ComputedStyle>>,
+
+    /// Selection overlay rectangle (x0, y0, x1, y1) in screen coordinates.
     pub selection_overlay: Option<IRect>,
+
+    /// Currently focused node for focus ring rendering.
     pub focused_node: Option<NodeKey>,
+
+    /// Whether to render the heads-up display (HUD) with perf metrics.
     pub hud_enabled: bool,
+
+    /// Number of deferred spillover operations (for HUD display).
     pub spillover_deferred: u64,
+
+    /// Number of nodes restyled in the last style pass (for HUD display).
     pub last_style_restyled_nodes: u64,
 }
 
-// Attempt to derive ascent/descent from the actual shaped line content. At this pinned
-// glyphon/cosmic-text revision, we can access run glyphs and their cache keys to obtain
-// a font_id; however, resolving that id into per-face metrics is not available via a stable
-// public API here. As a result, we currently fall back to a safe heuristic while keeping the
-// shaping of the real line content in one place to swap in true metrics when available.
-#[inline]
+/// Derives line metrics (ascent, descent, leading) from shaped text content.
+///
+/// Attempts to use real font metrics via glyphon shaping. Currently falls back
+/// to heuristic ratios (80% ascent, 20% descent) when face metrics are unavailable.
+///
+/// Returns: `(ascent_px, descent_px, leading_px, optional_line_height)`
+///
+/// # Panics
+///
+/// Panics if the glyphon font system mutex is poisoned.
+#[must_use]
 fn derive_line_metrics_from_content(
     line_text: &str,
     font_size: f32,
@@ -74,17 +117,22 @@ fn derive_line_metrics_from_content(
         // Nothing to measure; avoid shaping overhead.
         return (font_size * 0.8, font_size * 0.2, 0.0, None);
     }
-    let mut fs = GLYPHON_FONT_SYSTEM
+    let mut font_system = GLYPHON_FONT_SYSTEM
         .lock()
         .expect("glyphon font system lock poisoned");
     let metrics = GlyphonMetrics::new(font_size, font_size);
-    let mut buffer = GlyphonBuffer::new(&mut fs, metrics);
+    let mut buffer = GlyphonBuffer::new(&mut font_system, metrics);
     let attrs = GlyphonAttrs::new();
-    buffer.set_text(&mut fs, line_text, &attrs, GlyphonShaping::Advanced);
+    buffer.set_text(
+        &mut font_system,
+        line_text,
+        &attrs,
+        GlyphonShaping::Advanced,
+    );
     // Probe the first run/glyph to obtain the font_id being used for this content.
     // Keep this in case future versions allow resolving face metrics via font_id.
     let first_run = match buffer.layout_runs().next() {
-        Some(r) => r,
+        Some(run) => run,
         None => {
             warn!(
                 "glyph metrics fallback: no runs; using heuristic; content='{line_text}' size={font_size}"
@@ -93,7 +141,7 @@ fn derive_line_metrics_from_content(
         }
     };
     let glyph = match first_run.glyphs.first() {
-        Some(g) => g,
+        Some(glyph_data) => glyph_data,
         None => {
             warn!(
                 "glyph metrics fallback: no glyphs; using heuristic; content='{line_text}' size={font_size}"
@@ -113,27 +161,34 @@ fn derive_line_metrics_from_content(
         );
     }
     let leading_px = used_line_height_opt
-        .map(|lh| (lh - (ascent_px + descent_px)).max(0.0))
+        .map(|line_height| (line_height - (ascent_px + descent_px)).max(0.0))
         .unwrap_or(0.0);
     (ascent_px, descent_px, leading_px, used_line_height_opt)
 }
 
-// Shared glyphon FontSystem for measurement
-static GLYPHON_FONT_SYSTEM: Lazy<Mutex<GlyphonFontSystem>> =
-    Lazy::new(|| Mutex::new(GlyphonFontSystem::new()));
+/// Shared glyphon `FontSystem` for text measurement and shaping.
+static GLYPHON_FONT_SYSTEM: LazyLock<Mutex<GlyphonFontSystem>> =
+    LazyLock::new(|| Mutex::new(GlyphonFontSystem::new()));
 
-#[inline]
+/// Measures the width of shaped text in pixels.
+///
+/// Uses glyphon to shape the text and sum the widths of all layout runs.
+///
+/// # Panics
+///
+/// Panics if the glyphon font system mutex is poisoned.
+#[must_use]
 fn measure_text_width_px(text: &str, font_size: f32) -> i32 {
     if text.is_empty() {
         return 0;
     }
-    let mut fs = GLYPHON_FONT_SYSTEM
+    let mut font_system = GLYPHON_FONT_SYSTEM
         .lock()
         .expect("glyphon font system lock poisoned");
     let metrics = GlyphonMetrics::new(font_size, font_size);
-    let mut buffer = GlyphonBuffer::new(&mut fs, metrics);
+    let mut buffer = GlyphonBuffer::new(&mut font_system, metrics);
     let attrs = GlyphonAttrs::new();
-    buffer.set_text(&mut fs, text, &attrs, GlyphonShaping::Advanced);
+    buffer.set_text(&mut font_system, text, &attrs, GlyphonShaping::Advanced);
     buffer
         .layout_runs()
         .map(|run| run.line_w)
@@ -141,116 +196,131 @@ fn measure_text_width_px(text: &str, font_size: f32) -> i32 {
         .round() as i32
 }
 
-#[inline]
-fn push_border_items(list: &mut DisplayList, rect: &LayoutRect, cs: &ComputedStyle) {
-    if let Some(items) = build_border_items(rect, cs) {
+/// Pushes border display items to the display list.
+///
+/// Builds and appends border rectangles for all four sides if the border is visible.
+fn push_border_items(list: &mut DisplayList, rect: &LayoutRect, computed_style: &ComputedStyle) {
+    if let Some(items) = build_border_items(rect, computed_style) {
         for item in items {
             list.push(item);
         }
     }
 }
 
-#[inline]
-fn build_border_items(rect: &LayoutRect, cs: &ComputedStyle) -> Option<Vec<DisplayItem>> {
-    let bw = cs.border_width;
-    let bs = cs.border_style;
-    let bc = cs.border_color;
+/// Builds border display items for a layout rectangle.
+///
+/// Returns `None` if the border is transparent or not solid.
+/// Returns `Some` with up to 4 rectangles (top, right, bottom, left).
+#[must_use]
+fn build_border_items(
+    rect: &LayoutRect,
+    computed_style: &ComputedStyle,
+) -> Option<Vec<DisplayItem>> {
+    let border_width = computed_style.border_width;
+    let border_style = computed_style.border_style;
+    let border_color = computed_style.border_color;
     let color = [
-        bc.red as f32 / 255.0,
-        bc.green as f32 / 255.0,
-        bc.blue as f32 / 255.0,
-        bc.alpha as f32 / 255.0,
+        f32::from(border_color.red) / 255.0,
+        f32::from(border_color.green) / 255.0,
+        f32::from(border_color.blue) / 255.0,
+        f32::from(border_color.alpha) / 255.0,
     ];
-    if !(color[3] > 0.0 && matches!(bs, BorderStyle::Solid)) {
+    if !(color[3] > 0.0 && matches!(border_style, BorderStyle::Solid)) {
         return None;
     }
-    let x = rect.x;
-    let y = rect.y;
-    let w = rect.width;
-    let h = rect.height;
-    let t = bw.top.max(0.0);
-    let r = bw.right.max(0.0);
-    let b = bw.bottom.max(0.0);
-    let l = bw.left.max(0.0);
+    let rect_x = rect.x;
+    let rect_y = rect.y;
+    let rect_width = rect.width;
+    let rect_height = rect.height;
+    let top_width = border_width.top.max(0.0);
+    let right_width = border_width.right.max(0.0);
+    let bottom_width = border_width.bottom.max(0.0);
+    let left_width = border_width.left.max(0.0);
     let mut items: Vec<DisplayItem> = Vec::with_capacity(4);
-    if t > 0.0 {
+    if top_width > 0.0 {
         items.push(DisplayItem::Rect {
-            x,
-            y,
-            width: w,
-            height: t,
+            x: rect_x,
+            y: rect_y,
+            width: rect_width,
+            height: top_width,
             color,
         });
     }
-    if b > 0.0 {
+    if bottom_width > 0.0 {
         items.push(DisplayItem::Rect {
-            x,
-            y: y + h - b,
-            width: w,
-            height: b,
+            x: rect_x,
+            y: rect_y + rect_height - bottom_width,
+            width: rect_width,
+            height: bottom_width,
             color,
         });
     }
-    if l > 0.0 {
+    if left_width > 0.0 {
         items.push(DisplayItem::Rect {
-            x,
-            y,
-            width: l,
-            height: h,
+            x: rect_x,
+            y: rect_y,
+            width: left_width,
+            height: rect_height,
             color,
         });
     }
-    if r > 0.0 {
+    if right_width > 0.0 {
         items.push(DisplayItem::Rect {
-            x: x + w - r,
-            y,
-            width: r,
-            height: h,
+            x: rect_x + rect_width - right_width,
+            y: rect_y,
+            width: right_width,
+            height: rect_height,
             color,
         });
     }
     Some(items)
 }
 
-#[inline]
+/// Computes a z-index sort key for a child node.
+///
+/// Returns `(stacking_bucket, dom_order)` where:
+/// - `stacking_bucket`: -2 for negative z-index, 0 for static, 1 for positioned auto/0, 2 for positive
+/// - `dom_order`: the node's raw key value for stable sorting within buckets
+///
+/// Per CSS 2.2 paint order: negative z-index, normal flow, positioned auto/0, positive z-index.
+#[must_use]
 fn z_key_for_child(
     child: NodeKey,
     parent_map: &HashMap<NodeKey, NodeKey>,
     computed_map: &HashMap<NodeKey, ComputedStyle>,
     computed_fallback: &HashMap<NodeKey, ComputedStyle>,
-    computed_robust: &Option<HashMap<NodeKey, ComputedStyle>>,
+    computed_robust: Option<&HashMap<NodeKey, ComputedStyle>>,
 ) -> (i32, u64) {
     // Inline nearest-style lookup to avoid deep nesting and inner function coupling
     let style = {
         let mut current = Some(child);
         let mut found: Option<&ComputedStyle> = None;
-        while let Some(nkey) = current {
-            if let Some(cs) = computed_robust
-                .as_ref()
-                .and_then(|m| m.get(&nkey))
-                .or_else(|| computed_fallback.get(&nkey))
-                .or_else(|| computed_map.get(&nkey))
+        while let Some(node_key) = current {
+            if let Some(computed_style) = computed_robust
+                .and_then(|map| map.get(&node_key))
+                .or_else(|| computed_fallback.get(&node_key))
+                .or_else(|| computed_map.get(&node_key))
             {
-                found = Some(cs);
+                found = Some(computed_style);
                 break;
             }
-            current = parent_map.get(&nkey).copied();
+            current = parent_map.get(&node_key).copied();
         }
         found
     };
-    let (pos, zi_opt) = style
-        .map(|cs| (cs.position, cs.z_index))
+    let (position, z_index_opt) = style
+        .map(|computed_style| (computed_style.position, computed_style.z_index))
         .unwrap_or((Position::Static, None));
     // CSS 2.2 stacking order (simplified):
     //  - Negative z-index positioned descendants behind
     //  - Normal flow (non-positioned)
     //  - Positioned with z-index auto/0
     //  - Positive z-index positioned descendants on top
-    let positioned = !matches!(pos, Position::Static);
+    let positioned = !matches!(position, Position::Static);
     let bucket: i32 = if positioned {
-        match zi_opt {
-            Some(v) if v < 0 => -2,
-            Some(v) if v > 0 => 2,
+        match z_index_opt {
+            Some(value) if value < 0 => -2,
+            Some(value) if value > 0 => 2,
             Some(_) | None => 1,
         }
     } else {
@@ -260,13 +330,25 @@ fn z_key_for_child(
     (bucket, child.0)
 }
 
+/// Builder trait for constructing display lists from layout data.
+///
+/// Implementations can customize how layout information is transformed into
+/// renderer-consumable display items, rectangles, and text runs.
 pub trait DisplayBuilder: Send + Sync {
+    /// Builds a complete display list from retained frame inputs.
+    ///
+    /// Processes layout rectangles, computed styles, and UI overlays to produce
+    /// a hierarchical display list with stacking contexts and clipping regions.
     fn build_retained(&self, inputs: RetainedInputs) -> DisplayList;
+
+    /// Builds a simple list of filled rectangles for debugging layout boxes.
     fn build_rect_list(
         &self,
         rects: &HashMap<NodeKey, LayoutRect>,
         snapshot: SnapshotSlice,
     ) -> Vec<renderer::DrawRect>;
+
+    /// Builds a list of text runs with font properties and clipping bounds.
     fn build_text_list(
         &self,
         rects: &HashMap<NodeKey, LayoutRect>,
@@ -275,12 +357,16 @@ pub trait DisplayBuilder: Send + Sync {
     ) -> Vec<renderer::DrawText>;
 }
 
+/// Default implementation of `DisplayBuilder` using the module's display functions.
 pub struct DefaultDisplayBuilder;
 
 impl DisplayBuilder for DefaultDisplayBuilder {
+    #[inline]
     fn build_retained(&self, inputs: RetainedInputs) -> DisplayList {
         build_retained(inputs)
     }
+
+    #[inline]
     fn build_rect_list(
         &self,
         rects: &HashMap<NodeKey, LayoutRect>,
@@ -288,6 +374,8 @@ impl DisplayBuilder for DefaultDisplayBuilder {
     ) -> Vec<renderer::DrawRect> {
         build_rect_list(rects, snapshot)
     }
+
+    #[inline]
     fn build_text_list(
         &self,
         rects: &HashMap<NodeKey, LayoutRect>,
@@ -298,12 +386,16 @@ impl DisplayBuilder for DefaultDisplayBuilder {
     }
 }
 
+/// Builds a simple list of white-filled rectangles for all block layout boxes.
+///
+/// Used for debugging and visualizing layout structure. Ignores inline text nodes.
+#[must_use]
 pub fn build_rect_list(
     rects: &HashMap<NodeKey, LayoutRect>,
     snapshot: SnapshotSlice,
 ) -> Vec<renderer::DrawRect> {
     let mut list: Vec<renderer::DrawRect> = Vec::new();
-    for (node, kind, _children) in snapshot.iter() {
+    for (node, kind, _children) in snapshot {
         if !matches!(kind, LayoutNodeKind::Block { .. }) {
             continue;
         }
@@ -320,6 +412,14 @@ pub fn build_rect_list(
     list
 }
 
+/// Builds a list of text runs with proper line breaking, metrics, and clipping.
+///
+/// Processes inline text nodes from the layout snapshot, applying:
+/// - Font size and color from computed styles
+/// - Line breaking using Unicode `UAX#14`
+/// - Overflow clipping to content-box bounds
+/// - `BiDi` reordering for visual display
+#[must_use]
 pub fn build_text_list(
     rects: &HashMap<NodeKey, LayoutRect>,
     snapshot: SnapshotSlice,
@@ -328,34 +428,34 @@ pub fn build_text_list(
     let mut list: Vec<renderer::DrawText> = Vec::new();
     // Build a parent map so inline text can inherit from its element parent
     let mut parent_of: HashMap<NodeKey, NodeKey> = HashMap::new();
-    for (parent, _kind, children) in snapshot.iter() {
-        for &c in children {
-            parent_of.insert(c, *parent);
+    for (parent, _kind, children) in snapshot {
+        for &child in children {
+            parent_of.insert(child, *parent);
         }
     }
     // Helper: climb ancestors until a computed style is found
     let nearest_style = |start: NodeKey| -> Option<&ComputedStyle> {
-        let mut cur = Some(start);
-        while let Some(n) = cur {
-            if let Some(cs) = computed_map.get(&n) {
-                return Some(cs);
+        let mut current = Some(start);
+        while let Some(node) = current {
+            if let Some(computed_style) = computed_map.get(&node) {
+                return Some(computed_style);
             }
-            cur = parent_of.get(&n).copied();
+            current = parent_of.get(&node).copied();
         }
         None
     };
     // Helper: climb ancestors until a rect is found (inline text nodes don't have rects).
     let nearest_rect = |start: NodeKey| -> Option<LayoutRect> {
-        let mut cur = Some(start);
-        while let Some(n) = cur {
-            if let Some(r) = rects.get(&n) {
-                return Some(*r);
+        let mut current = Some(start);
+        while let Some(node) = current {
+            if let Some(rect) = rects.get(&node) {
+                return Some(*rect);
             }
-            cur = parent_of.get(&n).copied();
+            current = parent_of.get(&node).copied();
         }
         None
     };
-    for (key, kind, _children) in snapshot.iter() {
+    for (key, kind, _children) in snapshot {
         if let LayoutNodeKind::InlineText { text } = kind {
             if text.trim().is_empty() {
                 continue;
@@ -364,19 +464,18 @@ pub fn build_text_list(
                 .or_else(|| nearest_rect(parent_of.get(key).copied().unwrap_or(*key)));
             if let Some(rect) = rect {
                 let style_opt = nearest_style(*key);
-                let (font_size, color_rgb) = if let Some(cs) = style_opt {
-                    let c = cs.color;
-                    (
-                        cs.font_size,
-                        [
-                            c.red as f32 / 255.0,
-                            c.green as f32 / 255.0,
-                            c.blue as f32 / 255.0,
-                        ],
-                    )
-                } else {
-                    (16.0, [0.0, 0.0, 0.0])
-                };
+                let (font_size, color_rgb) =
+                    style_opt.map_or((16.0, [0.0, 0.0, 0.0]), |computed_style| {
+                        let text_color = computed_style.color;
+                        (
+                            computed_style.font_size,
+                            [
+                                f32::from(text_color.red) / 255.0,
+                                f32::from(text_color.green) / 255.0,
+                                f32::from(text_color.blue) / 255.0,
+                            ],
+                        )
+                    });
                 let collapsed = collapse_whitespace(text);
                 if collapsed.is_empty() {
                     continue;
@@ -384,12 +483,12 @@ pub fn build_text_list(
                 // When overflow is hidden/clip, clip to the content-box width per CSS Display/Overflow.
                 // Border-box rect is provided; compute content-box left and width.
                 let (content_left_x, content_width_px) = style_opt
-                    .filter(|cs| matches!(cs.overflow, Overflow::Hidden))
-                    .map(|cs| {
-                        let pad_left = cs.padding.left.max(0.0) as i32;
-                        let pad_right = cs.padding.right.max(0.0) as i32;
-                        let border_left = cs.border_width.left.max(0.0) as i32;
-                        let border_right = cs.border_width.right.max(0.0) as i32;
+                    .filter(|computed_style| matches!(computed_style.overflow, Overflow::Hidden))
+                    .map(|computed_style| {
+                        let pad_left = computed_style.padding.left.max(0.0) as i32;
+                        let pad_right = computed_style.padding.right.max(0.0) as i32;
+                        let border_left = computed_style.border_width.left.max(0.0) as i32;
+                        let border_right = computed_style.border_width.right.max(0.0) as i32;
                         let left_x = (rect.x.round() as i32) + border_left + pad_left;
                         let width_px = (rect.width.round() as i32)
                             .saturating_sub(border_left + pad_left + pad_right + border_right);
@@ -398,17 +497,20 @@ pub fn build_text_list(
                     .unwrap_or(((rect.x.round() as i32), (rect.width.round() as i32)));
                 let max_width_px = content_width_px.max(0);
                 // Prefer computed line-height when available; otherwise use real metrics if available.
-                let (asc_px, desc_px, lead_px, lh_from_glyph) =
+                let (ascent_px, descent_px, leading_px, line_height_from_glyph) =
                     derive_line_metrics_from_content(&collapsed, font_size);
-                let computed_lh = style_opt.and_then(|cs| cs.line_height);
-                let used_line_height = computed_lh.or(lh_from_glyph).unwrap_or_else(|| {
-                    // Spec-like normal using metrics; keep a minimum padding to avoid clip.
-                    let sum = asc_px + desc_px + lead_px;
-                    sum.max(font_size + 2.0)
-                });
+                let computed_line_height =
+                    style_opt.and_then(|computed_style| computed_style.line_height);
+                let used_line_height = computed_line_height
+                    .or(line_height_from_glyph)
+                    .unwrap_or_else(|| {
+                        // Spec-like normal using metrics; keep a minimum padding to avoid clip.
+                        let sum = ascent_px + descent_px + leading_px;
+                        sum.max(font_size + 2.0)
+                    });
                 let line_height = used_line_height.round() as i32;
-                let ascent = asc_px.round() as i32; // placeholder until face metrics are available
-                let _descent = desc_px.round() as i32;
+                let ascent = ascent_px.round() as i32; // placeholder until face metrics are available
+                let _descent = descent_px.round() as i32;
                 let lines = wrap_text_uax14(&collapsed, font_size, max_width_px);
                 for (line_index, raw_line) in lines.iter().enumerate() {
                     let visual_line = reorder_bidi_for_display(raw_line);
@@ -433,6 +535,10 @@ pub fn build_text_list(
     list
 }
 
+/// Pushes text display items to the display list with line breaking and `BiDi` reordering.
+///
+/// Used for immediate-mode text rendering without computed styles. Derives line
+/// metrics from glyph shaping and wraps text using `UAX#14` line breaking.
 fn push_text_item(
     list: &mut DisplayList,
     rect: &LayoutRect,
@@ -446,13 +552,13 @@ fn push_text_item(
     }
     let max_width_px = (rect.width.round() as i32).max(0);
     // Immediate path does not have computed styles; prefer glyph-provided line height.
-    let (asc_px, desc_px, lead_px, lh_from_glyph) =
+    let (ascent_px, descent_px, leading_px, line_height_from_glyph) =
         derive_line_metrics_from_content(&collapsed, font_size);
-    let used_line_height =
-        lh_from_glyph.unwrap_or_else(|| (asc_px + desc_px + lead_px).max(font_size + 2.0));
+    let used_line_height = line_height_from_glyph
+        .unwrap_or_else(|| (ascent_px + descent_px + leading_px).max(font_size + 2.0));
     let line_height = used_line_height.round() as i32;
-    let ascent = asc_px.round() as i32; // placeholder until face metrics are available
-    let _descent = desc_px.round() as i32;
+    let ascent = ascent_px.round() as i32; // placeholder until face metrics are available
+    let _descent = descent_px.round() as i32;
     let broken_lines = wrap_text_uax14(&collapsed, font_size, max_width_px);
     for (line_index, raw_line) in broken_lines.iter().enumerate() {
         let visual_line = reorder_bidi_for_display(raw_line);
@@ -477,9 +583,18 @@ fn push_text_item(
     }
 }
 
-// Break lines using Unicode line breaking (UAX#14), greedily packing runs while
-// measuring shaped widths. This improves fidelity for scripts where whitespace-only
-// breaking is insufficient.
+/// Breaks text into lines using Unicode line breaking (UAX#14).
+///
+/// Greedily packs text runs while measuring shaped widths. This improves fidelity
+/// for scripts where whitespace-only breaking is insufficient.
+///
+/// Returns a vector of line strings, trimming trailing spaces from each line.
+///
+/// # Panics
+///
+/// May panic if the `linebreaks` iterator produces indices that are not at UTF-8
+/// character boundaries. This should not occur with well-formed text.
+#[must_use]
 fn wrap_text_uax14(text: &str, font_size: f32, max_width_px: i32) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     if max_width_px <= 0 || text.is_empty() {
@@ -490,14 +605,17 @@ fn wrap_text_uax14(text: &str, font_size: f32, max_width_px: i32) -> Vec<String>
     }
     let mut start = 0usize;
     let mut last_good = 0usize;
-    for (idx, opp) in linebreaks(text) {
-        let is_break = matches!(opp, BreakOpportunity::Mandatory | BreakOpportunity::Allowed);
+    for (index, opportunity) in linebreaks(text) {
+        let is_break = matches!(
+            opportunity,
+            BreakOpportunity::Mandatory | BreakOpportunity::Allowed
+        );
         if is_break {
             // Measure candidate slice
-            let candidate = &text[start..idx];
-            let w = measure_text_width_px(candidate, font_size);
-            if w <= max_width_px {
-                last_good = idx;
+            let candidate = &text[start..index];
+            let width = measure_text_width_px(candidate, font_size);
+            if width <= max_width_px {
+                last_good = index;
                 continue;
             }
             // Emit last good (or force break at current if none)
@@ -513,7 +631,7 @@ fn wrap_text_uax14(text: &str, font_size: f32, max_width_px: i32) -> Vec<String>
                 start = last_good;
             } else {
                 // Force character-level break to avoid infinite loop
-                let end = idx.max(start + 1);
+                let end = index.max(start + 1);
                 let mut slice = text[start..end].to_string();
                 while slice.ends_with(' ') {
                     slice.pop();
@@ -542,7 +660,97 @@ fn wrap_text_uax14(text: &str, font_size: f32, max_width_px: i32) -> Vec<String>
     lines
 }
 
+/// Builds a complete display list from retained layout inputs.
+///
+/// Traverses the layout tree depth-first, emitting display items for:
+/// - Background fills and borders
+/// - Text runs with line breaking
+/// - Stacking contexts (opacity, z-index)
+/// - Clipping regions (overflow: hidden/clip)
+/// - UI overlays (selection, focus rings, HUD)
+///
+/// Returns a hierarchical display list ready for GPU rendering.
+#[must_use]
 pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
+    // Helper: finds nearest ancestor with a computed style (for inline text inheritance).
+    fn nearest_style<'style>(
+        start: NodeKey,
+        parent_map: &HashMap<NodeKey, NodeKey>,
+        computed_map: &'style HashMap<NodeKey, ComputedStyle>,
+        computed_fallback: &'style HashMap<NodeKey, ComputedStyle>,
+        computed_robust: Option<&'style HashMap<NodeKey, ComputedStyle>>,
+    ) -> Option<&'style ComputedStyle> {
+        let mut current = Some(start);
+        while let Some(node) = current {
+            if let Some(computed_style) = computed_robust
+                .and_then(|map| map.get(&node))
+                .or_else(|| computed_fallback.get(&node))
+                .or_else(|| computed_map.get(&node))
+            {
+                return Some(computed_style);
+            }
+            current = parent_map.get(&node).copied();
+        }
+        None
+    }
+
+    // Helper: finds nearest ancestor with a layout rect (inline text nodes lack rects).
+    #[inline]
+    fn nearest_rect(
+        start: NodeKey,
+        parent_map: &HashMap<NodeKey, NodeKey>,
+        rects: &HashMap<NodeKey, LayoutRect>,
+    ) -> Option<LayoutRect> {
+        let mut current = Some(start);
+        while let Some(node) = current {
+            if let Some(rect) = rects.get(&node) {
+                return Some(*rect);
+            }
+            current = parent_map.get(&node).copied();
+        }
+        None
+    }
+
+    // Helper: orders children by z-index stacking buckets for correct paint order.
+    #[inline]
+    fn order_children(
+        children: &[NodeKey],
+        parent_map: &HashMap<NodeKey, NodeKey>,
+        computed_map: &HashMap<NodeKey, ComputedStyle>,
+        computed_fallback: &HashMap<NodeKey, ComputedStyle>,
+        computed_robust: Option<&HashMap<NodeKey, ComputedStyle>>,
+    ) -> Vec<NodeKey> {
+        let mut ordered: Vec<NodeKey> = children.to_vec();
+        ordered.sort_by_key(|child| {
+            let (bucket, dom_order) = z_key_for_child(
+                *child,
+                parent_map,
+                computed_map,
+                computed_fallback,
+                computed_robust,
+            );
+            (bucket, dom_order)
+        });
+        ordered
+    }
+
+    // Helper: processes children in z-index paint order.
+    #[inline]
+    fn process_children(list: &mut DisplayList, node: NodeKey, ctx: &WalkCtx<'_>) {
+        if let Some(children) = ctx.children_map.get(&node) {
+            let ordered = order_children(
+                children,
+                ctx.parent_map,
+                ctx.computed_map,
+                ctx.computed_fallback,
+                ctx.computed_robust.as_ref(),
+            );
+            for child in ordered {
+                recurse(list, child, ctx);
+            }
+        }
+    }
+
     let RetainedInputs {
         rects,
         snapshot,
@@ -558,98 +766,22 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
 
     let mut kind_map: HashMap<NodeKey, LayoutNodeKind> = HashMap::new();
     let mut children_map: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
-    for (key, kind, children) in snapshot.into_iter() {
+    for (key, kind, children) in snapshot {
         kind_map.insert(key, kind);
         children_map.insert(key, children);
     }
     // Parent map for inheritance fallbacks
     let mut parent_map: HashMap<NodeKey, NodeKey> = HashMap::new();
-    for (parent, children) in children_map.iter() {
-        for &c in children {
-            parent_map.insert(c, *parent);
+    for (parent, children) in &children_map {
+        for &child in children {
+            parent_map.insert(child, *parent);
         }
     }
 
-    // Helper: nearest ancestor with a computed style (for inline text, etc.)
-    fn nearest_style<'a>(
-        start: NodeKey,
-        parent_map: &HashMap<NodeKey, NodeKey>,
-        computed_map: &'a HashMap<NodeKey, ComputedStyle>,
-        computed_fallback: &'a HashMap<NodeKey, ComputedStyle>,
-        computed_robust: &'a Option<HashMap<NodeKey, ComputedStyle>>,
-    ) -> Option<&'a ComputedStyle> {
-        let mut cur = Some(start);
-        while let Some(n) = cur {
-            if let Some(cs) = computed_robust
-                .as_ref()
-                .and_then(|m| m.get(&n))
-                .or_else(|| computed_fallback.get(&n))
-                .or_else(|| computed_map.get(&n))
-            {
-                return Some(cs);
-            }
-            cur = parent_map.get(&n).copied();
-        }
-        None
-    }
-    #[inline]
-    fn nearest_rect(
-        start: NodeKey,
-        parent_map: &HashMap<NodeKey, NodeKey>,
-        rects: &HashMap<NodeKey, LayoutRect>,
-    ) -> Option<LayoutRect> {
-        let mut cur = Some(start);
-        while let Some(n) = cur {
-            if let Some(r) = rects.get(&n) {
-                return Some(*r);
-            }
-            cur = parent_map.get(&n).copied();
-        }
-        None
-    }
-
-    // Structured walker to reduce argument counts and nesting.
-    #[inline]
-    fn order_children(
-        children: &[NodeKey],
-        parent_map: &HashMap<NodeKey, NodeKey>,
-        computed_map: &HashMap<NodeKey, ComputedStyle>,
-        computed_fallback: &HashMap<NodeKey, ComputedStyle>,
-        computed_robust: &Option<HashMap<NodeKey, ComputedStyle>>,
-    ) -> Vec<NodeKey> {
-        let mut ordered: Vec<NodeKey> = children.to_vec();
-        ordered.sort_by_key(|c| {
-            let (bucket, dom) = z_key_for_child(
-                *c,
-                parent_map,
-                computed_map,
-                computed_fallback,
-                computed_robust,
-            );
-            (bucket, dom)
-        });
-        ordered
-    }
-
-    #[inline]
-    fn process_children(list: &mut DisplayList, node: NodeKey, ctx: &WalkCtx<'_>) {
-        if let Some(children) = ctx.children_map.get(&node) {
-            let ordered = order_children(
-                children,
-                ctx.parent_map,
-                ctx.computed_map,
-                ctx.computed_fallback,
-                ctx.computed_robust,
-            );
-            for child in ordered.into_iter() {
-                recurse(list, child, ctx);
-            }
-        }
-    }
-
+    // Recursive tree walker that emits display items for each node.
     fn recurse(list: &mut DisplayList, node: NodeKey, ctx: &WalkCtx<'_>) {
         let kind = match ctx.kind_map.get(&node) {
-            Some(k) => k,
+            Some(layout_kind) => layout_kind,
             None => return,
         };
         match kind {
@@ -663,16 +795,16 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
             LayoutNodeKind::Block { .. } => {
                 // Background/border/clip only if we have a rect for this node
                 let rect_opt = ctx.rects.get(&node);
-                let cs_opt = ctx
+                let computed_style_opt = ctx
                     .computed_robust
                     .as_ref()
-                    .and_then(|m| m.get(&node))
+                    .and_then(|map| map.get(&node))
                     .or_else(|| ctx.computed_fallback.get(&node))
                     .or_else(|| ctx.computed_map.get(&node));
                 if let Some(rect) = rect_opt {
                     // Determine if this node establishes a stacking context.
                     // Preference order: Opacity < 1.0, otherwise positioned with non-auto z-index.
-                    let style_for_node_ctx = cs_opt;
+                    let style_for_node_ctx = computed_style_opt;
                     let mut opened_ctx = false;
                     let boundary_opt = style_for_node_ctx.and_then(stacking_boundary_for);
                     if let Some(boundary) = boundary_opt {
@@ -680,13 +812,13 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                         opened_ctx = true;
                     }
                     // Background fill from computed styles; only paint if non-transparent
-                    let fill_rgba_opt = cs_opt.map(|cs| {
-                        let bg = cs.background_color;
+                    let fill_rgba_opt = computed_style_opt.map(|computed_style| {
+                        let background = computed_style.background_color;
                         [
-                            bg.red as f32 / 255.0,
-                            bg.green as f32 / 255.0,
-                            bg.blue as f32 / 255.0,
-                            bg.alpha as f32 / 255.0,
+                            f32::from(background.red) / 255.0,
+                            f32::from(background.green) / 255.0,
+                            f32::from(background.blue) / 255.0,
+                            f32::from(background.alpha) / 255.0,
                         ]
                     });
                     if let Some(fill_rgba) = fill_rgba_opt.filter(|rgba| rgba[3] > 0.0) {
@@ -699,49 +831,49 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                         });
                     }
                     // Borders
-                    if let Some(cs) = cs_opt {
-                        push_border_items(list, rect, cs);
+                    if let Some(computed_style) = computed_style_opt {
+                        push_border_items(list, rect, computed_style);
                     }
                     // overflow clip
-                    let style_for_node = cs_opt.or_else(|| {
+                    let style_for_node = computed_style_opt.or_else(|| {
                         nearest_style(
                             node,
                             ctx.parent_map,
                             ctx.computed_map,
                             ctx.computed_fallback,
-                            ctx.computed_robust,
+                            ctx.computed_robust.as_ref(),
                         )
                     });
                     let mut opened_clip = false;
-                    if let Some(cs) = style_for_node
+                    if let Some(computed_style) = style_for_node
                         && matches!(
-                            cs.overflow,
+                            computed_style.overflow,
                             Overflow::Hidden | Overflow::Clip | Overflow::Auto | Overflow::Scroll
                         )
                     {
                         // Clip at the padding box per CSS Overflow spec. Compute padding-box
                         // from the border-box rect and the border widths.
-                        let pad_left = cs.padding.left.max(0.0);
-                        let pad_top = cs.padding.top.max(0.0);
-                        let pad_right = cs.padding.right.max(0.0);
-                        let pad_bottom = cs.padding.bottom.max(0.0);
-                        let border_left = cs.border_width.left.max(0.0);
-                        let border_top = cs.border_width.top.max(0.0);
-                        let border_right = cs.border_width.right.max(0.0);
-                        let border_bottom = cs.border_width.bottom.max(0.0);
+                        let pad_left = computed_style.padding.left.max(0.0);
+                        let pad_top = computed_style.padding.top.max(0.0);
+                        let pad_right = computed_style.padding.right.max(0.0);
+                        let pad_bottom = computed_style.padding.bottom.max(0.0);
+                        let border_left = computed_style.border_width.left.max(0.0);
+                        let border_top = computed_style.border_width.top.max(0.0);
+                        let border_right = computed_style.border_width.right.max(0.0);
+                        let border_bottom = computed_style.border_width.bottom.max(0.0);
                         let clip_x = rect.x + border_left + pad_left;
                         let clip_y = rect.y + border_top + pad_top;
-                        let clip_w = (rect.width
+                        let clip_width = (rect.width
                             - (border_left + pad_left + pad_right + border_right))
                             .max(0.0);
-                        let clip_h = (rect.height
+                        let clip_height = (rect.height
                             - (border_top + pad_top + pad_bottom + border_bottom))
                             .max(0.0);
                         list.push(DisplayItem::BeginClip {
                             x: clip_x,
                             y: clip_y,
-                            width: clip_w,
-                            height: clip_h,
+                            width: clip_width,
+                            height: clip_height,
                         });
                         opened_clip = true;
                     }
@@ -757,13 +889,13 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     }
                 } else {
                     // No rect for this block: still recurse into children; apply stacking context if present
-                    let style_for_node_ctx = cs_opt.or_else(|| {
+                    let style_for_node_ctx = computed_style_opt.or_else(|| {
                         nearest_style(
                             node,
                             ctx.parent_map,
                             ctx.computed_map,
                             ctx.computed_fallback,
-                            ctx.computed_robust,
+                            ctx.computed_robust.as_ref(),
                         )
                     });
                     let mut opened_ctx = false;
@@ -783,25 +915,24 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
                     return;
                 }
                 if let Some(rect) = nearest_rect(node, ctx.parent_map, ctx.rects) {
-                    let (font_size, color_rgb) = if let Some(cs) = nearest_style(
+                    let (font_size, color_rgb) = nearest_style(
                         node,
                         ctx.parent_map,
                         ctx.computed_map,
                         ctx.computed_fallback,
-                        ctx.computed_robust,
-                    ) {
-                        let c = cs.color;
+                        ctx.computed_robust.as_ref(),
+                    )
+                    .map_or((16.0, [0.0, 0.0, 0.0]), |computed_style| {
+                        let text_color = computed_style.color;
                         (
-                            cs.font_size,
+                            computed_style.font_size,
                             [
-                                c.red as f32 / 255.0,
-                                c.green as f32 / 255.0,
-                                c.blue as f32 / 255.0,
+                                f32::from(text_color.red) / 255.0,
+                                f32::from(text_color.green) / 255.0,
+                                f32::from(text_color.blue) / 255.0,
                             ],
                         )
-                    } else {
-                        (16.0, [0.0, 0.0, 0.0])
-                    };
+                    });
                     push_text_item(list, &rect, text, font_size, color_rgb);
                 }
             }
@@ -824,72 +955,78 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
         list.items.len()
     );
 
-    if let Some((x0, y0, x1, y1)) = selection_overlay {
-        let sel_x = x0.min(x1) as f32;
-        let sel_y = y0.min(y1) as f32;
-        let sel_w = (x0.max(x1) - sel_x.round() as i32).max(0) as f32;
-        let sel_h = (y0.max(y1) - sel_y.round() as i32).max(0) as f32;
+    // Render selection overlay as semi-transparent blue rectangles intersecting layout boxes
+    if let Some((x0_coord, y0_coord, x1_coord, y1_coord)) = selection_overlay {
+        let selection_x = x0_coord.min(x1_coord) as f32;
+        let selection_y = y0_coord.min(y1_coord) as f32;
+        let selection_width = (x0_coord.max(x1_coord) - selection_x.round() as i32).max(0) as f32;
+        let selection_height = (y0_coord.max(y1_coord) - selection_y.round() as i32).max(0) as f32;
         let selection = LayoutRect {
-            x: sel_x,
-            y: sel_y,
-            width: sel_w,
-            height: sel_h,
+            x: selection_x,
+            y: selection_y,
+            width: selection_width,
+            height: selection_height,
         };
-        for (_k, rect) in rects.iter() {
-            let ix = rect.x.max(selection.x);
-            let iy = rect.y.max(selection.y);
-            let ix1 = (rect.x + rect.width).min(selection.x + selection.width);
-            let iy1 = (rect.y + rect.height).min(selection.y + selection.height);
-            let iw = (ix1 - ix).max(0.0);
-            let ih = (iy1 - iy).max(0.0);
-            if iw > 0.0 && ih > 0.0 {
+        for (_node_key, rect) in &rects {
+            let intersect_x = rect.x.max(selection.x);
+            let intersect_y = rect.y.max(selection.y);
+            let intersect_right = (rect.x + rect.width).min(selection.x + selection.width);
+            let intersect_bottom = (rect.y + rect.height).min(selection.y + selection.height);
+            let intersect_width = (intersect_right - intersect_x).max(0.0);
+            let intersect_height = (intersect_bottom - intersect_y).max(0.0);
+            if intersect_width > 0.0 && intersect_height > 0.0 {
                 list.push(DisplayItem::Rect {
-                    x: ix,
-                    y: iy,
-                    width: iw,
-                    height: ih,
+                    x: intersect_x,
+                    y: intersect_y,
+                    width: intersect_width,
+                    height: intersect_height,
                     color: [0.2, 0.5, 1.0, 0.35],
                 });
             }
         }
     }
 
+    // Render focus ring as a 4-sided border around the focused element
     if let Some(focused) = focused_node
-        && let Some(r) = rects.get(&focused)
+        && let Some(focused_rect) = rects.get(&focused)
     {
-        let x = r.x;
-        let y = r.y;
-        let w = r.width;
-        let h = r.height;
-        let c = [0.2, 0.4, 1.0, 1.0];
-        let t = 2.0_f32;
+        let focus_x = focused_rect.x;
+        let focus_y = focused_rect.y;
+        let focus_width = focused_rect.width;
+        let focus_height = focused_rect.height;
+        let focus_color = [0.2, 0.4, 1.0, 1.0];
+        let focus_thickness = 2.0f32;
+        // Top border
         list.push(DisplayItem::Rect {
-            x,
-            y,
-            width: w,
-            height: t,
-            color: c,
+            x: focus_x,
+            y: focus_y,
+            width: focus_width,
+            height: focus_thickness,
+            color: focus_color,
         });
+        // Bottom border
         list.push(DisplayItem::Rect {
-            x,
-            y: y + h - t,
-            width: w,
-            height: t,
-            color: c,
+            x: focus_x,
+            y: focus_y + focus_height - focus_thickness,
+            width: focus_width,
+            height: focus_thickness,
+            color: focus_color,
         });
+        // Left border
         list.push(DisplayItem::Rect {
-            x,
-            y,
-            width: t,
-            height: h,
-            color: c,
+            x: focus_x,
+            y: focus_y,
+            width: focus_thickness,
+            height: focus_height,
+            color: focus_color,
         });
+        // Right border
         list.push(DisplayItem::Rect {
-            x: x + w - t,
-            y,
-            width: t,
-            height: h,
-            color: c,
+            x: focus_x + focus_width - focus_thickness,
+            y: focus_y,
+            width: focus_thickness,
+            height: focus_height,
+            color: focus_color,
         });
     }
 

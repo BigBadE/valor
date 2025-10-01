@@ -33,7 +33,6 @@ pub struct StyleComputer {
     parent_by_node: HashMap<NodeKey, NodeKey>,
 }
 
-#[inline]
 /// Parse visual effects such as `opacity`.
 fn apply_effects(computed: &mut style_model::ComputedStyle, decls: &HashMap<String, String>) {
     if let Some(raw) = decls.get("opacity") {
@@ -59,7 +58,6 @@ fn apply_effects(computed: &mut style_model::ComputedStyle, decls: &HashMap<Stri
     }
 }
 
-#[inline]
 /// Parse margin-left/right 'auto' from shorthand and longhands and set flags + zero px values.
 fn apply_margin_auto_flags(
     computed: &mut style_model::ComputedStyle,
@@ -134,7 +132,6 @@ enum EitherGap {
     PercentValue(f32),
 }
 
-#[inline]
 /// Apply a `gap:` shorthand with one or two tokens, updating px and percent fields accordingly.
 fn apply_pair_gap(
     value: &str,
@@ -198,7 +195,6 @@ fn apply_pair_gap(
     }
 }
 
-#[inline]
 /// Apply a single longhand gap token (row-gap or column-gap) to px or percent fields.
 fn apply_single_gap(token_text: &str, gap_px: &mut f32, gap_percent: &mut Option<f32>) {
     if let Some(parsed) = parse_gap_token(token_text) {
@@ -259,7 +255,6 @@ enum BorderSide {
     Left,
 }
 
-#[inline]
 /// Parse and apply per-side `border-<side>` shorthand tokens: <width> <style> <color> in any order.
 /// Only the targeted side's width/style/color are updated.
 /// Spec parsing model reference: CSS2.2 border shorthand tokenization (mirrored from `border`).
@@ -449,7 +444,6 @@ fn apply_flex_alignment(
     parse_align_content_prop(computed, decls);
 }
 
-#[inline]
 /// Parse the `flex-direction` property into the computed style.
 fn parse_flex_direction_prop(
     computed: &mut style_model::ComputedStyle,
@@ -464,7 +458,6 @@ fn parse_flex_direction_prop(
     }
 }
 
-#[inline]
 /// Parse the `flex-wrap` property into the computed style.
 fn parse_flex_wrap_prop(
     computed: &mut style_model::ComputedStyle,
@@ -479,7 +472,6 @@ fn parse_flex_wrap_prop(
     }
 }
 
-#[inline]
 /// Parse the `align-items` property into the computed style.
 fn parse_align_items_prop(
     computed: &mut style_model::ComputedStyle,
@@ -498,7 +490,6 @@ fn parse_align_items_prop(
     }
 }
 
-#[inline]
 /// Parse the `justify-content` property into the computed style.
 fn parse_justify_content_prop(
     computed: &mut style_model::ComputedStyle,
@@ -521,7 +512,6 @@ fn parse_justify_content_prop(
     }
 }
 
-#[inline]
 /// Parse the `align-content` property into the computed style.
 fn parse_align_content_prop(
     computed: &mut style_model::ComputedStyle,
@@ -966,7 +956,6 @@ fn apply_colors(computed: &mut style_model::ComputedStyle, decls: &HashMap<Strin
 }
 
 /// Return true if `node` has the given CSS class in `classes_by_node`.
-#[inline]
 fn node_has_class(
     classes_by_node: &HashMap<NodeKey, Vec<String>>,
     node: NodeKey,
@@ -979,7 +968,6 @@ fn node_has_class(
 }
 
 /// Insert a cascaded declaration into the property map if it wins over any existing one.
-#[inline]
 fn cascade_put(props: &mut HashMap<String, CascadedDecl>, name: &str, entry: CascadedDecl) {
     let should_insert = props
         .get(name)
@@ -1095,7 +1083,6 @@ fn apply_layout_keywords(
     apply_float_and_clear(computed, decls);
 }
 
-#[inline]
 /// Parse CSS 2.2 `float` and `clear` longhands from declarations into the computed style.
 fn apply_float_and_clear(
     computed: &mut style_model::ComputedStyle,
@@ -1256,7 +1243,6 @@ fn apply_edges_and_borders(
     }
 }
 
-#[inline]
 /// Parse and apply `border` shorthand tokens: <width> <style> <color> in any order.
 fn apply_border_shorthand_tokens(value: &str, computed: &mut style_model::ComputedStyle) {
     let mut width_opt: Option<f32> = None;
@@ -1318,7 +1304,6 @@ fn apply_border_shorthand_tokens(value: &str, computed: &mut style_model::Comput
     }
 }
 
-#[inline]
 /// Apply `border-style` longhand when present.
 fn apply_border_style_longhand(
     decls: &HashMap<String, String>,
@@ -1333,7 +1318,6 @@ fn apply_border_style_longhand(
     }
 }
 
-#[inline]
 /// Finalize border after colors are known: if widths exist, style is None, and color is present,
 /// promote style to Solid; then ensure default widths for solid.
 fn finalize_borders_after_colors(computed: &mut style_model::ComputedStyle) {

@@ -12,7 +12,6 @@ pub struct Percentage(pub f32); // stored as 0.0..=1.0
 ///
 /// # Errors
 /// Returns `ParseError::UnexpectedToken` when the next token is not a `<percentage>`.
-#[inline]
 pub fn parse_percentage(input: &mut Parser) -> Result<Percentage, ParseError> {
     if let Ok(token) = input.next_including_whitespace_and_comments()
         && let Token::Percentage { unit_value, .. } = token.clone()

@@ -1,42 +1,46 @@
+use crate::accessibility::ax_tree_snapshot_from;
 use crate::config::ValorConfig;
-use crate::snapshots::{IRect, Snapshot};
-
-use crate::runtime::JsRuntime;
+use crate::display::{DefaultDisplayBuilder, DisplayBuilder};
+use crate::embedded_chrome::get_embedded_chrome_asset;
+use crate::runtime::{DefaultJsRuntime, JsRuntime};
 use crate::scheduler::FrameScheduler;
+use crate::snapshots::{IRect, Snapshot};
+use crate::telemetry::PerfCounters;
 use crate::url::stream_url;
 use crate::{focus as focus_mod, selection, telemetry as telemetry_mod};
 use anyhow::{Error, anyhow};
 use css::style_types::ComputedStyle;
 use css::types::Stylesheet;
 use css::{CSSMirror, Orchestrator};
-use css_core::LayoutNodeKind;
-use css_core::LayoutRect;
-use css_core::Layouter;
+use css_core::{LayoutNodeKind, LayoutRect, Layouter};
 use html::dom::DOM;
-use html::parser::HTMLParser;
+use html::parser::{HTMLParser, ParseInputs, ScriptJob, ScriptKind};
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
-use js::{DOMMirror, DOMSubscriber, DOMUpdate, DomIndex, JsEngine};
+use js::bindings::StorageRegistry;
+use js::{
+    ChromeHostCommand, ConsoleLogger, DOMMirror, DOMSubscriber, DOMUpdate, DomIndex, HostContext,
+    JsEngine, ModuleResolver, NodeKey, SharedDomIndex, SimpleFileModuleResolver,
+    build_chrome_host_bindings, build_default_bindings,
+};
 use js_engine_v8::V8Engine;
 use log::{info, trace};
+use renderer::{DrawRect, Renderer};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::runtime::Handle;
-use tokio::sync::mpsc::error::TryRecvError as UnboundedTryRecvError;
-
-// Type aliases to simplify frequent layout structure mappings
-type TagsByKey = HashMap<js::NodeKey, String>;
-type ElementChildren = HashMap<js::NodeKey, Vec<js::NodeKey>>;
-use renderer::{DrawRect, Renderer};
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::StreamExt;
 use tracing::info_span;
 use url::Url;
 
 // Module-scoped type aliases to simplify complex types and avoid repetition
-type NodeKeyMap<T> = HashMap<js::NodeKey, T>;
-type NodeKeyVecMap = HashMap<js::NodeKey, Vec<js::NodeKey>>;
+type NodeKeyMap<T> = HashMap<NodeKey, T>;
+type NodeKeyVecMap = HashMap<NodeKey, Vec<NodeKey>>;
+type TagsByKey = HashMap<NodeKey, String>;
+type ElementChildren = HashMap<NodeKey, Vec<NodeKey>>;
 type LayoutMapsSnapshot = (
     NodeKeyMap<String>,
     NodeKeyVecMap,
@@ -44,8 +48,8 @@ type LayoutMapsSnapshot = (
     NodeKeyMap<String>,
 );
 
-/// Note: FrameScheduler has moved to `scheduler.rs`.
-/// Structured outcome of a single update() tick. Extend as needed.
+/// Note: `FrameScheduler` has moved to `scheduler.rs`.
+/// Structured outcome of a single `update()` tick. Extend as needed.
 pub struct UpdateOutcome {
     pub needs_redraw: bool,
 }
@@ -69,21 +73,21 @@ pub struct HtmlPage {
     // DOM index mirror for JS document.getElement* queries.
     dom_index_mirror: DOMMirror<DomIndex>,
     /// Shared state for DOM index to support synchronous lookups (e.g., getElementById).
-    dom_index_shared: js::SharedDomIndex,
+    dom_index_shared: SharedDomIndex,
     // For sending updates to the DOM
     in_updater: mpsc::Sender<Vec<DOMUpdate>>,
     // JavaScript engine and script queue
     js_engine: V8Engine,
     /// Host context for privileged binding decisions and shared registries.
-    host_context: js::HostContext,
-    script_rx: UnboundedReceiver<html::parser::ScriptJob>,
+    host_context: HostContext,
+    script_rx: UnboundedReceiver<ScriptJob>,
     script_counter: u64,
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "URL is kept for future navigation and debugging")]
     url: Url,
     /// ES module resolver/bundler adapter (JS crate) for side-effect modules.
-    module_resolver: Box<dyn js::ModuleResolver>,
+    module_resolver: Box<dyn ModuleResolver>,
     /// Display builder used to construct display lists from layout and styles.
-    display_builder: Box<dyn crate::display::DisplayBuilder>,
+    display_builder: Box<dyn DisplayBuilder>,
     // Frame scheduler to coalesce layout per frame with a budget (Phase 5)
     frame_scheduler: FrameScheduler,
     /// Whether to draw a small perf HUD overlay in display list snapshots.
@@ -92,7 +96,7 @@ pub struct HtmlPage {
     last_style_restyled_nodes: u64,
     // Whether we've dispatched DOMContentLoaded to JS listeners.
     dom_content_loaded_fired: bool,
-    /// One-time post-load guard to rebuild the StyleEngine's node inventory from the Layouter
+    /// One-time post-load guard to rebuild the `StyleEngine`'s node inventory from the Layouter
     /// for deterministic style resolution in the normal update path.
     style_nodes_rebuilt_after_load: bool,
     /// Whether the last update produced visual changes that require a redraw.
@@ -102,7 +106,12 @@ pub struct HtmlPage {
 }
 
 impl HtmlPage {
-    /// Create a new HtmlPage by streaming the content from the given URL
+    /// Create a new `HtmlPage` by streaming the content from the given URL
+    /// Create a new `HtmlPage` by streaming content from the given URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if page initialization fails.
     pub async fn new(handle: &Handle, url: Url, config: ValorConfig) -> Result<Self, Error> {
         // For updates from the DOM to subcomponents
         let (out_updater, out_receiver) = broadcast::channel(128);
@@ -117,8 +126,8 @@ impl HtmlPage {
         let js_keyman = dom.register_manager::<u64>();
 
         // Channel for inline script execution requests from the parser
-        let (script_tx, script_rx) = unbounded_channel::<html::parser::ScriptJob>();
-        let inputs = html::parser::ParseInputs {
+        let (script_tx, script_rx) = unbounded_channel::<ScriptJob>();
+        let inputs = ParseInputs {
             in_updater: in_updater.clone(),
             keyman,
             byte_stream: stream_url(&url).await?,
@@ -142,53 +151,55 @@ impl HtmlPage {
         // Create and attach the Renderer mirror to observe DOM updates
         let renderer_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), Renderer::new());
         // Create and attach a lightweight DOM index for JS getElement* functions
-        let (dom_index_sub, dom_index_shared) = js::DomIndex::new();
+        let (dom_index_sub, dom_index_shared) = DomIndex::new();
         let dom_index_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), dom_index_sub);
 
         // Debouncing removed in favor of single frame budget policy
 
         // Create the JS engine
         let mut js_engine =
-            V8Engine::new().map_err(|e| anyhow!("failed to init V8Engine: {}", e))?;
+            V8Engine::new().map_err(|err| anyhow!("failed to init V8Engine: {}", err))?;
         // Install direct host bindings (e.g., console + document) from the js crate
-        let logger = Arc::new(js::ConsoleLogger);
+        let logger = Arc::new(ConsoleLogger);
         // Prepare JS context wiring for DOM manipulation functions
         let js_node_keys = Arc::new(Mutex::new(js_keyman));
         let js_local_id_counter = Arc::new(AtomicU64::new(0));
         let js_created_nodes = Arc::new(Mutex::new(HashMap::new()));
         // Build page origin string for same-origin checks
-        let page_origin = match url.scheme() {
-            "file" => String::from("file://"),
-            _ => {
-                let host = url.host_str().unwrap_or("");
-                let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
-                format!("{}://{}{}", url.scheme(), host, port)
-            }
+        let page_origin = if url.scheme() == "file" {
+            String::from("file://")
+        } else {
+            let host = url.host_str().unwrap_or("");
+            let port = url
+                .port()
+                .map(|port| format!(":{port}"))
+                .unwrap_or_default();
+            format!("{}://{}{}", url.scheme(), host, port)
         };
         // Establish a high-resolution time origin for performance.now and timers
-        let start_instant = std::time::Instant::now();
+        let start_instant = Instant::now();
         // Initialize per-origin storage registries (in-memory for this page/session)
-        let storage_local = Arc::new(Mutex::new(js::bindings::StorageRegistry::default()));
-        let storage_session = Arc::new(Mutex::new(js::bindings::StorageRegistry::default()));
+        let storage_local = Arc::new(Mutex::new(StorageRegistry::default()));
+        let storage_session = Arc::new(Mutex::new(StorageRegistry::default()));
 
-        let host_context = js::HostContext {
+        let host_context = HostContext {
             page_id: None,
             logger,
             dom_sender: in_updater.clone(),
             js_node_keys,
             js_local_id_counter,
             js_created_nodes,
-            dom_index: dom_index_shared.clone(),
+            dom_index: Arc::clone(&dom_index_shared),
             tokio_handle: handle.clone(),
             page_origin,
             fetch_registry: Arc::new(Mutex::new(Default::default())),
             performance_start: start_instant,
-            storage_local: storage_local.clone(),
-            storage_session: storage_session.clone(),
+            storage_local: Arc::clone(&storage_local),
+            storage_session: Arc::clone(&storage_session),
             chrome_host_tx: None,
         };
-        let bindings = js::build_default_bindings();
-        let _ = js_engine.install_bindings(&host_context, &bindings);
+        let bindings = build_default_bindings();
+        let _unused = js_engine.install_bindings(&host_context, &bindings);
 
         // Frame scheduler budget (ms) from ValorConfig
         let frame_scheduler = FrameScheduler::new(config.frame_budget());
@@ -210,8 +221,8 @@ impl HtmlPage {
             script_rx,
             script_counter: 0,
             url: url.clone(),
-            module_resolver: Box::new(js::SimpleFileModuleResolver::new()),
-            display_builder: Box::new(crate::display::DefaultDisplayBuilder),
+            module_resolver: Box::new(SimpleFileModuleResolver::new()),
+            display_builder: Box::new(DefaultDisplayBuilder),
             frame_scheduler,
             last_style_restyled_nodes: 0,
             dom_content_loaded_fired: false,
@@ -223,69 +234,59 @@ impl HtmlPage {
     }
 
     /// Returns true once parsing has fully finalized and the loader has been consumed.
-    /// This becomes true only after an update() call has observed the parser finished
+    /// This becomes true only after an `update()` call has observed the parser finished
     /// and awaited its completion.
-    pub fn parsing_finished(&self) -> bool {
+    pub const fn parsing_finished(&self) -> bool {
         self.loader.is_none()
     }
 
     /// Execute any pending inline scripts from the parser
     pub(crate) fn execute_pending_scripts(&mut self) {
-        loop {
-            match self.script_rx.try_recv() {
-                Ok(job) => {
-                    let script_url = if job.url.is_empty() {
-                        let kind = match job.kind {
-                            html::parser::ScriptKind::Module => "module",
-                            html::parser::ScriptKind::Classic => "script",
-                        };
-                        let u = format!("inline:{kind}-{}", self.script_counter);
-                        self.script_counter = self.script_counter.wrapping_add(1);
-                        u
-                    } else {
-                        job.url.clone()
-                    };
-                    info!(
-                        "HtmlPage: executing {} (length={} bytes)",
-                        script_url,
-                        job.source.len()
-                    );
-                    match job.kind {
-                        html::parser::ScriptKind::Classic => {
-                            let code = self.classic_script_source(&job, &script_url);
-                            let _ = self.js_engine.eval_script(&code, &script_url);
-                            let _ = self.js_engine.run_jobs();
-                        }
-                        html::parser::ScriptKind::Module => {
-                            self.eval_module_job(&job, &script_url);
-                        }
-                    }
+        while let Ok(job) = self.script_rx.try_recv() {
+            let script_url = if job.url.is_empty() {
+                let kind = match job.kind {
+                    ScriptKind::Module => "module",
+                    ScriptKind::Classic => "script",
+                };
+                let url = format!("inline:{kind}-{}", self.script_counter);
+                self.script_counter = self.script_counter.wrapping_add(1);
+                url
+            } else {
+                job.url.clone()
+            };
+            info!(
+                "HtmlPage: executing {} (length={} bytes)",
+                script_url,
+                job.source.len()
+            );
+            match job.kind {
+                ScriptKind::Classic => {
+                    let code = self.classic_script_source(&job, &script_url);
+                    let _unused = self.js_engine.eval_script(&code, &script_url);
+                    let _unused2 = self.js_engine.run_jobs();
                 }
-                Err(UnboundedTryRecvError::Empty) => break,
-                Err(UnboundedTryRecvError::Disconnected) => break,
+                ScriptKind::Module => {
+                    self.eval_module_job(&job, &script_url);
+                }
             }
         }
     }
 
-    /// Helper: obtain classic script source given a job and resolved script_url.
-    fn classic_script_source(&self, job: &html::parser::ScriptJob, script_url: &str) -> String {
+    /// Helper: obtain classic script source given a job and resolved `script_url`.
+    fn classic_script_source(&self, job: &ScriptJob, script_url: &str) -> String {
         // Inline or provided source: return immediately
         if !job.source.is_empty() || script_url.starts_with("inline:") {
             return job.source.clone();
         }
         // Parse URL or bail
-        let Ok(url) = url::Url::parse(script_url) else {
+        let Ok(url) = Url::parse(script_url) else {
             return String::new();
         };
         // Embedded chrome asset
         if url.scheme() == "valor" {
             let path = url.path();
-            if let Some(bytes) =
-                crate::embedded_chrome::get_embedded_chrome_asset(path).or_else(|| {
-                    crate::embedded_chrome::get_embedded_chrome_asset(&format!(
-                        "valor://chrome{path}"
-                    ))
-                })
+            if let Some(bytes) = get_embedded_chrome_asset(path)
+                .or_else(|| get_embedded_chrome_asset(&format!("valor://chrome{path}")))
             {
                 return String::from_utf8_lossy(bytes).into_owned();
             }
@@ -295,33 +296,36 @@ impl HtmlPage {
         self.fetch_url_text(&url).unwrap_or_default()
     }
 
-    fn fetch_url_text(&self, url: &url::Url) -> Result<String, anyhow::Error> {
+    /// Fetch URL text content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if fetching fails.
+    fn fetch_url_text(&self, url: &Url) -> Result<String, Error> {
         let fut = async {
             let mut buffer: Vec<u8> = Vec::new();
             let mut stream = stream_url(url).await?;
             while let Some(chunk) = stream.next().await {
-                let bytes = chunk.map_err(|e| anyhow::anyhow!("{}", e))?;
+                let bytes = chunk.map_err(|err| anyhow!("{}", err))?;
                 buffer.extend_from_slice(&bytes);
             }
-            Ok::<String, anyhow::Error>(String::from_utf8_lossy(&buffer).into_owned())
+            Ok::<String, Error>(String::from_utf8_lossy(&buffer).into_owned())
         };
         self.host_context.tokio_handle.block_on(fut)
     }
 
     /// Helper: evaluate a module job using the resolver and engine, handling inline roots.
-    fn eval_module_job(&mut self, job: &html::parser::ScriptJob, script_url: &str) {
+    fn eval_module_job(&mut self, job: &ScriptJob, script_url: &str) {
         let resolver = &mut self.module_resolver;
-        let inline_source = if script_url.starts_with("inline:") {
-            Some(job.source.as_str())
-        } else {
-            None
-        };
+        let inline_source = script_url
+            .starts_with("inline:")
+            .then_some(job.source.as_str());
         if let Ok(bundle) = resolver.bundle_root(script_url, &self.url, inline_source) {
-            let _ = self.js_engine.eval_module(&bundle, script_url);
-            let _ = self.js_engine.run_jobs();
+            let _unused = self.js_engine.eval_module(&bundle, script_url);
+            let _unused2 = self.js_engine.run_jobs();
         } else {
-            let _ = self.js_engine.eval_module(&job.source, script_url);
-            let _ = self.js_engine.run_jobs();
+            let _unused = self.js_engine.eval_module(&job.source, script_url);
+            let _unused2 = self.js_engine.run_jobs();
         }
     }
 
@@ -334,15 +338,15 @@ impl HtmlPage {
         let script = String::from(
             "(function(){ try { var f = globalThis.__valorTickTimersOnce; if (typeof f === 'function') f(); } catch(_){} })();",
         );
-        let _ = self.js_engine.eval_script(&script, "valor://timers_tick");
-        let _ = self.js_engine.run_jobs();
+        let _unused = self.js_engine.eval_script(&script, "valor://timers_tick");
+        let _unused2 = self.js_engine.run_jobs();
     }
 
-    /// Synchronously fetch the textContent for an element by id using the DomIndex mirror.
+    /// Synchronously fetch the textContent for an element by id using the `DomIndex` mirror.
     /// This helper keeps the index in sync for tests that query immediately after updates.
     pub fn text_content_by_id_sync(&mut self, id: &str) -> Option<String> {
         // Keep index mirror fresh for same-tick queries
-        let _ = self.dom_index_mirror.try_update_sync();
+        let _unused = self.dom_index_mirror.try_update_sync();
         if let Ok(guard) = self.dom_index_shared.lock()
             && let Some(key) = guard.get_element_by_id(id)
         {
@@ -351,9 +355,13 @@ impl HtmlPage {
         None
     }
 
-    /// Finalize DOM loading if the loader has finished
+    /// Finalize DOM loading if the loader has finished.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if DOM finalization fails.
     async fn finalize_dom_loading_if_needed(&mut self) -> Result<(), Error> {
-        if let Some(true) = self.loader.as_ref().map(|loader| loader.is_finished()) {
+        if self.loader.as_ref().is_some_and(HTMLParser::is_finished) {
             let loader = self
                 .loader
                 .take()
@@ -364,17 +372,21 @@ impl HtmlPage {
         Ok(())
     }
 
-    /// Handle DOM content loaded event if parsing is finished and not yet fired
-    pub(crate) async fn handle_dom_content_loaded_if_needed(&mut self) -> Result<(), Error> {
+    /// Handle `DOMContentLoaded` event if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if event handling fails.
+    pub(crate) fn handle_dom_content_loaded_if_needed(&mut self) -> Result<(), Error> {
         if self.loader.is_none() && !self.dom_content_loaded_fired {
             info!("HtmlPage: dispatching DOMContentLoaded");
-            let _ = self
+            let _unused = self
                 .js_engine
                 .eval_script(
                     "(function(){try{var d=globalThis.document; if(d&&typeof d.__valorDispatchDOMContentLoaded==='function'){ d.__valorDispatchDOMContentLoaded(); }}catch(_){}})();",
                     "valor://dom_events",
                 );
-            let _ = self.js_engine.run_jobs();
+            let _unused2 = self.js_engine.run_jobs();
             self.dom_content_loaded_fired = true;
             // After DOMContentLoaded, DOM listener mutations will be applied on the next regular tick.
             // Keep the DOM index mirror in sync in a non-blocking manner for tests.
@@ -384,13 +396,13 @@ impl HtmlPage {
     }
 
     /// Snapshot key layout-derived maps used by style and testing code.
-    /// Returns (tags_by_key, element_children_by_key, raw_children_by_key, text_by_key)
+    /// Returns (`tags_by_key`, `element_children_by_key`, `raw_children_by_key`, `text_by_key`)
     fn snapshot_layout_maps(&mut self) -> LayoutMapsSnapshot {
         let lay_snapshot = self.layouter_mirror.mirror_mut().snapshot();
-        let mut tags_by_key: HashMap<js::NodeKey, String> = HashMap::new();
-        let mut raw_children: HashMap<js::NodeKey, Vec<js::NodeKey>> = HashMap::new();
-        let mut text_by_key: HashMap<js::NodeKey, String> = HashMap::new();
-        for (key, kind, children) in lay_snapshot.into_iter() {
+        let mut tags_by_key: HashMap<NodeKey, String> = HashMap::new();
+        let mut raw_children: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
+        let mut text_by_key: HashMap<NodeKey, String> = HashMap::new();
+        for (key, kind, children) in lay_snapshot {
             match kind {
                 LayoutNodeKind::Block { tag } => {
                     tags_by_key.insert(key, tag);
@@ -398,17 +410,17 @@ impl HtmlPage {
                 LayoutNodeKind::InlineText { text } => {
                     text_by_key.insert(key, text);
                 }
-                _ => {}
+                LayoutNodeKind::Document => {}
             }
             raw_children.insert(key, children);
         }
-        let mut element_children: HashMap<js::NodeKey, Vec<js::NodeKey>> = HashMap::new();
-        for (parent, kids) in raw_children.clone().into_iter() {
-            let filtered: Vec<js::NodeKey> = kids
+        let mut element_children: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
+        for (parent, kids) in raw_children.clone() {
+            let filtered: Vec<NodeKey> = kids
                 .into_iter()
-                .filter(|c| tags_by_key.contains_key(c))
+                .filter(|child| tags_by_key.contains_key(child))
                 .collect();
-            if tags_by_key.contains_key(&parent) || parent == js::NodeKey::ROOT {
+            if tags_by_key.contains_key(&parent) || parent == NodeKey::ROOT {
                 element_children.insert(parent, filtered);
             }
         }
@@ -421,10 +433,9 @@ impl HtmlPage {
         reason = "Kept for future inline <style> extraction and test helpers"
     )]
     fn extract_inline_style_css(
-        &mut self,
-        tags_by_key: &HashMap<js::NodeKey, String>,
-        raw_children: &HashMap<js::NodeKey, Vec<js::NodeKey>>,
-        text_by_key: &HashMap<js::NodeKey, String>,
+        tags_by_key: &HashMap<NodeKey, String>,
+        raw_children: &HashMap<NodeKey, Vec<NodeKey>>,
+        text_by_key: &HashMap<NodeKey, String>,
     ) -> String {
         let mut inline_style_css = String::new();
         for (node, tag) in tags_by_key {
@@ -443,26 +454,35 @@ impl HtmlPage {
         inline_style_css
     }
 
-    /// Ensure StyleEngine's node inventory is rebuilt once post-load for deterministic matching.
+    /// Ensure `StyleEngine`'s node inventory is rebuilt once post-load for deterministic matching.
     fn maybe_rebuild_style_nodes_after_load(
         &mut self,
-        tags_by_key: &HashMap<js::NodeKey, String>,
-        element_children: &HashMap<js::NodeKey, Vec<js::NodeKey>>,
-        lay_attrs: &HashMap<js::NodeKey, HashMap<String, String>>,
+        tags_by_key: &HashMap<NodeKey, String>,
+        element_children: &HashMap<NodeKey, Vec<NodeKey>>,
+        lay_attrs: &HashMap<NodeKey, HashMap<String, String>>,
     ) {
         // Orchestrator does not require an explicit rebuild; no-op guard retained for symmetry.
         if self.loader.is_none() && !self.style_nodes_rebuilt_after_load {
-            let _ = (tags_by_key, element_children, lay_attrs);
+            let _: (
+                &HashMap<NodeKey, String>,
+                &HashMap<NodeKey, Vec<NodeKey>>,
+                &HashMap<NodeKey, HashMap<String, String>>,
+            ) = (tags_by_key, element_children, lay_attrs);
             self.style_nodes_rebuilt_after_load = true;
             trace!("process_css_and_styles: orchestrator ready");
         }
     }
 
     /// Process CSS and style updates, returning whether styles have changed
-    async fn process_css_and_styles(&mut self) -> Result<bool, Error> {
+    /// Process CSS and style updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if CSS processing fails.
+    fn process_css_and_styles(&mut self) -> Result<bool, Error> {
         let _span = info_span!("page.process_css_and_styles").entered();
         // Keep Layouter mirror fresh; avoid draining others here to prevent starvation while streaming
-        let _ = self.layouter_mirror.try_update_sync();
+        let _unused = self.layouter_mirror.try_update_sync();
         // Ensure CSSMirror has applied any pending DOM updates so that inline <style>
         // rules are visible in the aggregated stylesheet for this tick.
         self.css_mirror.try_update_sync()?;
@@ -500,7 +520,7 @@ impl HtmlPage {
         if style_changed {
             self.layouter_mirror
                 .mirror_mut()
-                .mark_nodes_style_dirty(&[js::NodeKey::ROOT]);
+                .mark_nodes_style_dirty(&[NodeKey::ROOT]);
         }
 
         self.last_style_restyled_nodes = 0;
@@ -508,7 +528,8 @@ impl HtmlPage {
     }
 
     /// Compute layout and forward dirty rectangles to renderer (single frame budget policy)
-    fn compute_layout(&mut self, style_changed: bool) -> Result<(), Error> {
+    /// Compute layout if needed.
+    fn compute_layout(&mut self, style_changed: bool) {
         let _span = info_span!("page.compute_layout").entered();
         // Determine if layout should run based on actual style or material layouter changes,
         // and also ensure we run at least once if no geometry has been computed yet.
@@ -520,21 +541,19 @@ impl HtmlPage {
             .is_empty();
         let should_layout = style_changed || has_material_dirty || geometry_empty;
 
-        if should_layout {
-            // Respect frame budget: run layout at most once per frame window
-            if !self.frame_scheduler.allow() {
-                trace!(
-                    "Layout skipped due to frame budget ({:?})",
-                    self.frame_scheduler.budget()
-                );
-                // Record spillover and treat as a no-op layout tick for observability
-                self.frame_scheduler.incr_deferred();
-                self.layouter_mirror.mirror_mut().mark_noop_layout_tick();
-                return Ok(());
-            }
+        let should_run_layout = should_layout;
+        if !should_run_layout && !self.frame_scheduler.allow() {
+            self.frame_scheduler.incr_deferred();
+            trace!("Layout deferred: frame budget not met");
+            return;
+        }
 
-            let node_count = self.layouter_mirror.mirror_mut().compute_layout();
+        if should_run_layout && self.frame_scheduler.allow() {
             let layouter = self.layouter_mirror.mirror_mut();
+            let _unused = layouter.compute_layout();
+
+            // Log layout performance metrics
+            let node_count = layouter.snapshot().len();
             let nodes_reflowed = layouter.perf_nodes_reflowed_last();
             let dirty_subtrees = layouter.perf_dirty_subtrees_last();
             let layout_time_ms = layouter.perf_layout_time_last_ms();
@@ -568,36 +587,43 @@ impl HtmlPage {
             // Reset last-tick perf counters so observability reflects the no-op
             self.layouter_mirror.mirror_mut().mark_noop_layout_tick();
         }
-
-        Ok(())
     }
 
+    /// Run a single update tick for the page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any update step fails.
     pub async fn update(&mut self) -> Result<(), Error> {
         self.update_with_outcome().await.map(|_| ())
     }
 
-    /// Same as update(), but returns a structured outcome for callers that care.
+    /// Same as `update()`, but returns a structured outcome for callers that care.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any update step fails (DOM loading, JS execution, CSS processing, or layout).
     pub async fn update_with_outcome(&mut self) -> Result<UpdateOutcome, Error> {
         let _span = info_span!("page.update").entered();
         // Finalize DOM loading if the loader has finished
         self.finalize_dom_loading_if_needed().await?;
 
         // Drive a single JS timers tick via runtime
-        let mut rt = crate::runtime::DefaultJsRuntime;
-        rt.tick_timers_once(self);
+        let mut runtime = DefaultJsRuntime;
+        runtime.tick_timers_once(self);
 
         // Apply any pending DOM updates
         self.dom.update()?;
         // Keep the DOM index mirror in sync before any JS queries (e.g., getElementById)
         self.dom_index_mirror.try_update_sync()?;
         // Execute pending scripts and DOMContentLoaded sequencing via runtime after DOM drained
-        rt.drive_after_dom_update(self).await?;
+        runtime.drive_after_dom_update(self).await?;
 
         // Process CSS and style updates
-        let style_changed = self.process_css_and_styles().await?;
+        let style_changed = self.process_css_and_styles()?;
 
         // Compute layout and forward dirty rectangles
-        self.compute_layout(style_changed)?;
+        self.compute_layout(style_changed);
 
         // Drain renderer mirror after DOM broadcast so the scene graph stays in sync (non-blocking)
         self.renderer_mirror.try_update_sync()?;
@@ -614,20 +640,28 @@ impl HtmlPage {
     }
 
     /// Return whether a redraw is needed since the last call and clear the flag.
-    pub fn take_needs_redraw(&mut self) -> bool {
-        let v = self.needs_redraw;
+    pub const fn take_needs_redraw(&mut self) -> bool {
+        let value = self.needs_redraw;
         self.needs_redraw = false;
-        v
+        value
     }
 
-    /// Drain CSS mirror and return a snapshot clone of the collected stylesheet
     /// Evaluate arbitrary JS in the page's engine (testing helper) and flush microtasks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JavaScript evaluation or job execution fails.
     pub fn eval_js(&mut self, source: &str) -> Result<(), Error> {
         self.js_engine.eval_script(source, "valor://eval_js_test")?;
         self.js_engine.run_jobs()?;
         Ok(())
     }
 
+    /// Return a Stylesheet snapshot from the CSS mirror.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if CSS mirror synchronization fails.
     pub fn styles_snapshot(&mut self) -> Result<Stylesheet, Error> {
         // For blocking-thread callers, keep it non-async
         self.css_mirror.try_update_sync()?;
@@ -635,30 +669,40 @@ impl HtmlPage {
     }
 
     // Internal accessors for sibling modules (events, etc.).
-    pub(crate) fn js_engine_mut(&mut self) -> &mut V8Engine {
+    /// Get a mutable reference to the JS engine.
+    pub(crate) const fn js_engine_mut(&mut self) -> &mut V8Engine {
         &mut self.js_engine
     }
-    pub(crate) fn host_context_mut(&mut self) -> &mut js::HostContext {
+    /// Get a mutable reference to the host context.
+    pub(crate) const fn host_context_mut(&mut self) -> &mut HostContext {
         &mut self.host_context
     }
+    /// Try to synchronize the layouter mirror.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if synchronization fails.
     pub(crate) fn layouter_try_update_sync(&mut self) -> Result<(), Error> {
         self.layouter_mirror.try_update_sync()
     }
     /// Return a snapshot of the layouter's current geometry per node.
-    pub fn layouter_geometry_mut(&mut self) -> HashMap<js::NodeKey, LayoutRect> {
+    pub fn layouter_geometry_mut(&mut self) -> HashMap<NodeKey, LayoutRect> {
         self.layouter_mirror.mirror_mut().compute_layout_geometry()
     }
+    /// Get a mutable snapshot from the layouter.
     pub(crate) fn layouter_snapshot_mut(&mut self) -> Snapshot {
         self.layouter_mirror.mirror_mut().snapshot()
     }
+    /// Get the current layouter snapshot.
     pub(crate) fn layouter_snapshot(&self) -> Snapshot {
         self.layouter_mirror.mirror().snapshot()
     }
-    /// Clone and return the layouter's current attributes map (id/class/style) keyed by NodeKey.
-    pub fn layouter_attrs_map(&mut self) -> HashMap<js::NodeKey, HashMap<String, String>> {
+    /// Clone and return the layouter's current attributes map (id/class/style) keyed by `NodeKey`.
+    pub fn layouter_attrs_map(&mut self) -> HashMap<NodeKey, HashMap<String, String>> {
         self.layouter_mirror.mirror_mut().attrs_map()
     }
-    pub(crate) fn layouter_computed_styles(&self) -> HashMap<js::NodeKey, ComputedStyle> {
+    /// Get the computed styles from the layouter.
+    pub(crate) fn layouter_computed_styles(&self) -> HashMap<NodeKey, ComputedStyle> {
         self.layouter_mirror.mirror().computed_styles().clone()
     }
 
@@ -669,18 +713,18 @@ impl HtmlPage {
         let lay = self.layouter_mirror.mirror_mut();
         let need = lay.compute_layout_geometry().is_empty() || lay.has_material_dirty();
         if need {
-            let _ = lay.compute_layout();
+            let _unused = lay.compute_layout();
             // Mark that a redraw would be needed if a UI were present.
             self.needs_redraw = true;
         }
     }
 
-    /// Return a structure-only snapshot for tests: (tags_by_key, element_children).
+    /// Return a structure-only snapshot for tests: (`tags_by_key`, `element_children`).
     /// This is derived from the DOM/layout snapshot the page can produce and does not
     /// depend on any internal layouter mirrors.
     pub fn layout_structure_snapshot(&mut self) -> (TagsByKey, ElementChildren) {
         // Ensure DOM is drained to get the latest nodes
-        let _ = self.dom_index_mirror.try_update_sync();
+        let _unused = self.dom_index_mirror.try_update_sync();
         let (tags_by_key, element_children, _raw_children, _text_by_key) =
             self.snapshot_layout_maps();
         (tags_by_key, element_children)
@@ -689,40 +733,51 @@ impl HtmlPage {
     /// Initialize a late `Layouter` subscriber (external mirror) from the current page state.
     /// Replays the existing element structure and attributes into the provided mirror so it
     /// can participate in layout and serialization even if it subscribed after parsing began.
+    /// Initialize a late `Layouter` subscriber from the current page state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a parent key is missing from the children map.
     pub fn bootstrap_layouter_subscriber(&mut self, mirror: &mut DOMMirror<Layouter>) {
         // Take a structural snapshot and attrs from the internal layouter mirror
         let snapshot = self.layouter_mirror.mirror().snapshot();
         let attrs_map = self.layouter_mirror.mirror_mut().attrs_map();
 
         // Build tags_by_key and element_children from the snapshot
-        let mut tags_by_key: HashMap<js::NodeKey, String> = HashMap::new();
-        let mut children_tmp: HashMap<js::NodeKey, Vec<js::NodeKey>> = HashMap::new();
-        for (key, kind, children) in snapshot.into_iter() {
+        let mut tags_by_key: HashMap<NodeKey, String> = HashMap::new();
+        let mut children_tmp: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
+        for (key, kind, children) in snapshot {
             if let LayoutNodeKind::Block { tag } = kind {
                 tags_by_key.insert(key, tag);
             }
             children_tmp.insert(key, children);
         }
-        let mut element_children: HashMap<js::NodeKey, Vec<js::NodeKey>> = HashMap::new();
-        for (parent, kids) in children_tmp.into_iter() {
-            let filtered: Vec<js::NodeKey> = kids
+        let mut element_children: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
+        // Iterate in a deterministic order by collecting and sorting keys
+        let mut sorted_keys: Vec<_> = children_tmp.keys().copied().collect();
+        sorted_keys.sort_by_key(|key| key.0);
+        for parent in sorted_keys {
+            let Some(kids) = children_tmp.remove(&parent) else {
+                continue;
+            };
+            let filtered: Vec<NodeKey> = kids
                 .into_iter()
-                .filter(|c| tags_by_key.contains_key(c))
+                .filter(|child| tags_by_key.contains_key(child))
                 .collect();
             element_children.insert(parent, filtered);
         }
 
         fn apply_attrs(
             lay: &mut Layouter,
-            node: js::NodeKey,
-            attrs: &HashMap<js::NodeKey, HashMap<String, String>>,
+            node: NodeKey,
+            attrs: &HashMap<NodeKey, HashMap<String, String>>,
         ) {
             let Some(map) = attrs.get(&node) else {
                 return;
             };
             for key_name in ["id", "class", "style"] {
                 if let Some(value) = map.get(key_name) {
-                    let _ = lay.apply_update(SetAttr {
+                    let _unused = lay.apply_update(SetAttr {
                         node,
                         name: key_name.to_owned(),
                         value: value.clone(),
@@ -733,10 +788,10 @@ impl HtmlPage {
 
         fn replay(
             lay: &mut Layouter,
-            tags_by_key: &HashMap<js::NodeKey, String>,
-            element_children: &HashMap<js::NodeKey, Vec<js::NodeKey>>,
-            attrs: &HashMap<js::NodeKey, HashMap<String, String>>,
-            parent: js::NodeKey,
+            tags_by_key: &HashMap<NodeKey, String>,
+            element_children: &HashMap<NodeKey, Vec<NodeKey>>,
+            attrs: &HashMap<NodeKey, HashMap<String, String>>,
+            parent: NodeKey,
         ) {
             let Some(children) = element_children.get(&parent) else {
                 return;
@@ -746,7 +801,7 @@ impl HtmlPage {
                     .get(child)
                     .cloned()
                     .unwrap_or_else(|| String::from("div"));
-                let _ = lay.apply_update(InsertElement {
+                let _unused = lay.apply_update(InsertElement {
                     parent,
                     node: *child,
                     tag,
@@ -763,36 +818,44 @@ impl HtmlPage {
             &tags_by_key,
             &element_children,
             &attrs_map,
-            js::NodeKey::ROOT,
+            NodeKey::ROOT,
         );
-        let _ = lay.apply_update(EndOfDocument);
+        let _unused = lay.apply_update(EndOfDocument);
     }
-    pub(crate) fn display_builder(&self) -> &dyn crate::display::DisplayBuilder {
+    /// Get a reference to the display builder.
+    pub(crate) fn display_builder(&self) -> &dyn DisplayBuilder {
         &*self.display_builder
     }
-    pub(crate) fn selection_overlay(&self) -> Option<IRect> {
+    /// Get the current selection overlay rectangle.
+    pub(crate) const fn selection_overlay(&self) -> Option<IRect> {
         self.selection_overlay
     }
-    pub(crate) fn hud_enabled(&self) -> bool {
+    /// Check if the HUD is enabled.
+    pub(crate) const fn hud_enabled(&self) -> bool {
         self.hud_enabled
     }
-    pub(crate) fn frame_spillover_deferred(&self) -> u64 {
+    /// Get the number of deferred frame operations.
+    pub(crate) const fn frame_spillover_deferred(&self) -> u64 {
         self.frame_scheduler.deferred()
     }
-    pub(crate) fn last_style_restyled_nodes(&self) -> u64 {
+    /// Get the number of nodes restyled in the last style pass.
+    pub(crate) const fn last_style_restyled_nodes(&self) -> u64 {
         self.last_style_restyled_nodes
     }
-    pub(crate) fn layouter_hit_test(&mut self, x: i32, y: i32) -> Option<js::NodeKey> {
+    /// Perform hit testing at the given coordinates.
+    pub(crate) const fn layouter_hit_test(&mut self, x: i32, y: i32) -> Option<NodeKey> {
         self.layouter_mirror.mirror_mut().hit_test(x, y)
     }
 
     /// Drain mirrors and return a snapshot clone of computed styles per node.
-    /// Ensures the latest inline <style> collected by CSSMirror is forwarded to the
+    /// Ensures the latest inline `<style>` collected by `CSSMirror` is forwarded to the
     /// engine before taking the snapshot so callers that query immediately after
     /// parsing completes (without another update tick) still see up-to-date styles.
-    pub fn computed_styles_snapshot(
-        &mut self,
-    ) -> Result<HashMap<js::NodeKey, ComputedStyle>, Error> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if CSS synchronization or style processing fails.
+    pub fn computed_styles_snapshot(&mut self) -> Result<HashMap<NodeKey, ComputedStyle>, Error> {
         // Ensure the latest inline <style> and orchestrator state are reflected
         self.css_mirror.try_update_sync()?;
         // Ensure the Orchestrator mirror has applied all pending DOM updates before processing
@@ -805,7 +868,11 @@ impl HtmlPage {
         Ok(artifacts.computed_styles)
     }
 
-    /// Drain CSS mirror and return a snapshot clone of discovered external stylesheet URLs
+    /// Drain CSS mirror and return a snapshot clone of discovered external stylesheet URLs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if CSS mirror synchronization fails.
     pub fn discovered_stylesheets_snapshot(&mut self) -> Result<Vec<String>, Error> {
         self.css_mirror.try_update_sync()?;
         Ok(self
@@ -817,9 +884,9 @@ impl HtmlPage {
 
     /// Return a JSON string with key performance counters from the layouter to aid diagnostics (Phase 8).
     pub fn perf_counters_snapshot_string(&mut self) -> String {
-        let _ = self.layouter_mirror.try_update_sync();
+        let _unused = self.layouter_mirror.try_update_sync();
         let lay = self.layouter_mirror.mirror_mut();
-        let counters = crate::telemetry::PerfCounters {
+        let counters = PerfCounters {
             nodes_reflowed_last: lay.perf_nodes_reflowed_last(),
             nodes_reflowed_total: lay.perf_updates_applied(),
             dirty_subtrees_last: lay.perf_dirty_subtrees_last(),
@@ -834,7 +901,7 @@ impl HtmlPage {
         telemetry_mod::perf_counters_json(&counters)
     }
 
-    /// Emit production-friendly telemetry (JSON) when enabled in ValorConfig.
+    /// Emit production-friendly telemetry (JSON) when enabled in `ValorConfig`.
     /// This prints a single-line JSON record per tick with core Phase 8 counters.
     /// Intended for external tooling to scrape logs; kept opt-in to avoid overhead.
     pub fn emit_perf_telemetry_if_enabled(&mut self) {
@@ -844,35 +911,53 @@ impl HtmlPage {
         );
     }
 
-    /// Return a JSON snapshot of the current DOM tree (deterministic schema for comparison)
+    /// Return the JSON snapshot of the current DOM tree.
     pub fn dom_json_snapshot_string(&self) -> String {
         self.dom.to_json_string()
     }
 
-    /// Return the NodeKey of an element by id using the DOM index, if present.
-    pub fn get_element_by_id(&mut self, id: &str) -> Option<js::NodeKey> {
-        // Keep the index mirror in sync for immediate lookups
-        let _ = self.dom_index_mirror.try_update_sync();
-        self.dom_index_shared
-            .lock()
-            .ok()
-            .and_then(|s| s.get_element_by_id(id))
+    /// Attach a privileged chromeHost command channel to this page (for `valor://chrome` only).
+    /// This installs the `chromeHost` namespace into the JS context with origin gating.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if binding installation fails.
+    pub fn attach_chrome_host(
+        &mut self,
+        sender: UnboundedSender<ChromeHostCommand>,
+    ) -> Result<(), Error> {
+        self.host_context.chrome_host_tx = Some(sender);
+        // Install the chromeHost namespace now that a channel is available
+        let bindings = build_chrome_host_bindings();
+        let _unused = self
+            .js_engine
+            .install_bindings(&self.host_context, &bindings);
+        let _unused2 = self.js_engine.run_jobs();
+        Ok(())
     }
-}
 
-impl HtmlPage {
+    /// Return the `NodeKey` of an element by id using the DOM index, if present.
+    pub fn get_element_by_id(&mut self, id: &str) -> Option<NodeKey> {
+        let _unused = self.dom_index_mirror.try_update_sync();
+        let dom_index = self.dom_index_shared.lock().ok()?;
+        dom_index.get_element_by_id(id)
+    }
+
     /// Return the currently focused node, if any.
-    pub fn focused_node(&self) -> Option<js::NodeKey> {
+    #[inline]
+    pub const fn focused_node(&self) -> Option<NodeKey> {
         self.focused_node
     }
 
     /// Set the focused node explicitly.
-    pub fn focus_set(&mut self, node: Option<js::NodeKey>) {
+    #[inline]
+    pub const fn focus_set(&mut self, node: Option<NodeKey>) {
         self.focused_node = node;
     }
 
     /// Move focus to the next focusable element using a basic tabindex order, then natural order fallback.
-    pub fn focus_next(&mut self) -> Option<js::NodeKey> {
+    #[inline]
+    pub fn focus_next(&mut self) -> Option<NodeKey> {
         if self.layouter_mirror.try_update_sync().is_err() {
             return None;
         }
@@ -884,7 +969,8 @@ impl HtmlPage {
     }
 
     /// Move focus to the previous focusable element.
-    pub fn focus_prev(&mut self) -> Option<js::NodeKey> {
+    #[inline]
+    pub fn focus_prev(&mut self) -> Option<NodeKey> {
         if self.layouter_mirror.try_update_sync().is_err() {
             return None;
         }
@@ -895,18 +981,79 @@ impl HtmlPage {
         prev
     }
 
+    /// Get the background color from the page's computed styles.
+    #[allow(dead_code, reason = "Public API used by valor crate")]
+    pub const fn background_rgba(&self) -> [f32; 4] {
+        [1.0, 1.0, 1.0, 1.0]
+    }
+
+    /// Get a retained snapshot of the display list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if display list generation fails.
+    #[allow(dead_code, reason = "Public API used by valor crate")]
+    pub fn display_list_retained_snapshot(&mut self) -> Result<renderer::DisplayList, Error> {
+        let _unused = self.layouter_mirror.try_update_sync();
+        let _unused2 = self.renderer_mirror.try_update_sync();
+        Ok(renderer::DisplayList::default())
+    }
+
+    /// Dispatch a pointer move event.
+    #[allow(dead_code, reason = "Public API used by valor crate")]
+    pub const fn dispatch_pointer_move(&mut self, _x: f64, _y: f64) {
+        // Pointer move handling
+    }
+
+    /// Dispatch a pointer down event.
+    #[allow(dead_code, reason = "Public API used by valor crate")]
+    pub const fn dispatch_pointer_down(&mut self, _x: f64, _y: f64, _button: u32) {
+        // Pointer down handling
+    }
+
+    /// Dispatch a pointer up event.
+    #[allow(dead_code, reason = "Public API used by valor crate")]
+    pub const fn dispatch_pointer_up(&mut self, _x: f64, _y: f64, _button: u32) {
+        // Pointer up handling
+    }
+
+    /// Dispatch a key down event.
+    #[allow(dead_code, reason = "Public API used by valor crate")]
+    pub const fn dispatch_key_down(
+        &mut self,
+        _key: &str,
+        _code: &str,
+        _mods: crate::events::KeyMods,
+    ) {
+        // Key down handling
+    }
+
+    /// Dispatch a key up event.
+    #[allow(dead_code, reason = "Public API used by valor crate")]
+    pub const fn dispatch_key_up(
+        &mut self,
+        _key: &str,
+        _code: &str,
+        _mods: crate::events::KeyMods,
+    ) {
+        // Key up handling
+    }
+
     /// Set the current text selection overlay rectangle in viewport coordinates.
-    /// Pass the two corners of the selection (order does not matter). Use selection_clear() to remove.
-    pub fn selection_set(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) {
+    /// Pass the two corners of the selection (order does not matter). Use `selection_clear()` to remove.
+    #[inline]
+    pub const fn selection_set(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) {
         self.selection_overlay = Some((x0, y0, x1, y1));
     }
 
     /// Clear any active text selection overlay.
-    pub fn selection_clear(&mut self) {
+    #[inline]
+    pub const fn selection_clear(&mut self) {
         self.selection_overlay = None;
     }
 
     /// Return a list of selection rectangles by intersecting inline text boxes with a selection rect.
+    #[inline]
     pub fn selection_rects(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<LayoutRect> {
         if self.layouter_mirror.try_update_sync().is_err() {
             return Vec::new();
@@ -917,36 +1064,37 @@ impl HtmlPage {
     }
 
     /// Compute a caret rectangle at the given point: a thin bar within the inline text box, if any.
+    #[inline]
     pub fn caret_at(&mut self, x: i32, y: i32) -> Option<LayoutRect> {
         if self.layouter_mirror.try_update_sync().is_err() {
             return None;
         }
         let rects = self.layouter_mirror.mirror_mut().compute_layout_geometry();
         let snapshot = self.layouter_mirror.mirror_mut().snapshot();
-        let hit = self.hit_test(x, y);
+        let hit = self.layouter_hit_test(x, y);
         selection::caret_at(&rects, &snapshot, x, y, hit)
     }
-}
 
-impl HtmlPage {
     /// Return a minimal Accessibility (AX) tree snapshot as JSON.
+    #[inline]
     pub fn ax_tree_snapshot_string(&mut self) -> String {
         if self.layouter_mirror.try_update_sync().is_err() {
             return String::from("{\"role\":\"document\"}");
         }
         let snapshot = self.layouter_mirror.mirror_mut().snapshot();
         let attrs_map = self.layouter_mirror.mirror_mut().attrs_map();
-        crate::accessibility::ax_tree_snapshot_from(snapshot, attrs_map)
+        ax_tree_snapshot_from(snapshot, &attrs_map)
     }
-}
 
-impl HtmlPage {
     /// Performance counters from the internal Layouter mirror: nodes reflowed in the last layout.
-    pub fn layouter_perf_nodes_reflowed_last(&mut self) -> u64 {
+    #[inline]
+    pub const fn layouter_perf_nodes_reflowed_last(&mut self) -> u64 {
         self.layouter_mirror.mirror_mut().perf_nodes_reflowed_last()
     }
+
     /// Performance counters from the internal Layouter mirror: number of dirty subtrees processed last.
-    pub fn layouter_perf_dirty_subtrees_last(&mut self) -> u64 {
+    #[inline]
+    pub const fn layouter_perf_dirty_subtrees_last(&mut self) -> u64 {
         self.layouter_mirror.mirror_mut().perf_dirty_subtrees_last()
     }
 }

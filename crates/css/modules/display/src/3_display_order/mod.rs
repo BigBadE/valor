@@ -6,7 +6,6 @@ use css_orchestrator::style_model::ComputedStyle;
 use js::NodeKey;
 use std::collections::HashMap;
 
-#[inline]
 /// Return children in tree-abiding, order-modified document order.
 ///
 /// Spec: CSS Display 3 — §3 Display Order and Tree-Abiding

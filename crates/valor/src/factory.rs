@@ -18,7 +18,6 @@ pub struct ChromeInit {
 ///
 /// # Errors
 /// Returns an error if page creation or URL parsing fails.
-#[inline]
 pub fn create_chrome_and_content(
     runtime: &Runtime,
     initial_content_url: Url,

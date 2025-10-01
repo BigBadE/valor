@@ -32,7 +32,6 @@ use crate::{
     RootHeightsCtx, TopEdges,
 };
 
-#[inline]
 /// Compute inline baselines using inline-context grouping and default line-height.
 /// Returns `(first_baseline, last_baseline)` in CSS px when inline content exists.
 fn try_inline_baselines(layouter: &Layouter, node: NodeKey) -> Option<(f32, f32)> {
@@ -83,7 +82,6 @@ type BaselineVec = Vec<Option<(f32, f32)>>;
 type FlexInputsTriple = (Vec<FlexChild>, Vec<CrossTriplet>, BaselineVec);
 
 /// Compute content height and root border-box height.
-#[inline]
 pub fn compute_root_heights(layouter: &Layouter, ctx: RootHeightsCtx) -> (i32, i32) {
     let content_origin = ctx
         .root_y
@@ -150,7 +148,6 @@ pub fn compute_root_heights(layouter: &Layouter, ctx: RootHeightsCtx) -> (i32, i
     (content_height, root_height_border_box)
 }
 
-#[inline]
 /// Compute container origin, axes, and main inputs for flex layout.
 fn container_layout_context(
     cctx: ChildContentCtx,
@@ -210,7 +207,6 @@ fn container_layout_context(
     (origin, direction, axes, container_main_size, main_gap)
 }
 
-#[inline]
 /// Collect normalized flex item shells from children of the container.
 fn collect_item_shells(layouter: &Layouter, parent: NodeKey) -> Vec<(FlexItemRef, FlexItemStyle)> {
     // Only consider element block children for flex item collection; ignore text/anonymous nodes.
@@ -249,7 +245,6 @@ fn collect_item_shells(layouter: &Layouter, parent: NodeKey) -> Vec<(FlexItemRef
 
 /// Composite: compute heights and outgoing margins for a child.
 /// Mirrors the former lib.rs logic, exposed here to keep lib.rs thin.
-#[inline]
 pub fn compute_heights_and_margins_public(
     layouter: &mut Layouter,
     hctx: HeightsCtx<'_>,
@@ -299,7 +294,6 @@ pub fn compute_heights_and_margins_public(
 
 /// Compute used height for a block child, applying box extras when height is auto and
 /// falling back to a single line height if there is inline text and overall height is 0.
-#[inline]
 pub fn compute_used_height(
     layouter: &Layouter,
     style: &ComputedStyle,
@@ -383,7 +377,6 @@ pub fn compute_used_height(
 
 /// Return the parent's specified content height (px) if the parent has a definite specified
 /// border-box height; converts to content height by subtracting vertical padding and borders.
-#[inline]
 fn parent_specified_content_height(layouter: &Layouter, child_key: NodeKey) -> Option<i32> {
     let mut parent_key_opt: Option<NodeKey> = None;
     for (node_key, _kind, children) in layouter.snapshot() {
@@ -403,7 +396,6 @@ fn parent_specified_content_height(layouter: &Layouter, child_key: NodeKey) -> O
 }
 
 /// Apply percent min/max height constraints using the parent's definite content height.
-#[inline]
 fn apply_percent_min_max_from_parent(
     style: &ComputedStyle,
     parent_content_h: i32,
@@ -424,7 +416,6 @@ fn apply_percent_min_max_from_parent(
 /// Try to resolve percentage height/min/max when the parent has a definite specified height (px).
 /// Build child container metrics and compute raw content height by laying out descendants.
 /// Returns `(content_height, last_positive_bottom_margin)`.
-#[inline]
 pub fn compute_child_content_height(layouter: &mut Layouter, cctx: ChildContentCtx) -> (i32, i32) {
     let container_style = layouter
         .computed_styles
@@ -440,7 +431,6 @@ pub fn compute_child_content_height(layouter: &mut Layouter, cctx: ChildContentC
     block_child_content_height(layouter, cctx)
 }
 
-#[inline]
 /// Block fallback: lay out the container's children in block formatting context.
 fn block_child_content_height(layouter: &mut Layouter, cctx: ChildContentCtx) -> (i32, i32) {
     let child_metrics = Layouter::build_child_metrics(
@@ -463,7 +453,6 @@ fn block_child_content_height(layouter: &mut Layouter, cctx: ChildContentCtx) ->
     (content_height, last_pos_mb)
 }
 
-#[inline]
 /// Compute content height and place children for a flex container (single-line MVP).
 fn flex_child_content_height(
     layouter: &mut Layouter,
@@ -567,7 +556,6 @@ struct FinalizeParams<'params> {
     container_main_size: f32,
 }
 
-#[inline]
 /// Write rects, apply overflow hidden clamp, and place abspos children. Returns clamped content height.
 fn finalize_flex_container(
     layouter: &mut Layouter,
@@ -629,7 +617,6 @@ struct AbsContainerCtx {
 }
 
 /// Clamp content height when overflow is hidden (minimal overflow contract for flex containers).
-#[inline]
 const fn clamped_content_height_for_overflow(
     hidden: bool,
     content_height: i32,
@@ -648,7 +635,6 @@ const fn clamped_content_height_for_overflow(
 }
 
 /// Resolve container inline/block sizes from flex axes.
-#[inline]
 const fn resolve_axis_sizes(ctx: &AbsContainerCtx) -> (f32, f32) {
     let inline_size = if ctx.axes.main_is_inline {
         ctx.container_main_size
@@ -667,7 +653,6 @@ const fn resolve_axis_sizes(ctx: &AbsContainerCtx) -> (f32, f32) {
 type Offsets = (Option<f32>, Option<f32>, Option<f32>, Option<f32>);
 
 /// Resolve percentage/px offsets against inline/block sizes.
-#[inline]
 fn resolve_offsets(style: &ComputedStyle, inline_size: f32, block_size: f32) -> Offsets {
     let left_resolved = style
         .left_percent
@@ -689,7 +674,6 @@ fn resolve_offsets(style: &ComputedStyle, inline_size: f32, block_size: f32) -> 
 }
 
 /// Resolve used width/height with auto sizing when both opposite offsets are specified.
-#[inline]
 fn resolve_used_dimensions(
     style: &ComputedStyle,
     offsets: Offsets,
@@ -714,7 +698,6 @@ fn resolve_used_dimensions(
     (used_width, used_height)
 }
 
-#[inline]
 /// Build the single flex item used to compute the abspos static position and return
 /// the item, its cross size, and the initial cross-axis margin (for coordinate mapping).
 fn build_abspos_item(
@@ -765,7 +748,6 @@ fn build_abspos_item(
 }
 
 /// Build container and cross contexts for the one-line flex solve used by abspos static positioning.
-#[inline]
 const fn build_abspos_contexts(
     ctx: &AbsContainerCtx,
     inline_size: f32,
@@ -794,7 +776,6 @@ const fn build_abspos_contexts(
     (container_inputs, cross_ctx)
 }
 
-#[inline]
 /// Compute static position as if the child were the sole flex item.
 fn static_position_xy(
     child: NodeKey,
@@ -830,7 +811,6 @@ fn static_position_xy(
         })
 }
 
-#[inline]
 /// Compute the used absolute rectangle for a positioned child, resolving percentage offsets and
 /// supporting auto sizing when both opposite offsets are specified.
 fn compute_abs_rect(child: NodeKey, style: &ComputedStyle, ctx: AbsContainerCtx) -> LayoutRect {
@@ -866,7 +846,6 @@ fn compute_abs_rect(child: NodeKey, style: &ComputedStyle, ctx: AbsContainerCtx)
     }
 }
 
-#[inline]
 /// Place absolutely positioned children relative to the container's padding box origin.
 fn place_absolute_children(layouter: &mut Layouter, parent: NodeKey, ctx: AbsContainerCtx) {
     let children = layouter.children.get(&parent).cloned().unwrap_or_default();
@@ -884,7 +863,6 @@ fn place_absolute_children(layouter: &mut Layouter, parent: NodeKey, ctx: AbsCon
     }
 }
 
-#[inline]
 /// Build `FlexChild` inputs and cross constraints for the given item list.
 fn build_flex_item_inputs(
     layouter: &Layouter,
@@ -967,7 +945,6 @@ fn build_flex_item_inputs(
     (main_items, cross_inputs, baseline_inputs)
 }
 
-#[inline]
 /// Resolve justify/align context and container cross size from style and item inputs.
 fn justify_align_context(
     container_style: &ComputedStyle,
@@ -1019,7 +996,6 @@ fn justify_align_context(
     )
 }
 
-#[inline]
 /// Write item rectangles and return the computed content height for the container.
 fn write_pairs_and_measure(
     axes: FlexAxes,

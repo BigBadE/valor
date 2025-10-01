@@ -113,6 +113,7 @@ opt-level = 3
 codegen-backend = "cranelift"
 
 [workspace.lints.rust]
+unsafe_code = "forbid"
 warnings = "deny"
 future-incompatible = "deny"
 let-underscore = "deny"
@@ -151,6 +152,9 @@ std_instead_of_alloc = { level = "allow", priority = 1 }
 shadow_reuse = { level = "allow", priority = 1 }
 map_err_ignore = { level = "allow", priority = 1 }
 indexing_slicing = { level = "allow", priority = 1 }
+missing_inline_in_public_items = { level = "allow", priority = 1 }
+future_not_send = { level = "allow", priority = 1 }
+self_named_module_files = { level = "allow", priority = 1 }
 significant_drop_tightening = { level = "allow", priority = 1 }
 arithmetic_side_effects = { level = "allow", priority = 1 }
 missing-trait-methods = { level = "allow", priority = 1 }

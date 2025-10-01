@@ -20,7 +20,6 @@ use crate::{ChildLayoutCtx, ContainerMetrics, LayoutNodeKind, Layouter};
     dead_code,
     reason = "Public API kept for direct spec-mapped calls; used by tests/future orchestrator paths"
 )]
-#[inline]
 pub fn collapse_margins_pair(left: i32, right: i32) -> i32 {
     if left >= 0i32 && right >= 0i32 {
         return left.max(right);
@@ -32,7 +31,6 @@ pub fn collapse_margins_pair(left: i32, right: i32) -> i32 {
 }
 
 /// Spec: §8.3.1 — Compute the vertical offset from collapsed margins above a block child.
-#[inline]
 pub fn compute_collapsed_vertical_margin_public(
     ctx: &ChildLayoutCtx,
     child_margin_top: i32,
@@ -64,7 +62,6 @@ pub fn compute_collapsed_vertical_margin_public(
 }
 
 /// Spec: §8.3.1 — Compute the y position for a child from origin, cursor, and collapsed top.
-#[inline]
 pub const fn compute_y_position_public(
     origin_y: i32,
     cursor: i32,
@@ -76,7 +73,6 @@ pub const fn compute_y_position_public(
 }
 
 /// Spec: §8.3.1 — Public wrapper for effective top margin of a child.
-#[inline]
 pub fn effective_child_top_margin_public(
     layouter: &Layouter,
     child_key: NodeKey,
@@ -86,7 +82,6 @@ pub fn effective_child_top_margin_public(
 }
 
 /// Spec: §8.3.1 — Public wrapper for effective bottom margin of a child.
-#[inline]
 pub fn effective_child_bottom_margin_public(
     layouter: &Layouter,
     child_key: NodeKey,
@@ -100,7 +95,6 @@ pub fn effective_child_bottom_margin_public(
     dead_code,
     reason = "Public API kept for direct spec-mapped calls; used by tests/future orchestrator paths"
 )]
-#[inline]
 pub fn collapse_margins_list(margins: &[i32]) -> i32 {
     if margins.is_empty() {
         return 0i32;
@@ -135,7 +129,6 @@ pub fn collapse_margins_list(margins: &[i32]) -> i32 {
     dead_code,
     reason = "Public API kept for direct spec-mapped calls; used by tests/future orchestrator paths"
 )]
-#[inline]
 pub fn compute_margin_bottom_out(margin_top: i32, effective_bottom: i32, is_empty: bool) -> i32 {
     if is_empty {
         collapse_margins_pair(margin_top, effective_bottom)
@@ -149,7 +142,6 @@ pub fn compute_margin_bottom_out(margin_top: i32, effective_bottom: i32, is_empt
     dead_code,
     reason = "Public API kept for direct spec-mapped calls; used by tests/future orchestrator paths"
 )]
-#[inline]
 pub fn compute_first_placed_empty_margin_bottom(
     previous_bottom: i32,
     parent_self_top: i32,
@@ -166,7 +158,6 @@ pub fn compute_first_placed_empty_margin_bottom(
 }
 
 /// Spec: §8.3.1 — Leading top collapse application at parent's top edge.
-#[inline]
 pub fn apply_leading_top_collapse_public(
     layouter: &Layouter,
     root: NodeKey,
@@ -184,7 +175,6 @@ pub fn apply_leading_top_collapse_public(
 }
 
 /// Heuristic structural emptiness used during leading group pre-scan.
-#[inline]
 fn is_structurally_empty_chain(layouter: &Layouter, start: NodeKey) -> bool {
     let mut current = start;
     loop {
@@ -225,7 +215,6 @@ fn is_structurally_empty_chain(layouter: &Layouter, start: NodeKey) -> bool {
 
 /// Compute the effective top margin for a child by collapsing with its first block descendant
 /// chain when allowed by padding/border edges and structural emptiness rules.
-#[inline]
 fn effective_child_top_margin(
     layouter: &Layouter,
     child_key: NodeKey,
@@ -269,7 +258,6 @@ fn effective_child_top_margin(
 
 /// Compute the effective bottom margin for a child by collapsing with its last block descendant
 /// chain when allowed by padding/border edges and structural emptiness rules.
-#[inline]
 fn effective_child_bottom_margin(
     layouter: &Layouter,
     child_key: NodeKey,
@@ -309,7 +297,6 @@ fn effective_child_bottom_margin(
 }
 
 /// Return the first block child of a node after display tree flattening.
-#[inline]
 fn first_block_child(layouter: &Layouter, key: NodeKey) -> Option<NodeKey> {
     let flattened = normalize_children(&layouter.children, &layouter.computed_styles, key);
     for child in flattened {
@@ -324,7 +311,6 @@ fn first_block_child(layouter: &Layouter, key: NodeKey) -> Option<NodeKey> {
 }
 
 /// Find the last block descendant under a node using a flattened traversal.
-#[inline]
 fn find_last_block_under(layouter: &Layouter, start: NodeKey) -> Option<NodeKey> {
     let mut last: Option<NodeKey> = None;
     let flattened = normalize_children(&layouter.children, &layouter.computed_styles, start);
@@ -350,7 +336,6 @@ fn find_last_block_under(layouter: &Layouter, start: NodeKey) -> Option<NodeKey>
 }
 
 /// Return true if there is any inline text descendant under the given node.
-#[inline]
 fn has_inline_text_descendant(layouter: &Layouter, key: NodeKey) -> bool {
     let top = normalize_children(&layouter.children, &layouter.computed_styles, key);
     for child in top {
@@ -380,7 +365,6 @@ fn has_inline_text_descendant(layouter: &Layouter, key: NodeKey) -> bool {
 
 /// Scan the leading group to collect margins and skipping information used to apply or forward
 /// collapse at the parent's top edge.
-#[inline]
 fn scan_leading_group(
     layouter: &Layouter,
     root: NodeKey,
@@ -467,7 +451,6 @@ fn scan_leading_group(
 
 /// Apply the leading-top collapsed value at the parent's top edge when eligible, otherwise forward
 /// the collapsed value to the first non-empty child.
-#[inline]
 const fn apply_or_forward_group(
     include_parent_edge: bool,
     parent_edge_collapsible: bool,
@@ -491,7 +474,6 @@ const fn apply_or_forward_group(
 
 /// Apply the leading-top collapse rules (parent edge vs forwarding to the first non-empty child)
 /// and return (`y_cursor_start`, `prev_bottom_after`, `leading_applied`, `skip_count`).
-#[inline]
 fn apply_leading_top_collapse(
     layouter: &Layouter,
     root: NodeKey,
@@ -522,7 +504,6 @@ fn apply_leading_top_collapse(
 }
 
 /// Spec: §8.3.1 — Compute the root y after top collapse with first child when applicable.
-#[inline]
 pub fn compute_root_y_after_top_collapse(
     layouter: &Layouter,
     root: NodeKey,

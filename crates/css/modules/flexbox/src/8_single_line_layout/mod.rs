@@ -21,7 +21,6 @@ struct PackInputs<'inputs> {
     line_cross_vec: &'inputs [f32],
 }
 
-#[inline]
 /// Compute the reference baseline value for a line from per-item baseline metrics and cross sizes.
 fn compute_line_baseline_ref(
     align: AlignItems,
@@ -62,7 +61,6 @@ struct BaselineAdjustCtx<'baseline> {
     cross_accum_offset: f32,
 }
 
-#[inline]
 /// Adjust the `cross_placement` so that the item's chosen baseline matches the line reference.
 fn adjust_cross_for_baseline(ctx: &BaselineAdjustCtx<'_>, cross_placement: &mut CrossPlacement) {
     if matches!(ctx.align, AlignItems::Baseline | AlignItems::LastBaseline)
@@ -82,7 +80,6 @@ fn adjust_cross_for_baseline(ctx: &BaselineAdjustCtx<'_>, cross_placement: &mut 
     }
 }
 
-#[inline]
 /// Quantize a CSS pixel value to the layout unit (1/64 px) to match Chromium's subpixel model.
 fn quantize_layout(value: f32) -> f32 {
     (value * 64.0).round() / 64.0
@@ -97,7 +94,6 @@ pub struct CrossAndBaseline<'cb> {
     pub baseline_inputs: BaselineSlice<'cb>,
 }
 
-#[inline]
 /// Compute hypothetical sizes, gaps, and apply flex grow/shrink.
 fn plan_hypotheticals_and_flex(
     container: FlexContainerInputs,
@@ -131,14 +127,12 @@ fn plan_hypotheticals_and_flex(
     (sizes, gaps_total)
 }
 
-#[inline]
 /// Quantize a CSS pixel value downward to the layout unit (1/64 px). Used for between-spacing to
 /// match Chromium's fixed-point accumulation and avoid accumulating rounding overflow across slots.
 fn quantize_layout_floor(value: f32) -> f32 {
     ((value * 64.0).floor()) / 64.0
 }
 
-#[inline]
 /// Compute justify-content start offset and between-spacing (excluding CSS gap).
 fn justify_params(
     justify: JustifyContent,
@@ -166,7 +160,6 @@ fn justify_params(
     (quantize_layout(start), quantize_layout_floor(between))
 }
 
-#[inline]
 /// Build main-axis placements from inner sizes and outer starts (margin-aware starts) with
 /// the resolved effective left margins (includes auto margin absorption).
 fn build_main_placements(
@@ -190,7 +183,6 @@ fn build_main_placements(
 
 // removed: outer_sizes_and_sum (was unused after auto margin integration)
 
-#[inline]
 /// Ensure the first item's offset aligns to main-start for Start and `SpaceBetween`
 /// when the main axis is not reversed. This guards against any accidental
 /// pre-gap/start offset leaks. No effect for other justify modes or reverse axes.
@@ -219,7 +211,6 @@ fn clamp_first_offset_if_needed(
 
 /// Compute cross-axis placement for multiple items using `align-items`.
 /// Each tuple is `(item_cross_size, min_cross, max_cross)`.
-#[inline]
 pub fn align_cross_for_items(
     align: AlignItems,
     container_cross_size: f32,
@@ -246,7 +237,6 @@ pub struct CrossContext {
     pub cross_gap: f32,
 }
 
-#[inline]
 pub fn layout_single_line_with_cross(
     container: FlexContainerInputs,
     justify_content: JustifyContent,
@@ -295,7 +285,6 @@ pub fn layout_single_line_with_cross(
     pairs
 }
 
-#[inline]
 /// Multi-line flex layout (wrap) — per-line main layout + cross-axis line packing.
 ///
 /// Breaks items into lines by container main-size and CSS gap, then runs the single-line main
@@ -375,7 +364,6 @@ fn align_content_params(
 /// Line start/end indices for items included in the line: `[start, end)`.
 type LineRange = (usize, usize);
 
-#[inline]
 /// Break items into lines by accumulating hypothetical sizes and `main_gap` until exceeding
 /// `container_main_size`. Returns a list of `[start, end)` ranges.
 fn break_into_lines(
@@ -414,7 +402,6 @@ fn break_into_lines(
 /// Per line, compute single-line main-axis placements and the maximum clamped cross-size.
 /// Returns `(per_line_main, per_line_cross_max)` where `per_line_main[i]` pairs with
 /// `per_line_cross_max[i]`.
-#[inline]
 fn per_line_main_and_cross(
     container: FlexContainerInputs,
     justify_content: JustifyContent,
@@ -445,7 +432,6 @@ fn per_line_main_and_cross(
     (per_line_main, per_line_cross_max)
 }
 /// according to `align_content`, and aligning items within each line according to `align_items`.
-#[inline]
 fn stretch_line_crosses(cross_ctx: &CrossContext, per_line_cross_max: &[f32]) -> Vec<f32> {
     let mut line_cross_vec: Vec<f32> = per_line_cross_max.to_vec();
     let lines_total_cross: f32 = line_cross_vec.iter().copied().sum();
@@ -562,7 +548,6 @@ struct LineBuildCtx<'ctx> {
     cross_accum_offset: f32,
 }
 
-#[inline]
 /// Build `(FlexPlacement, CrossPlacement)` pairs for a single line.
 fn build_line_pairs(ctx: &LineBuildCtx<'_>) -> Vec<(FlexPlacement, CrossPlacement)> {
     ctx.line_main
@@ -689,7 +674,6 @@ type PerLineMainVec = Vec<PerLineMain>;
 /// - Distributes free space using grow when positive, shrink when negative.
 /// - Produces main offsets honoring direction (normal vs reverse).
 /// - Places items according to `justify_content` along the main axis (start/center/end).
-#[inline]
 pub fn layout_single_line(
     container: FlexContainerInputs,
     justify_content: JustifyContent,
@@ -756,7 +740,6 @@ type OuterCalc = (Vec<f32>, Vec<f32>, usize, f32);
 
 /// Distribute remaining main-axis free space across any auto margins, then produce effective
 /// left margins and outer sizes for each item. Returns `(outer_sizes, effective_left_margins, auto_slots, sum_outer)`.
-#[inline]
 fn resolve_auto_margins_and_outer(
     items: &[FlexChild],
     inner_sizes: &[f32],
@@ -828,7 +811,6 @@ struct MainOffsetPlan {
     main_gap: f32,
 }
 
-#[inline]
 /// Compute per-item main-axis offsets from a sizing plan and item sizes.
 fn accumulate_main_offsets(plan: &MainOffsetPlan, sizes: &[f32]) -> Vec<f32> {
     if plan.reverse {
@@ -861,7 +843,6 @@ fn accumulate_main_offsets(plan: &MainOffsetPlan, sizes: &[f32]) -> Vec<f32> {
     }
 }
 
-#[inline]
 /// Clamp a value between min and max inclusive.
 const fn clamp(value: f32, min_v: f32, max_v: f32) -> f32 {
     value.max(min_v).min(max_v)
@@ -966,7 +947,6 @@ pub struct CrossPlacement {
 /// Behavior:
 /// - Stretch: cross-size becomes container cross-size clamped by min/max; offset 0.
 /// - Center: cross-size remains the item cross-size (clamped) and offset centers it in the container.
-#[inline]
 pub fn align_single_line_cross(
     align: AlignItems,
     container_cross_size: f32,

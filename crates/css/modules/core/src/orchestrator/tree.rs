@@ -5,7 +5,6 @@
 use crate::{LayoutNodeKind, Layouter};
 use js::NodeKey;
 
-#[inline]
 /// Return the tag name for a block node, or `None` if the node is not a block.
 ///
 /// Spec: CSS 2.2 §9.4.1 — identify element boxes participating in BFC.
@@ -17,7 +16,6 @@ pub fn tag_of(layouter: &Layouter, key: NodeKey) -> Option<String> {
     }
 }
 
-#[inline]
 /// Find the first block-level node under `start` using a depth-first search.
 ///
 /// Spec: CSS 2.2 §9.4.1 — block formatting.
@@ -38,7 +36,6 @@ pub fn find_first_block_under(layouter: &Layouter, start: NodeKey) -> Option<Nod
     None
 }
 
-#[inline]
 /// Returns true if the subtree under `key` contains any inline text nodes with non-empty text.
 pub fn has_inline_text_descendant(layouter: &Layouter, key: NodeKey) -> bool {
     if let Some(children) = layouter.children.get(&key) {
@@ -58,7 +55,6 @@ pub fn has_inline_text_descendant(layouter: &Layouter, key: NodeKey) -> bool {
     false
 }
 
-#[inline]
 /// Choose the layout root. Prefer `body` under `html` when present; otherwise first block.
 pub fn choose_layout_root(layouter: &Layouter) -> Option<NodeKey> {
     // Find the document root, then prefer body under html when present.

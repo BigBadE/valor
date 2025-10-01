@@ -6,7 +6,6 @@ use serde_json::{from_str, Value};
 
 /// Apply HTTP headers from a JSON string to a request builder.
 /// Supports both object format `{"key": "value"}` and array format `[["key", "value"]]`.
-#[inline]
 pub fn apply_headers_from_json(mut req: RequestBuilder, headers_json: &str) -> RequestBuilder {
     if let Ok(val) = from_str::<Value>(headers_json) {
         if let Some(map) = val.as_object() {
@@ -33,7 +32,6 @@ pub fn apply_headers_from_json(mut req: RequestBuilder, headers_json: &str) -> R
 }
 
 /// Collect all HTTP headers from a response into a vector of (name, value) pairs.
-#[inline]
 pub fn collect_headers(resp: &Response) -> Vec<(String, String)> {
     resp.headers()
         .iter()
@@ -47,7 +45,6 @@ pub fn collect_headers(resp: &Response) -> Vec<(String, String)> {
 }
 
 /// Attach a base64-encoded body to a request builder if present and non-empty.
-#[inline]
 pub fn maybe_attach_body(req: RequestBuilder, body_b64: Option<&String>) -> RequestBuilder {
     match body_b64 {
         Some(base64_string) if !base64_string.is_empty() => {

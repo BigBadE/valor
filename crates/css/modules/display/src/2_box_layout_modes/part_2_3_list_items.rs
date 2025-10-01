@@ -8,7 +8,6 @@
 
 use css_orchestrator::style_model::ComputedStyle;
 
-#[inline]
 /// Return true if the element should behave as a list-item (i.e., generate a `::marker`).
 ///
 /// MVP: returns false until style computation exposes `list-item`. When that lands,

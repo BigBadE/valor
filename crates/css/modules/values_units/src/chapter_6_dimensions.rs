@@ -19,7 +19,6 @@ pub enum LengthUnit {
 /// - Pixels: returns the raw value.
 /// - Ems/RootEms: scales by the provided font sizes.
 /// - Viewport-relative (vw/vh): requires viewport; returns a percentage of width/height.
-#[inline]
 pub fn compute_length_px(
     length: Length,
     font_size_px: f32,
@@ -55,7 +54,6 @@ pub struct Viewport {
 ///
 /// # Errors
 /// Returns `ParseError::UnexpectedToken` when the next token is not a supported `<length>`.
-#[inline]
 pub fn parse_length(input: &mut Parser) -> Result<Length, ParseError> {
     match input.next_including_whitespace_and_comments() {
         Ok(token) => match token.clone() {

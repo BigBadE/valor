@@ -4,7 +4,6 @@ use css_orchestrator::style_model::{ComputedStyle, Position};
 
 /// Apply relative offsets from top/left/right/bottom when `position: relative`.
 /// Returns `(x_adjust, y_adjust)` in pixels.
-#[inline]
 pub const fn apply_relative_offsets(style: &ComputedStyle) -> (i32, i32) {
     if !matches!(style.position, Position::Relative) {
         return (0i32, 0i32);

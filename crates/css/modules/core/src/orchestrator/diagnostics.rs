@@ -5,7 +5,6 @@ use js::NodeKey;
 use log::debug;
 use std::collections::HashMap;
 
-#[inline]
 /// Log a vertical placement entry.
 pub fn log_vert(entry: VertLog) {
     debug!(
@@ -24,7 +23,6 @@ pub fn log_vert(entry: VertLog) {
     );
 }
 
-#[inline]
 /// Log the initial context for the first placed child under a parent.
 pub fn log_first_child_context(root: NodeKey, ctx: &ChildLayoutCtx) {
     debug!(
@@ -39,7 +37,6 @@ pub fn log_first_child_context(root: NodeKey, ctx: &ChildLayoutCtx) {
     );
 }
 
-#[inline]
 /// Insert or update the rectangle for a child in the rect map.
 pub fn insert_child_rect(
     rects: &mut HashMap<NodeKey, LayoutRect>,
@@ -49,7 +46,6 @@ pub fn insert_child_rect(
     rects.insert(child_key, rect);
 }
 
-#[inline]
 /// Build the last-placed info tuple `(key, rect_bottom, mb_out)` for a child.
 pub fn last_info_for_child(
     layouter: &Layouter,

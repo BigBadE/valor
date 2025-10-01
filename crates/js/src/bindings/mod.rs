@@ -220,7 +220,6 @@ fn make_log_fn(level: LogLevel) -> Arc<HostFnSync> {
 }
 
 /// Build the `console` namespace with standard logging methods.
-#[inline]
 pub fn build_console_namespace() -> HostNamespace {
     let methods: [(&str, LogLevel); 4] = [
         ("log", LogLevel::Info),
@@ -249,7 +248,6 @@ pub fn build_console_namespace() -> HostNamespace {
 /// - `console` namespace with logging methods.
 /// - `document` namespace with DOM manipulation.
 /// - `performance` namespace with timing.
-#[inline]
 pub fn build_default_bindings() -> HostBindings {
     HostBindings::new()
         .with_namespace("console", build_console_namespace())
@@ -259,7 +257,6 @@ pub fn build_default_bindings() -> HostBindings {
 
 /// Build the `chromeHost` namespace. Functions are gated to `<valor://chrome>` origin
 /// and require an attached host command channel in `HostContext`.
-#[inline]
 #[allow(
     clippy::too_many_lines,
     reason = "Chrome host namespace requires many navigation and tab management functions"
@@ -372,13 +369,11 @@ pub fn build_chrome_host_namespace() -> HostNamespace {
 }
 
 /// `HostBindings` bundle containing only the `chromeHost` namespace.
-#[inline]
 pub fn build_chrome_host_bindings() -> HostBindings {
     HostBindings::new().with_namespace("chromeHost", build_chrome_host_namespace())
 }
 
 /// Convert a vector of `JSValue` to a space-separated string.
-#[inline]
 pub fn stringify_arguments(arguments: Vec<JSValue>) -> String {
     arguments
         .into_iter()
@@ -394,7 +389,6 @@ pub fn stringify_arguments(arguments: Vec<JSValue>) -> String {
 }
 
 /// Build the `performance` namespace with a high-resolution `now()` function.
-#[inline]
 pub fn build_performance_namespace() -> HostNamespace {
     let now_fn = Arc::new(
         move |context: &HostContext, _args: Vec<JSValue>| -> Result<JSValue, JSError> {

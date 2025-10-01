@@ -43,7 +43,6 @@ impl CascadePriority {
 
 /// Rank a candidate declaration into a `CascadePriority`.
 /// Spec: Sections 3, 5, 6
-#[inline]
 pub const fn rank_candidate(
     origin: Origin,
     important: bool,
@@ -56,7 +55,6 @@ pub const fn rank_candidate(
 /// Compare two `CascadePriority` values according to the cascade rules.
 /// Lower comes first; return `Ordering::Greater` if `left` should win over `right`.
 /// Spec: Section 5 — Sorting the cascade
-#[inline]
 pub fn compare_priority(left: &CascadePriority, right: &CascadePriority) -> Ordering {
     // Importance first (important wins)
     if left.important != right.important {
@@ -81,7 +79,6 @@ pub fn compare_priority(left: &CascadePriority, right: &CascadePriority) -> Orde
 }
 
 /// Return ordering where true > false.
-#[inline]
 const fn bool_order_desc(a_true_wins: bool, b_true_wins: bool) -> Ordering {
     match (a_true_wins, b_true_wins) {
         (true, false) => Ordering::Greater,
@@ -91,7 +88,6 @@ const fn bool_order_desc(a_true_wins: bool, b_true_wins: bool) -> Ordering {
 }
 
 /// Rank origins: UA < User < Author.
-#[inline]
 const fn origin_rank(origin: Origin) -> i32 {
     match origin {
         Origin::UserAgent => 0,
@@ -102,7 +98,6 @@ const fn origin_rank(origin: Origin) -> i32 {
 
 /// Whether a property is inherited by default (subset).
 /// Spec: Section 7 — Inheritance (MVP subset)
-#[inline]
 pub fn is_inherited_property(property_name: &str) -> bool {
     matches!(
         property_name.to_ascii_lowercase().as_str(),
@@ -112,7 +107,6 @@ pub fn is_inherited_property(property_name: &str) -> bool {
 
 /// Initial values for a subset of properties (string form for MVP glue).
 /// Spec: Section 8 — Initial values (subset)
-#[inline]
 pub fn initial_value(property_name: &str) -> Option<&'static str> {
     match property_name.to_ascii_lowercase().as_str() {
         "font-size" => Some("medium"),
@@ -126,7 +120,6 @@ pub fn initial_value(property_name: &str) -> Option<&'static str> {
 ///
 /// Returns either the declared value, the parent's value (if inherited), or the initial value.
 /// Spec: Section 7 — Inheritance; Section 8 — Initial values
-#[inline]
 pub fn inherit_property(
     property_name: &str,
     declared_value: Option<String>,

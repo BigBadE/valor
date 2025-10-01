@@ -49,7 +49,7 @@ pub use stub::V8Engine;
 
 #[cfg(feature = "v8")]
 mod real {
-    //! Minimal V8-based JavaScript engine crate for Valor.
+    //! Minimal V8-based JavaScript engine implementation for the Valor browser.
     //!
     //! This crate provides a narrow, swappable interface to a JavaScript engine with
     //! a V8-backed implementation that is always enabled in this build.
@@ -124,10 +124,6 @@ mod real {
         let host_context: &HostContext = &payload.0;
         let host_fn_kind: &HostFnKind = &payload.1;
 
-        #[allow(
-            clippy::pattern_type_mismatch,
-            reason = "Not sure how to fix this pattern type mismatch"
-        )]
         let HostFnKind::Sync(function_arc) = host_fn_kind;
         match (**function_arc)(host_context, collected) {
             Ok(result) => ret_val.set(jsvalue_to_local(scope, result)),

@@ -4,7 +4,6 @@
 
 use css_orchestrator::style_model::Display;
 
-#[inline]
 /// Return true if the element participates as a block-level box in flow layout.
 ///
 /// Notes:

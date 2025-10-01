@@ -23,7 +23,6 @@ pub struct FlexItem {
 /// Collect in-flow flex items from normalized children.
 ///
 /// Spec: <https://www.w3.org/TR/css-flexbox-1/#flex-items>
-#[inline]
 pub fn collect_flex_items(children: &[(ItemRef, ItemStyle)]) -> Vec<FlexItem> {
     let mut out = Vec::with_capacity(children.len());
     for (handle, style) in children.iter().copied() {
@@ -42,7 +41,6 @@ pub fn collect_flex_items(children: &[(ItemRef, ItemStyle)]) -> Vec<FlexItem> {
 /// - Assumes children list is already normalized (e.g., `display: contents` handled upstream).
 ///
 /// Spec: <https://www.w3.org/TR/css-flexbox-1/#flex-items>
-#[inline]
 pub const fn is_flex_item(style: ItemStyle) -> bool {
     !style.is_none && !style.out_of_flow
 }

@@ -22,7 +22,6 @@ pub struct LineBox {
     pub fragments: Vec<InlineFragment>,
 }
 
-#[inline]
 /// Build line boxes from a flat list of children by grouping contiguous inline-level items.
 /// This variant accepts a predicate to skip nodes (e.g., ignorable whitespace text runs).
 ///
@@ -73,7 +72,6 @@ where
     out
 }
 
-#[inline]
 /// Build line boxes from a flat list of children by grouping contiguous inline-level items.
 ///
 /// MVP behavior:

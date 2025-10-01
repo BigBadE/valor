@@ -37,7 +37,6 @@ pub use storage::{
 ///
 /// # Errors
 /// Returns an error if the value is not a string.
-#[inline]
 pub fn parse_string(value: &JSValue, name: &str) -> Result<String, JSError> {
     match value {
         JSValue::String(string_value) => Ok(string_value.clone()),
@@ -49,7 +48,6 @@ pub fn parse_string(value: &JSValue, name: &str) -> Result<String, JSError> {
 ///
 /// # Errors
 /// Returns an error if the value is not a string or cannot be parsed as u64.
-#[inline]
 pub fn parse_key(value: &JSValue, name: &str) -> Result<NodeKey, JSError> {
     match value {
         JSValue::String(string_value) => {
@@ -65,7 +63,6 @@ pub fn parse_key(value: &JSValue, name: &str) -> Result<NodeKey, JSError> {
 }
 
 /// Helper to parse an optional usize from a number `JSValue`.
-#[inline]
 pub fn parse_usize(value: &JSValue) -> Option<usize> {
     match value {
         JSValue::Number(number) if *number >= 0.0f64 => Some(*number as usize),
@@ -74,7 +71,6 @@ pub fn parse_usize(value: &JSValue) -> Option<usize> {
 }
 
 /// Build the `document` namespace with all DOM manipulation functions.
-#[inline]
 pub fn build_document_namespace() -> HostNamespace {
     HostNamespace::new()
         .with_sync_fn("createElement", build_create_element())

@@ -20,7 +20,6 @@ pub mod place_child;
 /// Tree traversal and document utilities used by the orchestrator.
 pub mod tree;
 
-#[inline]
 /// Computes a naive block layout and returns the number of nodes affected.
 pub fn compute_layout_impl(layouter: &mut Layouter) -> usize {
     layouter.perf_layout_time_last_ms = 0;
@@ -31,7 +30,6 @@ pub fn compute_layout_impl(layouter: &mut Layouter) -> usize {
     layout_root_impl(layouter)
 }
 
-#[inline]
 /// Emit diagnostics for the last placed in-flow block used to compute `content_bottom`.
 fn log_last_placed_child_diag(layouter: &Layouter, root: NodeKey, content_bottom: Option<i32>) {
     let ordered_blocks = layouter.collect_block_children(root);
@@ -66,7 +64,6 @@ fn log_last_placed_child_diag(layouter: &Layouter, root: NodeKey, content_bottom
     }
 }
 
-#[inline]
 /// Compute container metrics for `root` given an initial containing block width.
 pub fn compute_container_metrics_impl(
     layouter: &Layouter,

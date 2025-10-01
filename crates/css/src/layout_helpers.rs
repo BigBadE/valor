@@ -1,6 +1,5 @@
 //! Text layout helper utilities.
 
-#[inline]
 pub fn collapse_whitespace(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_ws = false;
@@ -18,7 +17,6 @@ pub fn collapse_whitespace(text: &str) -> String {
     out.trim().to_owned()
 }
 
-#[inline]
 pub fn reorder_bidi_for_display(text: &str) -> String {
     text.to_owned()
 }

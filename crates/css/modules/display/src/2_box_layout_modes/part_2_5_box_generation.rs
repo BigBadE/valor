@@ -13,7 +13,6 @@ use std::collections::HashMap;
 ///
 /// Spec: CSS Display 3 — §2.5 Box Generation: the `none` and `contents` keywords
 ///   <https://www.w3.org/TR/css-display-3/#box-generation>
-#[inline]
 pub fn normalize_children<SChildren: BuildHasher, SStyles: BuildHasher>(
     children_by_parent: &HashMap<NodeKey, Vec<NodeKey>, SChildren>,
     styles: &HashMap<NodeKey, ComputedStyle, SStyles>,

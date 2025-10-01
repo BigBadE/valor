@@ -12,7 +12,6 @@ pub struct Ident(pub String);
 ///
 /// # Errors
 /// Returns `ParseError::UnexpectedToken` when the next token is not an identifier.
-#[inline]
 pub fn parse_ident(input: &mut Parser) -> Result<Ident, ParseError> {
     input.next_including_whitespace_and_comments().map_or(
         Err(ParseError::UnexpectedToken),

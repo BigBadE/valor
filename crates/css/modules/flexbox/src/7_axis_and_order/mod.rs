@@ -30,7 +30,6 @@ pub struct Axes {
 /// Resolve main/cross axes and direction given flex-direction and writing mode.
 ///
 /// Spec: <https://www.w3.org/TR/css-flexbox-1/#flex-direction-property>
-#[inline]
 pub const fn resolve_axes(direction: FlexDirection, writing_mode: WritingMode) -> Axes {
     match direction {
         FlexDirection::Row => Axes {
@@ -68,7 +67,6 @@ pub const fn resolve_axes(direction: FlexDirection, writing_mode: WritingMode) -
 /// Returns (order, `original_index`) so a stable sort by this key respects DOM order ties.
 ///
 /// Spec: <https://www.w3.org/TR/css-flexbox-1/#propdef-order>
-#[inline]
 pub const fn order_key(order: i32, original_index: usize) -> (i32, usize) {
     (order, original_index)
 }
@@ -78,7 +76,6 @@ pub const fn order_key(order: i32, original_index: usize) -> (i32, usize) {
 /// Spec: <https://www.w3.org/TR/css-flexbox-1/#order-property>
 type OrderKey = (i32, usize);
 
-#[inline]
 pub fn sort_items_by_order_stable(items: &[(ItemRef, i32)]) -> Vec<ItemRef> {
     let mut with_index: Vec<(OrderKey, ItemRef)> = items
         .iter()

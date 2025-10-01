@@ -77,7 +77,6 @@ struct ContainingBlock {
     height: i32,
 }
 
-#[inline]
 /// Compute the containing block for an absolute/fixed positioned element.
 ///
 /// Absolute: nearest positioned ancestor's padding-box; fallback to parent content-box.
@@ -101,9 +100,7 @@ fn containing_block(
     let mut nearest_positioned: Option<NodeKey> = None;
     // Helper to find parent by scanning children map (small trees in tests)
     let find_parent = |lay: &Layouter, needle: NodeKey| -> Option<NodeKey> {
-        // Avoid iterating directly over a hash-based type to satisfy clippy::iter_over_hash_type
-        let snapshot: Vec<ChildrenSnapshotEntry<'_>> = lay.children.iter().collect();
-        for (parent_key, children) in snapshot {
+        for (parent_key, children) in &lay.children {
             if children.contains(&needle) {
                 return Some(*parent_key);
             }
@@ -160,7 +157,6 @@ fn containing_block(
     }
 }
 
-#[inline]
 /// Resolve a single offset by preferring percentage over pixels and clamping to >= 0.
 fn resolve_offset(px_opt: Option<f32>, pct_opt: Option<f32>, total: i32) -> i32 {
     pct_opt.map_or_else(
@@ -182,7 +178,6 @@ struct ResolvedOffsets {
     bottom: i32,
 }
 
-#[inline]
 /// Resolve all four offsets from `ComputedStyle` against the containing block.
 fn resolve_all_offsets(style: &ComputedStyle, cblock: &ContainingBlock) -> ResolvedOffsets {
     ResolvedOffsets {
@@ -235,7 +230,6 @@ impl OffsetMask {
     }
 }
 
-#[inline]
 /// Compute used width/height for positioned layout honoring opposite-offset rules.
 fn compute_used_sizes(
     style: &ComputedStyle,
@@ -283,7 +277,6 @@ fn compute_used_sizes(
     (used_w, used_h)
 }
 
-#[inline]
 /// Choose the final (x, y) from the available edges and used size.
 const fn choose_position(
     cblock: &ContainingBlock,
@@ -334,7 +327,6 @@ struct PositionedBox {
     height: i32,
 }
 
-#[inline]
 /// Commit a positioned rectangle and return a zero-flow contribution `PlacedBlock`.
 fn commit_positioned(
     layouter: &mut Layouter,
@@ -372,7 +364,6 @@ fn commit_positioned(
     }
 }
 
-#[inline]
 /// Handle out-of-flow positioned boxes (absolute/fixed). Returns `Some(PlacedBlock)` if handled.
 fn handle_out_of_flow_positioned(
     layouter: &mut Layouter,
@@ -411,7 +402,6 @@ fn handle_out_of_flow_positioned(
     Some(commit_positioned(layouter, ctx, child_key, sides, rect))
 }
 
-#[inline]
 /// Emit diagnostics and insert the child's rectangle into the layouter.
 fn emit_vert_commit(layouter: &mut Layouter, ctx: &ChildLayoutCtx, inputs: CommitInputs) {
     layouter.commit_vert(VertCommit {
@@ -440,7 +430,6 @@ fn emit_vert_commit(layouter: &mut Layouter, ctx: &ChildLayoutCtx, inputs: Commi
     });
 }
 
-#[inline]
 /// Compute the parent leading-collapse contribution for the first in-flow child.
 const fn compute_leading_collapse_contrib(_ctx: &ChildLayoutCtx, _clear_lifted: bool) -> i32 {
     // Parent origin and child metrics already incorporate any applied leading-top shift.
@@ -448,7 +437,6 @@ const fn compute_leading_collapse_contrib(_ctx: &ChildLayoutCtx, _clear_lifted: 
     0i32
 }
 
-#[inline]
 /// Place a single block-level child and return a `PlacedBlock` bundle for vertical composition.
 pub fn place_child_public(
     layouter: &mut Layouter,

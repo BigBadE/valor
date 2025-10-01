@@ -93,7 +93,6 @@ impl Selector {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Specificity(pub u32, pub u32, pub u32);
 
-#[inline]
 /// Consume an identifier from a character iterator.
 fn consume_ident<I>(chars: &mut Peekable<I>, allow_underscore: bool) -> String
 where
@@ -113,7 +112,6 @@ where
     out
 }
 
-#[inline]
 /// Push the current simple selector into `parts` and reset `current`, attaching `combinator`.
 fn commit_current_part(
     parts: &mut Vec<SelectorPart>,
@@ -131,7 +129,6 @@ fn commit_current_part(
     });
 }
 
-#[inline]
 /// Compute the specificity (ids, classes, tags) for a parsed selector.
 pub(crate) fn compute_specificity(selector: &Selector) -> Specificity {
     let mut ids = 0u32;
@@ -152,7 +149,6 @@ pub(crate) fn compute_specificity(selector: &Selector) -> Specificity {
     Specificity(ids, classes, tags)
 }
 
-#[inline]
 /// Parse a single selector string into a `Selector`.
 fn parse_single_selector(selector_str: &str) -> Option<Selector> {
     let mut chars = selector_str.trim().chars().peekable();
@@ -236,7 +232,6 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
     }
 }
 
-#[inline]
 /// Parse a selector list separated by commas into a vector of `Selector`s.
 pub(crate) fn parse_selector_list(input: &str) -> Vec<Selector> {
     input.split(',').filter_map(parse_single_selector).collect()

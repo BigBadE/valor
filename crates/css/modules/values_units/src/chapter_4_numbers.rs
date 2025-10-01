@@ -13,7 +13,6 @@ pub struct Number(pub f32);
 ///
 /// # Errors
 /// Returns `ParseError::UnexpectedToken` when the next token is not a `<number>`.
-#[inline]
 pub fn parse_number(input: &mut Parser) -> Result<Number, ParseError> {
     input.next_including_whitespace_and_comments().map_or(
         Err(ParseError::UnexpectedToken),

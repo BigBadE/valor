@@ -11,7 +11,6 @@ use crate::{DOMUpdate, NodeKey};
 use core::sync::atomic::Ordering;
 use std::sync::Arc;
 /// Build createElement(tag) function.
-#[inline]
 pub fn build_create_element() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -68,7 +67,6 @@ pub fn build_create_element() -> Arc<HostFnSync> {
 }
 
 /// Build createTextNode(text) function.
-#[inline]
 pub fn build_create_text_node() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -100,7 +98,6 @@ pub fn build_create_text_node() -> Arc<HostFnSync> {
 }
 
 /// Build appendStyleText(cssText) function - creates `<style>` element under `<head>`.
-#[inline]
 pub fn build_append_style_text() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -157,7 +154,6 @@ pub fn build_append_style_text() -> Arc<HostFnSync> {
 }
 
 /// Build createTextNodeRoot(text) function - creates text node directly under ROOT.
-#[inline]
 pub fn build_create_text_node_root() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -208,7 +204,6 @@ pub fn build_create_text_node_root() -> Arc<HostFnSync> {
 }
 
 /// Build appendChild(parentKey, childKey, pos?) function.
-#[inline]
 pub fn build_append_child() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -268,7 +263,6 @@ pub fn build_append_child() -> Arc<HostFnSync> {
 }
 
 /// Build removeNode(nodeKey) function.
-#[inline]
 pub fn build_remove_node() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -291,7 +285,6 @@ pub fn build_remove_node() -> Arc<HostFnSync> {
     )
 }
 
-#[inline]
 pub fn build_get_inner_html() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -312,7 +305,6 @@ pub fn build_get_inner_html() -> Arc<HostFnSync> {
 }
 
 /// Build setInnerHTML(nodeKey, html) function.
-#[inline]
 pub fn build_set_inner_html() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {

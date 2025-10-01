@@ -25,7 +25,6 @@ use tokio::runtime::Runtime;
 use url::Url;
 
 /// Returns the directory containing HTML fixtures for integration tests.
-#[inline]
 pub fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -35,7 +34,6 @@ pub fn fixtures_dir() -> PathBuf {
 // ===== Shared artifacts and caching utilities =====
 
 /// Return the target directory for build/test outputs.
-#[inline]
 pub fn target_dir() -> PathBuf {
     if let Ok(dir) = env_var("CARGO_TARGET_DIR") {
         return PathBuf::from(dir);
@@ -46,7 +44,6 @@ pub fn target_dir() -> PathBuf {
 }
 
 /// Return a subdirectory under target for test artifacts.
-#[inline]
 pub fn artifacts_subdir(name: &str) -> PathBuf {
     target_dir().join(name)
 }
@@ -55,7 +52,6 @@ pub fn artifacts_subdir(name: &str) -> PathBuf {
 ///
 /// # Errors
 /// Returns an error if directory creation fails.
-#[inline]
 pub fn clear_dir(dir: &Path) -> Result<()> {
     if dir.exists() {
         let _remove_result: Result<(), _> = remove_dir_all(dir);
@@ -68,7 +64,6 @@ pub fn clear_dir(dir: &Path) -> Result<()> {
 ///
 /// # Errors
 /// Returns an error if file operations fail.
-#[inline]
 pub fn write_bytes_if_changed(path: &Path, bytes: &[u8]) -> Result<bool> {
     if let Ok(existing) = read(path)
         && existing == bytes
@@ -86,7 +81,6 @@ pub fn write_bytes_if_changed(path: &Path, bytes: &[u8]) -> Result<bool> {
 ///
 /// # Errors
 /// Returns an error if encoding or file operations fail.
-#[inline]
 pub fn write_png_rgba_if_changed(
     path: &Path,
     rgba: &[u8],
@@ -100,7 +94,6 @@ pub fn write_png_rgba_if_changed(
 }
 
 /// Read cached JSON for a fixture using a key derived from the fixture path and harness source.
-#[inline]
 pub fn read_cached_json_for_fixture(fixture_path: &Path, harness_src: &str) -> Option<Value> {
     fn checksum_u64(input_str: &str) -> u64 {
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a 64-bit
@@ -133,7 +126,6 @@ pub fn read_cached_json_for_fixture(fixture_path: &Path, harness_src: &str) -> O
 ///
 /// # Errors
 /// Returns an error if file operations fail.
-#[inline]
 pub fn write_cached_json_for_fixture(
     fixture_path: &Path,
     harness_src: &str,
@@ -175,7 +167,6 @@ pub fn write_cached_json_for_fixture(
 ///
 /// # Errors
 /// Returns an error if file operations fail.
-#[inline]
 pub fn write_named_json_for_fixture(
     fixture_path: &Path,
     harness_src: &str,
@@ -220,7 +211,6 @@ pub fn write_named_json_for_fixture(
     Ok(())
 }
 
-#[inline]
 pub fn fixtures_layout_dir() -> PathBuf {
     fixtures_dir().join("layout")
 }
@@ -252,7 +242,6 @@ fn module_css_fixture_roots() -> Vec<PathBuf> {
     roots
 }
 
-#[inline]
 pub fn fixtures_css_dir() -> PathBuf {
     fixtures_dir().join("css")
 }
@@ -301,7 +290,6 @@ fn collect_html_recursively(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 ///
 /// # Errors
 /// Returns an error if directory traversal fails.
-#[inline]
 pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
     let mut files: Vec<PathBuf> = Vec::new();
     // Valor crate local layout fixtures
@@ -369,7 +357,6 @@ pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
 ///
 /// # Errors
 /// Returns an error if directory traversal fails.
-#[inline]
 pub fn graphics_fixture_html_files() -> Result<Vec<PathBuf>> {
     let mut files: Vec<PathBuf> = Vec::new();
     // Valor crate local graphics fixtures
@@ -402,7 +389,6 @@ pub fn graphics_fixture_html_files() -> Result<Vec<PathBuf>> {
 ///
 /// # Errors
 /// Returns an error if the path cannot be converted to a URL.
-#[inline]
 pub fn to_file_url(path: &Path) -> Result<Url> {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     Url::from_file_path(&canonical)
@@ -413,7 +399,6 @@ pub fn to_file_url(path: &Path) -> Result<Url> {
 ///
 /// # Errors
 /// Returns an error if page creation fails.
-#[inline]
 pub fn create_page(runtime: &Runtime, url: Url) -> Result<HtmlPage> {
     let config = ValorConfig::from_env();
     let page = runtime.block_on(HtmlPage::new(runtime.handle(), url, config))?;
@@ -425,7 +410,6 @@ pub fn create_page(runtime: &Runtime, url: Url) -> Result<HtmlPage> {
 ///
 /// # Errors
 /// Returns an error if page creation fails.
-#[inline]
 pub fn create_chrome_and_content_for_tests(
     runtime: &Runtime,
     initial_content_url: Url,
@@ -438,7 +422,6 @@ pub fn create_chrome_and_content_for_tests(
 ///
 /// # Errors
 /// Returns an error if page updates fail.
-#[inline]
 pub fn update_until_finished<F>(
     runtime: &Runtime,
     page: &mut HtmlPage,
@@ -477,7 +460,6 @@ where
 ///
 /// # Errors
 /// Returns an error if page updates fail.
-#[inline]
 pub fn update_until_finished_simple(runtime: &Runtime, page: &mut HtmlPage) -> Result<bool> {
     update_until_finished(runtime, page, |_page| Ok(()))
 }
@@ -490,7 +472,6 @@ pub fn update_until_finished_simple(runtime: &Runtime, page: &mut HtmlPage) -> R
 ///
 /// # Errors
 /// Returns an error string if values differ.
-#[inline]
 pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> Result<(), String> {
     fn eq_nums(num_a: &Number, num_b: &Number, eps: f64) -> bool {
         let float_a = num_a.as_f64().unwrap_or(0.0f64);
@@ -539,7 +520,6 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
 
 /// Returns a JS snippet that injects a CSS Reset into the current document in Chromium tests.
 /// This should be executed via `tab.evaluate(script, /*return_by_value=*/ false)` after navigation.
-#[inline]
 pub const fn css_reset_injection_script() -> &'static str {
     r#"(function(){
         try {

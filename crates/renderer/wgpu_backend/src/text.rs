@@ -9,7 +9,6 @@ use renderer::renderer::DrawText;
 
 pub(crate) type TextBatch = (Option<Scissor>, Vec<DrawText>);
 
-#[inline]
 pub(crate) fn batch_texts_with_scissor(
     dl: &DisplayList,
     framebuffer_w: u32,
@@ -90,7 +89,6 @@ pub(crate) fn batch_texts_with_scissor(
     out
 }
 
-#[inline]
 pub(crate) fn batch_layer_texts_with_scissor(
     layers: &[Layer],
     framebuffer_w: u32,
@@ -175,7 +173,6 @@ pub(crate) fn batch_layer_texts_with_scissor(
     out
 }
 
-#[inline]
 pub(crate) fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
     if let DisplayItem::Text {
         x,
@@ -198,7 +195,6 @@ pub(crate) fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
     None
 }
 
-#[inline]
 fn rect_to_scissor(framebuffer: (u32, u32), x: f32, y: f32, w: f32, h: f32) -> Scissor {
     let framebuffer_w = framebuffer.0.max(1);
     let framebuffer_h = framebuffer.1.max(1);
@@ -221,7 +217,6 @@ fn rect_to_scissor(framebuffer: (u32, u32), x: f32, y: f32, w: f32, h: f32) -> S
     (sx as u32, sy as u32, sw, sh)
 }
 
-#[inline]
 fn intersect_scissor(a: Scissor, b: Scissor) -> Scissor {
     let (ax, ay, aw, ah) = a;
     let (bx, by, bw, bh) = b;

@@ -3,7 +3,6 @@
 
 use css_orchestrator::style_model::{ComputedStyle, Display, Float, Position};
 
-#[inline]
 /// Compute the used outer display value for a child box, applying blockification/inlinification
 /// rules relevant to our current layout engine. This is a pure function that does not mutate styles.
 ///

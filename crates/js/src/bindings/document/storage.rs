@@ -4,7 +4,6 @@ use crate::bindings::values::{JSError, JSValue};
 use crate::bindings::{HostContext, HostFnSync};
 use std::sync::Arc;
 /// Build `storage_getItem` function.
-#[inline]
 pub fn build_storage_get_item() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -45,7 +44,6 @@ pub fn build_storage_get_item() -> Arc<HostFnSync> {
 }
 
 /// Build `storage_setItem` function.
-#[inline]
 pub fn build_storage_set_item() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -90,7 +88,6 @@ pub fn build_storage_set_item() -> Arc<HostFnSync> {
 }
 
 /// Build `storage_removeItem` function.
-#[inline]
 pub fn build_storage_remove_item() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -131,7 +128,6 @@ pub fn build_storage_remove_item() -> Arc<HostFnSync> {
 }
 
 /// Build `storage_clear` function.
-#[inline]
 pub fn build_storage_clear() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
@@ -168,7 +164,6 @@ pub fn build_storage_clear() -> Arc<HostFnSync> {
 }
 
 /// Build `storage_keys` function.
-#[inline]
 pub fn build_storage_keys() -> Arc<HostFnSync> {
     Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {

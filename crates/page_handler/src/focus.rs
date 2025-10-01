@@ -3,22 +3,32 @@ use css_core::LayoutNodeKind;
 use js::NodeKey;
 use std::collections::HashMap;
 
-pub fn next(
+/// Computes the next focusable element in tab order.
+///
+/// Elements with explicit positive `tabindex` are visited first in numeric order,
+/// followed by naturally focusable elements (a, button, input, textarea) in document order.
+/// Wraps to the beginning if no next element exists.
+///
+/// # Returns
+///
+/// Returns `Some(NodeKey)` for the next focusable element, or `None` if no focusable elements exist.
+#[must_use]
+pub fn next<S: ::std::hash::BuildHasher, S2: ::std::hash::BuildHasher>(
     snapshot: SnapshotSlice,
-    attrs: &HashMap<NodeKey, HashMap<String, String>>,
+    attrs: &HashMap<NodeKey, HashMap<String, String, S2>, S>,
     current: Option<NodeKey>,
 ) -> Option<NodeKey> {
     let mut focusables: Vec<(i32, NodeKey)> = Vec::new();
     let mut natural: Vec<NodeKey> = Vec::new();
-    for (key, kind, _children) in snapshot.iter() {
+    for (key, kind, _children) in snapshot {
         let tabindex_opt = attrs
             .get(key)
-            .and_then(|m| m.get("tabindex"))
-            .and_then(|s| s.parse::<i32>().ok());
+            .and_then(|attr_map| attr_map.get("tabindex"))
+            .and_then(|tabindex_str| tabindex_str.parse::<i32>().ok());
         let is_focusable_tag = match kind {
             LayoutNodeKind::Block { tag } => {
-                let t = tag.to_ascii_lowercase();
-                matches!(t.as_str(), "a" | "button" | "input" | "textarea")
+                let tag_lower = tag.to_ascii_lowercase();
+                matches!(tag_lower.as_str(), "a" | "button" | "input" | "textarea")
             }
             _ => false,
         };
@@ -29,10 +39,10 @@ pub fn next(
         }
     }
     focusables.sort_by_key(|(tabindex, _)| *tabindex);
-    let order: Vec<NodeKey> = if !focusables.is_empty() {
-        focusables.into_iter().map(|(_, key)| key).collect()
-    } else {
+    let order: Vec<NodeKey> = if focusables.is_empty() {
         natural
+    } else {
+        focusables.into_iter().map(|(_, key)| key).collect()
     };
     if order.is_empty() {
         return None;
@@ -54,46 +64,56 @@ pub fn next(
     })
 }
 
-pub fn prev(
+/// Computes the previous focusable element in tab order.
+///
+/// Elements with explicit positive `tabindex` are visited first in numeric order,
+/// followed by naturally focusable elements (a, button, input, textarea) in document order.
+/// Wraps to the end if no previous element exists.
+///
+/// # Returns
+///
+/// Returns `Some(NodeKey)` for the previous focusable element, or `None` if no focusable elements exist.
+#[must_use]
+pub fn prev<S: ::std::hash::BuildHasher, S2: ::std::hash::BuildHasher>(
     snapshot: SnapshotSlice,
-    attrs: &HashMap<NodeKey, HashMap<String, String>>,
+    attrs: &HashMap<NodeKey, HashMap<String, String, S2>, S>,
     current: Option<NodeKey>,
 ) -> Option<NodeKey> {
     let mut focusables: Vec<(i32, NodeKey)> = Vec::new();
     let mut natural: Vec<NodeKey> = Vec::new();
-    for (key, kind, _children) in snapshot.iter() {
+    for (key, kind, _children) in snapshot {
         let tabindex_opt = attrs
             .get(key)
-            .and_then(|m| m.get("tabindex"))
-            .and_then(|s| s.parse::<i32>().ok());
+            .and_then(|attr_map| attr_map.get("tabindex"))
+            .and_then(|tabindex_str| tabindex_str.parse::<i32>().ok());
         let is_focusable_tag = match kind {
             LayoutNodeKind::Block { tag } => {
-                let t = tag.to_ascii_lowercase();
-                matches!(t.as_str(), "a" | "button" | "input" | "textarea")
+                let tag_lower = tag.to_ascii_lowercase();
+                matches!(tag_lower.as_str(), "a" | "button" | "input" | "textarea")
             }
             _ => false,
         };
-        if let Some(tb) = tabindex_opt {
-            focusables.push((tb, *key));
+        if let Some(tabindex) = tabindex_opt {
+            focusables.push((tabindex, *key));
         } else if is_focusable_tag {
             natural.push(*key);
         }
     }
-    focusables.sort_by_key(|(tb, _)| *tb);
-    let order: Vec<NodeKey> = if !focusables.is_empty() {
-        focusables.into_iter().map(|(_, k)| k).collect()
-    } else {
+    focusables.sort_by_key(|(tabindex, _)| *tabindex);
+    let order: Vec<NodeKey> = if focusables.is_empty() {
         natural
+    } else {
+        focusables.into_iter().map(|(_, key)| key).collect()
     };
     if order.is_empty() {
         return None;
     }
     Some(match current {
         None => order[order.len() - 1],
-        Some(cur) => {
+        Some(current_key) => {
             let pos = order
                 .iter()
-                .position(|key| *key == cur)
+                .position(|key| *key == current_key)
                 .unwrap_or(usize::MAX);
             let idx = if pos == usize::MAX || pos == 0 {
                 order.len() - 1

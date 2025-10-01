@@ -44,14 +44,12 @@ impl StylesheetStreamParser {
     }
 }
 
-#[inline]
 /// Parse a stylesheet string and return the resulting `Stylesheet`.
 pub fn parse_stylesheet(css: &str, origin: Origin, base_rule_idx: u32) -> Stylesheet {
     let (sheet, _next) = parse_stylesheet_with_next(css, origin, base_rule_idx);
     sheet
 }
 
-#[inline]
 /// Parse a stylesheet string and return the resulting `Stylesheet` together with the next source
 /// order that should be used for a subsequent parse.
 fn parse_stylesheet_with_next(css: &str, origin: Origin, base_rule_idx: u32) -> (Stylesheet, u32) {

@@ -17,7 +17,6 @@ pub struct Color {
 }
 
 /// Convert an ASCII hex digit to its numeric value.
-#[inline]
 pub const fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0' => Some(0),
@@ -41,7 +40,6 @@ pub const fn hex_value(byte: u8) -> Option<u8> {
 }
 
 /// Parse a 3- or 6-digit hex color (e.g., `#abc` or `#aabbcc`).
-#[inline]
 fn parse_hex_color(text: &str) -> Option<Color> {
     let trimmed = text.trim();
     let bytes = trimmed.as_bytes();
@@ -94,7 +92,6 @@ fn parse_hex_color(text: &str) -> Option<Color> {
 }
 
 /// Map a CSS named color (minimal subset) to an RGBA value.
-#[inline]
 fn named_color(name: &str) -> Option<Color> {
     match name.to_ascii_lowercase().as_str() {
         "black" => Some(Color {
@@ -133,7 +130,6 @@ fn named_color(name: &str) -> Option<Color> {
 
 /// Parse `rgb()`/`rgba()` with integer components only (0..=255).
 /// Alpha is an optional 4th integer (0..=255).
-#[inline]
 fn parse_rgb_function(name: &str, input: &mut Parser) -> Option<Color> {
     let lowercase = name.to_ascii_lowercase();
     let mut comps: Vec<u8> = Vec::with_capacity(4);
@@ -187,7 +183,6 @@ fn parse_rgb_function(name: &str, input: &mut Parser) -> Option<Color> {
 ///
 /// # Errors
 /// Returns `ParseError::UnexpectedToken` for unsupported or malformed input.
-#[inline]
 pub fn parse_color(input: &mut Parser) -> Result<Color, ParseError> {
     let token_initial = match input.next_including_whitespace_and_comments() {
         Ok(initial) => initial.clone(),

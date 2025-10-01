@@ -24,7 +24,6 @@ mod chapter3;
 #[path = "4_visibility/mod.rs"]
 mod chapter4;
 
-#[inline]
 /// Normalize children for layout by applying a subset of CSS Display 3 box generation rules.
 ///
 /// Spec: CSS Display 3 — §2.5 Box Generation: the `none` and `contents` keywords
@@ -44,7 +43,6 @@ pub fn normalize_children<SChildren: BuildHasher, SStyles: BuildHasher>(
     chapter2::part_2_5_box_generation::normalize_children(children_by_parent, styles, parent)
 }
 
-#[inline]
 /// Normalize children and also compute inline/block runs suitable for anonymous block synthesis.
 /// This does not mutate any tree and does not synthesize nodes; it only describes runs.
 ///

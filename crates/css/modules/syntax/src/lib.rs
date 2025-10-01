@@ -41,7 +41,6 @@ pub struct Stylesheet {
 }
 
 /// Parse `!important` at the end of a value, returning (`value_without_important`, `important_flag`).
-#[inline]
 fn split_important_tail(value: &str) -> (String, bool) {
     let trimmed = value.trim();
     if let Some(pos) = trimmed.rfind("!important")
@@ -217,7 +216,6 @@ impl CssQualifiedRuleParser<'_> for TopLevelParser {
 }
 
 /// Parse declarations from a rule block using `cssparser` body parser.
-#[inline]
 fn parse_declarations_from_block(block: &mut Parser) -> Vec<Declaration> {
     let mut out: Vec<Declaration> = Vec::new();
     let mut body = BodyDeclParser;
@@ -228,7 +226,6 @@ fn parse_declarations_from_block(block: &mut Parser) -> Vec<Declaration> {
 }
 
 /// Parse a full stylesheet into a `Stylesheet` using cssparser.
-#[inline]
 pub fn parse_stylesheet(css: &str) -> Stylesheet {
     let mut input = ParserInput::new(css);
     let mut parser = Parser::new(&mut input);

@@ -10,7 +10,6 @@ use js::NodeKey;
 use log::debug;
 
 /// Spec: §9.5 — Compute the clearance floor for a child.
-#[inline]
 pub fn compute_clearance_floor_for_child(
     layouter: &Layouter,
     child_key: NodeKey,
@@ -40,7 +39,6 @@ pub fn compute_clearance_floor_for_child(
 }
 
 /// Spec: §9.5 — Update side-specific float clearance floors after laying out a float.
-#[inline]
 pub fn update_clearance_floors_for_float(
     layouter: &Layouter,
     child_key: NodeKey,
@@ -88,7 +86,6 @@ pub fn update_clearance_floors_for_float(
 /// Cap left/right float-avoidance bands so neither exceeds the parent content width and their
 /// sum does not exceed the parent content width. This prevents over-constraining available
 /// inline space when multiple floats overlap the query `y`.
-#[inline]
 fn cap_bands(parent_content_width: i32, left_band: i32, right_band: i32) -> (i32, i32) {
     let mut left_capped = left_band.clamp(0i32, parent_content_width);
     let mut right_capped = right_band.clamp(0i32, parent_content_width);
@@ -105,7 +102,6 @@ fn cap_bands(parent_content_width: i32, left_band: i32, right_band: i32) -> (i32
 }
 
 /// Spec: §9.5 — Compute horizontal float-avoidance bands at a given y.
-#[inline]
 pub fn compute_float_bands_for_y(
     layouter: &Layouter,
     loop_ctx: &PlaceLoopCtx<'_>,

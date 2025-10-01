@@ -28,10 +28,6 @@ fn push_non_null(children: &mut Vec<Value>, value: Value) {
 ///
 /// # Panics
 /// Panics if a child `NodeId` is invalid.
-#[allow(
-    clippy::min_ident_chars,
-    reason = "Short variable names for DOM traversal"
-)]
 fn coalesce_children(dom: &DOM, id: NodeId) -> Vec<Value> {
     let mut children: Vec<Value> = Vec::new();
     let mut text_buf = String::new();
@@ -89,13 +85,6 @@ pub(super) fn node_to_json(dom: &DOM, id: NodeId) -> Value {
 }
 
 impl fmt::Debug for DOM {
-    #[inline]
-    #[allow(
-        clippy::too_many_lines,
-        clippy::items_after_statements,
-        clippy::missing_errors_doc,
-        reason = "Debug implementation with nested helper functions for DOM printing"
-    )]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Header
         writeln!(f, "DOM")?;

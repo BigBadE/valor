@@ -107,7 +107,6 @@ pub struct Specificity(pub u16, pub u16, pub u16);
 
 /// Parse a selector list from CSS text.
 /// Spec: Section 3, 4, 5–8, 11
-#[inline]
 pub fn parse_selector_list(input: &str) -> SelectorList {
     let mut list = SelectorList::default();
     for part in input.split(',') {
@@ -124,7 +123,6 @@ pub fn parse_selector_list(input: &str) -> SelectorList {
 ///
 /// # Panics
 /// Never panics.
-#[inline]
 pub fn parse_complex_selector(input: &str) -> ComplexSelector {
     let mut tokens = tokenize_selector(input);
     let mut current = CompoundSelector::default();
@@ -195,7 +193,6 @@ enum Tok {
 
 /// Tokenize a selector into a stream of tokens that our minimal parser understands.
 /// Spec: Section 3, 5–8, 11
-#[inline]
 fn tokenize_selector(input: &str) -> SelectorTokenizer {
     SelectorTokenizer::new(input)
 }
@@ -394,7 +391,6 @@ impl SelectorTokenizer {
 
 /// Compute the specificity of a compound selector.
 /// Spec: Section 13 — Specificity (a, b, c)
-#[inline]
 pub fn specificity_of_compound(compound: &CompoundSelector) -> Specificity {
     let mut id_count = 0u16;
     let mut class_attr_count = 0u16;
@@ -420,7 +416,6 @@ pub fn specificity_of_compound(compound: &CompoundSelector) -> Specificity {
 
 /// Compute the specificity of a complex selector (sum of its compounds).
 /// Spec: Section 13 — Specificity accumulation
-#[inline]
 pub fn specificity_of_complex(sel: &ComplexSelector) -> Specificity {
     let mut spec_total = specificity_of_compound(&sel.first);
     for pair in &sel.rest {
@@ -435,7 +430,6 @@ pub fn specificity_of_complex(sel: &ComplexSelector) -> Specificity {
 
 /// Match a selector list against an element.
 /// Spec: Section 3, 4
-#[inline]
 pub fn matches_selector_list<A: ElementAdapter>(
     adapter: &A,
     element: A::Handle,
@@ -448,7 +442,6 @@ pub fn matches_selector_list<A: ElementAdapter>(
 
 /// Match a complex selector against an element.
 /// Spec: Section 3, 11 — Right-to-left matching strategy
-#[inline]
 pub fn matches_complex<A: ElementAdapter>(
     adapter: &A,
     element: A::Handle,
@@ -497,7 +490,6 @@ pub fn matches_complex<A: ElementAdapter>(
 
 /// Match a compound selector against a single element.
 /// Spec: Section 5–8
-#[inline]
 pub fn matches_compound<A: ElementAdapter>(
     adapter: &A,
     element: A::Handle,
@@ -664,7 +656,6 @@ impl MatchCache {
 
 /// Build a stable key for a selector to use with `MatchCache`.
 /// In production you might hash the serialized form. Here we use a simple hasher.
-#[inline]
 pub fn calc_selector_key(sel: &ComplexSelector) -> u64 {
     let mut hasher = DefaultHasher::new();
     // Stable hash of the structure
