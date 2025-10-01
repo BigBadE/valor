@@ -1,3 +1,4 @@
+/// DOM printing and serialization utilities.
 mod printing;
 
 use anyhow::Error;

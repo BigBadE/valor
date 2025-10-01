@@ -9,6 +9,7 @@ use smallvec::SmallVec;
 // Module-scope helpers
 // -----------------------
 
+/// Flush accumulated text buffer to children as a text node.
 fn flush_text(children: &mut Vec<Value>, text_buf: &mut String) {
     if !text_buf.trim().is_empty() {
         children.push(json!({ "type": "text", "text": text_buf.clone() }));
@@ -16,44 +17,58 @@ fn flush_text(children: &mut Vec<Value>, text_buf: &mut String) {
     text_buf.clear();
 }
 
-fn push_non_null(children: &mut Vec<Value>, v: Value) {
-    if !v.is_null() {
-        children.push(v);
+/// Push a value to children if it's not null.
+fn push_non_null(children: &mut Vec<Value>, value: Value) {
+    if !value.is_null() {
+        children.push(value);
     }
 }
 
+/// Coalesce adjacent text nodes and collect children for JSON serialization.
+///
+/// # Panics
+/// Panics if a child `NodeId` is invalid.
+#[allow(
+    clippy::min_ident_chars,
+    reason = "Short variable names for DOM traversal"
+)]
 fn coalesce_children(dom: &DOM, id: NodeId) -> Vec<Value> {
     let mut children: Vec<Value> = Vec::new();
     let mut text_buf = String::new();
-    for c in id.children(&dom.dom) {
-        let cref = dom.dom.get(c).expect("Child NodeId valid");
+    for child in id.children(&dom.dom) {
+        let Some(cref) = dom.dom.get(child) else {
+            continue;
+        };
         if let NodeKind::Text { text } = &cref.get().kind {
             text_buf.push_str(text);
             continue;
         }
         flush_text(&mut children, &mut text_buf);
-        let v = node_to_json(dom, c);
-        push_non_null(&mut children, v);
+        let value = node_to_json(dom, child);
+        push_non_null(&mut children, value);
     }
     flush_text(&mut children, &mut text_buf);
     children
 }
 
+/// Convert a DOM node to a JSON value for serialization.
+///
+/// # Panics
+/// Panics if the `NodeId` is invalid.
 pub(super) fn node_to_json(dom: &DOM, id: NodeId) -> Value {
-    let node_ref = dom
-        .dom
-        .get(id)
-        .expect("NodeId should be valid during JSON snapshot");
+    let Some(node_ref) = dom.dom.get(id) else {
+        return json!({ "type": "error", "message": "Invalid NodeId" });
+    };
     let DOMNode { kind, attrs } = node_ref.get();
     match kind.clone() {
         NodeKind::Document => json!({ "type": "document", "children": coalesce_children(dom, id) }),
         NodeKind::Element { tag } => {
             // Convert attrs SmallVec to map and sort by key for determinism
             let mut pairs: Vec<(String, String)> = attrs.iter().cloned().collect();
-            pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            pairs.sort_by(|attr_a, attr_b| attr_a.0.cmp(&attr_b.0));
             let mut attrs_obj = Map::new();
-            for (k, v) in pairs {
-                attrs_obj.insert(k, Value::String(v));
+            for (key, value) in pairs {
+                attrs_obj.insert(key, Value::String(value));
             }
             let children = coalesce_children(dom, id);
             json!({
@@ -74,6 +89,13 @@ pub(super) fn node_to_json(dom: &DOM, id: NodeId) -> Value {
 }
 
 impl fmt::Debug for DOM {
+    #[inline]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::items_after_statements,
+        clippy::missing_errors_doc,
+        reason = "Debug implementation with nested helper functions for DOM printing"
+    )]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Header
         writeln!(f, "DOM")?;

@@ -1,7 +1,7 @@
 //! Opacity compositor for handling stacking contexts and multi-pass rendering.
 //!
 //! This module provides high-level orchestration for opacity rendering, separating
-//! the "what to render" logic from the low-level GPU operations in wgpu_backend.
+//! the "what to render" logic from the low-level GPU operations in `wgpu_backend`.
 
 use crate::display_list::{DisplayItem, DisplayList, StackingContextBoundary};
 
@@ -15,6 +15,8 @@ pub struct Rect {
 }
 
 impl Rect {
+    /// Create a new rectangle.
+    #[inline]
     pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
             x,
@@ -24,23 +26,24 @@ impl Rect {
         }
     }
 
-    /// Expand this rect to include another rect.
+    /// Expand this rectangle to include another rectangle.
+    #[inline]
     pub fn union(&mut self, other: Self) {
-        let x2 = (self.x + self.width).max(other.x + other.width);
-        let y2 = (self.y + self.height).max(other.y + other.height);
+        let max_x = (self.x + self.width).max(other.x + other.width);
+        let max_y = (self.y + self.height).max(other.y + other.height);
         self.x = self.x.min(other.x);
         self.y = self.y.min(other.y);
-        self.width = x2 - self.x;
-        self.height = y2 - self.y;
+        self.width = max_x - self.x;
+        self.height = max_y - self.y;
     }
 }
 
 /// An opacity group that needs to be rendered offscreen and composited.
 #[derive(Debug, Clone)]
 pub struct OpacityGroup {
-    /// Index of BeginStackingContext in the display list.
+    /// Index of `BeginStackingContext` in the display list.
     pub start_index: usize,
-    /// Index of EndStackingContext in the display list.
+    /// Index of `EndStackingContext` in the display list.
     pub end_index: usize,
     /// Opacity value (0.0 to 1.0).
     pub alpha: f32,
@@ -52,32 +55,33 @@ pub struct OpacityGroup {
 
 /// High-level compositor for managing opacity groups and stacking contexts.
 pub struct OpacityCompositor {
+    /// List of collected opacity groups.
     groups: Vec<OpacityGroup>,
 }
 
 impl OpacityCompositor {
-    /// Collect all opacity groups from a display list.
-    pub fn collect_from_display_list(dl: &DisplayList) -> Self {
+    /// Collect opacity groups from a display list.
+    #[inline]
+    pub fn collect_from_display_list(display_list: &DisplayList) -> Self {
         let mut groups = Vec::new();
-        let items = &dl.items;
-
-        let mut i = 0;
-        while i < items.len() {
-            if Self::is_opacity_stacking_context(&items[i]) {
+        let items = &display_list.items;
+        let mut index = 0;
+        while index < items.len() {
+            if Self::is_opacity_stacking_context(&items[index]) {
                 // Find the matching EndStackingContext
-                let end_index = Self::find_stacking_context_end(items, i + 1);
+                let end = Self::find_stacking_context_end(items, index + 1);
 
                 // Extract items within the group
-                let group_items: Vec<DisplayItem> = items[i + 1..end_index].to_vec();
+                let group_items = &items[index + 1..end];
 
                 // Compute bounds for the group
                 let bounds =
-                    Self::compute_bounds(&group_items).unwrap_or(Rect::new(0.0, 0.0, 1.0, 1.0));
+                    Self::compute_bounds(group_items).unwrap_or(Rect::new(0.0, 0.0, 1.0, 1.0));
 
                 // Extract alpha value
                 let alpha = if let DisplayItem::BeginStackingContext {
                     boundary: StackingContextBoundary::Opacity { alpha },
-                } = &items[i]
+                } = &items[index]
                 {
                     *alpha
                 } else {
@@ -85,17 +89,17 @@ impl OpacityCompositor {
                 };
 
                 groups.push(OpacityGroup {
-                    start_index: i,
-                    end_index,
+                    start_index: index,
+                    end_index: end,
                     alpha,
                     bounds,
-                    items: group_items,
+                    items: group_items.to_vec(),
                 });
 
-                i = end_index + 1;
+                index = end + 1;
                 continue;
             }
-            i += 1;
+            index += 1;
         }
 
         Self { groups }
@@ -112,22 +116,30 @@ impl OpacityCompositor {
     }
 
     /// Check if any opacity groups need offscreen rendering.
+    #[inline]
     pub const fn needs_offscreen_rendering(&self) -> bool {
         !self.groups.is_empty()
     }
 
     /// Get all opacity groups.
+    #[inline]
     pub fn groups(&self) -> &[OpacityGroup] {
         &self.groups
     }
 
     /// Compute bounding box for a slice of display items.
     /// Returns (x, y, width, height) or None if no items have bounds.
+    #[inline]
+    #[allow(
+        clippy::type_complexity,
+        reason = "Simple tuple return for bounds coordinates"
+    )]
     pub fn compute_items_bounds(items: &[DisplayItem]) -> Option<(f32, f32, f32, f32)> {
-        Self::compute_bounds(items).map(|r| (r.x, r.y, r.width, r.height))
+        Self::compute_bounds(items).map(|rect| (rect.x, rect.y, rect.width, rect.height))
     }
 
-    /// Find the matching EndStackingContext for a BeginStackingContext.
+    /// Find the matching `EndStackingContext` for a `BeginStackingContext`.
+    #[inline]
     pub fn find_stacking_context_end(items: &[DisplayItem], start: usize) -> usize {
         let mut depth = 1i32;
         for (idx, item) in items.iter().enumerate().skip(start) {
@@ -202,11 +214,12 @@ impl OpacityCompositor {
         })
     }
 
-    /// Get ranges to exclude from main rendering (the opacity group regions).
+    /// Get the exclude ranges for opacity groups.
+    #[inline]
     pub fn exclude_ranges(&self) -> Vec<(usize, usize)> {
         self.groups
             .iter()
-            .map(|g| (g.start_index, g.end_index))
+            .map(|group| (group.start_index, group.end_index))
             .collect()
     }
 }
@@ -215,12 +228,20 @@ impl OpacityCompositor {
 mod tests {
     use super::*;
 
+    /// Test that `compute_bounds` returns None for empty items.
+    ///
+    /// # Panics
+    /// Panics if the test assertions fail.
     #[test]
     fn compute_bounds_empty() {
         let items = vec![];
         assert!(OpacityCompositor::compute_bounds(&items).is_none());
     }
 
+    /// Test that `compute_bounds` correctly calculates bounds for a single rect.
+    ///
+    /// # Panics
+    /// Panics if the test assertions fail.
     #[test]
     #[allow(
         clippy::unwrap_used,
@@ -241,6 +262,10 @@ mod tests {
         assert!((bounds.height - 50.0).abs() < f32::EPSILON);
     }
 
+    /// Test that `find_stacking_context_end` correctly finds matching end markers.
+    ///
+    /// # Panics
+    /// Panics if the test assertions fail.
     #[test]
     fn find_stacking_context_end_works() {
         let items = vec![
@@ -260,29 +285,33 @@ mod tests {
         assert_eq!(end, 2);
     }
 
+    /// Test that opacity groups are correctly collected from a display list.
+    ///
+    /// # Panics
+    /// Panics if the test assertions fail.
     #[test]
     fn collect_opacity_groups() {
-        let mut dl = DisplayList::new();
-        dl.items.push(DisplayItem::Rect {
+        let mut display_list = DisplayList::new();
+        display_list.items.push(DisplayItem::Rect {
             x: 0.0,
             y: 0.0,
             width: 200.0,
             height: 200.0,
             color: [1.0, 1.0, 1.0, 1.0],
         });
-        dl.items.push(DisplayItem::BeginStackingContext {
+        display_list.items.push(DisplayItem::BeginStackingContext {
             boundary: StackingContextBoundary::Opacity { alpha: 0.5 },
         });
-        dl.items.push(DisplayItem::Rect {
+        display_list.items.push(DisplayItem::Rect {
             x: 10.0,
             y: 10.0,
             width: 100.0,
             height: 100.0,
             color: [1.0, 0.0, 0.0, 1.0],
         });
-        dl.items.push(DisplayItem::EndStackingContext);
+        display_list.items.push(DisplayItem::EndStackingContext);
 
-        let compositor = OpacityCompositor::collect_from_display_list(&dl);
+        let compositor = OpacityCompositor::collect_from_display_list(&display_list);
         assert_eq!(compositor.groups().len(), 1);
         assert!((compositor.groups()[0].alpha - 0.5).abs() < f32::EPSILON);
         assert!(compositor.needs_offscreen_rendering());

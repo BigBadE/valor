@@ -8,7 +8,7 @@ use html5ever::tendril::StrTendril;
 use html5ever::tendril::TendrilSink as _;
 use html5ever::tree_builder::{ElemName, ElementFlags, NodeOrText, QuirksMode, TreeSink};
 use html5ever::{
-    Attribute, LocalName, Namespace, ParseOpts, Parser, QualName, local_name, ns as html_ns,
+    Attribute, LocalName, Namespace, ParseOpts, Parser, QualName, local_name, ns as html_namespace,
 };
 use indextree::NodeId;
 use js::{DOMMirror, DOMUpdate};
@@ -153,7 +153,7 @@ impl TreeSink for ValorSink {
         // Fallback to a reasonable default. In practice, we should always have a name
         // for elements created via create_element.
         OwnedElemName {
-            namespace: html_ns!(html),
+            namespace: html_namespace!(html),
             local: local_name!("div"),
         }
     }
@@ -171,7 +171,7 @@ impl TreeSink for ValorSink {
         };
         // Track the element's qualified name for correct elem_name reporting
         self.element_names.borrow_mut().insert(id, name.clone());
-        let is_script = name.ns == html_ns!(html) && name.local == local_name!("script");
+        let is_script = name.ns == html_namespace!(html) && name.local == local_name!("script");
         let mut state = is_script.then(|| ScriptState {
             has_src: false,
             buffer: String::new(),

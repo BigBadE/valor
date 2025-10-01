@@ -1,4 +1,8 @@
 //! Backend-agnostic renderer crate exposing scene graph and display list.
+#![allow(
+    clippy::self_named_module_files,
+    reason = "renderer.rs is the main module, not a submodule"
+)]
 
 pub mod compositor;
 pub mod display_list;

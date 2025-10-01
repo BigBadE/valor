@@ -1,4 +1,8 @@
 //! HTML parsing module.
+#![allow(
+    clippy::min_ident_chars,
+    reason = "html5ever uses short macro names like ns"
+)]
 
 /// HTML5 parser implementation using html5ever.
 mod html5ever_engine;

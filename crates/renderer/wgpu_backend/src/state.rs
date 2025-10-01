@@ -309,7 +309,7 @@ impl RenderState {
             let next = exclude.get(ex_idx).map(|r| r.0).unwrap_or(items.len());
             if i < next {
                 // Use draw_items_with_groups to properly handle stacking contexts
-                let _ = self.draw_items_with_groups(pass, &items[i..next]);
+                drop(self.draw_items_with_groups(pass, &items[i..next]));
                 i = next;
             }
         }
@@ -1093,6 +1093,10 @@ impl RenderState {
     }
 
     #[inline]
+    #[allow(
+        dead_code,
+        reason = "Utility function for future opacity bounds calculation"
+    )]
     fn compute_items_bounds(&self, items: &[DisplayItem]) -> Option<Bounds> {
         let mut min_x = f32::INFINITY;
         let mut min_y = f32::INFINITY;

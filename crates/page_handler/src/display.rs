@@ -42,7 +42,7 @@ fn stacking_boundary_for(cs: &ComputedStyle) -> Option<StackingContextBoundary> 
     if !matches!(cs.position, Position::Static)
         && let Some(z) = cs.z_index
     {
-        return Some(StackingContextBoundary::ZIndex { z });
+        return Some(StackingContextBoundary::ZIndex { z_index: z });
     }
     None
 }

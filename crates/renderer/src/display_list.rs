@@ -20,20 +20,20 @@ pub type Scissor = (u32, u32, u32, u32);
 #[derive(Debug, Clone, PartialEq)]
 pub enum StackingContextBoundary {
     /// Opacity less than 1.0 creates a stacking context
-    /// Spec: https://www.w3.org/TR/CSS22/zindex.html#stacking-context
+    /// Spec: <https://www.w3.org/TR/CSS22/zindex.html#stacking-context>
     Opacity { alpha: f32 },
     /// 3D transforms create stacking contexts
-    /// Spec: https://www.w3.org/TR/css-transforms-1/#stacking-context
+    /// Spec: <https://www.w3.org/TR/css-transforms-1/#stacking-context>
     Transform { matrix: [f32; 16] },
     /// CSS filters create stacking contexts
-    /// Spec: https://www.w3.org/TR/filter-effects-1/#FilterProperty
+    /// Spec: <https://www.w3.org/TR/filter-effects-1/#FilterProperty>
     Filter { filter_id: u32 },
     /// Isolation property creates stacking contexts
-    /// Spec: https://www.w3.org/TR/css-compositing-1/#isolation
+    /// Spec: <https://www.w3.org/TR/css-compositing-1/#isolation>
     Isolation,
     /// Positioned elements with z-index create stacking contexts
-    /// Spec: https://www.w3.org/TR/CSS22/zindex.html#stacking-context
-    ZIndex { z: i32 },
+    /// Spec: <https://www.w3.org/TR/CSS22/zindex.html#stacking-context>
+    ZIndex { z_index: i32 },
 }
 
 /// A single display list item.
@@ -59,7 +59,7 @@ pub enum DisplayItem {
         /// Optional bounds for wrapping/clipping in framebuffer pixels.
         bounds: Option<TextBoundsPx>,
     },
-    /// Push a rectangular clip onto the stack (placeholder; enforced as a scissor in RenderState for now).
+    /// Push a rectangular clip onto the stack (placeholder; enforced as a scissor in `RenderState` for now).
     BeginClip {
         x: f32,
         y: f32,
@@ -76,6 +76,7 @@ pub enum DisplayItem {
 }
 
 impl Default for DisplayList {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
@@ -91,7 +92,8 @@ pub struct DisplayList {
 }
 
 impl DisplayList {
-    /// Create an empty display list.
+    /// Create a new empty display list.
+    #[inline]
     pub const fn new() -> Self {
         Self {
             items: Vec::new(),
@@ -99,7 +101,8 @@ impl DisplayList {
         }
     }
 
-    /// Create a display list from a collection of items.
+    /// Create a display list from an iterator of items.
+    #[inline]
     pub fn from_items<I: IntoIterator<Item = DisplayItem>>(items: I) -> Self {
         let mut list = Self::new();
         list.items.extend(items);
@@ -107,21 +110,24 @@ impl DisplayList {
     }
 
     /// Bump the generation counter and return the new value.
+    #[inline]
     pub const fn bump_generation(&mut self) -> u64 {
         self.generation = self.generation.wrapping_add(1);
         self.generation
     }
 
     /// Append an item to the end of the list.
+    #[inline]
     pub fn push(&mut self, item: DisplayItem) {
         self.items.push(item);
     }
 
     /// Return a simple diff between two display lists.
     ///
-    /// MVP strategy: if the lists are exactly equal, return NoChange; otherwise
-    /// request a ReplaceAll with the target items. This keeps the API stable for
+    /// MVP strategy: if the lists are exactly equal, return `NoChange`; otherwise
+    /// request a `ReplaceAll` with the target items. This keeps the API stable for
     /// future fine-grained diffs without overengineering now.
+    #[inline]
     pub fn diff(&self, other: &Self) -> DisplayListDiff {
         if self == other {
             DisplayListDiff::NoChange
@@ -130,8 +136,8 @@ impl DisplayList {
         }
     }
 
-    /// Flatten this display list into the current immediate-mode renderer commands.
-    /// Returns a pair of (rectangles, text) to feed into RenderState for drawing.
+    /// Flatten the display list to immediate-mode draw calls.
+    #[inline]
     pub fn flatten_to_immediate(&self) -> (Vec<DrawRect>, Vec<DrawText>) {
         let mut rects: Vec<DrawRect> = Vec::new();
         let mut texts: Vec<DrawText> = Vec::new();
@@ -209,42 +215,42 @@ pub struct Batch {
 
 /// Convert a float rectangle to a scissor rectangle in framebuffer coordinates.
 fn rect_to_scissor(rect: (f32, f32, f32, f32), framebuffer_size: (u32, u32)) -> Scissor {
-    let (x, y, w, h) = rect;
+    let (rect_x, rect_y, width, height) = rect;
     let (framebuffer_width, framebuffer_height) = framebuffer_size;
     let framebuffer_w = framebuffer_width.max(1);
     let framebuffer_h = framebuffer_height.max(1);
-    let mut sx = x.max(0.0).floor() as i32;
-    let mut sy = y.max(0.0).floor() as i32;
-    let mut sw = w.max(0.0).ceil() as i32;
-    let mut sh = h.max(0.0).ceil() as i32;
-    if sx < 0i32 {
-        sw += sx;
-        sx = 0i32;
+    let mut scissor_x = rect_x.max(0.0).floor() as i32;
+    let mut scissor_y = rect_y.max(0.0).floor() as i32;
+    let mut scissor_width = width.max(0.0).ceil() as i32;
+    let mut scissor_height = height.max(0.0).ceil() as i32;
+    if scissor_x < 0i32 {
+        scissor_width += scissor_x;
+        scissor_x = 0i32;
     }
-    if sy < 0i32 {
-        sh += sy;
-        sy = 0i32;
+    if scissor_y < 0i32 {
+        scissor_height += scissor_y;
+        scissor_y = 0i32;
     }
-    let max_w = i32::try_from(framebuffer_w).unwrap_or(i32::MAX) - sx;
-    let max_h = i32::try_from(framebuffer_h).unwrap_or(i32::MAX) - sy;
-    let sw = u32::try_from(sw.clamp(0i32, max_w)).unwrap_or(0);
-    let sh = u32::try_from(sh.clamp(0i32, max_h)).unwrap_or(0);
+    let max_w = i32::try_from(framebuffer_w).unwrap_or(i32::MAX) - scissor_x;
+    let max_h = i32::try_from(framebuffer_h).unwrap_or(i32::MAX) - scissor_y;
+    let final_width = u32::try_from(scissor_width.clamp(0i32, max_w)).unwrap_or(0);
+    let final_height = u32::try_from(scissor_height.clamp(0i32, max_h)).unwrap_or(0);
     (
-        u32::try_from(sx).unwrap_or(0),
-        u32::try_from(sy).unwrap_or(0),
-        sw,
-        sh,
+        u32::try_from(scissor_x).unwrap_or(0),
+        u32::try_from(scissor_y).unwrap_or(0),
+        final_width,
+        final_height,
     )
 }
 
 /// Intersect two scissor rectangles.
-fn intersect_scissors(a: Scissor, b: Scissor) -> Scissor {
-    let (ax, ay, aw, ah) = a;
-    let (bx, by, bw, bh) = b;
-    let left = ax.max(bx);
-    let top = ay.max(by);
-    let right = (ax + aw).min(bx + bw);
-    let bottom = (ay + ah).min(by + bh);
+fn intersect_scissors(scissor_a: Scissor, scissor_b: Scissor) -> Scissor {
+    let (a_x, a_y, a_width, a_height) = scissor_a;
+    let (b_x, b_y, b_width, b_height) = scissor_b;
+    let left = a_x.max(b_x);
+    let top = a_y.max(b_y);
+    let right = (a_x + a_width).min(b_x + b_width);
+    let bottom = (a_y + a_height).min(b_y + b_height);
     let width = right.saturating_sub(left);
     let height = bottom.saturating_sub(top);
     (left, top, width, height)
