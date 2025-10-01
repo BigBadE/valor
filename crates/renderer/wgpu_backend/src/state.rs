@@ -1329,7 +1329,7 @@ impl RenderState {
     }
 
     /// Set the framebuffer clear color (canvas background). RGBA in [0,1].
-    pub fn set_clear_color(&mut self, rgba: [f32; 4]) {
+    pub const fn set_clear_color(&mut self, rgba: [f32; 4]) {
         self.clear_color = rgba;
     }
 
@@ -1346,8 +1346,8 @@ impl RenderState {
             desired_maximum_frame_latency: 2,
             present_mode: PresentMode::AutoVsync,
         };
-        if let Some(s) = &self.surface {
-            s.configure(&self.device, &surface_config);
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &surface_config);
         }
     }
 
@@ -1363,13 +1363,13 @@ impl RenderState {
         self.readback_size = 0;
     }
 
-    /// Clear any compositor layers; subsequent render() will use the single retained list if set.
+    /// Clear any compositor layers; subsequent `render()` will use the single retained list if set.
     pub fn clear_layers(&mut self) {
         self.layers.clear();
     }
 
     /// Reset rendering state for the next frame. Critical for test isolation and preventing
-    /// state corruption when reusing RenderState across multiple renders.
+    /// state corruption when reusing `RenderState` across multiple renders.
     ///
     /// This method:
     /// - Flushes pending GPU operations
@@ -1488,7 +1488,7 @@ impl RenderState {
     }
 
     /// Ensure offscreen texture exists and matches current framebuffer size.
-    fn ensure_offscreen_texture(&mut self) -> Result<(), AnyhowError> {
+    fn ensure_offscreen_texture(&mut self) {
         let framebuffer_width = self.size.width.max(1);
         let framebuffer_height = self.size.height.max(1);
         let need_offscreen = self.offscreen_tex.as_ref().is_none_or(|tex| {
@@ -1519,10 +1519,12 @@ impl RenderState {
             });
             self.offscreen_tex = Some(tex);
         }
-        Ok(())
     }
 
     /// Render to offscreen texture and return the texture view.
+    ///
+    /// # Errors
+    /// Returns an error if rendering or command submission fails.
     fn render_to_offscreen(&mut self) -> Result<(), AnyhowError> {
         let tmp_view = self
             .offscreen_tex
@@ -1564,8 +1566,11 @@ impl RenderState {
     }
 
     /// Copy offscreen texture to readback buffer.
+    ///
+    /// # Errors
+    /// Returns an error if texture or buffer is not available.
     fn copy_texture_to_readback(
-        &mut self,
+        &self,
         copy_encoder: &mut CommandEncoder,
         width: u32,
         height: u32,
@@ -1602,13 +1607,16 @@ impl RenderState {
     }
 
     /// Read back texture data from GPU buffer.
+    ///
+    /// # Errors
+    /// Returns an error if buffer mapping or readback fails.
     fn readback_texture_data(
-        &mut self,
+        &self,
         width: u32,
         height: u32,
-        bpp: u32,
+        bytes_per_pixel: u32,
         row_bytes: u32,
-        padded_bpr: u32,
+        padded_bytes_per_row: u32,
     ) -> Result<Vec<u8>, AnyhowError> {
         let readback = self
             .readback_buf
@@ -1627,10 +1635,11 @@ impl RenderState {
             }
         }
         let mapped = slice.get_mapped_range();
-        let expected_total_bytes = (width as usize) * (height as usize) * (bpp as usize);
+        let expected_total_bytes =
+            (width as usize) * (height as usize) * (bytes_per_pixel as usize);
         let mut out = vec![0u8; expected_total_bytes];
         for row in 0..height as usize {
-            let src_off = row * (padded_bpr as usize);
+            let src_off = row * (padded_bytes_per_row as usize);
             let dst_off = row * (row_bytes as usize);
             out[dst_off..dst_off + (row_bytes as usize)]
                 .copy_from_slice(&mapped[src_off..src_off + (row_bytes as usize)]);
@@ -1641,6 +1650,9 @@ impl RenderState {
     }
 
     /// Convert BGRA to RGBA if needed.
+    ///
+    /// # Panics
+    /// Panics if pixel chunks are not exactly 4 bytes (should never happen with `chunks_exact_mut(4)`).
     fn convert_bgra_to_rgba(&self, out: &mut [u8]) {
         match self.render_format {
             TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb => {
@@ -1674,7 +1686,7 @@ impl RenderState {
         let validation_scope = ErrorScopeGuard::push(&self.device, "pre-render-validation");
         validation_scope.check()?;
 
-        self.ensure_offscreen_texture()?;
+        self.ensure_offscreen_texture();
         self.render_to_offscreen()?;
 
         let mut copy_encoder = self
@@ -1775,7 +1787,7 @@ impl RenderState {
             framebuffer_height,
         );
 
-        let scope = ErrorScopeGuard::push(&self.device, "glyphon-viewport-update");
+        let viewport_scope = ErrorScopeGuard::push(&self.device, "glyphon-viewport-update");
         self.viewport.update(
             &self.queue,
             Resolution {
@@ -1783,13 +1795,13 @@ impl RenderState {
                 height: framebuffer_height,
             },
         );
-        if let Err(error) = scope.check() {
+        if let Err(error) = viewport_scope.check() {
             log::error!(target: "wgpu_renderer", "Glyphon viewport.update() generated error: {error:?}");
             return;
         }
 
         let areas_count = areas.len();
-        let scope = ErrorScopeGuard::push(&self.device, "glyphon-text-prepare");
+        let prepare_scope = ErrorScopeGuard::push(&self.device, "glyphon-text-prepare");
         let prep_res = self.text_renderer.prepare(
             &self.device,
             &self.queue,
@@ -1799,7 +1811,7 @@ impl RenderState {
             areas,
             &mut self.swash_cache,
         );
-        if let Err(error) = scope.check() {
+        if let Err(error) = prepare_scope.check() {
             log::error!(target: "wgpu_renderer", "Glyphon text_renderer.prepare() generated validation error: {error:?}");
         }
         log::debug!(
@@ -1822,7 +1834,7 @@ impl RenderState {
             framebuffer_height,
         );
 
-        let scope = ErrorScopeGuard::push(&self.device, "glyphon-viewport-update-for");
+        let viewport_scope_for = ErrorScopeGuard::push(&self.device, "glyphon-viewport-update-for");
         self.viewport.update(
             &self.queue,
             Resolution {
@@ -1830,13 +1842,13 @@ impl RenderState {
                 height: framebuffer_height,
             },
         );
-        if let Err(error) = scope.check() {
+        if let Err(error) = viewport_scope_for.check() {
             log::error!(target: "wgpu_renderer", "Glyphon viewport.update() (for) generated error: {error:?}");
             return;
         }
 
         let areas_len = areas.len();
-        let scope = ErrorScopeGuard::push(&self.device, "glyphon-text-prepare-for");
+        let prepare_scope_for = ErrorScopeGuard::push(&self.device, "glyphon-text-prepare-for");
         let prep_res = self.text_renderer.prepare(
             &self.device,
             &self.queue,
@@ -1846,7 +1858,7 @@ impl RenderState {
             areas,
             &mut self.swash_cache,
         );
-        if let Err(error) = scope.check() {
+        if let Err(error) = prepare_scope_for.check() {
             log::error!(target: "wgpu_renderer", "Glyphon text_renderer.prepare() (for) generated validation error: {error:?}");
         }
         log::debug!(
