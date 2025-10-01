@@ -17,7 +17,7 @@ use css_core::{LayoutNodeKind, LayoutRect, Layouter};
 use html::dom::DOM;
 use html::parser::{HTMLParser, ParseInputs, ScriptJob, ScriptKind};
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
-use js::bindings::{StorageRegistry, net::FetchRegistry};
+use js::bindings::StorageRegistry;
 use js::{
     ChromeHostCommand, ConsoleLogger, DOMMirror, DOMSubscriber, DOMUpdate, DomIndex, HostContext,
     JsEngine, ModuleResolver, NodeKey, SharedDomIndex, SimpleFileModuleResolver,
@@ -25,6 +25,7 @@ use js::{
 };
 use js_engine_v8::V8Engine;
 use log::{info, trace};
+use net::FetchRegistry;
 use renderer::{DisplayList, DrawRect, Renderer};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;

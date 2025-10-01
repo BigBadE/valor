@@ -4,6 +4,7 @@ use crate::text::{
     TextBatch, batch_layer_texts_with_scissor, batch_texts_with_scissor, map_text_item,
 };
 use anyhow::{Error as AnyhowError, Result as AnyResult, anyhow};
+use bytemuck::cast_slice;
 use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Cache, Color as GlyphonColor, FontSystem, Metrics, Resolution,
     Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -339,7 +340,7 @@ impl RenderState {
         for (_s, _e, tex, _view, _tw, _th, _alpha, bounds, bind_group) in comps.into_iter() {
             // Keep the texture alive until after submit; otherwise some backends invalidate at finish.
             self.live_textures.push(tex);
-            self.draw_texture_quad_with_bind_group(pass, &bind_group, bounds)?;
+            self.draw_texture_quad_with_bind_group(pass, &bind_group, bounds);
         }
         Ok(())
     }
@@ -477,7 +478,7 @@ impl RenderState {
             debug!(target: "wgpu_renderer", "end main-pass");
             // Explicitly drop the pass to ensure encoder is not borrowed
             drop(pass);
-        }
+        };
         Ok(())
     }
 
@@ -486,8 +487,11 @@ impl RenderState {
     /// Opacity compositing is fully functional using a hybrid approach:
     /// - All offscreen passes are grouped in one encoder (minimal overhead)
     /// - After offscreen rendering, we submit and create a new encoder
-    /// - This explicit submission ensures D3D12 resource state transitions (RENDER_TARGET → PIXEL_SHADER_RESOURCE)
+    /// - This explicit submission ensures D3D12 resource state transitions (`RENDER_TARGET` → `PIXEL_SHADER_RESOURCE`)
     /// - Main pass uses the new encoder to sample the offscreen textures
+    ///
+    /// # Errors
+    /// Returns an error if rendering or opacity group processing fails.
     fn record_draw_passes(
         &mut self,
         texture_view: &TextureView,
@@ -503,8 +507,12 @@ impl RenderState {
 
         // Prepare text via glyphon for single-list paths
         if use_retained {
-            if let Some(dl) = &self.retained_display_list {
-                self.text_list = dl.items.iter().filter_map(map_text_item).collect();
+            if let Some(display_list) = &self.retained_display_list {
+                self.text_list = display_list
+                    .items
+                    .iter()
+                    .filter_map(map_text_item)
+                    .collect();
             }
             self.glyphon_prepare();
         } else if !use_layers {
@@ -527,10 +535,10 @@ impl RenderState {
                             resolve_target: None,
                             ops: Operations {
                                 load: LoadOp::Clear(Color {
-                                    r: self.clear_color[0] as f64,
-                                    g: self.clear_color[1] as f64,
-                                    b: self.clear_color[2] as f64,
-                                    a: self.clear_color[3] as f64,
+                                    r: f64::from(self.clear_color[0]),
+                                    g: f64::from(self.clear_color[1]),
+                                    b: f64::from(self.clear_color[2]),
+                                    a: f64::from(self.clear_color[3]),
                                 }),
                                 store: StoreOp::Store,
                             },
@@ -550,7 +558,7 @@ impl RenderState {
                     .layers
                     .clone()
                     .iter()
-                    .map(|l| self.preprocess_layer_with_encoder(encoder, l))
+                    .map(|layer| self.preprocess_layer_with_encoder(encoder, layer))
                     .collect::<AnyResult<Vec<_>>>()?;
 
                 // NOTE: We do NOT submit here. All render passes (offscreen + main) use the same encoder.
@@ -565,10 +573,10 @@ impl RenderState {
                 // Open the main pass and draw layers: non-group items first, then composite groups
                 self.render_layers_pass(encoder, texture_view, main_load, per_layer)?;
             } else if use_retained {
-                let Some(dl) = self.retained_display_list.clone() else {
+                let Some(display_list) = self.retained_display_list.clone() else {
                     return Ok(());
                 };
-                let items: Vec<DisplayItem> = dl.items;
+                let items: Vec<DisplayItem> = display_list.items;
                 // Pre-collect opacity composites BEFORE opening the main pass
                 let comps = self.collect_opacity_composites(encoder, &items)?;
 
@@ -588,7 +596,7 @@ impl RenderState {
                         rgba,
                     );
                 }
-                let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
+                let vertex_bytes = cast_slice(vertices.as_slice());
                 let vertex_buffer = self.device.create_buffer_init(&util::BufferInitDescriptor {
                     label: Some("rect-vertices"),
                     contents: vertex_bytes,
@@ -629,32 +637,34 @@ impl RenderState {
                 let batches =
                     batch_layer_texts_with_scissor(&self.layers, self.size.width, self.size.height);
                 self.draw_text_batches(&mut pass, batches);
-            } else if use_retained && let Some(dl) = &self.retained_display_list {
-                let batches = batch_texts_with_scissor(dl, self.size.width, self.size.height);
+            } else if use_retained && let Some(display_list) = &self.retained_display_list {
+                let batches =
+                    batch_texts_with_scissor(display_list, self.size.width, self.size.height);
                 self.draw_text_batches(&mut pass, batches);
             }
             pass.pop_debug_group();
             debug!(target: "wgpu_renderer", "end text-pass");
             // Explicitly drop the pass to ensure encoder is not borrowed
             drop(pass);
-        }
+        };
 
         // All render passes complete - encoder should not be borrowed at this point
         Ok(())
     }
 
+    /// Push rectangle vertices in NDC coordinates to the vertex buffer.
     #[inline]
     fn push_rect_vertices_ndc(&self, out: &mut Vec<Vertex>, rect_xywh: [f32; 4], color: [f32; 4]) {
-        let fw = self.size.width.max(1) as f32;
-        let fh = self.size.height.max(1) as f32;
+        let framebuffer_width = self.size.width.max(1) as f32;
+        let framebuffer_height = self.size.height.max(1) as f32;
         let [rect_x, rect_y, rect_width, rect_height] = rect_xywh;
         if rect_width <= 0.0 || rect_height <= 0.0 {
             return;
         }
-        let x0 = (rect_x / fw) * 2.0 - 1.0;
-        let x1 = ((rect_x + rect_width) / fw) * 2.0 - 1.0;
-        let y0 = 1.0 - (rect_y / fh) * 2.0;
-        let y1 = 1.0 - ((rect_y + rect_height) / fh) * 2.0;
+        let x0 = (rect_x / framebuffer_width).mul_add(2.0, -1.0);
+        let x1 = ((rect_x + rect_width) / framebuffer_width).mul_add(2.0, -1.0);
+        let y0 = (rect_y / framebuffer_height).mul_add(-2.0, 1.0);
+        let y1 = ((rect_y + rect_height) / framebuffer_height).mul_add(-2.0, 1.0);
         // Pass through color; shader handles sRGB->linear conversion for blending.
         let vertex_color = color;
         out.extend_from_slice(&[
@@ -687,19 +697,22 @@ impl RenderState {
 
     /// Draw display items with proper stacking context handling
     /// Spec: CSS 2.2 §9.9.1 - Stacking contexts and paint order
+    ///
+    /// # Errors
+    /// Returns an error if rendering or opacity group processing fails.
     fn draw_items_with_groups(
         &mut self,
         pass: &mut RenderPass<'_>,
         items: &[DisplayItem],
     ) -> AnyResult<()> {
-        let mut i = 0usize;
+        let mut index = 0usize;
 
-        while i < items.len() {
-            match &items[i] {
+        while index < items.len() {
+            match &items[index] {
                 DisplayItem::BeginStackingContext { boundary } => {
                     // Find the matching end boundary
-                    let end = OpacityCompositor::find_stacking_context_end(items, i + 1);
-                    let group_items = &items[i + 1..end];
+                    let end = OpacityCompositor::find_stacking_context_end(items, index + 1);
+                    let group_items = &items[index + 1..end];
 
                     match boundary {
                         StackingContextBoundary::Opacity { alpha } if *alpha < 1.0 => {
@@ -713,16 +726,16 @@ impl RenderState {
                         }
                     }
 
-                    i = end + 1; // Skip to after EndStackingContext
+                    index = end + 1; // Skip to after EndStackingContext
                 }
                 DisplayItem::EndStackingContext => {
                     // This should be handled by the BeginStackingContext case
-                    i += 1;
+                    index += 1;
                 }
                 _ => {
                     // Regular display item - find the next stacking context boundary
-                    let start = i;
-                    let mut end = i;
+                    let start = index;
+                    let mut end = index;
                     while end < items.len() {
                         match &items[end] {
                             DisplayItem::BeginStackingContext { .. } => break,
@@ -733,15 +746,18 @@ impl RenderState {
                     if start < end {
                         self.draw_items_batched(pass, &items[start..end]);
                     }
-                    i = end;
+                    index = end;
                 }
             }
         }
         Ok(())
     }
 
-    /// Context-aware version of draw_items_with_groups that uses RenderContext instead of self.size.
+    /// Context-aware version of `draw_items_with_groups` that uses `RenderContext` instead of self.size.
     /// This prevents state corruption when rendering to different-sized targets.
+    ///
+    /// # Errors
+    /// Returns an error if rendering fails.
     fn draw_items_with_groups_ctx(
         &mut self,
         pass: &mut RenderPass<'_>,
@@ -756,7 +772,7 @@ impl RenderState {
         result
     }
 
-    /// Context-aware version of draw_text_batch that uses RenderContext.
+    /// Context-aware version of `draw_text_batch` that uses `RenderContext`.
     fn draw_text_batch_ctx(
         &mut self,
         pass: &mut RenderPass<'_>,
@@ -771,16 +787,21 @@ impl RenderState {
         self.size = old_size;
     }
 
+    /// Draw display items in batches for efficient rendering.
     #[inline]
     fn draw_items_batched(&mut self, pass: &mut RenderPass<'_>, items: &[DisplayItem]) {
         let sub = DisplayList::from_items(items.to_vec());
         let batches = batch_display_list(&sub, self.size.width, self.size.height);
-        for b in batches.into_iter() {
-            let mut vertices: Vec<Vertex> = Vec::with_capacity(b.quads.len() * 6);
-            for q in b.quads.iter() {
-                self.push_rect_vertices_ndc(&mut vertices, [q.x, q.y, q.width, q.height], q.color);
+        for batch in batches {
+            let mut vertices: Vec<Vertex> = Vec::with_capacity(batch.quads.len() * 6);
+            for quad in &batch.quads {
+                self.push_rect_vertices_ndc(
+                    &mut vertices,
+                    [quad.x, quad.y, quad.width, quad.height],
+                    quad.color,
+                );
             }
-            let vertex_bytes = bytemuck::cast_slice(vertices.as_slice());
+            let vertex_bytes = cast_slice(vertices.as_slice());
             let vertex_buffer = self.device.create_buffer_init(&util::BufferInitDescriptor {
                 label: Some("layer-rect-batch"),
                 contents: vertex_bytes,
@@ -789,22 +810,22 @@ impl RenderState {
             // Keep buffer alive until submission to avoid backend lifetime edge-cases
             self.live_buffers.push(vertex_buffer.clone());
             pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            match b.scissor {
-                Some((x, y, w, h)) => {
-                    let fw = self.size.width.max(1);
-                    let fh = self.size.height.max(1);
-                    let rx = x.min(fw);
-                    let ry = y.min(fh);
-                    let rw = w.min(fw.saturating_sub(rx));
-                    let rh = h.min(fh.saturating_sub(ry));
-                    if rw == 0 || rh == 0 {
+            match batch.scissor {
+                Some((scissor_x, scissor_y, scissor_width, scissor_height)) => {
+                    let framebuffer_width = self.size.width.max(1);
+                    let framebuffer_height = self.size.height.max(1);
+                    let rect_x = scissor_x.min(framebuffer_width);
+                    let rect_y = scissor_y.min(framebuffer_height);
+                    let rect_width = scissor_width.min(framebuffer_width.saturating_sub(rect_x));
+                    let rect_height = scissor_height.min(framebuffer_height.saturating_sub(rect_y));
+                    if rect_width == 0 || rect_height == 0 {
                         // Nothing visible; skip draw for this batch
                         continue;
                     }
-                    pass.set_scissor_rect(rx, ry, rw, rh)
+                    pass.set_scissor_rect(rect_x, rect_y, rect_width, rect_height);
                 }
                 None => {
-                    pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1))
+                    pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1));
                 }
             }
             if !vertices.is_empty() {
@@ -821,7 +842,10 @@ impl RenderState {
     /// After ALL offscreen rendering completes, the caller must submit the encoder before
     /// opening the main pass. This explicit submission ensures D3D12 resource state transitions.
     ///
-    /// Returns (texture, view, width, height, bind_group).
+    /// Returns (texture, view, width, height, `bind_group`).
+    ///
+    /// # Errors
+    /// Returns an error if offscreen rendering or bind group creation fails.
     fn render_items_to_offscreen_bounded_with_bind_group(
         &mut self,
         encoder: &mut CommandEncoder,
@@ -884,37 +908,37 @@ impl RenderState {
             .iter()
             .map(|item| match item {
                 DisplayItem::Rect {
-                    x: rx,
-                    y: ry,
-                    width: rw,
-                    height: rh,
+                    x: rect_x,
+                    y: rect_y,
+                    width: rect_width,
+                    height: rect_height,
                     color,
                 } => DisplayItem::Rect {
-                    x: rx - x,
-                    y: ry - y,
-                    width: *rw,
-                    height: *rh,
+                    x: rect_x - x,
+                    y: rect_y - y,
+                    width: *rect_width,
+                    height: *rect_height,
                     color: *color,
                 },
                 DisplayItem::Text {
-                    x: tx,
-                    y: ty,
+                    x: text_x,
+                    y: text_y,
                     text,
                     color,
                     font_size,
-                    bounds,
+                    bounds: text_bounds,
                 } => DisplayItem::Text {
-                    x: tx - x,
-                    y: ty - y,
+                    x: text_x - x,
+                    y: text_y - y,
                     text: text.clone(),
                     color: *color,
                     font_size: *font_size,
-                    bounds: bounds.map(|(l, t, r, b)| {
+                    bounds: text_bounds.map(|(left, top, right, bottom)| {
                         (
-                            (l as f32 - x) as i32,
-                            (t as f32 - y) as i32,
-                            (r as f32 - x) as i32,
-                            (b as f32 - y) as i32,
+                            (left as f32 - x) as i32,
+                            (top as f32 - y) as i32,
+                            (right as f32 - x) as i32,
+                            (bottom as f32 - y) as i32,
                         )
                     }),
                 },
@@ -948,9 +972,9 @@ impl RenderState {
                 log::debug!(target: "wgpu_renderer", "    Drawing items");
                 self.draw_items_with_groups_ctx(&mut pass, &translated_items, ctx)?;
                 log::debug!(target: "wgpu_renderer", "    About to drop pass");
-            }
+            };
             log::debug!(target: "wgpu_renderer", "<<< Pass DROPPED");
-        }
+        };
 
         // Text pass with error scope guard
         let text_items: Vec<DrawText> = translated_items.iter().filter_map(map_text_item).collect();
@@ -979,7 +1003,7 @@ impl RenderState {
                 text_pass.set_viewport(0.0, 0.0, tex_width as f32, tex_height as f32, 0.0, 1.0);
                 self.draw_text_batch_ctx(&mut text_pass, text_items.as_slice(), None, ctx);
                 log::debug!(target: "wgpu_renderer", "    About to drop text pass");
-            }
+            };
             log::debug!(target: "wgpu_renderer", "<<< Text pass DROPPED");
         }
 
@@ -991,7 +1015,7 @@ impl RenderState {
         // Create uniform buffer for alpha (std140-like padded to 16 bytes)
         let alpha_buf = self.device.create_buffer_init(&util::BufferInitDescriptor {
             label: Some("opacity-alpha"),
-            contents: bytemuck::cast_slice(&[alpha, 0.0f32, 0.0f32, 0.0f32]),
+            contents: cast_slice(&[alpha, 0.0f32, 0.0f32, 0.0f32]),
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
         self.live_buffers.push(alpha_buf.clone());
@@ -1026,92 +1050,92 @@ impl RenderState {
         pass: &mut RenderPass<'_>,
         bind_group: &BindGroup,
         bounds: Bounds, // x, y, w, h in px
-    ) -> AnyResult<()> {
-        let (x, y, w, h) = bounds;
-        log::debug!(target: "wgpu_renderer", ">>> draw_texture_quad_with_bind_group: bounds=({x}, {y}, {w}, {h})");
+    ) {
+        let (rect_x, rect_y, rect_width, rect_height) = bounds;
+        log::debug!(target: "wgpu_renderer", ">>> draw_texture_quad_with_bind_group: bounds=({rect_x}, {rect_y}, {rect_width}, {rect_height})");
 
         // Build a quad covering the group's bounds with UVs 0..1 over the offscreen texture
-        let fw = self.size.width.max(1) as f32;
-        let fh = self.size.height.max(1) as f32;
-        let x0 = (x / fw) * 2.0 - 1.0;
-        let x1 = ((x + w) / fw) * 2.0 - 1.0;
-        let y0 = 1.0 - (y / fh) * 2.0;
-        let y1 = 1.0 - ((y + h) / fh) * 2.0;
+        let framebuffer_width = self.size.width.max(1) as f32;
+        let framebuffer_height = self.size.height.max(1) as f32;
+        let x0 = (rect_x / framebuffer_width).mul_add(2.0, -1.0);
+        let x1 = ((rect_x + rect_width) / framebuffer_width).mul_add(2.0, -1.0);
+        let y0 = (rect_y / framebuffer_height).mul_add(-2.0, 1.0);
+        let y1 = ((rect_y + rect_height) / framebuffer_height).mul_add(-2.0, 1.0);
         // UVs cover the full offscreen texture [0,1]
-        let u0 = 0.0;
-        let v0 = 0.0;
-        let u1 = 1.0;
-        let v1 = 1.0;
+        let uv_left = 0.0;
+        let uv_top = 0.0;
+        let uv_right = 1.0;
+        let uv_bottom = 1.0;
         let verts = [
             TexVertex {
                 pos: [x0, y0],
-                uv: [u0, v1],
+                uv: [uv_left, uv_bottom],
             },
             TexVertex {
                 pos: [x1, y0],
-                uv: [u1, v1],
+                uv: [uv_right, uv_bottom],
             },
             TexVertex {
                 pos: [x1, y1],
-                uv: [u1, v0],
+                uv: [uv_right, uv_top],
             },
             TexVertex {
                 pos: [x0, y0],
-                uv: [u0, v1],
+                uv: [uv_left, uv_bottom],
             },
             TexVertex {
                 pos: [x1, y1],
-                uv: [u1, v0],
+                uv: [uv_right, uv_top],
             },
             TexVertex {
                 pos: [x0, y1],
-                uv: [u0, v0],
+                uv: [uv_left, uv_top],
             },
         ];
-        let vb = self.device.create_buffer_init(&util::BufferInitDescriptor {
+        let vertex_buffer = self.device.create_buffer_init(&util::BufferInitDescriptor {
             label: Some("opacity-quad-vertices"),
-            contents: bytemuck::cast_slice(&verts),
+            contents: cast_slice(&verts),
             usage: BufferUsages::VERTEX,
         });
-        self.live_buffers.push(vb.clone());
+        self.live_buffers.push(vertex_buffer.clone());
 
         // Constrain drawing to the group's bounds to avoid edge bleed and match compositing region.
         pass.set_pipeline(&self.tex_pipeline);
 
-        let sx = x.max(0.0).floor() as u32;
-        let sy = y.max(0.0).floor() as u32;
-        let sw = w.max(0.0).ceil() as u32;
-        let sh = h.max(0.0).ceil() as u32;
+        let scissor_x = rect_x.max(0.0).floor() as u32;
+        let scissor_y = rect_y.max(0.0).floor() as u32;
+        let scissor_width = rect_width.max(0.0).ceil() as u32;
+        let scissor_height = rect_height.max(0.0).ceil() as u32;
 
         let framebuffer_width_u32 = self.size.width.max(1);
         let framebuffer_height_u32 = self.size.height.max(1);
-        let rx = sx.min(framebuffer_width_u32);
-        let ry = sy.min(framebuffer_height_u32);
-        let rw = sw.min(framebuffer_width_u32.saturating_sub(rx));
-        let rh = sh.min(framebuffer_height_u32.saturating_sub(ry));
-        if rw == 0 || rh == 0 {
+        let final_x = scissor_x.min(framebuffer_width_u32);
+        let final_y = scissor_y.min(framebuffer_height_u32);
+        let final_width = scissor_width.min(framebuffer_width_u32.saturating_sub(final_x));
+        let final_height = scissor_height.min(framebuffer_height_u32.saturating_sub(final_y));
+        if final_width == 0 || final_height == 0 {
             // Nothing visible; skip draw for this batch
-            return Ok(());
+            return;
         }
-        pass.set_scissor_rect(rx, ry, rw, rh);
-        pass.set_vertex_buffer(0, vb.slice(..));
+        pass.set_scissor_rect(final_x, final_y, final_width, final_height);
+        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_bind_group(0, bind_group, &[]);
         pass.draw(0..6, 0..1);
-        Ok(())
     }
 
+    /// Compute the bounding box of display items for opacity group sizing.
     #[inline]
     #[allow(
         dead_code,
         reason = "Utility function for future opacity bounds calculation"
     )]
-    fn compute_items_bounds(&self, items: &[DisplayItem]) -> Option<Bounds> {
+    fn compute_items_bounds(items: &[DisplayItem]) -> Option<Bounds> {
         let mut min_x = f32::INFINITY;
         let mut min_y = f32::INFINITY;
         let mut max_x = f32::NEG_INFINITY;
         let mut max_y = f32::NEG_INFINITY;
-        for it in items {
-            match it {
+        for item in items {
+            match item {
                 DisplayItem::Rect {
                     x,
                     y,
@@ -1131,42 +1155,43 @@ impl RenderState {
                     bounds,
                     ..
                 } => {
-                    if let Some((l, t, r, b)) = bounds {
-                        let lx = *l as f32;
-                        let ty = *t as f32;
-                        let rx = *r as f32;
-                        let by = *b as f32;
-                        min_x = min_x.min(lx);
-                        min_y = min_y.min(ty);
-                        max_x = max_x.max(rx);
-                        max_y = max_y.max(by);
+                    if let Some((left, top, right, bottom)) = bounds {
+                        let left_x = *left as f32;
+                        let top_y = *top as f32;
+                        let right_x = *right as f32;
+                        let bottom_y = *bottom as f32;
+                        min_x = min_x.min(left_x);
+                        min_y = min_y.min(top_y);
+                        max_x = max_x.max(right_x);
+                        max_y = max_y.max(bottom_y);
                     } else {
                         // Conservative fallback: treat a line box around baseline
-                        let h = (*font_size).max(1.0);
-                        let w = (*font_size) * 4.0; // rough estimate
+                        let height = (*font_size).max(1.0);
+                        let width = (*font_size) * 4.0; // rough estimate
                         min_x = min_x.min(*x);
-                        min_y = min_y.min(*y - h);
-                        max_x = max_x.max(*x + w);
+                        min_y = min_y.min(*y - height);
+                        max_x = max_x.max(*x + width);
                         max_y = max_y.max(*y);
                     }
                 }
                 _ => {}
             }
         }
-        if min_x.is_finite() {
-            Some((
+        min_x.is_finite().then(|| {
+            (
                 min_x.max(0.0),
                 min_y.max(0.0),
                 (max_x - min_x).max(0.0),
                 (max_y - min_y).max(0.0),
-            ))
-        } else {
-            None
-        }
+            )
+        })
     }
 
     /// Create the GPU device/surface and initialize a simple render pipeline.
-    pub async fn new(window: Arc<Window>) -> RenderState {
+    ///
+    /// # Panics
+    /// Panics if no suitable GPU adapter is found or if device creation fails.
+    pub async fn new(window: Arc<Window>) -> Self {
         // Enable DX12 validation layer for detailed error messages
         let instance = Instance::new(&InstanceDescriptor {
             backends: Backends::DX12 | Backends::VULKAN | Backends::GL,
@@ -1180,17 +1205,20 @@ impl RenderState {
                 force_fallback_adapter: false,
             })
             .await
-            .unwrap();
+            .expect("Failed to find a suitable GPU adapter");
         // Enable validation layers in debug builds for better error reporting
         let device_descriptor = DeviceDescriptor {
             label: Some("valor-render-device"),
             required_features: Features::empty(),
             required_limits: Limits::default(),
             memory_hints: MemoryHints::default(),
-            trace: Default::default(),
+            trace: Trace::default(),
         };
 
-        let (device, queue) = adapter.request_device(&device_descriptor).await.unwrap();
+        let (device, queue) = adapter
+            .request_device(&device_descriptor)
+            .await
+            .expect("Failed to create GPU device");
 
         // Set up error callback for better debugging
         device.on_uncaptured_error(Box::new(|error| {
@@ -1203,56 +1231,60 @@ impl RenderState {
         let size = window.inner_size();
 
         // Try to create a surface; if capabilities are empty, fall back to offscreen mode.
-        let (surface_opt, surface_format, render_format) = match instance
-            .create_surface(window.clone())
-        {
-            Ok(surface) => {
-                let capabilities = surface.get_capabilities(&adapter);
-                if capabilities.formats.is_empty() {
-                    // Headless path: no surface formats available
+        let (surface_opt, surface_format, render_format) =
+            instance.create_surface(Arc::clone(&window)).map_or_else(
+                |_| {
                     (
                         None,
                         TextureFormat::Rgba8Unorm,
                         TextureFormat::Rgba8UnormSrgb,
                     )
-                } else {
-                    // Prefer RGBA8 for consistent channel ordering; fall back to the first available format
-                    let sfmt = capabilities
-                        .formats
-                        .iter()
-                        .copied()
-                        .find(|f| {
-                            matches!(f, TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb)
-                        })
-                        .unwrap_or(capabilities.formats[0]);
-                    // Use the base (non-sRGB) surface format, but render to an sRGB view
-                    let surface_fmt = match sfmt {
-                        TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8Unorm,
-                        other => other,
-                    };
-                    let render_fmt = TextureFormat::Rgba8UnormSrgb;
-                    // Configure the surface before creating the pipeline
-                    let surface_config = SurfaceConfiguration {
-                        usage: TextureUsages::RENDER_ATTACHMENT,
-                        format: surface_fmt,
-                        // Request compatibility with the sRGB-format texture view we are going to create later.
-                        view_formats: vec![render_fmt],
-                        alpha_mode: CompositeAlphaMode::Auto,
-                        width: size.width,
-                        height: size.height,
-                        desired_maximum_frame_latency: 2,
-                        present_mode: PresentMode::AutoVsync,
-                    };
-                    surface.configure(&device, &surface_config);
-                    (Some(surface), surface_fmt, render_fmt)
-                }
-            }
-            Err(_) => (
-                None,
-                TextureFormat::Rgba8Unorm,
-                TextureFormat::Rgba8UnormSrgb,
-            ),
-        };
+                },
+                |surface| {
+                    let capabilities = surface.get_capabilities(&adapter);
+                    if capabilities.formats.is_empty() {
+                        // Headless path: no surface formats available
+                        (
+                            None,
+                            TextureFormat::Rgba8Unorm,
+                            TextureFormat::Rgba8UnormSrgb,
+                        )
+                    } else {
+                        // Prefer RGBA8 for consistent channel ordering; fall back to the first available format
+                        let sfmt = capabilities
+                            .formats
+                            .iter()
+                            .copied()
+                            .find(|format| {
+                                matches!(
+                                    format,
+                                    TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb
+                                )
+                            })
+                            .unwrap_or(capabilities.formats[0]);
+                        // Use the base (non-sRGB) surface format, but render to an sRGB view
+                        let surface_fmt = match sfmt {
+                            TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8Unorm,
+                            other => other,
+                        };
+                        let render_fmt = TextureFormat::Rgba8UnormSrgb;
+                        // Configure the surface before creating the pipeline
+                        let surface_config = SurfaceConfiguration {
+                            usage: TextureUsages::RENDER_ATTACHMENT,
+                            format: surface_fmt,
+                            // Request compatibility with the sRGB-format texture view we are going to create later.
+                            view_formats: vec![render_fmt],
+                            alpha_mode: CompositeAlphaMode::Auto,
+                            width: size.width,
+                            height: size.height,
+                            desired_maximum_frame_latency: 2,
+                            present_mode: PresentMode::AutoVsync,
+                        };
+                        surface.configure(&device, &surface_config);
+                        (Some(surface), surface_fmt, render_fmt)
+                    }
+                },
+            );
 
         // Build pipeline and buffers now that formats are known
         let (pipeline, vertex_buffer, vertex_count) =
@@ -1284,11 +1316,11 @@ impl RenderState {
         font_system_runtime.db_mut().load_system_fonts();
 
         // Log any uncaptured WGPU errors to help diagnose backend issues
-        device.on_uncaptured_error(Box::new(|e| {
-            log::error!(target: "wgpu_renderer", "WGPU uncaptured error: {e:?}");
+        device.on_uncaptured_error(Box::new(|error| {
+            log::error!(target: "wgpu_renderer", "WGPU uncaptured error: {error:?}");
         }));
 
-        RenderState {
+        Self {
             window,
             device,
             queue,
@@ -1610,14 +1642,14 @@ impl RenderState {
     ///
     /// # Errors
     /// Returns an error if buffer mapping or readback fails.
-    fn readback_texture_data(
-        &self,
-        width: u32,
-        height: u32,
-        bytes_per_pixel: u32,
-        row_bytes: u32,
-        padded_bytes_per_row: u32,
-    ) -> Result<Vec<u8>, AnyhowError> {
+    fn readback_texture_data(&self, params: ReadbackParams) -> Result<Vec<u8>, AnyhowError> {
+        let ReadbackParams {
+            width,
+            height,
+            bytes_per_pixel,
+            row_bytes,
+            padded_bytes_per_row,
+        } = params;
         let readback = self
             .readback_buf
             .as_ref()
@@ -1713,7 +1745,13 @@ impl RenderState {
         };
         submit_with_validation(&self.device, &self.queue, [copy_command_buffer])?;
 
-        let mut out = self.readback_texture_data(width, height, bpp, row_bytes, padded_bpr)?;
+        let mut out = self.readback_texture_data(ReadbackParams {
+            width,
+            height,
+            bytes_per_pixel: bpp,
+            row_bytes,
+            padded_bytes_per_row: padded_bpr,
+        })?;
         self.convert_bgra_to_rgba(&mut out);
         Ok(out)
     }
@@ -1918,3 +1956,18 @@ impl RenderState {
 
 /// Pixel bounds (x, y, width, height)
 pub(crate) type Bounds = (f32, f32, f32, f32);
+
+/// Parameters for texture readback operation.
+#[derive(Copy, Clone)]
+struct ReadbackParams {
+    /// Width of the texture in pixels.
+    width: u32,
+    /// Height of the texture in pixels.
+    height: u32,
+    /// Number of bytes per pixel (typically 4 for RGBA).
+    bytes_per_pixel: u32,
+    /// Number of bytes per row (width * `bytes_per_pixel`).
+    row_bytes: u32,
+    /// Padded bytes per row (aligned to 256 bytes for GPU buffer requirements).
+    padded_bytes_per_row: u32,
+}
