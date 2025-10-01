@@ -1,11 +1,3 @@
-#![allow(
-    clippy::single_match_else,
-    clippy::option_if_let_else,
-    clippy::absolute_paths,
-    clippy::missing_errors_doc,
-    reason = "DOM mirror uses standard patterns and JSON serialization"
-)]
-
 mod printing;
 
 use anyhow::Error;
@@ -30,12 +22,17 @@ pub enum NodeKind {
 }
 
 pub struct DOM {
+    /// The arena storing all DOM nodes.
     dom: Arena<DOMNode>,
+    /// The root node ID.
     root: NodeId,
+    /// Sender for broadcasting DOM updates.
     out_updater: broadcast::Sender<Vec<DOMUpdate>>,
+    /// Receiver for incoming DOM updates.
     in_receiver: mpsc::Receiver<Vec<DOMUpdate>>,
-    // Map stable NodeKey -> runtime DOM NodeId
+    /// Map from parser-local `NodeKey` to runtime `NodeId`.
     id_map: HashMap<NodeKey, NodeId>,
+    /// Keyspace for managing node keys.
     keyspace: KeySpace,
 }
 
@@ -45,15 +42,19 @@ impl DOM {
     /// - Document: { "type":"document", "children":[ ... ] }
     /// - Element: { "type":"element", "tag": "div", "attrs": {..}, "children":[ ... ] }
     /// - Text: { "type":"text", "text":"..." }
+    #[inline]
     pub fn to_json_value(&self) -> Value {
         printing::node_to_json(self, self.root)
     }
 
     /// Pretty JSON string for snapshots and test comparisons.
+    #[inline]
     pub fn to_json_string(&self) -> String {
-        serde_json::to_string_pretty(&self.to_json_value()).unwrap_or_else(|_| String::from("{}"))
+        use serde_json::to_string_pretty;
+        to_string_pretty(&self.to_json_value()).unwrap_or_else(|_| String::from("{}"))
     }
 
+    #[inline]
     pub fn new(
         out_updater: broadcast::Sender<Vec<DOMUpdate>>,
         in_receiver: mpsc::Receiver<Vec<DOMUpdate>>,
@@ -72,15 +73,22 @@ impl DOM {
         }
     }
 
+    #[inline]
     pub fn register_manager<L: Eq + Hash + Copy>(&mut self) -> NodeKeyManager<L> {
         self.keyspace.register_manager()
     }
 
     // Convenience for the parser's local id type
+    #[inline]
     pub fn register_parser_manager(&mut self) -> NodeKeyManager<NodeId> {
         self.keyspace.register_manager()
     }
 
+    /// Apply pending DOM updates from the receiver.
+    ///
+    /// # Errors
+    /// Returns an error if update application fails.
+    #[inline]
     pub fn update(&mut self) -> Result<(), Error> {
         while let Ok(batch) = self.in_receiver.try_recv() {
             // Apply and collect simple counts for test-printing diagnostics
@@ -115,6 +123,7 @@ impl DOM {
         Ok(())
     }
 
+    #[inline]
     pub fn subscribe(&self) -> broadcast::Receiver<Vec<DOMUpdate>> {
         self.out_updater.subscribe()
     }
@@ -123,15 +132,12 @@ impl DOM {
     fn ensure_node(&mut self, parser_id: NodeKey, kind: Option<NodeKind>) -> NodeId {
         if let Some(&mapped) = self.id_map.get(&parser_id) {
             // Optionally update kind if provided and current is default
-            if let Some(k) = kind
-                && let Some(n) = self.dom.get_mut(mapped)
+            if let Some(node_kind) = kind
+                && let Some(node_ref) = self.dom.get_mut(mapped)
             {
-                let node = n.get_mut();
-                match (&node.kind, &k) {
-                    (NodeKind::Document, _) => {
-                        node.kind = k;
-                    }
-                    _ => { /* keep existing kind (e.g., text or element) */ }
+                let node = node_ref.get_mut();
+                if matches!(node.kind, NodeKind::Document) {
+                    node.kind = node_kind;
                 }
             }
             return mapped;
@@ -154,6 +160,7 @@ impl DOM {
         }
     }
 
+    /// Apply a single DOM update to the tree.
     fn apply_update(&mut self, update: &DOMUpdate) {
         use DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr};
 

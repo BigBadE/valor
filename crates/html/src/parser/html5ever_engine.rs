@@ -1,13 +1,3 @@
-#![allow(
-    clippy::min_ident_chars,
-    reason = "HTML5 parsing uses standard short variable names"
-)]
-#![allow(
-    clippy::missing_docs_in_private_items,
-    clippy::missing_errors_doc,
-    reason = "HTML5ever engine is internal implementation"
-)]
-
 use crate::parser::{ParserDOMMirror, ScriptJob, ScriptKind};
 use alloc::borrow::Cow;
 use anyhow::Error;
@@ -181,7 +171,7 @@ impl TreeSink for ValorSink {
         };
         // Track the element's qualified name for correct elem_name reporting
         self.element_names.borrow_mut().insert(id, name.clone());
-        let is_script = name.ns == html_ns!(html) && name.local.eq(&local_name!("script"));
+        let is_script = name.ns == html_ns!(html) && name.local == local_name!("script");
         let mut state = is_script.then(|| ScriptState {
             has_src: false,
             buffer: String::new(),

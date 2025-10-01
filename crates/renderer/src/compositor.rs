@@ -121,8 +121,14 @@ impl OpacityCompositor {
         &self.groups
     }
 
+    /// Compute bounding box for a slice of display items.
+    /// Returns (x, y, width, height) or None if no items have bounds.
+    pub fn compute_items_bounds(items: &[DisplayItem]) -> Option<(f32, f32, f32, f32)> {
+        Self::compute_bounds(items).map(|r| (r.x, r.y, r.width, r.height))
+    }
+
     /// Find the matching EndStackingContext for a BeginStackingContext.
-    fn find_stacking_context_end(items: &[DisplayItem], start: usize) -> usize {
+    pub fn find_stacking_context_end(items: &[DisplayItem], start: usize) -> usize {
         let mut depth = 1i32;
         for (idx, item) in items.iter().enumerate().skip(start) {
             match item {
@@ -216,7 +222,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
+    #[allow(
+        clippy::unwrap_used,
+        reason = "Test code may use unwrap for simplicity"
+    )]
     fn compute_bounds_single_rect() {
         let items = vec![DisplayItem::Rect {
             x: 10.0,

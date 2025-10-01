@@ -228,14 +228,8 @@ impl Renderer {
 
     /// Drain and return the current dirty rectangles (for testing/integration).
     #[inline]
-    #[allow(
-        clippy::missing_const_for_fn,
-        reason = "May need interior mutability in future"
-    )]
     pub fn take_dirty_rects(&mut self) -> Vec<DrawRect> {
-        let mut out = Vec::new();
-        mem::swap(&mut out, &mut self.dirty_rects);
-        out
+        mem::take(&mut self.dirty_rects)
     }
 }
 

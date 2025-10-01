@@ -207,16 +207,53 @@ pub struct Batch {
     pub quads: Vec<Quad>,
 }
 
-/// Compute batches from a DisplayList by segmenting on clip stack boundaries.
+/// Convert a float rectangle to a scissor rectangle in framebuffer coordinates.
+fn rect_to_scissor(rect: (f32, f32, f32, f32), framebuffer_size: (u32, u32)) -> Scissor {
+    let (x, y, w, h) = rect;
+    let (framebuffer_width, framebuffer_height) = framebuffer_size;
+    let framebuffer_w = framebuffer_width.max(1);
+    let framebuffer_h = framebuffer_height.max(1);
+    let mut sx = x.max(0.0).floor() as i32;
+    let mut sy = y.max(0.0).floor() as i32;
+    let mut sw = w.max(0.0).ceil() as i32;
+    let mut sh = h.max(0.0).ceil() as i32;
+    if sx < 0i32 {
+        sw += sx;
+        sx = 0i32;
+    }
+    if sy < 0i32 {
+        sh += sy;
+        sy = 0i32;
+    }
+    let max_w = i32::try_from(framebuffer_w).unwrap_or(i32::MAX) - sx;
+    let max_h = i32::try_from(framebuffer_h).unwrap_or(i32::MAX) - sy;
+    let sw = u32::try_from(sw.clamp(0i32, max_w)).unwrap_or(0);
+    let sh = u32::try_from(sh.clamp(0i32, max_h)).unwrap_or(0);
+    (
+        u32::try_from(sx).unwrap_or(0),
+        u32::try_from(sy).unwrap_or(0),
+        sw,
+        sh,
+    )
+}
+
+/// Intersect two scissor rectangles.
+fn intersect_scissors(a: Scissor, b: Scissor) -> Scissor {
+    let (ax, ay, aw, ah) = a;
+    let (bx, by, bw, bh) = b;
+    let left = ax.max(bx);
+    let top = ay.max(by);
+    let right = (ax + aw).min(bx + bw);
+    let bottom = (ay + ah).min(by + bh);
+    let width = right.saturating_sub(left);
+    let height = bottom.saturating_sub(top);
+    (left, top, width, height)
+}
+
+/// Compute batches from a `DisplayList` by segmenting on clip stack boundaries.
 /// - Returns batches each carrying a list of quads and an optional scissor rect in framebuffer pixels.
 /// - Applies Opacity by multiplying per-quad alpha (no offscreen compositing yet).
-#[allow(
-    clippy::too_many_lines,
-    clippy::default_numeric_fallback,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "Display list batching function uses complex geometric calculations"
-)]
+#[inline]
 pub fn batch_display_list(
     list: &DisplayList,
     framebuffer_width: u32,
@@ -226,44 +263,6 @@ pub fn batch_display_list(
     let mut current_quads: Vec<Quad> = Vec::new();
     let mut scissor_stack: Vec<Scissor> = Vec::new();
     let mut current_scissor: Option<Scissor> = None;
-    // Opacity is handled by group compositing in RenderState; do not scale here.
-
-    let rect_to_scissor = |x: f32, y: f32, w: f32, h: f32| -> Scissor {
-        let framebuffer_w = framebuffer_width.max(1);
-        let framebuffer_h = framebuffer_height.max(1);
-        let mut sx = x.max(0.0).floor() as i32;
-        let mut sy = y.max(0.0).floor() as i32;
-        let mut sw = w.max(0.0).ceil() as i32;
-        let mut sh = h.max(0.0).ceil() as i32;
-        if sx < 0 {
-            sw += sx;
-            sx = 0;
-        }
-        if sy < 0 {
-            sh += sy;
-            sy = 0;
-        }
-        let max_w = framebuffer_w as i32 - sx;
-        let max_h = framebuffer_h as i32 - sy;
-        let sw = sw.clamp(0, max_w) as u32;
-        let sh = sh.clamp(0, max_h) as u32;
-        (sx as u32, sy as u32, sw, sh)
-    };
-    #[allow(
-        clippy::min_ident_chars,
-        reason = "Geometric functions use standard short names"
-    )]
-    let intersect = |a: Scissor, b: Scissor| -> Scissor {
-        let (ax, ay, aw, ah) = a;
-        let (bx, by, bw, bh) = b;
-        let left = ax.max(bx);
-        let top = ay.max(by);
-        let right = (ax + aw).min(bx + bw);
-        let bottom = (ay + ah).min(by + bh);
-        let width = right.saturating_sub(left);
-        let height = bottom.saturating_sub(top);
-        (left, top, width, height)
-    };
 
     for item in &list.items {
         match item {
@@ -298,11 +297,17 @@ pub fn batch_display_list(
                         quads: take(&mut current_quads),
                     });
                 }
-                let new_sc = rect_to_scissor(*x, *y, *width, *height);
-                let effective =
-                    current_scissor.map_or(new_sc, |scissor| intersect(scissor, new_sc));
-                scissor_stack.push(new_sc);
-                current_scissor = Some(effective);
+                let new_scissor = rect_to_scissor(
+                    (*x, *y, *width, *height),
+                    (framebuffer_width, framebuffer_height),
+                );
+                let effective_scissor = current_scissor.map_or(new_scissor, |parent| {
+                    intersect_scissors(parent, new_scissor)
+                });
+                scissor_stack.push(effective_scissor);
+                if current_scissor != Some(effective_scissor) {
+                    current_scissor = Some(effective_scissor);
+                }
             }
             DisplayItem::EndClip => {
                 // Flush current batch before restoring scissor
@@ -313,7 +318,7 @@ pub fn batch_display_list(
                     });
                 }
                 let _: Option<Scissor> = scissor_stack.pop();
-                current_scissor = scissor_stack.iter().copied().reduce(intersect);
+                current_scissor = scissor_stack.iter().copied().reduce(intersect_scissors);
             }
             DisplayItem::BeginStackingContext { .. }
             | DisplayItem::EndStackingContext

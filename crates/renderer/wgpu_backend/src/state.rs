@@ -5,6 +5,7 @@ use anyhow::Result as AnyResult;
 use anyhow::anyhow;
 use glyphon::{Cache, FontSystem, Resolution, SwashCache, TextAtlas, TextRenderer, Viewport};
 use log::debug;
+use renderer::compositor::OpacityCompositor;
 use renderer::display_list::{
     DisplayItem, DisplayList, StackingContextBoundary, batch_display_list,
 };
@@ -17,6 +18,9 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 // pollster is used via crate::error helpers.
+
+/// Result type for offscreen rendering operations.
+type OffscreenRenderResult = (Texture, TextureView, u32, u32, BindGroup);
 
 // Composite info for a pre-rendered opacity group.
 // (start_index, end_index, texture, texture_view, tex_w, tex_h, alpha, bounds, bind_group)
@@ -260,14 +264,13 @@ impl RenderState {
             if let DisplayItem::BeginStackingContext { boundary } = &items[i]
                 && matches!(boundary, StackingContextBoundary::Opacity { alpha } if *alpha < 1.0)
             {
-                let end = self.find_stacking_context_end(items, i + 1);
+                let end = OpacityCompositor::find_stacking_context_end(items, i + 1);
                 let group_items = &items[i + 1..end];
                 let alpha = match boundary {
                     StackingContextBoundary::Opacity { alpha } => *alpha,
                     _ => 1.0,
                 };
-                let bounds = self
-                    .compute_items_bounds(group_items)
+                let bounds = OpacityCompositor::compute_items_bounds(group_items)
                     .unwrap_or((0.0, 0.0, 1.0, 1.0));
                 let (tex, view, tw, th, bind_group) = self
                     .render_items_to_offscreen_bounded_with_bind_group(
@@ -470,19 +473,6 @@ impl RenderState {
         Ok(())
     }
 
-    /// Check if a display item is an opacity stacking context.
-    /// NOTE: Currently unused because opacity compositing is not functional yet.
-    /// Kept for when the CSS layer generates stacking contexts.
-    #[allow(dead_code)]
-    fn is_opacity_context(item: &DisplayItem) -> bool {
-        matches!(
-            item,
-            DisplayItem::BeginStackingContext {
-                boundary: StackingContextBoundary::Opacity { alpha }
-            } if *alpha < 1.0
-        )
-    }
-
     /// Record all render passes (rectangles + text) into the provided encoder.
     ///
     /// Opacity compositing is fully functional using a hybrid approach:
@@ -567,21 +557,18 @@ impl RenderState {
                 // Open the main pass and draw layers: non-group items first, then composite groups
                 self.render_layers_pass(encoder, texture_view, main_load, per_layer)?;
             } else if use_retained {
-                if let Some(dl) = self.retained_display_list.clone() {
-                    let items: Vec<DisplayItem> = dl.items;
-                    // Pre-collect opacity composites BEFORE opening the main pass
-                    // CRITICAL: All error scopes from offscreen passes must be checked before submission
-                    let comps = self.collect_opacity_composites(encoder, &items)?;
+                let Some(dl) = self.retained_display_list.clone() else {
+                    return Ok(());
+                };
+                let items: Vec<DisplayItem> = dl.items;
+                // Pre-collect opacity composites BEFORE opening the main pass
+                let comps = self.collect_opacity_composites(encoder, &items)?;
 
-                    // NOTE: We do NOT submit here. All render passes (offscreen + main) use the same encoder.
-                    // WGPU/D3D12 automatically inserts resource barriers between render passes within the same command buffer.
-                    // This is the standard pattern used by production renderers.
-                    if !comps.is_empty() {
-                        log::debug!(target: "wgpu_renderer", ">>> Collected {} opacity groups (no mid-frame submission)", comps.len());
-                    }
+                // NOTE: We do NOT submit here. All render passes (offscreen + main) use the same encoder.
+                // WGPU/D3D12 automatically inserts resource barriers between render passes within the same command buffer.
+                log::debug!(target: "wgpu_renderer", ">>> Collected {} opacity groups (no mid-frame submission)", comps.len());
 
-                    self.render_retained_pass(encoder, texture_view, main_load, &items, comps)?;
-                }
+                self.render_retained_pass(encoder, texture_view, main_load, &items, comps)?;
             } else {
                 // Immediate path: batch all rects into one draw call as before
                 let mut vertices: Vec<Vertex> = Vec::with_capacity(self.display_list.len() * 6);
@@ -703,7 +690,7 @@ impl RenderState {
             match &items[i] {
                 DisplayItem::BeginStackingContext { boundary } => {
                     // Find the matching end boundary
-                    let end = self.find_stacking_context_end(items, i + 1);
+                    let end = OpacityCompositor::find_stacking_context_end(items, i + 1);
                     let group_items = &items[i + 1..end];
 
                     match boundary {
@@ -776,28 +763,6 @@ impl RenderState {
         self.size = old_size;
     }
 
-    /// Find the matching EndStackingContext for a BeginStackingContext
-    /// Spec: Proper nesting of stacking context boundaries
-    #[inline]
-    fn find_stacking_context_end(&self, items: &[DisplayItem], start: usize) -> usize {
-        let mut depth = 1i32;
-        let mut j = start;
-        while j < items.len() {
-            match &items[j] {
-                DisplayItem::BeginStackingContext { .. } => depth += 1,
-                DisplayItem::EndStackingContext => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return j;
-                    }
-                }
-                _ => {}
-            }
-            j += 1;
-        }
-        items.len() // fallback if unmatched
-    }
-
     #[inline]
     fn draw_items_batched(&mut self, pass: &mut RenderPass<'_>, items: &[DisplayItem]) {
         let sub = DisplayList::from_items(items.to_vec());
@@ -849,14 +814,13 @@ impl RenderState {
     /// opening the main pass. This explicit submission ensures D3D12 resource state transitions.
     ///
     /// Returns (texture, view, width, height, bind_group).
-    #[allow(clippy::type_complexity)]
     fn render_items_to_offscreen_bounded_with_bind_group(
         &mut self,
         encoder: &mut CommandEncoder,
         items: &[DisplayItem],
         bounds: (f32, f32, f32, f32),
         alpha: f32,
-    ) -> AnyResult<(Texture, TextureView, u32, u32, BindGroup)> {
+    ) -> AnyResult<OffscreenRenderResult> {
         let (x, y, width, height) = bounds;
         let tex_width = (width.ceil() as u32).max(1);
         let tex_height = (height.ceil() as u32).max(1);

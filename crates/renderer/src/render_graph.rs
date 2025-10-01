@@ -56,14 +56,17 @@ pub struct Dependency {
 
 /// High-level render graph that orchestrates multi-pass rendering.
 pub struct RenderGraph {
+    /// List of render passes to execute.
     passes: Vec<RenderPass>,
+    /// Dependencies between passes.
     dependencies: Vec<Dependency>,
 }
 
 impl RenderGraph {
     /// Build a render graph from a display list.
+    #[inline]
     pub fn build_from_display_list(
-        dl: &DisplayList,
+        display_list: &DisplayList,
         opacity_groups: &[OpacityGroup],
         needs_clear: bool,
     ) -> Self {
@@ -109,17 +112,17 @@ impl RenderGraph {
         // Pass N: Main rendering
         let exclude_ranges: Vec<(usize, usize)> = opacity_groups
             .iter()
-            .map(|g| (g.start_index, g.end_index))
+            .map(|group| (group.start_index, group.end_index))
             .collect();
 
         passes.push(RenderPass::Main {
-            items: dl.items.clone(),
+            items: display_list.items.clone(),
             exclude_ranges,
             composites,
         });
 
         // Pass N+1: Text rendering
-        let text_items: Vec<DisplayItem> = dl
+        let text_items: Vec<DisplayItem> = display_list
             .items
             .iter()
             .filter(|item| matches!(item, DisplayItem::Text { .. }))
@@ -137,11 +140,13 @@ impl RenderGraph {
     }
 
     /// Get all render passes in execution order.
+    #[inline]
     pub fn passes(&self) -> &[RenderPass] {
         &self.passes
     }
 
     /// Get all dependencies.
+    #[inline]
     pub fn dependencies(&self) -> &[Dependency] {
         &self.dependencies
     }
@@ -149,17 +154,19 @@ impl RenderGraph {
     /// Check if a submission is needed between two passes.
     ///
     /// For D3D12, we need to submit after all offscreen passes complete
-    /// to ensure proper resource state transitions (RENDER_TARGET → SHADER_RESOURCE).
+    /// to ensure proper resource state transitions (`RENDER_TARGET` → `SHADER_RESOURCE`).
+    #[inline]
     pub fn needs_submission_after(&self, pass_id: PassId) -> bool {
         // Check if any dependency originates from this pass
         self.dependencies.iter().any(|dep| dep.from_pass == pass_id)
     }
 
-    /// Get the number of offscreen passes.
+    /// Get the number of offscreen opacity passes.
+    #[inline]
     pub fn offscreen_pass_count(&self) -> usize {
         self.passes
             .iter()
-            .filter(|p| matches!(p, RenderPass::OffscreenOpacity { .. }))
+            .filter(|pass| matches!(pass, RenderPass::OffscreenOpacity { .. }))
             .count()
     }
 }
@@ -170,10 +177,14 @@ mod tests {
     use crate::compositor::OpacityCompositor;
     use crate::display_list::StackingContextBoundary;
 
+    /// Test render graph without opacity.
+    ///
+    /// # Panics
+    /// Panics if the test assertions fail.
     #[test]
     fn render_graph_no_opacity() {
-        let mut dl = DisplayList::new();
-        dl.items.push(DisplayItem::Rect {
+        let mut display_list = DisplayList::new();
+        display_list.push(DisplayItem::Rect {
             x: 0.0,
             y: 0.0,
             width: 100.0,
@@ -181,8 +192,8 @@ mod tests {
             color: [1.0, 0.0, 0.0, 1.0],
         });
 
-        let compositor = OpacityCompositor::collect_from_display_list(&dl);
-        let graph = RenderGraph::build_from_display_list(&dl, compositor.groups(), true);
+        let compositor = OpacityCompositor::collect_from_display_list(&display_list);
+        let graph = RenderGraph::build_from_display_list(&display_list, compositor.groups(), true);
 
         // Should have: Clear + Main + (maybe Text)
         assert!(graph.passes().len() >= 2);
@@ -190,23 +201,27 @@ mod tests {
         assert!(matches!(graph.passes()[1], RenderPass::Main { .. }));
     }
 
+    /// Test render graph with opacity.
+    ///
+    /// # Panics
+    /// Panics if the test assertions fail.
     #[test]
     fn render_graph_with_opacity() {
-        let mut dl = DisplayList::new();
-        dl.items.push(DisplayItem::BeginStackingContext {
+        let mut display_list = DisplayList::new();
+        display_list.items.push(DisplayItem::BeginStackingContext {
             boundary: StackingContextBoundary::Opacity { alpha: 0.5 },
         });
-        dl.items.push(DisplayItem::Rect {
+        display_list.push(DisplayItem::Rect {
             x: 0.0,
             y: 0.0,
             width: 100.0,
             height: 100.0,
             color: [1.0, 0.0, 0.0, 1.0],
         });
-        dl.items.push(DisplayItem::EndStackingContext);
+        display_list.items.push(DisplayItem::EndStackingContext);
 
-        let compositor = OpacityCompositor::collect_from_display_list(&dl);
-        let graph = RenderGraph::build_from_display_list(&dl, compositor.groups(), true);
+        let compositor = OpacityCompositor::collect_from_display_list(&display_list);
+        let graph = RenderGraph::build_from_display_list(&display_list, compositor.groups(), true);
 
         // Should have: Clear + OffscreenOpacity + Main
         assert!(graph.offscreen_pass_count() == 1);

@@ -30,15 +30,21 @@ pub struct TextureMetadata {
 /// This pool tracks resource lifetimes and enables reuse of offscreen
 /// textures, buffers, and bind groups to reduce allocation overhead.
 pub struct ResourcePool {
+    /// Map of texture handles to their metadata.
     textures: BTreeMap<TextureHandle, TextureMetadata>,
+    /// Next texture ID to assign.
     next_texture_id: usize,
+    /// Textures used in the current frame.
     frame_textures: Vec<TextureHandle>,
+    /// Buffers used in the current frame.
     frame_buffers: Vec<BufferHandle>,
+    /// Bind groups used in the current frame.
     frame_bind_groups: Vec<BindGroupHandle>,
 }
 
 impl ResourcePool {
     /// Create a new empty resource pool.
+    #[inline]
     pub const fn new() -> Self {
         Self {
             textures: BTreeMap::new(),
@@ -52,7 +58,8 @@ impl ResourcePool {
     /// Acquire a texture handle for the given dimensions.
     ///
     /// This will reuse an existing texture if one is available, or
-    /// allocate a new handle if needed.
+    /// Acquire a texture handle for the given dimensions.
+    #[inline]
     pub fn acquire_texture(&mut self, width: u32, height: u32) -> TextureHandle {
         // Try to find an unused texture with matching dimensions
         for (handle, metadata) in &mut self.textures {
@@ -81,6 +88,7 @@ impl ResourcePool {
     }
 
     /// Release a texture handle, making it available for reuse.
+    #[inline]
     pub fn release_texture(&mut self, handle: TextureHandle) {
         if let Some(metadata) = self.textures.get_mut(&handle) {
             metadata.in_use = false;
@@ -88,26 +96,31 @@ impl ResourcePool {
     }
 
     /// Register a buffer used in the current frame.
+    #[inline]
     pub fn register_frame_buffer(&mut self, handle: BufferHandle) {
         self.frame_buffers.push(handle);
     }
 
     /// Register a bind group used in the current frame.
+    #[inline]
     pub fn register_frame_bind_group(&mut self, handle: BindGroupHandle) {
         self.frame_bind_groups.push(handle);
     }
 
-    /// Get all textures used in the current frame.
+    /// Get textures used in the current frame.
+    #[inline]
     pub fn frame_textures(&self) -> &[TextureHandle] {
         &self.frame_textures
     }
 
     /// Get all buffers used in the current frame.
+    #[inline]
     pub fn frame_buffers(&self) -> &[BufferHandle] {
         &self.frame_buffers
     }
 
-    /// Get all bind groups used in the current frame.
+    /// Get bind groups used in the current frame.
+    #[inline]
     pub fn frame_bind_groups(&self) -> &[BindGroupHandle] {
         &self.frame_bind_groups
     }
@@ -116,6 +129,7 @@ impl ResourcePool {
     ///
     /// This should be called at the end of each frame after submission.
     /// It releases all frame resources but keeps the pool for reuse.
+    #[inline]
     pub fn clear_frame_resources(&mut self) {
         // Release all textures used this frame
         let handles: Vec<TextureHandle> = self.frame_textures.clone();
@@ -131,6 +145,7 @@ impl ResourcePool {
     /// Clear all resources from the pool.
     ///
     /// This should be called when the renderer is being destroyed or reset.
+    #[inline]
     pub fn clear_all(&mut self) {
         self.textures.clear();
         self.frame_textures.clear();
@@ -140,17 +155,23 @@ impl ResourcePool {
     }
 
     /// Get the number of textures in the pool.
+    #[inline]
     pub fn texture_count(&self) -> usize {
         self.textures.len()
     }
 
     /// Get the number of textures currently in use.
+    #[inline]
     pub fn textures_in_use(&self) -> usize {
-        self.textures.values().filter(|m| m.in_use).count()
+        self.textures
+            .values()
+            .filter(|metadata| metadata.in_use)
+            .count()
     }
 }
 
 impl Default for ResourcePool {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
@@ -160,6 +181,10 @@ impl Default for ResourcePool {
 mod tests {
     use super::*;
 
+    /// Test basic texture acquisition.
+    ///
+    /// # Panics
+    /// Panics if the test assertions fail.
     #[test]
     fn acquire_texture() {
         let mut pool = ResourcePool::new();
@@ -169,6 +194,10 @@ mod tests {
         assert!(pool.frame_textures().contains(&handle));
     }
 
+    /// Test that textures are reused when available.
+    ///
+    /// # Panics
+    /// Panics if the test assertions fail.
     #[test]
     fn texture_reuse() {
         let mut pool = ResourcePool::new();
@@ -180,6 +209,10 @@ mod tests {
         assert_eq!(pool.texture_count(), 1);
     }
 
+    /// Test that different texture sizes get different handles.
+    ///
+    /// # Panics
+    /// Panics if the test assertions fail.
     #[test]
     fn different_sizes() {
         let mut pool = ResourcePool::new();
@@ -190,6 +223,10 @@ mod tests {
         assert_eq!(pool.texture_count(), 2);
     }
 
+    /// Test that frame resources are cleared properly.
+    ///
+    /// # Panics
+    /// Panics if the test assertions fail.
     #[test]
     fn clear_frame_resources() {
         let mut pool = ResourcePool::new();
@@ -209,6 +246,10 @@ mod tests {
         assert_eq!(pool.textures_in_use(), 0);
     }
 
+    /// Test that clearing all resources works.
+    ///
+    /// # Panics
+    /// Panics if the test assertions fail.
     #[test]
     fn clear_all() {
         let mut pool = ResourcePool::new();

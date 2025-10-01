@@ -1,11 +1,3 @@
-#![allow(
-    clippy::items_after_statements,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::too_many_lines,
-    reason = "Helper functions for DOM printing are organized inline"
-)]
-
 use core::fmt;
 
 use super::{DOM, DOMNode, NodeKind};
@@ -87,23 +79,23 @@ impl fmt::Debug for DOM {
         writeln!(f, "DOM")?;
 
         // Pretty print starting from root
-        fn write_indent(f: &mut fmt::Formatter<'_>, depth: usize) -> fmt::Result {
+        fn write_indent(formatter: &mut fmt::Formatter<'_>, depth: usize) -> fmt::Result {
             for _ in 0..depth {
-                f.write_str("  ")?;
+                formatter.write_str("  ")?;
             }
             Ok(())
         }
 
-        fn escape_text(s: &str) -> String {
-            let mut out = String::with_capacity(s.len());
-            for ch in s.chars() {
-                match ch {
+        fn escape_text(text: &str) -> String {
+            let mut out = String::with_capacity(text.len());
+            for character in text.chars() {
+                match character {
                     '\\' => out.push_str("\\\\"),
                     '"' => out.push_str("\\\""),
                     '\n' => out.push_str("\\n"),
                     '\r' => out.push_str("\\r"),
                     '\t' => out.push_str("\\t"),
-                    _ => out.push(ch),
+                    _ => out.push(character),
                 }
             }
             out
@@ -112,11 +104,11 @@ impl fmt::Debug for DOM {
         fn fmt_children(
             dom: &DOM,
             id: NodeId,
-            f: &mut fmt::Formatter<'_>,
+            formatter: &mut fmt::Formatter<'_>,
             depth: usize,
         ) -> fmt::Result {
             for child in id.children(&dom.dom) {
-                fmt_node(dom, child, f, depth + 1)?;
+                fmt_node(dom, child, formatter, depth + 1)?;
             }
             Ok(())
         }
@@ -124,53 +116,52 @@ impl fmt::Debug for DOM {
         fn fmt_node(
             dom: &DOM,
             id: NodeId,
-            f: &mut fmt::Formatter<'_>,
+            formatter: &mut fmt::Formatter<'_>,
             depth: usize,
         ) -> fmt::Result {
-            let node_ref = dom
-                .dom
-                .get(id)
-                .expect("NodeId in DOM printing should be valid");
+            let Some(node_ref) = dom.dom.get(id) else {
+                return write!(formatter, "<invalid-node>");
+            };
             let DOMNode { kind, attrs } = node_ref.get();
 
             // Small helper to write sorted attributes
             fn write_attrs(
-                f: &mut fmt::Formatter<'_>,
+                formatter: &mut fmt::Formatter<'_>,
                 attrs: &SmallVec<(String, String), 4>,
             ) -> fmt::Result {
                 if attrs.is_empty() {
                     return Ok(());
                 }
                 let mut pairs: Vec<(String, String)> = attrs.iter().cloned().collect();
-                pairs.sort_by(|a, b| a.0.cmp(&b.0));
-                for (k, v) in pairs {
-                    write!(f, " {}=\"{}\"", k, escape_text(&v))?;
+                pairs.sort_by(|attr_a, attr_b| attr_a.0.cmp(&attr_b.0));
+                for (key, value) in pairs {
+                    write!(formatter, " {}=\"{}\"", key, escape_text(&value))?;
                 }
                 Ok(())
             }
 
             match kind {
                 NodeKind::Document => {
-                    write_indent(f, depth)?;
-                    writeln!(f, "#document")?;
-                    fmt_children(dom, id, f, depth)?;
+                    write_indent(formatter, depth)?;
+                    writeln!(formatter, "#document")?;
+                    fmt_children(dom, id, formatter, depth)?;
                 }
                 NodeKind::Element { tag } => {
-                    write_indent(f, depth)?;
-                    write!(f, "<{}", tag.to_lowercase())?;
-                    write_attrs(f, attrs)?;
-                    writeln!(f, ">")?;
-                    fmt_children(dom, id, f, depth)?;
-                    write_indent(f, depth)?;
-                    writeln!(f, "</{}>", tag.to_lowercase())?;
+                    write_indent(formatter, depth)?;
+                    write!(formatter, "<{}", tag.to_lowercase())?;
+                    write_attrs(formatter, attrs)?;
+                    writeln!(formatter, ">")?;
+                    fmt_children(dom, id, formatter, depth)?;
+                    write_indent(formatter, depth)?;
+                    writeln!(formatter, "</{}>", tag.to_lowercase())?;
                 }
                 NodeKind::Text { text } => {
                     // Skip pure-whitespace text nodes in the printer for cleaner output
                     if text.chars().all(char::is_whitespace) {
                         return Ok(());
                     }
-                    write_indent(f, depth)?;
-                    writeln!(f, "\"{}\"", escape_text(text))?;
+                    write_indent(formatter, depth)?;
+                    writeln!(formatter, "\"{}\"", escape_text(text))?;
                 }
             }
             Ok(())
