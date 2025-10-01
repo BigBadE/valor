@@ -27,14 +27,19 @@ fn vs_main(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> V
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    // Convert sRGB -> linear for correct blending when render target is *Srgb
+    // Input colors are in sRGB space. When rendering to an sRGB texture format,
+    // the GPU automatically handles linear<->sRGB conversions:
+    // - Shader outputs linear RGB
+    // - GPU converts to sRGB when writing to texture
+    // So we need to convert input sRGB to linear before outputting
     let c = in.color;
     let rgb = c.xyz;
     let lo = rgb / 12.92;
     let hi = pow((rgb + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
     let t = step(vec3<f32>(0.04045), rgb);
     let linear_rgb = mix(lo, hi, t);
-    return vec4<f32>(linear_rgb, c.w);
+    // Premultiply RGB by alpha for correct blending
+    return vec4<f32>(linear_rgb * c.w, c.w);
 }
 "#;
 
@@ -61,7 +66,9 @@ fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>) -> VsOut {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let c = textureSample(t_color, t_sampler, in.uv);
-    return vec4<f32>(c.rgb, c.a * u_params.alpha);
+    // Texture already contains premultiplied RGB, just apply alpha multiplier
+    let final_alpha = c.a * u_params.alpha;
+    return vec4<f32>(c.rgb * u_params.alpha, final_alpha);
 }
 "#;
 
@@ -241,9 +248,10 @@ pub fn build_texture_pipeline(
             entry_point: Some("fs_main"),
             targets: &[Some(ColorTargetState {
                 format: render_format,
+                // Premultiplied alpha blending: shader outputs premultiplied RGBA
                 blend: Some(BlendState {
                     color: BlendComponent {
-                        src_factor: BlendFactor::SrcAlpha,
+                        src_factor: BlendFactor::One, // RGB already multiplied by alpha in shader
                         dst_factor: BlendFactor::OneMinusSrcAlpha,
                         operation: BlendOperation::Add,
                     },

@@ -19,11 +19,18 @@ use winit::window::Window;
 // pollster is used via crate::error helpers.
 
 // Composite info for a pre-rendered opacity group.
-// (start_index, end_index, texture, texture_view, tex_w, tex_h, alpha, bounds)
-pub(crate) type OpacityComposite = (usize, usize, Texture, TextureView, u32, u32, f32, Bounds);
-
-// Result payload for offscreen renders: (texture, view, width, height)
-pub(crate) type OffscreenRenderResult = (Texture, TextureView, u32, u32);
+// (start_index, end_index, texture, texture_view, tex_w, tex_h, alpha, bounds, bind_group)
+pub(crate) type OpacityComposite = (
+    usize,
+    usize,
+    Texture,
+    TextureView,
+    u32,
+    u32,
+    f32,
+    Bounds,
+    BindGroup,
+);
 
 // Compact representation for preprocessed layer data: either no content
 // or (items, composites, excluded ranges).
@@ -245,16 +252,21 @@ impl RenderState {
             {
                 let end = self.find_stacking_context_end(items, i + 1);
                 let group_items = &items[i + 1..end];
-                let bounds = self
-                    .compute_items_bounds(group_items)
-                    .unwrap_or((0.0, 0.0, 1.0, 1.0));
-                let (tex, view, tw, th) =
-                    self.render_items_to_offscreen_bounded(encoder, group_items, bounds)?;
                 let alpha = match boundary {
                     StackingContextBoundary::Opacity { alpha } => *alpha,
                     _ => 1.0,
                 };
-                out.push((i, end, tex, view, tw, th, alpha, bounds));
+                let bounds = self
+                    .compute_items_bounds(group_items)
+                    .unwrap_or((0.0, 0.0, 1.0, 1.0));
+                let (tex, view, tw, th, bind_group) = self
+                    .render_items_to_offscreen_bounded_with_bind_group(
+                        encoder,
+                        group_items,
+                        bounds,
+                        alpha,
+                    )?;
+                out.push((i, end, tex, view, tw, th, alpha, bounds, bind_group));
                 i = end + 1;
                 continue;
             }
@@ -280,7 +292,8 @@ impl RenderState {
             }
             let next = exclude.get(ex_idx).map(|r| r.0).unwrap_or(items.len());
             if i < next {
-                self.draw_items_batched(pass, &items[i..next]);
+                // Use draw_items_with_groups to properly handle stacking contexts
+                let _ = self.draw_items_with_groups(pass, &items[i..next]);
                 i = next;
             }
         }
@@ -301,10 +314,10 @@ impl RenderState {
         pass: &mut RenderPass<'_>,
         comps: Vec<OpacityComposite>,
     ) -> AnyResult<()> {
-        for (_s, _e, tex, view, _tw, _th, alpha, bounds) in comps.into_iter() {
+        for (_s, _e, tex, _view, _tw, _th, _alpha, bounds, bind_group) in comps.into_iter() {
             // Keep the texture alive until after submit; otherwise some backends invalidate at finish.
             self.live_textures.push(tex);
-            self.draw_texture_quad(pass, &view, alpha, bounds)?;
+            self.draw_texture_quad_with_bind_group(pass, &bind_group, bounds)?;
         }
         Ok(())
     }
@@ -320,8 +333,8 @@ impl RenderState {
         // composites before opening the main pass. For any other contexts (including offscreen
         // renders), simply draw the group's items directly here.
         let _ = alpha; // alpha handled in higher-level compositing when applicable
-        self.draw_items_batched(pass, group_items);
-        Ok(())
+        // Use draw_items_with_groups to handle nested stacking contexts
+        self.draw_items_with_groups(pass, group_items)
     }
 
     /// Helper method to render layers pass, extracted to reduce nesting.
@@ -444,9 +457,65 @@ impl RenderState {
         scope.check()
     }
 
+    /// Check if a display item is an opacity stacking context.
+    fn is_opacity_context(item: &DisplayItem) -> bool {
+        matches!(
+            item,
+            DisplayItem::BeginStackingContext {
+                boundary: StackingContextBoundary::Opacity { alpha }
+            } if *alpha < 1.0
+        )
+    }
+
+    /// Check if display list has opacity groups needing offscreen rendering.
+    fn has_opacity_groups(&self, use_retained: bool) -> bool {
+        if use_retained {
+            if let Some(dl) = &self.retained_display_list {
+                return dl.items.iter().any(Self::is_opacity_context);
+            }
+            false
+        } else if !self.layers.is_empty() {
+            self.layers.iter().any(|layer| {
+                if let Layer::Content(dl) | Layer::Chrome(dl) = layer {
+                    dl.items.iter().any(Self::is_opacity_context)
+                } else {
+                    false
+                }
+            })
+        } else {
+            false
+        }
+    }
+
     /// Record all render passes (rectangles + text) into the provided texture view.
-    /// Uses a single encoder for the entire frame (production-grade pattern).
+    /// Internally splits into multiple command buffers when needed for D3D12 resource transitions.
+    /// Returns true if the passed encoder was used, false if split path handled everything internally.
     fn record_draw_passes(
+        &mut self,
+        texture_view: &TextureView,
+        encoder: &mut CommandEncoder,
+        use_retained: bool,
+        allow_split: bool, // Only split for direct swapchain rendering
+    ) -> AnyResult<bool> {
+        // Check if we have opacity groups that need offscreen rendering
+        let needs_offscreen = self.has_opacity_groups(use_retained);
+
+        // Only use split path for direct swapchain rendering, not for render_to_rgba
+        // (which already renders to an intermediate texture)
+        if needs_offscreen && allow_split {
+            // D3D12 path: Split into multiple command buffers
+            // Phase 1: Render offscreen, submit, then Phase 2: Render main+text
+            self.record_draw_passes_split(texture_view, use_retained)?;
+            Ok(false) // Did NOT use the passed encoder
+        } else {
+            // No offscreen rendering needed, use single encoder
+            self.record_draw_passes_single(texture_view, encoder, use_retained)?;
+            Ok(true) // DID use the passed encoder
+        }
+    }
+
+    /// Record all passes without offscreen rendering (single encoder path).
+    fn record_draw_passes_single(
         &mut self,
         texture_view: &TextureView,
         encoder: &mut CommandEncoder,
@@ -456,12 +525,7 @@ impl RenderState {
         let is_offscreen = false;
 
         // Determine load operations
-        let main_load = if is_offscreen {
-            LoadOp::Clear(Color::TRANSPARENT)
-        } else {
-            LoadOp::Load
-        };
-        // For text pass, always use Load to preserve the main pass content
+        let main_load = LoadOp::Load;
         let text_load = LoadOp::Load;
 
         // Prepare text via glyphon for single-list paths
@@ -522,11 +586,8 @@ impl RenderState {
             } else if use_retained {
                 if let Some(dl) = self.retained_display_list.clone() {
                     let items: Vec<DisplayItem> = dl.items;
-                    // Pre-render opacity groups offscreen using the shared encoder
-                    // Render passes are properly scoped for automatic texture state transitions
-                    let comps = self.collect_opacity_composites(encoder, &items)?;
-                    // Open main pass and draw non-group items, then composite groups in order
-                    self.render_retained_pass(encoder, texture_view, main_load, &items, comps)?;
+                    // No offscreen rendering in single-encoder path
+                    self.render_retained_pass(encoder, texture_view, main_load, &items, vec![])?;
                 }
             } else {
                 // Immediate path: batch all rects into one draw call as before
@@ -598,6 +659,163 @@ impl RenderState {
         Ok(())
     }
 
+    /// Record passes with offscreen rendering (split encoder path for D3D12).
+    /// Phase 1: Render all offscreen textures and submit.
+    /// Phase 2: Render main pass (using offscreen textures) + text pass.
+    fn record_draw_passes_split(
+        &mut self,
+        texture_view: &TextureView,
+        use_retained: bool,
+    ) -> AnyResult<()> {
+        log::debug!(target: "wgpu_renderer", "=== Using SPLIT encoder path for D3D12 compatibility ===");
+
+        let use_layers = !self.layers.is_empty();
+        let main_load = LoadOp::Load;
+        let text_load = LoadOp::Load;
+
+        // Prepare text via glyphon
+        if use_retained {
+            if let Some(dl) = &self.retained_display_list {
+                self.text_list = dl.items.iter().filter_map(map_text_item).collect();
+            }
+            self.glyphon_prepare();
+        } else if !use_layers {
+            self.glyphon_prepare();
+        }
+
+        // PHASE 1: Render all offscreen opacity groups
+        log::debug!(target: "wgpu_renderer", "PHASE 1: Rendering offscreen opacity groups");
+        let mut offscreen_encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("offscreen-opacity-encoder"),
+            });
+        offscreen_encoder.push_debug_group("offscreen-opacity-phase");
+
+        let comps = if use_retained {
+            if let Some(dl) = self.retained_display_list.clone() {
+                let items: Vec<DisplayItem> = dl.items;
+                self.collect_opacity_composites(&mut offscreen_encoder, &items)?
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
+        offscreen_encoder.pop_debug_group();
+        let offscreen_cb = {
+            let scope = ErrorScopeGuard::push(&self.device, "offscreen-encoder.finish");
+            let cb = offscreen_encoder.finish();
+            scope.check()?;
+            cb
+        };
+
+        log::debug!(target: "wgpu_renderer", "PHASE 1 complete: {} opacity groups rendered, submitting...", comps.len());
+        submit_with_validation(&self.device, &self.queue, [offscreen_cb])?;
+        log::debug!(target: "wgpu_renderer", "PHASE 1 submitted successfully");
+
+        // Wait for Phase 1 GPU work to complete before starting Phase 2
+        // This ensures D3D12 resource transitions are fully processed
+        let _ = self.device.poll(wgpu::PollType::Wait);
+        log::debug!(target: "wgpu_renderer", "PHASE 1 GPU work complete");
+
+        // PHASE 2: Render main pass + text pass using offscreen textures
+        log::debug!(target: "wgpu_renderer", "PHASE 2: Rendering main and text passes");
+        let mut main_encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("main-and-text-encoder"),
+            });
+        main_encoder.push_debug_group("main-and-text-phase");
+
+        // Clear pass
+        {
+            debug!(target: "wgpu_renderer", "start clear-pass");
+            let scope = ErrorScopeGuard::push(&self.device, "clear-pass");
+            {
+                let _clear_pass = main_encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("clear-pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: texture_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Clear(Color {
+                                r: self.clear_color[0] as f64,
+                                g: self.clear_color[1] as f64,
+                                b: self.clear_color[2] as f64,
+                                a: self.clear_color[3] as f64,
+                            }),
+                            store: StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+            }
+            scope.check()?;
+            debug!(target: "wgpu_renderer", "end clear-pass");
+        }
+
+        // Main pass with opacity compositing
+        if use_retained && let Some(dl) = self.retained_display_list.clone() {
+            let items: Vec<DisplayItem> = dl.items;
+            // No offscreen rendering in single-encoder path
+            {
+                let scope = ErrorScopeGuard::push(&self.device, "main-pass-retained");
+                self.render_retained_pass(&mut main_encoder, texture_view, main_load, &items, comps)?;
+                scope.check()?;
+            }
+        }
+
+        // Text pass
+        {
+            let scope = ErrorScopeGuard::push(&self.device, "text-pass");
+            {
+                let mut pass = main_encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("text-pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: texture_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: text_load,
+                            store: StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                debug!(target: "wgpu_renderer", "start text-pass");
+                pass.push_debug_group("text-pass");
+                if use_retained && let Some(dl) = &self.retained_display_list {
+                    let batches = batch_texts_with_scissor(dl, self.size.width, self.size.height);
+                    self.draw_text_batches(&mut pass, batches);
+                }
+                pass.pop_debug_group();
+                debug!(target: "wgpu_renderer", "end text-pass");
+            }
+            scope.check()?;
+        }
+
+        main_encoder.pop_debug_group();
+        let main_cb = {
+            let scope = ErrorScopeGuard::push(&self.device, "main-encoder.finish");
+            let cb = main_encoder.finish();
+            scope.check()?;
+            cb
+        };
+
+        log::debug!(target: "wgpu_renderer", "PHASE 2 complete, submitting...");
+        submit_with_validation(&self.device, &self.queue, [main_cb])?;
+        log::debug!(target: "wgpu_renderer", "PHASE 2 submitted successfully");
+
+        Ok(())
+    }
+
     #[inline]
     fn push_rect_vertices_ndc(&self, out: &mut Vec<Vertex>, rect_xywh: [f32; 4], color: [f32; 4]) {
         let fw = self.size.width.max(1) as f32;
@@ -661,9 +879,10 @@ impl RenderState {
                             self.draw_opacity_group(pass, group_items, *alpha)?;
                         }
                         _ => {
-                            // Other stacking contexts (transforms, filters, etc.) - render normally for now
+                            // Other stacking contexts (transforms, filters, z-index, etc.) - render normally
+                            // but recursively handle any nested stacking contexts
                             // TODO: Implement transform matrices and filter effects
-                            self.draw_items_batched(pass, group_items);
+                            self.draw_items_with_groups(pass, group_items)?;
                         }
                     }
 
@@ -790,34 +1009,32 @@ impl RenderState {
         }
     }
 
-    /// Render items to offscreen texture with tight bounds and texture pooling
+    /// Render items to offscreen texture with tight bounds and create bind group.
     /// Uses RAII guards to ensure state is always properly restored.
     ///
     /// PRODUCTION-GRADE ARCHITECTURE: Uses the shared encoder (single encoder per frame).
     /// Render passes are properly scoped to ensure automatic texture state transitions.
     /// This is the correct pattern used by Chromium, Firefox, and Safari.
     ///
-    /// Returns (texture, view, width, height).
-    fn render_items_to_offscreen_bounded(
+    /// Returns (texture, view, width, height, bind_group).
+    #[allow(clippy::type_complexity)]
+    fn render_items_to_offscreen_bounded_with_bind_group(
         &mut self,
         encoder: &mut CommandEncoder,
         items: &[DisplayItem],
         bounds: (f32, f32, f32, f32),
-    ) -> AnyResult<OffscreenRenderResult> {
+        alpha: f32,
+    ) -> AnyResult<(Texture, TextureView, u32, u32, BindGroup)> {
         let (x, y, width, height) = bounds;
         let tex_width = (width.ceil() as u32).max(1);
         let tex_height = (height.ceil() as u32).max(1);
 
-        log::debug!(target: "wgpu_renderer", "render_items_to_offscreen_bounded: bounds=({}, {}, {}, {}), tex_size={}x{}, items={}", 
+        log::debug!(target: "wgpu_renderer", "render_items_to_offscreen_bounded: bounds=({}, {}, {}, {}), tex_size={}x{}, items={}",
             x, y, width, height, tex_width, tex_height, items.len());
 
-        // Use a non-sRGB base format for the texture and an sRGB view for rendering.
-        // Many backends (e.g., D3D12) do not allow render attachments with sRGB base textures.
-        let offscreen_format = match self.render_format {
-            TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8Unorm,
-            TextureFormat::Bgra8UnormSrgb => TextureFormat::Bgra8Unorm,
-            other => other,
-        };
+        // With split-encoder approach, D3D12 can handle sRGB textures as RENDER_ATTACHMENT
+        // because the resource transition happens between command list submissions
+        let offscreen_format = self.render_format;
 
         // Create texture for this offscreen pass
         // CRITICAL: The texture MUST have TEXTURE_BINDING usage to be used as a shader resource
@@ -839,15 +1056,16 @@ impl RenderState {
             usage: TextureUsages::RENDER_ATTACHMENT
                 | TextureUsages::TEXTURE_BINDING
                 | TextureUsages::COPY_SRC,
-            view_formats: &[self.render_format],
+            view_formats: &[],
         });
 
-        log::debug!(target: "wgpu_renderer", "Created offscreen texture: format={:?}, usage={:?}", 
+        log::debug!(target: "wgpu_renderer", "Created offscreen texture: format={:?}, usage={:?}",
             offscreen_format, texture.usage());
 
+        // Use same format for view as texture
         let view = texture.create_view(&TextureViewDescriptor {
             label: Some("offscreen-opacity-view"),
-            format: Some(self.render_format),
+            format: Some(offscreen_format),
             ..Default::default()
         });
 
@@ -973,24 +1191,52 @@ impl RenderState {
 
         // Render passes are complete and properly scoped
         // WGPU has automatically transitioned the texture from RENDER_ATTACHMENT to TEXTURE_BINDING state
-        // The texture is now safe to use as a shader resource in subsequent render passes
+        // NOW create the bind group while encoder is between render passes
+        log::debug!(target: "wgpu_renderer", "Offscreen render passes complete, creating bind group");
 
-        log::debug!(target: "wgpu_renderer", "Offscreen render passes complete, texture ready for use");
+        // Create uniform buffer for alpha (std140-like padded to 16 bytes)
+        let alpha_buf = self.device.create_buffer_init(&util::BufferInitDescriptor {
+            label: Some("opacity-alpha"),
+            contents: bytemuck::cast_slice(&[alpha, 0.0f32, 0.0f32, 0.0f32]),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        });
+        self.live_buffers.push(alpha_buf.clone());
 
-        Ok((texture, view, tex_width, tex_height))
+        let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
+            label: Some("opacity-tex-bind"),
+            layout: &self.tex_bind_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&self.linear_sampler),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: alpha_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        log::debug!(target: "wgpu_renderer", "Bind group created, texture ready for compositing");
+
+        Ok((texture, view, tex_width, tex_height, bind_group))
     }
 
-    fn draw_texture_quad(
+    /// Draw a textured quad using a pre-created bind group (called from within render pass)
+    fn draw_texture_quad_with_bind_group(
         &mut self,
         pass: &mut RenderPass<'_>,
-        view: &TextureView,
-        alpha: f32,
+        bind_group: &BindGroup,
         bounds: Bounds, // x, y, w, h in px
     ) -> AnyResult<()> {
-        log::debug!(target: "wgpu_renderer", ">>> draw_texture_quad: bounds={bounds:?}, alpha={alpha}");
+        let (x, y, w, h) = bounds;
+        log::debug!(target: "wgpu_renderer", ">>> draw_texture_quad_with_bind_group: bounds=({x}, {y}, {w}, {h})");
 
         // Build a quad covering the group's bounds with UVs 0..1 over the offscreen texture
-        let (x, y, w, h) = bounds;
         let fw = self.size.width.max(1) as f32;
         let fh = self.size.height.max(1) as f32;
         let x0 = (x / fw) * 2.0 - 1.0;
@@ -1034,63 +1280,15 @@ impl RenderState {
             usage: BufferUsages::VERTEX,
         });
         self.live_buffers.push(vb.clone());
-        // Create a tiny uniform buffer for alpha (std140-like padded to 16 bytes)
-        let alpha_buf = self.device.create_buffer_init(&util::BufferInitDescriptor {
-            label: Some("opacity-alpha"),
-            contents: bytemuck::cast_slice(&[alpha, 0.0f32, 0.0f32, 0.0f32]),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-        self.live_buffers.push(alpha_buf.clone());
-        // Bind group for texture + sampler + alpha (with proper error scope management)
-        log::debug!(target: "wgpu_renderer", "    Creating bind group for offscreen texture");
-        log::debug!(target: "wgpu_renderer", "    Texture view: {view:?}");
-
-        // CRITICAL: Push error scope BEFORE creating bind group to catch validation errors
-        let scope = ErrorScopeGuard::push(&self.device, "opacity-tex-bind");
-        log::debug!(target: "wgpu_renderer", "    Error scope pushed, about to create bind group");
-
-        let bind_group = {
-            let bg = self.device.create_bind_group(&BindGroupDescriptor {
-                label: Some("opacity-tex-bind"),
-                layout: &self.tex_bind_layout,
-                entries: &[
-                    BindGroupEntry {
-                        binding: 0,
-                        resource: BindingResource::TextureView(view),
-                    },
-                    BindGroupEntry {
-                        binding: 1,
-                        resource: BindingResource::Sampler(&self.linear_sampler),
-                    },
-                    BindGroupEntry {
-                        binding: 2,
-                        resource: alpha_buf.as_entire_binding(),
-                    },
-                ],
-            });
-            log::debug!(target: "wgpu_renderer", "    Bind group created successfully");
-            bg
-        };
-
-        log::debug!(target: "wgpu_renderer", "    Checking error scope after bind group creation");
-        scope.check()?;
-        log::debug!(target: "wgpu_renderer", "    Bind group error scope OK");
 
         // Constrain drawing to the group's bounds to avoid edge bleed and match compositing region.
-        log::debug!(target: "wgpu_renderer", "    About to set pipeline");
-        {
-            let scope = ErrorScopeGuard::push(&self.device, "composite.set_pipeline");
-            pass.set_pipeline(&self.tex_pipeline);
-            scope.check()?;
-        }
-        log::debug!(target: "wgpu_renderer", "    Pipeline set successfully");
+        pass.set_pipeline(&self.tex_pipeline);
 
         let sx = x.max(0.0).floor() as u32;
         let sy = y.max(0.0).floor() as u32;
         let sw = w.max(0.0).ceil() as u32;
         let sh = h.max(0.0).ceil() as u32;
 
-        log::debug!(target: "wgpu_renderer", "    About to set scissor rect: ({sx}, {sy}, {sw}, {sh})");
         let fw_u = self.size.width.max(1);
         let fh_u = self.size.height.max(1);
         let rx = sx.min(fw_u);
@@ -1103,16 +1301,8 @@ impl RenderState {
         }
         pass.set_scissor_rect(rx, ry, rw, rh);
         pass.set_vertex_buffer(0, vb.slice(..));
-        {
-            let scope = ErrorScopeGuard::push(&self.device, "composite.set_bind_group");
-            pass.set_bind_group(0, &bind_group, &[]);
-            scope.check()?;
-        }
-        {
-            let scope = ErrorScopeGuard::push(&self.device, "composite.draw");
-            pass.draw(0..6, 0..1);
-            scope.check()?;
-        }
+        pass.set_bind_group(0, bind_group, &[]);
+        pass.draw(0..6, 0..1);
         Ok(())
     }
 
@@ -1247,6 +1437,7 @@ impl RenderState {
                     let surface_config = SurfaceConfiguration {
                         usage: TextureUsages::RENDER_ATTACHMENT,
                         format: surface_fmt,
+                        // Request compatibility with the sRGB-format texture view we are going to create later.
                         view_formats: vec![render_fmt],
                         alpha_mode: CompositeAlphaMode::Auto,
                         width: size.width,
@@ -1321,6 +1512,7 @@ impl RenderState {
             swash_cache: SwashCache::new(),
             text_atlas: text_atlas_local,
             text_renderer: text_renderer_local,
+            #[allow(dead_code)]
             glyphon_cache: glyphon_cache_local,
             viewport: viewport_local,
             layers: Vec::new(),
@@ -1476,16 +1668,19 @@ impl RenderState {
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
         encoder.push_debug_group("onscreen-frame");
-        self.record_draw_passes(&texture_view, &mut encoder, false)?;
-        encoder.pop_debug_group();
-        // Catch finish-time errors with proper error scope management
-        let cb = {
-            let scope = ErrorScopeGuard::push(&self.device, "encoder.finish(main)");
-            let command_buffer = encoder.finish();
-            scope.check()?;
-            command_buffer
-        };
-        submit_with_validation(&self.device, &self.queue, [cb])?;
+        let used_encoder = self.record_draw_passes(&texture_view, &mut encoder, false, true)?; // allow_split=true for swapchain
+        if used_encoder {
+            encoder.pop_debug_group();
+            // Catch finish-time errors with proper error scope management
+            let cb = {
+                let scope = ErrorScopeGuard::push(&self.device, "encoder.finish(main)");
+                let command_buffer = encoder.finish();
+                scope.check()?;
+                command_buffer
+            };
+            submit_with_validation(&self.device, &self.queue, [cb])?;
+        }
+        // If encoder wasn't used, split path already handled submission
         // After submission, it's safe to drop per-frame resources
         self.live_textures.clear();
         self.live_buffers.clear();
@@ -1494,36 +1689,19 @@ impl RenderState {
         Ok(())
     }
 
-    /// Render a frame and return the framebuffer RGBA bytes using the exact same drawing path.
+    /// Render a frame and return the framebuffer RGBA bytes.
+    /// Uses split encoder pattern for D3D12 compatibility when opacity groups are present.
     pub fn render_to_rgba(&mut self) -> Result<Vec<u8>, anyhow::Error> {
         // Always render to an offscreen texture so we can COPY_SRC safely. Reuse across calls.
         // Ensure previous-frame resources are dropped before starting
         self.live_textures.clear();
         self.live_buffers.clear();
 
-        // Verify device is in clean state before creating main encoder
-        // This catches any lingering errors from previous operations
+        // Verify device is in clean state
         {
             let validation_scope = ErrorScopeGuard::push(&self.device, "pre-render-validation");
             validation_scope.check()?;
         }
-
-        log::debug!(target: "wgpu_renderer", "Creating main encoder for render_to_rgba");
-        let encoder_scope = ErrorScopeGuard::push(&self.device, "encoder-creation");
-        let mut encoder = self
-            .device
-            .create_command_encoder(&CommandEncoderDescriptor {
-                label: Some("render-to-rgba-main-encoder"),
-            });
-        encoder_scope.check()?;
-        log::debug!(target: "wgpu_renderer", "Main encoder created successfully");
-
-        // Verify encoder is valid by pushing a debug group
-        // If the encoder is invalid, this will fail
-        let debug_scope = ErrorScopeGuard::push(&self.device, "encoder-debug-group");
-        encoder.push_debug_group("offscreen-frame");
-        debug_scope.check()?;
-        log::debug!(target: "wgpu_renderer", "Encoder debug group pushed successfully");
 
         // (Re)create offscreen texture/view if missing or size changed
         let fb_w = self.size.width.max(1);
@@ -1569,29 +1747,29 @@ impl RenderState {
                 format: Some(self.render_format),
                 ..Default::default()
             });
-        // Use ErrorScopeGuard to ensure error scope is always properly popped
-        let command_buffer = {
-            let scope = ErrorScopeGuard::push(&self.device, "render_to_rgba");
+        // Check if we need opacity compositing (requires split encoder for D3D12 resource transitions)
+        let use_retained = true;
+        let needs_opacity = self.has_opacity_groups(use_retained);
 
-            // Record draw passes using single encoder (production-grade pattern)
-            log::debug!(target: "wgpu_renderer", "About to record draw passes");
-            self.record_draw_passes(&tmp_view, &mut encoder, true)?;
-            log::debug!(target: "wgpu_renderer", "Draw passes recorded successfully");
+        if needs_opacity {
+            // Use split encoder pattern: Phase 1 renders opacity groups, Phase 2 uses them
+            // This allows D3D12 to transition resources from RENDER_TARGET to PIXEL_SHADER_RESOURCE
+            log::debug!(target: "wgpu_renderer", "Opacity groups detected, using split encoder pattern");
+            self.render_to_rgba_with_opacity(&tmp_view)?;
+        } else {
+            // No opacity groups: use simple single encoder path
+            log::debug!(target: "wgpu_renderer", "No opacity groups, using single encoder");
+            let mut encoder = self
+                .device
+                .create_command_encoder(&CommandEncoderDescriptor {
+                    label: Some("render-to-rgba-encoder"),
+                });
+            self.record_draw_passes(&tmp_view, &mut encoder, true, false)?;
+            let cb = encoder.finish();
+            submit_with_validation(&self.device, &self.queue, [cb])?;
+        }
 
-            // Check for validation errors BEFORE finishing encoder
-            scope.check()?;
-            log::debug!(target: "wgpu_renderer", "Error scope checked OK");
-
-            // Pop debug group and finish encoder (in separate scope)
-            encoder.pop_debug_group();
-            log::debug!(target: "wgpu_renderer", "About to finish encoder");
-            let finish_scope = ErrorScopeGuard::push(&self.device, "encoder.finish");
-            let command_buffer = encoder.finish();
-            finish_scope.check()?;
-            log::debug!(target: "wgpu_renderer", "Encoder finished successfully");
-            command_buffer
-        };
-        submit_with_validation(&self.device, &self.queue, [command_buffer])?;
+        // Drop per-frame resources after rendering complete
         // Drop per-frame resources after submission
         self.live_textures.clear();
         self.live_buffers.clear();
@@ -1704,6 +1882,133 @@ impl RenderState {
             _ => {}
         }
         Ok(out)
+    }
+
+    /// Render to RGBA with opacity groups using split encoder pattern for D3D12 compatibility.
+    /// Phase 1: Render opacity groups to offscreen textures and submit.
+    /// Phase 2: Create bind groups and render main pass using those textures.
+    fn render_to_rgba_with_opacity(&mut self, texture_view: &TextureView) -> AnyResult<()> {
+        log::debug!(target: "wgpu_renderer", "=== PHASE 1: Rendering opacity groups ===");
+
+        // Phase 1: Create encoder for offscreen opacity rendering
+        let mut offscreen_encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("offscreen-opacity-encoder"),
+            });
+
+        // Collect and render opacity composites (WITHOUT creating bind groups yet)
+        let comps_no_bindings = if let Some(dl) = self.retained_display_list.clone() {
+            let items: Vec<DisplayItem> = dl.items;
+            self.collect_opacity_composites(&mut offscreen_encoder, &items)?
+        } else {
+            vec![]
+        };
+
+        // Finish and submit Phase 1 encoder
+        // This allows D3D12 to transition offscreen textures from RENDER_TARGET to PIXEL_SHADER_RESOURCE
+        let offscreen_cb = offscreen_encoder.finish();
+        submit_with_validation(&self.device, &self.queue, [offscreen_cb])?;
+        log::debug!(target: "wgpu_renderer", "PHASE 1 complete: {} opacity groups rendered, submitting...", comps_no_bindings.len());
+        log::debug!(target: "wgpu_renderer", "PHASE 1 submitted successfully");
+
+        // Wait for Phase 1 GPU work to complete before starting Phase 2
+        // This ensures D3D12 resource transitions are fully processed
+        let _ = self.device.poll(wgpu::PollType::Wait);
+        log::debug!(target: "wgpu_renderer", "PHASE 1 GPU work complete");
+
+        // PHASE 2: Create bind groups and render main pass + text pass using offscreen textures
+        log::debug!(target: "wgpu_renderer", "PHASE 2: Creating bind groups and rendering main pass");
+        let mut main_encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("main-and-text-encoder"),
+            });
+
+        // Clear pass
+        {
+            debug!(target: "wgpu_renderer", "start clear-pass");
+            let scope = ErrorScopeGuard::push(&self.device, "clear-pass");
+            {
+                let _clear_pass = main_encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("clear-pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: texture_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Clear(Color {
+                                r: self.clear_color[0] as f64,
+                                g: self.clear_color[1] as f64,
+                                b: self.clear_color[2] as f64,
+                                a: self.clear_color[3] as f64,
+                            }),
+                            store: StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+            }
+            scope.check()?;
+            debug!(target: "wgpu_renderer", "end clear-pass");
+        }
+
+        // Main pass with opacity compositing
+        if let Some(dl) = self.retained_display_list.clone() {
+            let items: Vec<DisplayItem> = dl.items;
+            // No offscreen rendering in single-encoder path
+            {
+                let scope = ErrorScopeGuard::push(&self.device, "main-pass-retained");
+                self.render_retained_pass(&mut main_encoder, texture_view, LoadOp::Load, &items, comps_no_bindings)?;
+                scope.check()?;
+            }
+        }
+
+        // Text pass
+        {
+            let scope = ErrorScopeGuard::push(&self.device, "text-pass");
+            {
+                let mut pass = main_encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("text-pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: texture_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Load,
+                            store: StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                debug!(target: "wgpu_renderer", "start text-pass");
+                pass.push_debug_group("text-pass");
+                if let Some(dl) = &self.retained_display_list {
+                    let batches = batch_texts_with_scissor(dl, self.size.width, self.size.height);
+                    self.draw_text_batches(&mut pass, batches);
+                }
+                pass.pop_debug_group();
+                debug!(target: "wgpu_renderer", "end text-pass");
+            }
+            scope.check()?;
+        }
+
+        let main_cb = {
+            let scope = ErrorScopeGuard::push(&self.device, "main-encoder.finish");
+            let cb = main_encoder.finish();
+            scope.check()?;
+            cb
+        };
+
+        log::debug!(target: "wgpu_renderer", "PHASE 2 complete, submitting...");
+        submit_with_validation(&self.device, &self.queue, [main_cb])?;
+        log::debug!(target: "wgpu_renderer", "PHASE 2 submitted successfully");
+
+        Ok(())
     }
 }
 
