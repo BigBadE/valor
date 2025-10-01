@@ -5,6 +5,9 @@
 
 use crate::display_list::{DisplayItem, DisplayList, StackingContextBoundary};
 
+/// Bounding box represented as (x, y, width, height).
+pub type BoundingBox = (f32, f32, f32, f32);
+
 /// A rectangular region in device-independent pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
@@ -130,7 +133,7 @@ impl OpacityCompositor {
     /// Compute bounding box for a slice of display items.
     /// Returns (x, y, width, height) or None if no items have bounds.
     #[inline]
-    pub fn compute_items_bounds(items: &[DisplayItem]) -> Option<(f32, f32, f32, f32)> {
+    pub fn compute_items_bounds(items: &[DisplayItem]) -> Option<BoundingBox> {
         Self::compute_bounds(items).map(|rect| (rect.x, rect.y, rect.width, rect.height))
     }
 

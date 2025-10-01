@@ -1,16 +1,14 @@
-use crate::state::{ErrorScopeGuard, Layer, RenderState};
-use glyphon::{
-    Attrs, Buffer as GlyphonBuffer, Color as GlyphonColor, Metrics, Resolution, Shaping, TextArea,
-    TextBounds,
-};
-use log::debug;
+use crate::state::Layer;
+use core::mem::take;
 use renderer::display_list::{DisplayItem, DisplayList, Scissor, StackingContextBoundary};
 use renderer::renderer::DrawText;
 
-pub(crate) type TextBatch = (Option<Scissor>, Vec<DrawText>);
+/// A batch of text items with an optional scissor rectangle.
+pub type TextBatch = (Option<Scissor>, Vec<DrawText>);
 
-pub(crate) fn batch_texts_with_scissor(
-    dl: &DisplayList,
+/// Batch text items from a display list with scissor rectangles.
+pub fn batch_texts_with_scissor(
+    display_list: &DisplayList,
     framebuffer_w: u32,
     framebuffer_h: u32,
 ) -> Vec<TextBatch> {
@@ -20,7 +18,7 @@ pub(crate) fn batch_texts_with_scissor(
     let mut current_texts: Vec<DrawText> = Vec::new();
     let mut sc_stack_is_opacity: Vec<bool> = Vec::new();
     let mut opacity_depth: usize = 0;
-    for item in &dl.items {
+    for item in &display_list.items {
         match item {
             DisplayItem::BeginClip {
                 x,
@@ -29,23 +27,22 @@ pub(crate) fn batch_texts_with_scissor(
                 height,
             } => {
                 if !current_texts.is_empty() {
-                    out.push((current_scissor, std::mem::take(&mut current_texts)));
+                    out.push((current_scissor, take(&mut current_texts)));
                 }
-                let new_sc =
+                let new_scissor =
                     rect_to_scissor((framebuffer_w, framebuffer_h), *x, *y, *width, *height);
-                let effective = match current_scissor {
-                    Some(sc) => intersect_scissor(sc, new_sc),
-                    None => new_sc,
-                };
-                stack.push(new_sc);
+                let effective = current_scissor.map_or(new_scissor, |scissor| {
+                    intersect_scissor(scissor, new_scissor)
+                });
+                stack.push(new_scissor);
                 current_scissor = Some(effective);
             }
             DisplayItem::EndClip => {
                 if !current_texts.is_empty() {
-                    out.push((current_scissor, std::mem::take(&mut current_texts)));
+                    out.push((current_scissor, take(&mut current_texts)));
                 }
-                let _ = stack.pop();
-                current_scissor = stack.iter().cloned().reduce(intersect_scissor);
+                stack.pop();
+                current_scissor = stack.iter().copied().reduce(intersect_scissor);
             }
             DisplayItem::BeginStackingContext { boundary } => {
                 let is_opacity =
@@ -79,7 +76,7 @@ pub(crate) fn batch_texts_with_scissor(
                     });
                 }
             }
-            _ => {}
+            DisplayItem::Rect { .. } => {}
         }
     }
 
@@ -89,91 +86,104 @@ pub(crate) fn batch_texts_with_scissor(
     out
 }
 
-pub(crate) fn batch_layer_texts_with_scissor(
+/// Process a single display list layer and extract text batches with scissor rects.
+fn batch_single_layer(
+    display_list: &DisplayList,
+    framebuffer_w: u32,
+    framebuffer_h: u32,
+    out: &mut Vec<TextBatch>,
+) {
+    let mut stack: Vec<Scissor> = Vec::new();
+    let mut current_scissor: Option<Scissor> = None;
+    let mut current_texts: Vec<DrawText> = Vec::new();
+    let mut sc_stack_is_opacity: Vec<bool> = Vec::new();
+    let mut opacity_depth: usize = 0;
+
+    for item in &display_list.items {
+        match item {
+            DisplayItem::BeginClip {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                if !current_texts.is_empty() {
+                    out.push((current_scissor, take(&mut current_texts)));
+                }
+                let new_scissor =
+                    rect_to_scissor((framebuffer_w, framebuffer_h), *x, *y, *width, *height);
+                let effective = current_scissor.map_or(new_scissor, |scissor| {
+                    intersect_scissor(scissor, new_scissor)
+                });
+                stack.push(new_scissor);
+                current_scissor = Some(effective);
+            }
+            DisplayItem::EndClip => {
+                if !current_texts.is_empty() {
+                    out.push((current_scissor, take(&mut current_texts)));
+                }
+                stack.pop();
+                current_scissor = stack.iter().copied().reduce(intersect_scissor);
+            }
+            DisplayItem::BeginStackingContext { boundary } => {
+                let is_opacity =
+                    matches!(boundary, StackingContextBoundary::Opacity { alpha } if *alpha < 1.0);
+                sc_stack_is_opacity.push(is_opacity);
+                if is_opacity {
+                    opacity_depth += 1;
+                }
+            }
+            DisplayItem::EndStackingContext => {
+                if sc_stack_is_opacity.pop().unwrap_or(false) && opacity_depth > 0 {
+                    opacity_depth -= 1;
+                }
+            }
+            DisplayItem::Text {
+                x,
+                y,
+                text,
+                color,
+                font_size,
+                bounds,
+            } => {
+                if opacity_depth == 0 {
+                    current_texts.push(DrawText {
+                        x: *x,
+                        y: *y,
+                        text: text.clone(),
+                        color: *color,
+                        font_size: *font_size,
+                        bounds: *bounds,
+                    });
+                }
+            }
+            DisplayItem::Rect { .. } => {}
+        }
+    }
+    if !current_texts.is_empty() {
+        out.push((current_scissor, current_texts));
+    }
+}
+
+/// Batch text items from multiple layers with scissor rectangles.
+pub fn batch_layer_texts_with_scissor(
     layers: &[Layer],
     framebuffer_w: u32,
     framebuffer_h: u32,
 ) -> Vec<TextBatch> {
     let mut out: Vec<TextBatch> = Vec::new();
     for layer in layers {
-        let dl = match layer {
-            Layer::Content(dl) | Layer::Chrome(dl) => dl,
+        let display_list = match layer {
+            Layer::Content(list) | Layer::Chrome(list) => list,
             Layer::Background => continue,
         };
-        let mut stack: Vec<Scissor> = Vec::new();
-        let mut current_scissor: Option<Scissor> = None;
-        let mut current_texts: Vec<DrawText> = Vec::new();
-        let mut sc_stack_is_opacity: Vec<bool> = Vec::new();
-        let mut opacity_depth: usize = 0;
-        for item in &dl.items {
-            match item {
-                DisplayItem::BeginClip {
-                    x,
-                    y,
-                    width,
-                    height,
-                } => {
-                    if !current_texts.is_empty() {
-                        out.push((current_scissor, std::mem::take(&mut current_texts)));
-                    }
-                    let new_sc =
-                        rect_to_scissor((framebuffer_w, framebuffer_h), *x, *y, *width, *height);
-                    let effective = match current_scissor {
-                        Some(sc) => intersect_scissor(sc, new_sc),
-                        None => new_sc,
-                    };
-                    stack.push(new_sc);
-                    current_scissor = Some(effective);
-                }
-                DisplayItem::EndClip => {
-                    if !current_texts.is_empty() {
-                        out.push((current_scissor, std::mem::take(&mut current_texts)));
-                    }
-                    let _ = stack.pop();
-                    current_scissor = stack.iter().cloned().reduce(intersect_scissor);
-                }
-                DisplayItem::BeginStackingContext { boundary } => {
-                    let is_opacity = matches!(boundary, StackingContextBoundary::Opacity { alpha } if *alpha < 1.0);
-                    sc_stack_is_opacity.push(is_opacity);
-                    if is_opacity {
-                        opacity_depth += 1;
-                    }
-                }
-                DisplayItem::EndStackingContext => {
-                    if sc_stack_is_opacity.pop().unwrap_or(false) && opacity_depth > 0 {
-                        opacity_depth -= 1;
-                    }
-                }
-                DisplayItem::Text {
-                    x,
-                    y,
-                    text,
-                    color,
-                    font_size,
-                    bounds,
-                } => {
-                    if opacity_depth == 0 {
-                        current_texts.push(DrawText {
-                            x: *x,
-                            y: *y,
-                            text: text.clone(),
-                            color: *color,
-                            font_size: *font_size,
-                            bounds: *bounds,
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-        if !current_texts.is_empty() {
-            out.push((current_scissor, current_texts));
-        }
+        batch_single_layer(display_list, framebuffer_w, framebuffer_h, &mut out);
     }
     out
 }
 
-pub(crate) fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
+/// Map a display item to a text draw command if it's a text item.
+pub fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
     if let DisplayItem::Text {
         x,
         y,
@@ -195,264 +205,39 @@ pub(crate) fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
     None
 }
 
-fn rect_to_scissor(framebuffer: (u32, u32), x: f32, y: f32, w: f32, h: f32) -> Scissor {
-    let framebuffer_w = framebuffer.0.max(1);
-    let framebuffer_h = framebuffer.1.max(1);
-    let mut sx = x.max(0.0).floor() as i32;
-    let mut sy = y.max(0.0).floor() as i32;
-    let mut sw = w.max(0.0).ceil() as i32;
-    let mut sh = h.max(0.0).ceil() as i32;
-    if sx < 0 {
-        sw += sx;
-        sx = 0;
-    }
-    if sy < 0 {
-        sh += sy;
-        sy = 0;
-    }
-    let max_w = framebuffer_w as i32 - sx;
-    let max_h = framebuffer_h as i32 - sy;
-    let sw = sw.clamp(0, max_w) as u32;
-    let sh = sh.clamp(0, max_h) as u32;
-    (sx as u32, sy as u32, sw, sh)
+/// Convert a rectangle to scissor coordinates, clamping to framebuffer bounds.
+fn rect_to_scissor(framebuffer: (u32, u32), x: f32, y: f32, width: f32, height: f32) -> Scissor {
+    let framebuffer_width = framebuffer.0.max(1);
+    let framebuffer_height = framebuffer.1.max(1);
+
+    let positive_x = x.max(0.0);
+    let positive_y = y.max(0.0);
+    let scissor_x_f32 = positive_x.floor().min(u32::MAX as f32);
+    let scissor_y_f32 = positive_y.floor().min(u32::MAX as f32);
+
+    let end_x_f32 = (positive_x + width.max(0.0)).ceil().min(u32::MAX as f32);
+    let end_y_f32 = (positive_y + height.max(0.0)).ceil().min(u32::MAX as f32);
+
+    let scissor_x = (scissor_x_f32 as u32).min(framebuffer_width);
+    let scissor_y = (scissor_y_f32 as u32).min(framebuffer_height);
+    let end_x = (end_x_f32 as u32).min(framebuffer_width);
+    let end_y = (end_y_f32 as u32).min(framebuffer_height);
+
+    let final_width = end_x.saturating_sub(scissor_x);
+    let final_height = end_y.saturating_sub(scissor_y);
+
+    (scissor_x, scissor_y, final_width, final_height)
 }
 
-fn intersect_scissor(a: Scissor, b: Scissor) -> Scissor {
-    let (ax, ay, aw, ah) = a;
-    let (bx, by, bw, bh) = b;
-    let x0 = ax.max(bx);
-    let y0 = ay.max(by);
-    let x1 = (ax + aw).min(bx + bw);
-    let y1 = (ay + ah).min(by + bh);
-    let w = x1.saturating_sub(x0);
-    let h = y1.saturating_sub(y0);
-    (x0, y0, w, h)
-}
-
-impl RenderState {
-    /// Prepare glyphon buffers for the current text list and upload glyphs into the atlas.
-    pub(crate) fn glyphon_prepare(&mut self) {
-        let framebuffer_width = self.size.width;
-        let framebuffer_height = self.size.height;
-        let scale: f32 = self.window.scale_factor() as f32;
-        // Build buffers first
-        let mut buffers: Vec<GlyphonBuffer> = Vec::with_capacity(self.text_list.len());
-        for item in &self.text_list {
-            let mut buffer = GlyphonBuffer::new(
-                &mut self.font_system,
-                Metrics::new(item.font_size * scale, item.font_size * scale),
-            );
-            let attrs = Attrs::new();
-            buffer.set_text(&mut self.font_system, &item.text, &attrs, Shaping::Advanced);
-            buffers.push(buffer);
-        }
-        // Build areas referencing buffers
-        let mut areas: Vec<TextArea> = Vec::with_capacity(self.text_list.len());
-        for (index, item) in self.text_list.iter().enumerate() {
-            // Visible on white: use opaque black (ARGB alpha-highest)
-            let color = GlyphonColor(0xFF00_0000);
-            let bounds = match item.bounds {
-                Some((l, t, r, b)) => TextBounds {
-                    left: (l as f32 * scale).round() as i32,
-                    top: (t as f32 * scale).round() as i32,
-                    right: (r as f32 * scale).round() as i32,
-                    bottom: (b as f32 * scale).round() as i32,
-                },
-                None => TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: framebuffer_width as i32,
-                    bottom: framebuffer_height as i32,
-                },
-            };
-            let buffer_ref = &buffers[index];
-            areas.push(TextArea {
-                buffer: buffer_ref,
-                left: item.x * scale,
-                top: item.y * scale,
-                scale: 1.0,
-                bounds,
-                default_color: color,
-                custom_glyphs: &[],
-            });
-        }
-        // Prepare text (atlas upload + layout)
-        // CRITICAL: Wrap glyphon operations in error scopes to catch validation errors
-        {
-            let scope = ErrorScopeGuard::push(&self.device, "glyphon-viewport-update");
-            self.viewport.update(
-                &self.queue,
-                Resolution {
-                    width: framebuffer_width,
-                    height: framebuffer_height,
-                },
-            );
-            if let Err(e) = scope.check() {
-                log::error!(target: "wgpu_renderer", "Glyphon viewport.update() generated error: {e:?}");
-                return;
-            }
-        }
-
-        let areas_count = areas.len();
-        let prep_res = {
-            let scope = ErrorScopeGuard::push(&self.device, "glyphon-text-prepare");
-            let result = self.text_renderer.prepare(
-                &self.device,
-                &self.queue,
-                &mut self.font_system,
-                &mut self.text_atlas,
-                &self.viewport,
-                areas,
-                &mut self.swash_cache,
-            );
-            if let Err(e) = scope.check() {
-                log::error!(target: "wgpu_renderer", "Glyphon text_renderer.prepare() generated validation error: {e:?}");
-            }
-            result
-        };
-        debug!(
-            target: "wgpu_renderer",
-            "glyphon_prepare: areas={areas_count} viewport={framebuffer_width}x{framebuffer_height} result={prep_res:?}"
-        );
-        debug!(
-            target: "wgpu_renderer",
-            "glyphon_prepare: text_items={} ",
-            self.text_list.len()
-        );
-    }
-
-    pub(crate) fn glyphon_prepare_for(&mut self, items: &[DrawText]) {
-        let framebuffer_width = self.size.width;
-        let framebuffer_height = self.size.height;
-        let scale: f32 = self.window.scale_factor() as f32;
-        let mut buffers: Vec<GlyphonBuffer> = Vec::with_capacity(items.len());
-        for item in items.iter() {
-            let mut buffer = GlyphonBuffer::new(
-                &mut self.font_system,
-                Metrics::new(item.font_size * scale, item.font_size * scale),
-            );
-            let attrs = Attrs::new();
-            buffer.set_text(&mut self.font_system, &item.text, &attrs, Shaping::Advanced);
-            buffers.push(buffer);
-        }
-        let mut areas: Vec<TextArea> = Vec::with_capacity(items.len());
-        for (index, item) in items.iter().enumerate() {
-            let color = GlyphonColor(0xFF00_0000);
-            let bounds = match item.bounds {
-                Some((l, t, r, b)) => TextBounds {
-                    left: (l as f32 * scale).round() as i32,
-                    top: (t as f32 * scale).round() as i32,
-                    right: (r as f32 * scale).round() as i32,
-                    bottom: (b as f32 * scale).round() as i32,
-                },
-                None => TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: framebuffer_width as i32,
-                    bottom: framebuffer_height as i32,
-                },
-            };
-            let buffer_ref = &buffers[index];
-            areas.push(TextArea {
-                buffer: buffer_ref,
-                left: item.x * scale,
-                top: item.y * scale,
-                scale: 1.0,
-                bounds,
-                default_color: color,
-                custom_glyphs: &[],
-            });
-        }
-        // CRITICAL: Wrap glyphon operations in error scopes
-        {
-            let scope = ErrorScopeGuard::push(&self.device, "glyphon-viewport-update-for");
-            self.viewport.update(
-                &self.queue,
-                Resolution {
-                    width: framebuffer_width,
-                    height: framebuffer_height,
-                },
-            );
-            if let Err(e) = scope.check() {
-                log::error!(target: "wgpu_renderer", "Glyphon viewport.update() (for) generated error: {e:?}");
-                return;
-            }
-        }
-
-        let areas_len = areas.len();
-        let prep_res = {
-            let scope = ErrorScopeGuard::push(&self.device, "glyphon-text-prepare-for");
-            let result = self.text_renderer.prepare(
-                &self.device,
-                &self.queue,
-                &mut self.font_system,
-                &mut self.text_atlas,
-                &self.viewport,
-                areas,
-                &mut self.swash_cache,
-            );
-            if let Err(e) = scope.check() {
-                log::error!(target: "wgpu_renderer", "Glyphon text_renderer.prepare() (for) generated validation error: {e:?}");
-            }
-            result
-        };
-        debug!(
-            target: "wgpu_renderer",
-            "glyphon_prepare_for: items={} areas={} viewport={}x{} result={:?}",
-            items.len(),
-            areas_len,
-            framebuffer_width,
-            framebuffer_height,
-            prep_res
-        );
-    }
-
-    #[inline]
-    pub(crate) fn draw_text_batch(
-        &mut self,
-        pass: &mut wgpu::RenderPass<'_>,
-        items: &[DrawText],
-        scissor_opt: Option<Scissor>,
-    ) {
-        self.glyphon_prepare_for(items);
-        pass.set_viewport(
-            0.0,
-            0.0,
-            self.size.width as f32,
-            self.size.height as f32,
-            0.0,
-            1.0,
-        );
-        match scissor_opt {
-            Some((x, y, w, h)) => pass.set_scissor_rect(x, y, w, h),
-            None => pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1)),
-        }
-        // CRITICAL: Glyphon's render() can generate validation errors
-        // Wrap in error scope to catch and propagate them
-        {
-            let scope = ErrorScopeGuard::push(&self.device, "glyphon-text-render");
-            if let Err(e) = self
-                .text_renderer
-                .render(&self.text_atlas, &self.viewport, pass)
-            {
-                log::error!(target: "wgpu_renderer", "Glyphon text_renderer.render() failed: {e:?}");
-                // Don't propagate glyphon errors as they may be non-fatal
-            }
-            if let Err(e) = scope.check() {
-                log::error!(target: "wgpu_renderer", "Glyphon text_renderer.render() generated validation error: {e:?}");
-                // Log but don't propagate to avoid breaking the entire render due to text rendering issues
-            }
-        }
-    }
-
-    #[inline]
-    pub(crate) fn draw_text_batches(
-        &mut self,
-        pass: &mut wgpu::RenderPass<'_>,
-        batches: Vec<TextBatch>,
-    ) {
-        for (scissor_opt, items) in batches.into_iter().filter(|(_, it)| !it.is_empty()) {
-            self.draw_text_batch(pass, &items, scissor_opt);
-        }
-    }
+/// Compute the intersection of two scissor rectangles.
+fn intersect_scissor(rect_a: Scissor, rect_b: Scissor) -> Scissor {
+    let (a_x, a_y, a_width, a_height) = rect_a;
+    let (b_x, b_y, b_width, b_height) = rect_b;
+    let x_min = a_x.max(b_x);
+    let y_min = a_y.max(b_y);
+    let x_max = (a_x + a_width).min(b_x + b_width);
+    let y_max = (a_y + a_height).min(b_y + b_height);
+    let width = x_max.saturating_sub(x_min);
+    let height = y_max.saturating_sub(y_min);
+    (x_min, y_min, width, height)
 }

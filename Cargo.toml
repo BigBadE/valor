@@ -119,7 +119,7 @@ future-incompatible = "deny"
 let-underscore = "deny"
 nonstandard-style = "deny"
 refining-impl-trait = "deny"
-unused = "deny"
+unused = { level = "deny", priority = -1 }
 
 # Strict lints, should not be changed.
 [workspace.lints.clippy]
@@ -144,6 +144,7 @@ mod_module_files = { level = "allow", priority = 1 }
 blanket_clippy_restriction_lints = { level = "allow", priority = 1 }
 cargo_common_metadata = { level = "allow", priority = 1 }
 cast_possible_truncation = { level = "allow", priority = 1 }
+cast_sign_loss = { level = "allow", priority = 1 }
 pub_with_shorthand = { level = "allow", priority = 1 }
 exhaustive_structs = { level = "allow", priority = 1 }
 unseparated_literal_suffix = { level = "allow", priority = 1 }

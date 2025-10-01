@@ -7,15 +7,19 @@ use html5ever::parse_document;
 use html5ever::tendril::StrTendril;
 use html5ever::tendril::TendrilSink as _;
 use html5ever::tree_builder::{ElemName, ElementFlags, NodeOrText, QuirksMode, TreeSink};
-use html5ever::{
-    Attribute, LocalName, Namespace, ParseOpts, Parser, QualName, local_name, ns as html_namespace,
-};
+use html5ever::{Attribute, LocalName, Namespace, ParseOpts, Parser, QualName, local_name};
 use indextree::NodeId;
 use js::{DOMMirror, DOMUpdate};
 use std::collections::HashMap;
 use std::fs::read_to_string;
 use tokio::sync::mpsc::UnboundedSender;
 use url::Url;
+
+/// Helper function to get HTML namespace.
+#[inline]
+fn html_namespace() -> Namespace {
+    html5ever::ns!(html)
+}
 
 /// Owned element name for `TreeSink` implementation.
 #[derive(Debug, Clone)]

@@ -1,19 +1,24 @@
 use crate::error::submit_with_validation;
 use crate::pipelines::{Vertex, build_pipeline_and_buffers, build_texture_pipeline};
-use crate::text::{batch_layer_texts_with_scissor, batch_texts_with_scissor, map_text_item};
-use anyhow::Result as AnyResult;
-use anyhow::anyhow;
-use glyphon::{Cache, FontSystem, Resolution, SwashCache, TextAtlas, TextRenderer, Viewport};
+use crate::text::{
+    TextBatch, batch_layer_texts_with_scissor, batch_texts_with_scissor, map_text_item,
+};
+use anyhow::{Error as AnyhowError, Result as AnyResult, anyhow};
+use glyphon::{
+    Attrs, Buffer as GlyphonBuffer, Cache, Color as GlyphonColor, FontSystem, Metrics, Resolution,
+    Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
+};
 use log::debug;
 use renderer::compositor::OpacityCompositor;
 use renderer::display_list::{
-    DisplayItem, DisplayList, StackingContextBoundary, batch_display_list,
+    DisplayItem, DisplayList, Scissor, StackingContextBoundary, batch_display_list,
 };
 use renderer::renderer::{DrawRect, DrawText};
 use std::sync::Arc;
+use std::sync::mpsc::channel;
 use tracing::info_span;
 use wgpu::util::DeviceExt;
-use wgpu::*;
+use wgpu::{MultisampleState, PollType, *};
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
@@ -214,9 +219,10 @@ pub struct RenderState {
     // Glyphon text rendering state
     pub(crate) font_system: FontSystem,
     pub(crate) swash_cache: SwashCache,
+    #[allow(dead_code, reason = "Used by glyphon text rendering system")]
     pub(crate) text_atlas: TextAtlas,
     pub(crate) text_renderer: TextRenderer,
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "Cache maintained for glyphon state management")]
     pub(crate) glyphon_cache: Cache,
     pub(crate) viewport: Viewport,
     /// Optional layers for multi-DL compositing; when non-empty, render() draws these instead of the single retained list.
@@ -469,6 +475,8 @@ impl RenderState {
             }
             pass.pop_debug_group();
             debug!(target: "wgpu_renderer", "end main-pass");
+            // Explicitly drop the pass to ensure encoder is not borrowed
+            drop(pass);
         }
         Ok(())
     }
@@ -639,40 +647,40 @@ impl RenderState {
     fn push_rect_vertices_ndc(&self, out: &mut Vec<Vertex>, rect_xywh: [f32; 4], color: [f32; 4]) {
         let fw = self.size.width.max(1) as f32;
         let fh = self.size.height.max(1) as f32;
-        let [x, y, w, h] = rect_xywh;
-        if w <= 0.0 || h <= 0.0 {
+        let [rect_x, rect_y, rect_width, rect_height] = rect_xywh;
+        if rect_width <= 0.0 || rect_height <= 0.0 {
             return;
         }
-        let x0 = (x / fw) * 2.0 - 1.0;
-        let x1 = ((x + w) / fw) * 2.0 - 1.0;
-        let y0 = 1.0 - (y / fh) * 2.0;
-        let y1 = 1.0 - ((y + h) / fh) * 2.0;
+        let x0 = (rect_x / fw) * 2.0 - 1.0;
+        let x1 = ((rect_x + rect_width) / fw) * 2.0 - 1.0;
+        let y0 = 1.0 - (rect_y / fh) * 2.0;
+        let y1 = 1.0 - ((rect_y + rect_height) / fh) * 2.0;
         // Pass through color; shader handles sRGB->linear conversion for blending.
-        let c = color;
+        let vertex_color = color;
         out.extend_from_slice(&[
             Vertex {
                 position: [x0, y0],
-                color: c,
+                color: vertex_color,
             },
             Vertex {
                 position: [x1, y0],
-                color: c,
+                color: vertex_color,
             },
             Vertex {
                 position: [x1, y1],
-                color: c,
+                color: vertex_color,
             },
             Vertex {
                 position: [x0, y0],
-                color: c,
+                color: vertex_color,
             },
             Vertex {
                 position: [x1, y1],
-                color: c,
+                color: vertex_color,
             },
             Vertex {
                 position: [x0, y1],
-                color: c,
+                color: vertex_color,
             },
         ]);
     }
@@ -1075,14 +1083,14 @@ impl RenderState {
         let sw = w.max(0.0).ceil() as u32;
         let sh = h.max(0.0).ceil() as u32;
 
-        let fw_u = self.size.width.max(1);
-        let fh_u = self.size.height.max(1);
-        let rx = sx.min(fw_u);
-        let ry = sy.min(fh_u);
-        let rw = sw.min(fw_u.saturating_sub(rx));
-        let rh = sh.min(fh_u.saturating_sub(ry));
+        let framebuffer_width_u32 = self.size.width.max(1);
+        let framebuffer_height_u32 = self.size.height.max(1);
+        let rx = sx.min(framebuffer_width_u32);
+        let ry = sy.min(framebuffer_height_u32);
+        let rw = sw.min(framebuffer_width_u32.saturating_sub(rx));
+        let rh = sh.min(framebuffer_height_u32.saturating_sub(ry));
         if rw == 0 || rh == 0 {
-            // Nothing visible to draw; avoid zero-sized scissor which can invalidate encoder on some backends.
+            // Nothing visible; skip draw for this batch
             return Ok(());
         }
         pass.set_scissor_rect(rx, ry, rw, rh);
@@ -1109,7 +1117,7 @@ impl RenderState {
                     y,
                     width,
                     height,
-                    ..
+                    color: [_, _, _, _],
                 } if *width > 0.0 && *height > 0.0 => {
                     min_x = min_x.min(*x);
                     min_y = min_y.min(*y);
@@ -1302,7 +1310,6 @@ impl RenderState {
             swash_cache: SwashCache::new(),
             text_atlas: text_atlas_local,
             text_renderer: text_renderer_local,
-            #[allow(dead_code)]
             glyphon_cache: glyphon_cache_local,
             viewport: viewport_local,
             layers: Vec::new(),
@@ -1374,7 +1381,7 @@ impl RenderState {
     pub fn reset_for_next_frame(&mut self) {
         // Force device to process all pending operations before clearing state
         // This prevents encoder corruption from incomplete operations
-        let _ = self.device.poll(wgpu::PollType::Wait);
+        self.device.poll(PollType::Wait);
 
         // Clear per-frame GPU resources
         self.live_textures.clear();
@@ -1388,8 +1395,8 @@ impl RenderState {
         {
             let scope = ErrorScopeGuard::push(&self.device, "glyphon-atlas-trim");
             self.text_atlas.trim();
-            if let Err(e) = scope.check() {
-                log::error!(target: "wgpu_renderer", "Glyphon text_atlas.trim() generated validation error: {e:?}");
+            if let Err(error) = scope.check() {
+                log::error!(target: "wgpu_renderer", "Glyphon text_atlas.trim() generated validation error: {error:?}");
             }
         }
 
@@ -1400,11 +1407,11 @@ impl RenderState {
             self.text_renderer = TextRenderer::new(
                 &mut self.text_atlas,
                 &self.device,
-                wgpu::MultisampleState::default(),
+                MultisampleState::default(),
                 None,
             );
-            if let Err(e) = scope.check() {
-                log::error!(target: "wgpu_renderer", "Glyphon TextRenderer::new() generated validation error: {e:?}");
+            if let Err(error) = scope.check() {
+                log::error!(target: "wgpu_renderer", "Glyphon TextRenderer::new() generated validation error: {error:?}");
             }
         }
 
@@ -1430,7 +1437,7 @@ impl RenderState {
     }
 
     /// Install a retained display list as the source of truth for rendering.
-    /// When set, render() will prefer drawing directly from the retained list
+    /// When set, `render()` will prefer drawing directly from the retained list
     /// (with clip support) rather than the immediate lists.
     pub fn set_retained_display_list(&mut self, list: DisplayList) {
         // Using a single retained display list implies no layered compositing this frame.
@@ -1442,7 +1449,10 @@ impl RenderState {
     }
 
     /// Render a frame by clearing and drawing quads from the current display list.
-    pub fn render(&mut self) -> Result<(), anyhow::Error> {
+    ///
+    /// # Errors
+    /// Returns an error if surface acquisition or rendering fails.
+    pub fn render(&mut self) -> Result<(), AnyhowError> {
         let _span = info_span!("renderer.render").entered();
         // Ensure previous-frame resources are dropped before starting
         self.live_textures.clear();
@@ -1466,8 +1476,8 @@ impl RenderState {
         self.record_draw_passes(&texture_view, &mut encoder, false)?;
 
         // Finish and submit
-        let cb = encoder.finish();
-        submit_with_validation(&self.device, &self.queue, [cb])?;
+        let command_buffer = encoder.finish();
+        submit_with_validation(&self.device, &self.queue, [command_buffer])?;
 
         // After submission, it's safe to drop per-frame resources
         self.live_textures.clear();
@@ -1477,33 +1487,17 @@ impl RenderState {
         Ok(())
     }
 
-    /// Render a frame and return the framebuffer RGBA bytes.
-    pub fn render_to_rgba(&mut self) -> Result<Vec<u8>, anyhow::Error> {
-        // Always render to an offscreen texture so we can COPY_SRC safely. Reuse across calls.
-        // Ensure previous-frame resources are dropped before starting
-        self.live_textures.clear();
-        self.live_buffers.clear();
-
-        // Verify device is in clean state
-        {
-            let validation_scope = ErrorScopeGuard::push(&self.device, "pre-render-validation");
-            validation_scope.check()?;
-        }
-
-        // (Re)create offscreen texture/view if missing or size changed
-        let fb_w = self.size.width.max(1);
-        let fb_h = self.size.height.max(1);
-        let need_offscreen = match &self.offscreen_tex {
-            None => true,
-            Some(tex) => {
-                let s = tex.size();
-                s.width != fb_w || s.height != fb_h || s.depth_or_array_layers != 1
-            }
-        };
+    /// Ensure offscreen texture exists and matches current framebuffer size.
+    fn ensure_offscreen_texture(&mut self) -> Result<(), AnyhowError> {
+        let framebuffer_width = self.size.width.max(1);
+        let framebuffer_height = self.size.height.max(1);
+        let need_offscreen = self.offscreen_tex.as_ref().is_none_or(|tex| {
+            let size = tex.size();
+            size.width != framebuffer_width
+                || size.height != framebuffer_height
+                || size.depth_or_array_layers != 1
+        });
         if need_offscreen {
-            let fb_w = self.size.width.max(1);
-            let fb_h = self.size.height.max(1);
-            // Use non-sRGB base with sRGB view for rendering
             let base_format = match self.render_format {
                 TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8Unorm,
                 TextureFormat::Bgra8UnormSrgb => TextureFormat::Bgra8Unorm,
@@ -1512,8 +1506,8 @@ impl RenderState {
             let tex = self.device.create_texture(&TextureDescriptor {
                 label: Some("offscreen-target"),
                 size: Extent3d {
-                    width: fb_w,
-                    height: fb_h,
+                    width: framebuffer_width,
+                    height: framebuffer_height,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -1525,45 +1519,34 @@ impl RenderState {
             });
             self.offscreen_tex = Some(tex);
         }
-        // Create a transient view from the cached offscreen texture to avoid borrowing self immutably
+        Ok(())
+    }
+
+    /// Render to offscreen texture and return the texture view.
+    fn render_to_offscreen(&mut self) -> Result<(), AnyhowError> {
         let tmp_view = self
             .offscreen_tex
             .as_ref()
-            .expect("offscreen tex available")
+            .ok_or_else(|| anyhow!("offscreen texture not available"))?
             .create_view(&TextureViewDescriptor {
                 format: Some(self.render_format),
                 ..Default::default()
             });
-        // Render using single CommandEncoder - simpler and more reliable
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor {
                 label: Some("render-to-rgba"),
             });
         self.record_draw_passes(&tmp_view, &mut encoder, true)?;
-        let cb = encoder.finish();
-        submit_with_validation(&self.device, &self.queue, [cb])?;
-
-        // Drop per-frame resources after rendering complete
-        // Drop per-frame resources after submission
+        let command_buffer = encoder.finish();
+        submit_with_validation(&self.device, &self.queue, [command_buffer])?;
         self.live_textures.clear();
         self.live_buffers.clear();
+        Ok(())
+    }
 
-        // Create a new encoder for the texture copy operation
-        let mut copy_encoder = self
-            .device
-            .create_command_encoder(&CommandEncoderDescriptor {
-                label: Some("texture-copy-encoder"),
-            });
-
-        // Read back with 256-byte aligned rows
-        let width = self.size.width.max(1);
-        let height = self.size.height.max(1);
-        let bpp = 4u32;
-        let row_bytes = width * bpp;
-        let padded_bpr = row_bytes.div_ceil(256) * 256;
-        let buffer_size = (padded_bpr as u64) * (height as u64);
-        // (Re)create readback buffer if missing or bytes-per-row changed or too small
+    /// Ensure readback buffer exists and is large enough.
+    fn ensure_readback_buffer(&mut self, padded_bpr: u32, buffer_size: u64) {
         let need_readback = self.readback_buf.is_none()
             || self.readback_padded_bpr != padded_bpr
             || self.readback_size < buffer_size;
@@ -1578,12 +1561,22 @@ impl RenderState {
             self.readback_padded_bpr = padded_bpr;
             self.readback_size = buffer_size;
         }
+    }
+
+    /// Copy offscreen texture to readback buffer.
+    fn copy_texture_to_readback(
+        &mut self,
+        copy_encoder: &mut CommandEncoder,
+        width: u32,
+        height: u32,
+        padded_bpr: u32,
+    ) -> Result<(), AnyhowError> {
         copy_encoder.copy_texture_to_buffer(
             TexelCopyTextureInfo {
                 texture: self
                     .offscreen_tex
                     .as_ref()
-                    .expect("offscreen tex available"),
+                    .ok_or_else(|| anyhow!("offscreen texture not available"))?,
                 mip_level: 0,
                 origin: Origin3d::ZERO,
                 aspect: TextureAspect::All,
@@ -1592,7 +1585,7 @@ impl RenderState {
                 buffer: self
                     .readback_buf
                     .as_ref()
-                    .expect("readback buffer available"),
+                    .ok_or_else(|| anyhow!("readback buffer not available"))?,
                 layout: TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bpr),
@@ -1605,35 +1598,35 @@ impl RenderState {
                 depth_or_array_layers: 1,
             },
         );
+        Ok(())
+    }
 
-        // Submit the copy command buffer with proper error scope management
-        let copy_command_buffer = {
-            let scope = ErrorScopeGuard::push(&self.device, "copy_encoder.finish");
-            let cb = copy_encoder.finish();
-            scope.check()?;
-            cb
-        };
-        submit_with_validation(&self.device, &self.queue, [copy_command_buffer])?;
-
-        // Map and wait for the copy to be available
+    /// Read back texture data from GPU buffer.
+    fn readback_texture_data(
+        &mut self,
+        width: u32,
+        height: u32,
+        bpp: u32,
+        row_bytes: u32,
+        padded_bpr: u32,
+    ) -> Result<Vec<u8>, AnyhowError> {
         let readback = self
             .readback_buf
             .as_ref()
-            .expect("readback buffer available");
+            .ok_or_else(|| anyhow!("readback buffer not available"))?;
         let slice = readback.slice(..);
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = channel();
         slice.map_async(MapMode::Read, move |res| {
-            let _ = sender.send(res);
+            drop(sender.send(res));
         });
         loop {
-            let _ = self.device.poll(wgpu::PollType::Wait);
+            self.device.poll(PollType::Wait);
             if let Ok(res) = receiver.try_recv() {
                 res?;
                 break;
             }
         }
         let mapped = slice.get_mapped_range();
-        // Ensure we create a buffer of exactly the expected size
         let expected_total_bytes = (width as usize) * (height as usize) * (bpp as usize);
         let mut out = vec![0u8; expected_total_bytes];
         for row in 0..height as usize {
@@ -1644,19 +1637,270 @@ impl RenderState {
         }
         drop(mapped);
         readback.unmap();
-        // If our render target format uses BGRA ordering, convert to RGBA for consumers
+        Ok(out)
+    }
+
+    /// Convert BGRA to RGBA if needed.
+    fn convert_bgra_to_rgba(&self, out: &mut [u8]) {
         match self.render_format {
             TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb => {
-                for px in out.chunks_exact_mut(4) {
-                    let b = px[0];
-                    let r = px[2];
-                    px[0] = r;
-                    px[2] = b;
+                for pixel in out.chunks_exact_mut(4) {
+                    assert!(
+                        pixel.len() > 2,
+                        "pixel chunks from chunks_exact_mut(4) must have at least 3 elements"
+                    );
+                    let blue = pixel[0];
+                    let red = pixel[2];
+                    pixel[0] = red;
+                    pixel[2] = blue;
                 }
             }
             _ => {}
         }
+    }
+
+    /// Render a frame and return the framebuffer RGBA bytes.
+    /// Render the current display list to an RGBA buffer.
+    ///
+    /// # Errors
+    /// Returns an error if rendering or texture readback fails.
+    ///
+    /// # Panics
+    /// Panics if pixel chunks are not exactly 4 bytes (should never happen with `chunks_exact_mut(4)`).
+    pub fn render_to_rgba(&mut self) -> Result<Vec<u8>, AnyhowError> {
+        self.live_textures.clear();
+        self.live_buffers.clear();
+
+        let validation_scope = ErrorScopeGuard::push(&self.device, "pre-render-validation");
+        validation_scope.check()?;
+
+        self.ensure_offscreen_texture()?;
+        self.render_to_offscreen()?;
+
+        let mut copy_encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("texture-copy-encoder"),
+            });
+
+        let width = self.size.width.max(1);
+        let height = self.size.height.max(1);
+        let bpp = 4u32;
+        let row_bytes = width * bpp;
+        let padded_bpr = row_bytes.div_ceil(256) * 256;
+        let buffer_size = u64::from(padded_bpr) * u64::from(height);
+
+        self.ensure_readback_buffer(padded_bpr, buffer_size);
+        self.copy_texture_to_readback(&mut copy_encoder, width, height, padded_bpr)?;
+
+        let copy_command_buffer = {
+            let scope = ErrorScopeGuard::push(&self.device, "copy_encoder.finish");
+            let buffer = copy_encoder.finish();
+            scope.check()?;
+            buffer
+        };
+        submit_with_validation(&self.device, &self.queue, [copy_command_buffer])?;
+
+        let mut out = self.readback_texture_data(width, height, bpp, row_bytes, padded_bpr)?;
+        self.convert_bgra_to_rgba(&mut out);
         Ok(out)
+    }
+
+    /// Create glyphon buffers from text items.
+    fn create_glyphon_buffers(&mut self, items: &[DrawText], scale: f32) -> Vec<GlyphonBuffer> {
+        let mut buffers = Vec::with_capacity(items.len());
+        for item in items {
+            let mut buffer = GlyphonBuffer::new(
+                &mut self.font_system,
+                Metrics::new(item.font_size * scale, item.font_size * scale),
+            );
+            let attrs = Attrs::new();
+            buffer.set_text(&mut self.font_system, &item.text, &attrs, Shaping::Advanced);
+            buffers.push(buffer);
+        }
+        buffers
+    }
+
+    /// Create glyphon text areas from buffers and items.
+    fn create_text_areas<'buffer>(
+        buffers: &'buffer [GlyphonBuffer],
+        items: &[DrawText],
+        scale: f32,
+        framebuffer_width: u32,
+        framebuffer_height: u32,
+    ) -> Vec<TextArea<'buffer>> {
+        let mut areas = Vec::with_capacity(items.len());
+        for (index, item) in items.iter().enumerate() {
+            let color = GlyphonColor(0xFF00_0000);
+            let bounds = match item.bounds {
+                Some((left, top, right, bottom)) => TextBounds {
+                    left: i32::try_from((left as f32 * scale).round() as u32).unwrap_or(i32::MAX),
+                    top: i32::try_from((top as f32 * scale).round() as u32).unwrap_or(i32::MAX),
+                    right: i32::try_from((right as f32 * scale).round() as u32).unwrap_or(i32::MAX),
+                    bottom: i32::try_from((bottom as f32 * scale).round() as u32)
+                        .unwrap_or(i32::MAX),
+                },
+                None => TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: i32::try_from(framebuffer_width).unwrap_or(i32::MAX),
+                    bottom: i32::try_from(framebuffer_height).unwrap_or(i32::MAX),
+                },
+            };
+            areas.push(TextArea {
+                buffer: &buffers[index],
+                left: item.x * scale,
+                top: item.y * scale,
+                scale: 1.0,
+                bounds,
+                default_color: color,
+                custom_glyphs: &[],
+            });
+        }
+        areas
+    }
+
+    /// Prepare glyphon buffers for the current text list and upload glyphs into the atlas.
+    pub(crate) fn glyphon_prepare(&mut self) {
+        let framebuffer_width = self.size.width;
+        let framebuffer_height = self.size.height;
+        let scale: f32 = self.window.scale_factor() as f32;
+        let text_list = self.text_list.clone();
+        let buffers = self.create_glyphon_buffers(&text_list, scale);
+        let areas = Self::create_text_areas(
+            &buffers,
+            &text_list,
+            scale,
+            framebuffer_width,
+            framebuffer_height,
+        );
+
+        let scope = ErrorScopeGuard::push(&self.device, "glyphon-viewport-update");
+        self.viewport.update(
+            &self.queue,
+            Resolution {
+                width: framebuffer_width,
+                height: framebuffer_height,
+            },
+        );
+        if let Err(error) = scope.check() {
+            log::error!(target: "wgpu_renderer", "Glyphon viewport.update() generated error: {error:?}");
+            return;
+        }
+
+        let areas_count = areas.len();
+        let scope = ErrorScopeGuard::push(&self.device, "glyphon-text-prepare");
+        let prep_res = self.text_renderer.prepare(
+            &self.device,
+            &self.queue,
+            &mut self.font_system,
+            &mut self.text_atlas,
+            &self.viewport,
+            areas,
+            &mut self.swash_cache,
+        );
+        if let Err(error) = scope.check() {
+            log::error!(target: "wgpu_renderer", "Glyphon text_renderer.prepare() generated validation error: {error:?}");
+        }
+        log::debug!(
+            target: "wgpu_renderer",
+            "glyphon_prepare: areas={areas_count} viewport={framebuffer_width}x{framebuffer_height} result={prep_res:?}"
+        );
+    }
+
+    /// Prepare glyphon buffers for a specific set of text items.
+    pub(crate) fn glyphon_prepare_for(&mut self, items: &[DrawText]) {
+        let framebuffer_width = self.size.width;
+        let framebuffer_height = self.size.height;
+        let scale: f32 = self.window.scale_factor() as f32;
+        let buffers = self.create_glyphon_buffers(items, scale);
+        let areas = Self::create_text_areas(
+            &buffers,
+            items,
+            scale,
+            framebuffer_width,
+            framebuffer_height,
+        );
+
+        let scope = ErrorScopeGuard::push(&self.device, "glyphon-viewport-update-for");
+        self.viewport.update(
+            &self.queue,
+            Resolution {
+                width: framebuffer_width,
+                height: framebuffer_height,
+            },
+        );
+        if let Err(error) = scope.check() {
+            log::error!(target: "wgpu_renderer", "Glyphon viewport.update() (for) generated error: {error:?}");
+            return;
+        }
+
+        let areas_len = areas.len();
+        let scope = ErrorScopeGuard::push(&self.device, "glyphon-text-prepare-for");
+        let prep_res = self.text_renderer.prepare(
+            &self.device,
+            &self.queue,
+            &mut self.font_system,
+            &mut self.text_atlas,
+            &self.viewport,
+            areas,
+            &mut self.swash_cache,
+        );
+        if let Err(error) = scope.check() {
+            log::error!(target: "wgpu_renderer", "Glyphon text_renderer.prepare() (for) generated validation error: {error:?}");
+        }
+        log::debug!(
+            target: "wgpu_renderer",
+            "glyphon_prepare_for: items={} areas={} viewport={}x{} result={:?}",
+            items.len(),
+            areas_len,
+            framebuffer_width,
+            framebuffer_height,
+            prep_res
+        );
+    }
+
+    /// Draw a batch of text items with optional scissor rect.
+    #[inline]
+    pub(crate) fn draw_text_batch(
+        &mut self,
+        pass: &mut RenderPass<'_>,
+        items: &[DrawText],
+        scissor_opt: Option<Scissor>,
+    ) {
+        self.glyphon_prepare_for(items);
+        pass.set_viewport(
+            0.0,
+            0.0,
+            self.size.width as f32,
+            self.size.height as f32,
+            0.0,
+            1.0,
+        );
+        match scissor_opt {
+            Some((x, y, width, height)) => pass.set_scissor_rect(x, y, width, height),
+            None => pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1)),
+        }
+        {
+            let scope = ErrorScopeGuard::push(&self.device, "glyphon-text-render");
+            if let Err(error) = self
+                .text_renderer
+                .render(&self.text_atlas, &self.viewport, pass)
+            {
+                log::error!(target: "wgpu_renderer", "Glyphon text_renderer.render() failed: {error:?}");
+            }
+            if let Err(error) = scope.check() {
+                log::error!(target: "wgpu_renderer", "Glyphon text_renderer.render() generated validation error: {error:?}");
+            }
+        }
+    }
+
+    /// Draw multiple text batches with their respective scissor rects.
+    #[inline]
+    pub(crate) fn draw_text_batches(&mut self, pass: &mut RenderPass<'_>, batches: Vec<TextBatch>) {
+        for (scissor_opt, items) in batches.into_iter().filter(|(_, items)| !items.is_empty()) {
+            self.draw_text_batch(pass, &items, scissor_opt);
+        }
     }
 }
 

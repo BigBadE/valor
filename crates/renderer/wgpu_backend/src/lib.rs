@@ -7,7 +7,11 @@ mod logical_encoder;
 mod offscreen;
 mod pipelines;
 pub mod state;
+
+/// Text rendering utilities for batching and scissoring.
 mod text;
+
+/// Texture pool for efficient reuse of offscreen textures.
 mod texture_pool;
 
 pub use error::{submit_with_validation, with_validation_scope};

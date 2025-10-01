@@ -18,7 +18,7 @@ impl Default for TexturePool {
 
 impl TexturePool {
     /// Create a new texture pool
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             available: Vec::new(),
         }
@@ -34,13 +34,20 @@ impl TexturePool {
         format: TextureFormat,
     ) -> Texture {
         // Find suitable existing texture (allow up to 25% larger to improve reuse)
-        let max_width = width + width / 4;
-        let max_height = height + height / 4;
+        let max_width = width.saturating_add(width.saturating_div(4));
+        let max_height = height.saturating_add(height.saturating_div(4));
 
-        if let Some(pos) = self.available.iter().position(|(w, h, _)| {
-            *w >= width && *h >= height && *w <= max_width && *h <= max_height
-        }) {
-            let (_w, _h, texture) = self.available.remove(pos);
+        if let Some(pos) = self
+            .available
+            .iter()
+            .position(|(tex_width, tex_height, _)| {
+                *tex_width >= width
+                    && *tex_height >= height
+                    && *tex_width <= max_width
+                    && *tex_height <= max_height
+            })
+        {
+            let (_unused_width, _unused_height, texture) = self.available.remove(pos);
             return texture;
         }
 
