@@ -212,16 +212,16 @@ fn rect_to_scissor(framebuffer: (u32, u32), x: f32, y: f32, width: f32, height: 
 
     let positive_x = x.max(0.0);
     let positive_y = y.max(0.0);
-    let scissor_x_f32 = positive_x.floor().min(u32::MAX as f32);
-    let scissor_y_f32 = positive_y.floor().min(u32::MAX as f32);
+    let start_horizontal = positive_x.floor().min(u32::MAX as f32);
+    let start_vertical = positive_y.floor().min(u32::MAX as f32);
 
-    let end_x_f32 = (positive_x + width.max(0.0)).ceil().min(u32::MAX as f32);
-    let end_y_f32 = (positive_y + height.max(0.0)).ceil().min(u32::MAX as f32);
+    let end_horizontal = (positive_x + width.max(0.0)).ceil().min(u32::MAX as f32);
+    let end_vertical = (positive_y + height.max(0.0)).ceil().min(u32::MAX as f32);
 
-    let scissor_x = (scissor_x_f32 as u32).min(framebuffer_width);
-    let scissor_y = (scissor_y_f32 as u32).min(framebuffer_height);
-    let end_x = (end_x_f32 as u32).min(framebuffer_width);
-    let end_y = (end_y_f32 as u32).min(framebuffer_height);
+    let scissor_x = (start_horizontal as u32).min(framebuffer_width);
+    let scissor_y = (start_vertical as u32).min(framebuffer_height);
+    let end_x = (end_horizontal as u32).min(framebuffer_width);
+    let end_y = (end_vertical as u32).min(framebuffer_height);
 
     let final_width = end_x.saturating_sub(scissor_x);
     let final_height = end_y.saturating_sub(scissor_y);

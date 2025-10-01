@@ -15,12 +15,6 @@ use std::fs::read_to_string;
 use tokio::sync::mpsc::UnboundedSender;
 use url::Url;
 
-/// Helper function to get HTML namespace.
-#[inline]
-fn html_namespace() -> Namespace {
-    html5ever::ns!(html)
-}
-
 /// Owned element name for `TreeSink` implementation.
 #[derive(Debug, Clone)]
 pub struct OwnedElemName {
@@ -157,7 +151,7 @@ impl TreeSink for ValorSink {
         // Fallback to a reasonable default. In practice, we should always have a name
         // for elements created via create_element.
         OwnedElemName {
-            namespace: html_namespace!(html),
+            namespace: html5ever::ns!(html),
             local: local_name!("div"),
         }
     }
@@ -175,7 +169,7 @@ impl TreeSink for ValorSink {
         };
         // Track the element's qualified name for correct elem_name reporting
         self.element_names.borrow_mut().insert(id, name.clone());
-        let is_script = name.ns == html_namespace!(html) && name.local == local_name!("script");
+        let is_script = name.ns == html5ever::ns!(html) && name.local == local_name!("script");
         let mut state = is_script.then(|| ScriptState {
             has_src: false,
             buffer: String::new(),

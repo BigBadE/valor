@@ -2,6 +2,7 @@ use crate::accessibility::ax_tree_snapshot_from;
 use crate::config::ValorConfig;
 use crate::display::{DefaultDisplayBuilder, DisplayBuilder};
 use crate::embedded_chrome::get_embedded_chrome_asset;
+use crate::events::KeyMods;
 use crate::runtime::{DefaultJsRuntime, JsRuntime};
 use crate::scheduler::FrameScheduler;
 use crate::snapshots::{IRect, Snapshot};
@@ -24,7 +25,8 @@ use js::{
 };
 use js_engine_v8::V8Engine;
 use log::{info, trace};
-use renderer::{DrawRect, Renderer};
+use net::FetchRegistry;
+use renderer::{DisplayList, DrawRect, Renderer};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
@@ -74,27 +76,30 @@ pub struct HtmlPage {
     dom_index_mirror: DOMMirror<DomIndex>,
     /// Shared state for DOM index to support synchronous lookups (e.g., getElementById).
     dom_index_shared: SharedDomIndex,
-    // For sending updates to the DOM
+    /// For sending updates to the DOM.
     in_updater: mpsc::Sender<Vec<DOMUpdate>>,
-    // JavaScript engine and script queue
+    /// JavaScript engine and script queue.
     js_engine: V8Engine,
     /// Host context for privileged binding decisions and shared registries.
     host_context: HostContext,
+    /// Script receiver for processing script jobs.
     script_rx: UnboundedReceiver<ScriptJob>,
+    /// Counter for tracking script execution.
     script_counter: u64,
+    /// Current page URL.
     #[allow(dead_code, reason = "URL is kept for future navigation and debugging")]
     url: Url,
     /// ES module resolver/bundler adapter (JS crate) for side-effect modules.
     module_resolver: Box<dyn ModuleResolver>,
     /// Display builder used to construct display lists from layout and styles.
     display_builder: Box<dyn DisplayBuilder>,
-    // Frame scheduler to coalesce layout per frame with a budget (Phase 5)
+    /// Frame scheduler to coalesce layout per frame with a budget (Phase 5).
     frame_scheduler: FrameScheduler,
     /// Whether to draw a small perf HUD overlay in display list snapshots.
     hud_enabled: bool,
     /// Diagnostics: number of nodes restyled in the last tick.
     last_style_restyled_nodes: u64,
-    // Whether we've dispatched DOMContentLoaded to JS listeners.
+    /// Whether we've dispatched DOMContentLoaded to JS listeners.
     dom_content_loaded_fired: bool,
     /// One-time post-load guard to rebuild the `StyleEngine`'s node inventory from the Layouter
     /// for deterministic style resolution in the normal update path.
@@ -192,7 +197,7 @@ impl HtmlPage {
             dom_index: Arc::clone(&dom_index_shared),
             tokio_handle: handle.clone(),
             page_origin,
-            fetch_registry: Arc::new(Mutex::new(Default::default())),
+            fetch_registry: Arc::new(Mutex::new(FetchRegistry::default())),
             performance_start: start_instant,
             storage_local: Arc::clone(&storage_local),
             storage_session: Arc::clone(&storage_session),
@@ -415,7 +420,8 @@ impl HtmlPage {
             raw_children.insert(key, children);
         }
         let mut element_children: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
-        for (parent, kids) in raw_children.clone() {
+        let children_vec: Vec<_> = raw_children.clone().into_iter().collect();
+        for (parent, kids) in children_vec {
             let filtered: Vec<NodeKey> = kids
                 .into_iter()
                 .filter(|child| tags_by_key.contains_key(child))
@@ -438,7 +444,8 @@ impl HtmlPage {
         text_by_key: &HashMap<NodeKey, String>,
     ) -> String {
         let mut inline_style_css = String::new();
-        for (node, tag) in tags_by_key {
+        let tags_vec: Vec<_> = tags_by_key.into_iter().collect();
+        for (node, tag) in tags_vec {
             if !tag.eq_ignore_ascii_case("style") {
                 continue;
             }
@@ -457,17 +464,12 @@ impl HtmlPage {
     /// Ensure `StyleEngine`'s node inventory is rebuilt once post-load for deterministic matching.
     fn maybe_rebuild_style_nodes_after_load(
         &mut self,
-        tags_by_key: &HashMap<NodeKey, String>,
-        element_children: &HashMap<NodeKey, Vec<NodeKey>>,
-        lay_attrs: &HashMap<NodeKey, HashMap<String, String>>,
+        _tags_by_key: &HashMap<NodeKey, String>,
+        _element_children: &HashMap<NodeKey, Vec<NodeKey>>,
+        _lay_attrs: &HashMap<NodeKey, HashMap<String, String>>,
     ) {
         // Orchestrator does not require an explicit rebuild; no-op guard retained for symmetry.
         if self.loader.is_none() && !self.style_nodes_rebuilt_after_load {
-            let _: (
-                &HashMap<NodeKey, String>,
-                &HashMap<NodeKey, Vec<NodeKey>>,
-                &HashMap<NodeKey, HashMap<String, String>>,
-            ) = (tags_by_key, element_children, lay_attrs);
             self.style_nodes_rebuilt_after_load = true;
             trace!("process_css_and_styles: orchestrator ready");
         }
@@ -739,34 +741,6 @@ impl HtmlPage {
     ///
     /// Panics if a parent key is missing from the children map.
     pub fn bootstrap_layouter_subscriber(&mut self, mirror: &mut DOMMirror<Layouter>) {
-        // Take a structural snapshot and attrs from the internal layouter mirror
-        let snapshot = self.layouter_mirror.mirror().snapshot();
-        let attrs_map = self.layouter_mirror.mirror_mut().attrs_map();
-
-        // Build tags_by_key and element_children from the snapshot
-        let mut tags_by_key: HashMap<NodeKey, String> = HashMap::new();
-        let mut children_tmp: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
-        for (key, kind, children) in snapshot {
-            if let LayoutNodeKind::Block { tag } = kind {
-                tags_by_key.insert(key, tag);
-            }
-            children_tmp.insert(key, children);
-        }
-        let mut element_children: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
-        // Iterate in a deterministic order by collecting and sorting keys
-        let mut sorted_keys: Vec<_> = children_tmp.keys().copied().collect();
-        sorted_keys.sort_by_key(|key| key.0);
-        for parent in sorted_keys {
-            let Some(kids) = children_tmp.remove(&parent) else {
-                continue;
-            };
-            let filtered: Vec<NodeKey> = kids
-                .into_iter()
-                .filter(|child| tags_by_key.contains_key(child))
-                .collect();
-            element_children.insert(parent, filtered);
-        }
-
         fn apply_attrs(
             lay: &mut Layouter,
             node: NodeKey,
@@ -810,6 +784,34 @@ impl HtmlPage {
                 apply_attrs(lay, *child, attrs);
                 replay(lay, tags_by_key, element_children, attrs, *child);
             }
+        }
+
+        // Take a structural snapshot and attrs from the internal layouter mirror
+        let snapshot = self.layouter_mirror.mirror().snapshot();
+        let attrs_map = self.layouter_mirror.mirror_mut().attrs_map();
+
+        // Build tags_by_key and element_children from the snapshot
+        let mut tags_by_key: HashMap<NodeKey, String> = HashMap::new();
+        let mut children_tmp: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
+        for (key, kind, children) in snapshot {
+            if let LayoutNodeKind::Block { tag } = kind {
+                tags_by_key.insert(key, tag);
+            }
+            children_tmp.insert(key, children);
+        }
+        let mut element_children: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
+        // Iterate in a deterministic order by collecting and sorting keys
+        let mut sorted_keys: Vec<_> = children_tmp.keys().copied().collect();
+        sorted_keys.sort_by_key(|key| key.0);
+        for parent in sorted_keys {
+            let Some(kids) = children_tmp.remove(&parent) else {
+                continue;
+            };
+            let filtered: Vec<NodeKey> = kids
+                .into_iter()
+                .filter(|child| tags_by_key.contains_key(child))
+                .collect();
+            element_children.insert(parent, filtered);
         }
 
         let lay = mirror.mirror_mut();
@@ -879,7 +881,7 @@ impl HtmlPage {
             .css_mirror
             .mirror_mut()
             .discovered_stylesheets()
-            .to_vec())
+            .clone())
     }
 
     /// Return a JSON string with key performance counters from the layouter to aid diagnostics (Phase 8).
@@ -993,10 +995,10 @@ impl HtmlPage {
     ///
     /// Returns an error if display list generation fails.
     #[allow(dead_code, reason = "Public API used by valor crate")]
-    pub fn display_list_retained_snapshot(&mut self) -> Result<renderer::DisplayList, Error> {
+    pub fn display_list_retained_snapshot(&mut self) -> Result<DisplayList, Error> {
         let _unused = self.layouter_mirror.try_update_sync();
         let _unused2 = self.renderer_mirror.try_update_sync();
-        Ok(renderer::DisplayList::default())
+        Ok(DisplayList::default())
     }
 
     /// Dispatch a pointer move event.
@@ -1019,23 +1021,13 @@ impl HtmlPage {
 
     /// Dispatch a key down event.
     #[allow(dead_code, reason = "Public API used by valor crate")]
-    pub const fn dispatch_key_down(
-        &mut self,
-        _key: &str,
-        _code: &str,
-        _mods: crate::events::KeyMods,
-    ) {
+    pub const fn dispatch_key_down(&mut self, _key: &str, _code: &str, _mods: KeyMods) {
         // Key down handling
     }
 
     /// Dispatch a key up event.
     #[allow(dead_code, reason = "Public API used by valor crate")]
-    pub const fn dispatch_key_up(
-        &mut self,
-        _key: &str,
-        _code: &str,
-        _mods: crate::events::KeyMods,
-    ) {
+    pub const fn dispatch_key_up(&mut self, _key: &str, _code: &str, _mods: KeyMods) {
         // Key up handling
     }
 

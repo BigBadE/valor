@@ -11,7 +11,7 @@ pub struct Vertex {
 }
 
 /// Minimal WGSL shader that converts sRGB vertex colors to linear for correct blending into an sRGB target.
-const SHADER_WGSL: &str = r#"
+const SHADER_WGSL: &str = "
 struct VertexOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) color: vec4<f32>,
@@ -41,10 +41,10 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // Premultiply RGB by alpha for correct blending
     return vec4<f32>(linear_rgb * c.w, c.w);
 }
-"#;
+";
 
 /// WGSL for textured quad with external alpha multiplier.
-const TEX_SHADER_WGSL: &str = r#"
+const TEX_SHADER_WGSL: &str = "
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -71,7 +71,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // This correctly scales both the premultiplied RGB and alpha channels.
     return c * u_params.alpha;
 }
-"#;
+";
 
 pub fn build_pipeline_and_buffers(
     device: &Device,

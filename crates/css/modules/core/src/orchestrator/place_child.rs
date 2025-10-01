@@ -32,9 +32,6 @@ pub struct PlacedBlock {
     pub leading_collapse_contrib: i32,
 }
 
-/// Snapshot entry type for iterating children without directly ranging over hash-based maps.
-type ChildrenSnapshotEntry<'iter> = (&'iter NodeKey, &'iter Vec<NodeKey>);
-
 /// Inputs required to emit a vertical commit/log and child rect to the layouter.
 #[derive(Clone, Copy)]
 struct CommitInputs {
@@ -100,7 +97,9 @@ fn containing_block(
     let mut nearest_positioned: Option<NodeKey> = None;
     // Helper to find parent by scanning children map (small trees in tests)
     let find_parent = |lay: &Layouter, needle: NodeKey| -> Option<NodeKey> {
-        for (parent_key, children) in &lay.children {
+        // Collect keys to avoid iterating over hash-based type directly
+        let children_vec: Vec<_> = lay.children.iter().collect();
+        for (parent_key, children) in children_vec {
             if children.contains(&needle) {
                 return Some(*parent_key);
             }

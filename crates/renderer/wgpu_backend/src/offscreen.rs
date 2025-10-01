@@ -17,7 +17,7 @@ struct Vertex {
     color: [f32; 4],
 }
 
-const SHADER_WGSL: &str = r#"
+const SHADER_WGSL: &str = "
 struct VertexOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) color: vec4<f32>,
@@ -33,7 +33,7 @@ fn vs_main(@location(0) pos: vec2<f32>, @location(1) color: vec4<f32>) -> Vertex
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> { return in.color; }
-"#;
+";
 
 fn build_pipeline(device: &Device, render_format: TextureFormat) -> RenderPipeline {
     let shader = device.create_shader_module(ShaderModuleDescriptor {
