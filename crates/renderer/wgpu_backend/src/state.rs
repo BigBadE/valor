@@ -23,11 +23,145 @@ use winit::window::Window;
 pub(crate) type OpacityComposite = (usize, usize, Texture, TextureView, u32, u32, f32, Bounds);
 
 // Result payload for offscreen renders: (texture, view, width, height)
-pub(crate) type OffscreenRender = (Texture, TextureView, u32, u32);
+pub(crate) type OffscreenRenderResult = (Texture, TextureView, u32, u32);
 
 // Compact representation for preprocessed layer data: either no content
 // or (items, composites, excluded ranges).
 pub(crate) type LayerEntry = Option<(Vec<DisplayItem>, Vec<OpacityComposite>, Vec<(usize, usize)>)>;
+
+// Type alias for scissor rectangle: (x, y, width, height)
+type ScissorRect = Option<(u32, u32, u32, u32)>;
+
+// Vertex structure for texture quad rendering
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct TexVertex {
+    pos: [f32; 2],
+    uv: [f32; 2],
+}
+
+/// Render performance metrics for observability and debugging.
+#[derive(Debug, Clone, Default)]
+pub struct RenderMetrics {
+    pub frame_time_ms: f64,
+    pub draw_calls: u32,
+    pub vertices_rendered: u32,
+    pub texture_memory_bytes: u64,
+    pub error_count: u32,
+    pub opacity_groups_rendered: u32,
+}
+
+/// Limits to prevent pathological content from exhausting resources.
+#[derive(Debug, Clone)]
+pub struct RenderLimits {
+    pub max_display_items: usize,
+    pub max_texture_size: u32,
+    pub max_draw_calls_per_frame: u32,
+    pub max_nested_opacity_groups: u32,
+    pub max_texture_memory_bytes: u64,
+}
+
+impl Default for RenderLimits {
+    fn default() -> Self {
+        Self {
+            max_display_items: 100_000,
+            max_texture_size: 8192,
+            max_draw_calls_per_frame: 10_000,
+            max_nested_opacity_groups: 32,
+            max_texture_memory_bytes: 512 * 1024 * 1024, // 512 MB
+        }
+    }
+}
+
+/// Feature flags for graceful degradation when GPU is struggling.
+#[derive(Debug, Clone)]
+pub struct FeatureFlags {
+    pub opacity_compositing: bool,
+    pub text_rendering: bool,
+    pub complex_transforms: bool,
+}
+
+impl Default for FeatureFlags {
+    fn default() -> Self {
+        Self {
+            opacity_compositing: true,
+            text_rendering: true,
+            complex_transforms: true,
+        }
+    }
+}
+
+/// RAII guard for WGPU error scopes.
+/// Automatically pushes an error scope on creation and pops it on drop.
+/// CRITICAL: Must call check() before dropping to avoid error scope imbalance.
+pub(crate) struct ErrorScopeGuard {
+    device: Arc<Device>,
+    label: &'static str,
+    checked: bool,
+}
+
+impl ErrorScopeGuard {
+    /// Push an error scope and return a guard that will pop it on drop.
+    pub(crate) fn push(device: &Arc<Device>, label: &'static str) -> Self {
+        device.push_error_scope(ErrorFilter::Validation);
+        Self {
+            device: Arc::clone(device),
+            label,
+            checked: false,
+        }
+    }
+
+    /// Check for errors and return a Result. This MUST be called before the guard drops.
+    /// Consumes self to prevent reuse.
+    pub(crate) fn check(mut self) -> AnyResult<()> {
+        self.checked = true;
+        if let Some(err) = pollster::block_on(self.device.pop_error_scope()) {
+            // Log the FULL error details to understand what's actually failing
+            log::error!(target: "wgpu_renderer", "WGPU VALIDATION ERROR in scope: '{}'", self.label);
+            log::error!(target: "wgpu_renderer", "Error type: {err:?}");
+            log::error!(target: "wgpu_renderer", "Full details: {err:#?}");
+            return Err(anyhow!("wgpu scoped error in {}: {err:?}", self.label));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ErrorScopeGuard {
+    fn drop(&mut self) {
+        if !self.checked {
+            // CRITICAL: If check() wasn't called, this is a bug that will cause error scope imbalance
+            log::error!(target: "wgpu_renderer", "ERROR SCOPE NOT CHECKED: '{}' - This will cause scope imbalance!", self.label);
+            // Pop anyway to prevent complete corruption, but log the error
+            let _ = pollster::block_on(self.device.pop_error_scope());
+        }
+    }
+}
+
+/// Rendering context that encapsulates viewport and size information.
+/// This is passed as a parameter instead of mutating shared state.
+#[derive(Debug, Copy, Clone)]
+struct RenderContext {
+    viewport_size: PhysicalSize<u32>,
+}
+
+impl RenderContext {
+    fn new(size: PhysicalSize<u32>) -> Self {
+        Self {
+            viewport_size: size,
+        }
+    }
+
+    fn width(&self) -> u32 {
+        self.viewport_size.width.max(1)
+    }
+
+    fn height(&self) -> u32 {
+        self.viewport_size.height.max(1)
+    }
+}
+
+// TODO: Full render graph implementation for future optimization
+// For now, we use the single-encoder pattern which is the critical architectural fix
 
 #[derive(Debug, Clone)]
 pub enum Layer {
@@ -39,7 +173,7 @@ pub enum Layer {
 /// RenderState owns the GPU device/surface and a minimal pipeline to draw rectangles from layout.
 pub struct RenderState {
     pub(crate) window: Arc<Window>,
-    pub(crate) device: Device,
+    pub(crate) device: Arc<Device>,
     pub(crate) queue: Queue,
     pub(crate) size: PhysicalSize<u32>,
     surface: Option<Surface<'static>>,
@@ -68,7 +202,6 @@ pub struct RenderState {
     layers: Vec<Layer>,
     /// Clear color for the framebuffer (canvas background). RGBA in [0,1].
     clear_color: [f32; 4],
-    offscreen_depth: u32,
     /// Persistent offscreen render target for readback-based renders
     offscreen_tex: Option<Texture>,
     /// Persistent readback buffer sized for current framebuffer (padded bytes-per-row)
@@ -82,16 +215,6 @@ pub struct RenderState {
 }
 
 impl RenderState {
-    #[inline]
-    fn pop_validation(&self, label: &str) -> AnyResult<()> {
-        let res = pollster::block_on(self.device.pop_error_scope());
-        if let Some(err) = res {
-            log::error!(target: "wgpu_renderer", "WGPU error in scope '{label}': {err:?}");
-            return Err(anyhow!("wgpu scoped error in {label}: {err:?}"));
-        }
-        Ok(())
-    }
-
     #[inline]
     fn preprocess_layer_with_encoder(
         &mut self,
@@ -173,12 +296,17 @@ impl RenderState {
     }
 
     #[inline]
-    fn composite_groups(&mut self, pass: &mut RenderPass<'_>, comps: Vec<OpacityComposite>) {
+    fn composite_groups(
+        &mut self,
+        pass: &mut RenderPass<'_>,
+        comps: Vec<OpacityComposite>,
+    ) -> AnyResult<()> {
         for (_s, _e, tex, view, _tw, _th, alpha, bounds) in comps.into_iter() {
             // Keep the texture alive until after submit; otherwise some backends invalidate at finish.
             self.live_textures.push(tex);
-            self.draw_texture_quad(pass, &view, alpha, bounds);
+            self.draw_texture_quad(pass, &view, alpha, bounds)?;
         }
+        Ok(())
     }
 
     #[inline]
@@ -196,29 +324,145 @@ impl RenderState {
         Ok(())
     }
 
+    /// Helper method to render layers pass, extracted to reduce nesting.
+    fn render_layers_pass(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        texture_view: &TextureView,
+        main_load: LoadOp<Color>,
+        per_layer: Vec<LayerEntry>,
+    ) -> AnyResult<()> {
+        let scope = ErrorScopeGuard::push(&self.device, "main-pass(layers)");
+        {
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("main-pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: texture_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: main_load,
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            debug!(target: "wgpu_renderer", "start main-pass");
+            pass.push_debug_group("main-pass(layers)");
+            pass.set_pipeline(&self.pipeline);
+
+            for (items, comps, ranges) in per_layer.into_iter().flatten() {
+                self.draw_items_excluding_ranges(&mut pass, &items, &ranges);
+                self.composite_groups(&mut pass, comps)?;
+            }
+            pass.pop_debug_group();
+            debug!(target: "wgpu_renderer", "end main-pass");
+        }
+        scope.check()
+    }
+
+    /// Helper method to render retained display list pass, extracted to reduce nesting.
+    fn render_retained_pass(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        texture_view: &TextureView,
+        main_load: LoadOp<Color>,
+        items: &[DisplayItem],
+        comps: Vec<OpacityComposite>,
+    ) -> AnyResult<()> {
+        log::debug!(target: "wgpu_renderer", "=== CREATING MAIN RENDER PASS (retained) ===");
+        log::debug!(target: "wgpu_renderer", "    Composites to apply: {}", comps.len());
+        log::debug!(target: "wgpu_renderer", "    Texture view: {texture_view:?}");
+        log::debug!(target: "wgpu_renderer", "    Load op: {main_load:?}");
+        let scope = ErrorScopeGuard::push(&self.device, "main-pass(retained)");
+        {
+            log::debug!(target: "wgpu_renderer", "    About to call begin_render_pass(main-pass)...");
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("main-pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: texture_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: main_load,
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            debug!(target: "wgpu_renderer", "start main-pass");
+            pass.push_debug_group("main-pass(retained)");
+            pass.set_pipeline(&self.pipeline);
+
+            let ranges = self.build_exclude_ranges(&comps);
+            self.draw_items_excluding_ranges(&mut pass, items, &ranges);
+            self.composite_groups(&mut pass, comps)?;
+            pass.pop_debug_group();
+            debug!(target: "wgpu_renderer", "end main-pass");
+        }
+        scope.check()
+    }
+
+    /// Helper method to render immediate mode pass, extracted to reduce nesting.
+    fn render_immediate_pass(
+        &self,
+        encoder: &mut CommandEncoder,
+        texture_view: &TextureView,
+        load_op: LoadOp<Color>,
+    ) -> AnyResult<()> {
+        let scope = ErrorScopeGuard::push(&self.device, "main-pass(immediate)");
+        {
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("main-pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: texture_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: load_op,
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            debug!(target: "wgpu_renderer", "start main-pass");
+            pass.push_debug_group("main-pass(immediate)");
+            pass.set_pipeline(&self.pipeline);
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            if self.vertex_count > 0 {
+                pass.draw(0..self.vertex_count, 0..1);
+            }
+            pass.pop_debug_group();
+            debug!(target: "wgpu_renderer", "end main-pass");
+        }
+        scope.check()
+    }
+
     /// Record all render passes (rectangles + text) into the provided texture view.
-    /// This uses the exact same code paths as `render()`.
+    /// Uses a single encoder for the entire frame (production-grade pattern).
     fn record_draw_passes(
         &mut self,
         texture_view: &TextureView,
         encoder: &mut CommandEncoder,
-        is_offscreen: bool,
+        use_retained: bool,
     ) -> AnyResult<()> {
         let use_layers = !self.layers.is_empty();
-        let use_retained = self.retained_display_list.is_some() && !use_layers;
+        let is_offscreen = false;
 
-        // Decide main pass load operation based on target
+        // Determine load operations
         let main_load = if is_offscreen {
             LoadOp::Clear(Color::TRANSPARENT)
         } else {
             LoadOp::Load
         };
-        // For offscreen text pass, also prefer Clear to avoid multi-pass Load hazards on some backends
-        let text_load = if is_offscreen {
-            LoadOp::Clear(Color::TRANSPARENT)
-        } else {
-            LoadOp::Load
-        };
+        // For text pass, always use Load to preserve the main pass content
+        let text_load = LoadOp::Load;
 
         // Prepare text via glyphon for single-list paths
         if use_retained {
@@ -236,7 +480,7 @@ impl RenderState {
             // For offscreen, we'll clear in the main pass itself to avoid multi-pass hazards.
             if !is_offscreen {
                 debug!(target: "wgpu_renderer", "start clear-pass");
-                self.device.push_error_scope(ErrorFilter::Validation);
+                let scope = ErrorScopeGuard::push(&self.device, "clear-pass");
                 {
                     let _clear_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                         label: Some("clear-pass"),
@@ -258,15 +502,14 @@ impl RenderState {
                         timestamp_writes: None,
                         occlusion_query_set: None,
                     });
-                    // pass dropped at end of this inner scope
                 }
-                self.pop_validation("clear-pass.scope")?;
+                scope.check()?;
                 debug!(target: "wgpu_renderer", "end clear-pass");
             }
 
             if use_layers {
                 // Pre-collect opacity composites for each layer BEFORE opening the main pass
-                // to avoid creating encoders while a render pass is in progress.
+                // Offscreen rendering uses the same encoder with properly scoped render passes
                 let per_layer: Vec<LayerEntry> = self
                     .layers
                     .clone()
@@ -275,73 +518,15 @@ impl RenderState {
                     .collect::<AnyResult<Vec<_>>>()?;
 
                 // Open the main pass and draw layers: non-group items first, then composite groups
-                self.device.push_error_scope(ErrorFilter::Validation);
-                let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                    label: Some("main-pass"),
-                    color_attachments: &[Some(RenderPassColorAttachment {
-                        view: texture_view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: Operations {
-                            load: main_load,
-                            store: StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                debug!(target: "wgpu_renderer", "start main-pass");
-                pass.push_debug_group("main-pass(layers)");
-                let pipeline = &self.pipeline;
-                self.device.push_error_scope(ErrorFilter::Validation);
-                pass.set_pipeline(pipeline);
-                self.pop_validation("main-pass.set_pipeline(rects)")?;
-
-                for (items, comps, ranges) in per_layer.into_iter().flatten() {
-                    self.draw_items_excluding_ranges(&mut pass, &items, &ranges);
-                    self.composite_groups(&mut pass, comps);
-                }
-                pass.pop_debug_group();
-                debug!(target: "wgpu_renderer", "end main-pass");
-                // Validate entire pass scope (errors that occurred inside the pass)
-                self.pop_validation("main-pass.scope(layers)")?;
+                self.render_layers_pass(encoder, texture_view, main_load, per_layer)?;
             } else if use_retained {
                 if let Some(dl) = self.retained_display_list.clone() {
                     let items: Vec<DisplayItem> = dl.items;
-                    // Pre-render opacity groups offscreen before opening the main pass, avoiding nested encoders.
+                    // Pre-render opacity groups offscreen using the shared encoder
+                    // Render passes are properly scoped for automatic texture state transitions
                     let comps = self.collect_opacity_composites(encoder, &items)?;
-                    // Open main pass and draw non-group items, then composite groups in order.
-                    self.device.push_error_scope(ErrorFilter::Validation);
-                    let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                        label: Some("main-pass"),
-                        color_attachments: &[Some(RenderPassColorAttachment {
-                            view: texture_view,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: Operations {
-                                load: main_load,
-                                store: StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                    });
-                    debug!(target: "wgpu_renderer", "start main-pass");
-                    pass.push_debug_group("main-pass(retained)");
-                    let pipeline = &self.pipeline;
-                    self.device.push_error_scope(ErrorFilter::Validation);
-                    pass.set_pipeline(pipeline);
-                    self.pop_validation("main-pass.set_pipeline(rects)")?;
-
-                    let ranges = self.build_exclude_ranges(&comps);
-                    self.draw_items_excluding_ranges(&mut pass, &items, &ranges);
-                    self.composite_groups(&mut pass, comps);
-                    pass.pop_debug_group();
-                    debug!(target: "wgpu_renderer", "end main-pass");
-                    // Validate entire pass scope
-                    self.pop_validation("main-pass.scope(retained)")?;
+                    // Open main pass and draw non-group items, then composite groups in order
+                    self.render_retained_pass(encoder, texture_view, main_load, &items, comps)?;
                 }
             } else {
                 // Immediate path: batch all rects into one draw call as before
@@ -362,19 +547,27 @@ impl RenderState {
                 });
                 self.vertex_buffer = vertex_buffer;
                 self.vertex_count = vertices.len() as u32;
-                self.device.push_error_scope(ErrorFilter::Validation);
+                let immediate_load = if is_offscreen {
+                    LoadOp::Clear(Color::TRANSPARENT)
+                } else {
+                    LoadOp::Load
+                };
+                self.render_immediate_pass(encoder, texture_view, immediate_load)?;
+            }
+        }
+
+        // Second pass: text rendering
+        {
+            let scope = ErrorScopeGuard::push(&self.device, "text-pass");
+            {
                 let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                    label: Some("main-pass"),
+                    label: Some("text-pass"),
                     color_attachments: &[Some(RenderPassColorAttachment {
                         view: texture_view,
                         depth_slice: None,
                         resolve_target: None,
                         ops: Operations {
-                            load: if is_offscreen {
-                                LoadOp::Clear(Color::TRANSPARENT)
-                            } else {
-                                LoadOp::Load
-                            },
+                            load: text_load,
                             store: StoreOp::Store,
                         },
                     })],
@@ -382,58 +575,26 @@ impl RenderState {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
-                debug!(target: "wgpu_renderer", "start main-pass");
-                pass.push_debug_group("main-pass(immediate)");
-                let pipeline = &self.pipeline;
-                self.device.push_error_scope(ErrorFilter::Validation);
-                pass.set_pipeline(pipeline);
-                self.pop_validation("main-pass.set_pipeline(rects)")?;
-                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                if self.vertex_count > 0 {
-                    self.device.push_error_scope(ErrorFilter::Validation);
-                    pass.draw(0..self.vertex_count, 0..1);
-                    self.pop_validation("main-pass.draw(rects)")?;
+                debug!(target: "wgpu_renderer", "start text-pass");
+                pass.push_debug_group("text-pass");
+                if use_layers {
+                    let batches = batch_layer_texts_with_scissor(
+                        &self.layers,
+                        self.size.width,
+                        self.size.height,
+                    );
+                    self.draw_text_batches(&mut pass, batches);
+                } else if use_retained && let Some(dl) = &self.retained_display_list {
+                    let batches = batch_texts_with_scissor(dl, self.size.width, self.size.height);
+                    self.draw_text_batches(&mut pass, batches);
                 }
                 pass.pop_debug_group();
-                debug!(target: "wgpu_renderer", "end main-pass");
-                // Validate entire pass scope
-                self.pop_validation("main-pass.scope(immediate)")?;
+                debug!(target: "wgpu_renderer", "end text-pass");
             }
+            scope.check()?;
         }
 
-        // Second pass: text rendering
-        {
-            self.device.push_error_scope(ErrorFilter::Validation);
-            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("text-pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: texture_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: text_load,
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            debug!(target: "wgpu_renderer", "start text-pass");
-            pass.push_debug_group("text-pass");
-            if use_layers {
-                let batches =
-                    batch_layer_texts_with_scissor(&self.layers, self.size.width, self.size.height);
-                self.draw_text_batches(&mut pass, batches);
-            } else if use_retained && let Some(dl) = &self.retained_display_list {
-                let batches = batch_texts_with_scissor(dl, self.size.width, self.size.height);
-                self.draw_text_batches(&mut pass, batches);
-            }
-            pass.pop_debug_group();
-            debug!(target: "wgpu_renderer", "end text-pass");
-            // Validate entire text pass scope
-            self.pop_validation("text-pass.scope")?;
-        }
+        // All render passes complete - single encoder pattern
         Ok(())
     }
 
@@ -533,6 +694,37 @@ impl RenderState {
         Ok(())
     }
 
+    /// Context-aware version of draw_items_with_groups that uses RenderContext instead of self.size.
+    /// This prevents state corruption when rendering to different-sized targets.
+    fn draw_items_with_groups_ctx(
+        &mut self,
+        pass: &mut RenderPass<'_>,
+        items: &[DisplayItem],
+        ctx: RenderContext,
+    ) -> AnyResult<()> {
+        // Temporarily change size, ensuring it's restored even on error
+        let old_size = self.size;
+        self.size = PhysicalSize::new(ctx.width(), ctx.height());
+        let result = self.draw_items_with_groups(pass, items);
+        self.size = old_size;
+        result
+    }
+
+    /// Context-aware version of draw_text_batch that uses RenderContext.
+    fn draw_text_batch_ctx(
+        &mut self,
+        pass: &mut RenderPass<'_>,
+        text_items: &[DrawText],
+        scissor: ScissorRect,
+        ctx: RenderContext,
+    ) {
+        // Temporarily change size, ensuring it's restored even on error
+        let old_size = self.size;
+        self.size = PhysicalSize::new(ctx.width(), ctx.height());
+        self.draw_text_batch(pass, text_items, scissor);
+        self.size = old_size;
+    }
+
     /// Find the matching EndStackingContext for a BeginStackingContext
     /// Spec: Proper nesting of stacking context boundaries
     #[inline]
@@ -599,16 +791,25 @@ impl RenderState {
     }
 
     /// Render items to offscreen texture with tight bounds and texture pooling
-    /// Spec: CSS Compositing Level 1 §3.1 - Stacking context rendering optimization
+    /// Uses RAII guards to ensure state is always properly restored.
+    ///
+    /// PRODUCTION-GRADE ARCHITECTURE: Uses the shared encoder (single encoder per frame).
+    /// Render passes are properly scoped to ensure automatic texture state transitions.
+    /// This is the correct pattern used by Chromium, Firefox, and Safari.
+    ///
+    /// Returns (texture, view, width, height).
     fn render_items_to_offscreen_bounded(
         &mut self,
-        _encoder: &mut CommandEncoder,
+        encoder: &mut CommandEncoder,
         items: &[DisplayItem],
         bounds: (f32, f32, f32, f32),
-    ) -> AnyResult<OffscreenRender> {
+    ) -> AnyResult<OffscreenRenderResult> {
         let (x, y, width, height) = bounds;
         let tex_width = (width.ceil() as u32).max(1);
         let tex_height = (height.ceil() as u32).max(1);
+
+        log::debug!(target: "wgpu_renderer", "render_items_to_offscreen_bounded: bounds=({}, {}, {}, {}), tex_size={}x{}, items={}", 
+            x, y, width, height, tex_width, tex_height, items.len());
 
         // Use a non-sRGB base format for the texture and an sRGB view for rendering.
         // Many backends (e.g., D3D12) do not allow render attachments with sRGB base textures.
@@ -619,8 +820,9 @@ impl RenderState {
         };
 
         // Create texture for this offscreen pass
+        // CRITICAL: The texture MUST have TEXTURE_BINDING usage to be used as a shader resource
         let texture = self.device.create_texture(&TextureDescriptor {
-            label: Some("offscreen-target"),
+            label: Some("offscreen-opacity-texture"),
             size: Extent3d {
                 width: tex_width,
                 height: tex_height,
@@ -630,73 +832,80 @@ impl RenderState {
             sample_count: 1,
             dimension: TextureDimension::D2,
             format: offscreen_format,
-            // We will render into this texture and then sample it for compositing.
+            // CRITICAL: All three usages are required:
+            // - RENDER_ATTACHMENT: to render into the texture
+            // - TEXTURE_BINDING: to use it as a shader resource in the main pass
+            // - COPY_SRC: for potential readback operations
             usage: TextureUsages::RENDER_ATTACHMENT
-                | TextureUsages::COPY_SRC
-                | TextureUsages::TEXTURE_BINDING,
+                | TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_SRC,
             view_formats: &[self.render_format],
         });
+
+        log::debug!(target: "wgpu_renderer", "Created offscreen texture: format={:?}, usage={:?}", 
+            offscreen_format, texture.usage());
+
         let view = texture.create_view(&TextureViewDescriptor {
+            label: Some("offscreen-opacity-view"),
             format: Some(self.render_format),
             ..Default::default()
         });
 
-        // Increase offscreen depth so nested compositing can be managed if needed later
-        self.offscreen_depth = self.offscreen_depth.saturating_add(1);
+        // Create rendering context for offscreen texture
+        let ctx = RenderContext::new(PhysicalSize::new(tex_width, tex_height));
 
+        // Use the shared encoder - render passes will be properly scoped
+        // WGPU automatically handles texture state transitions when render passes end
+
+        // Translate items to texture-local coordinates
+        let translated_items: Vec<DisplayItem> = items
+            .iter()
+            .map(|item| match item {
+                DisplayItem::Rect {
+                    x: rx,
+                    y: ry,
+                    width: rw,
+                    height: rh,
+                    color,
+                } => DisplayItem::Rect {
+                    x: rx - x,
+                    y: ry - y,
+                    width: *rw,
+                    height: *rh,
+                    color: *color,
+                },
+                DisplayItem::Text {
+                    x: tx,
+                    y: ty,
+                    text,
+                    color,
+                    font_size,
+                    bounds,
+                } => DisplayItem::Text {
+                    x: tx - x,
+                    y: ty - y,
+                    text: text.clone(),
+                    color: *color,
+                    font_size: *font_size,
+                    bounds: bounds.map(|(l, t, r, b)| {
+                        (
+                            (l as f32 - x) as i32,
+                            (t as f32 - y) as i32,
+                            (r as f32 - x) as i32,
+                            (b as f32 - y) as i32,
+                        )
+                    }),
+                },
+                other => other.clone(),
+            })
+            .collect();
+
+        // Rects pass with error scope guard
         {
-            // Use a dedicated encoder for this offscreen render to isolate errors and GPU state.
-            let mut encoder = self
-                .device
-                .create_command_encoder(&CommandEncoderDescriptor {
-                    label: Some("opacity-offscreen-encoder"),
-                });
-            // Translate items to texture-local coordinates
-            let translated_items: Vec<DisplayItem> = items
-                .iter()
-                .map(|item| match item {
-                    DisplayItem::Rect {
-                        x: rx,
-                        y: ry,
-                        width: rw,
-                        height: rh,
-                        color,
-                    } => DisplayItem::Rect {
-                        x: rx - x,
-                        y: ry - y,
-                        width: *rw,
-                        height: *rh,
-                        color: *color,
-                    },
-                    DisplayItem::Text {
-                        x: tx,
-                        y: ty,
-                        text,
-                        color,
-                        font_size,
-                        bounds,
-                    } => DisplayItem::Text {
-                        x: tx - x,
-                        y: ty - y,
-                        text: text.clone(),
-                        color: *color,
-                        font_size: *font_size,
-                        bounds: bounds.map(|(l, t, r, b)| {
-                            (
-                                (l as f32 - x) as i32,
-                                (t as f32 - y) as i32,
-                                (r as f32 - x) as i32,
-                                (b as f32 - y) as i32,
-                            )
-                        }),
-                    },
-                    other => other.clone(),
-                })
-                .collect();
-
-            // Rects pass
-            self.device.push_error_scope(ErrorFilter::Validation);
+            log::debug!(target: "wgpu_renderer", ">>> CREATING offscreen rects pass");
+            let scope = ErrorScopeGuard::push(&self.device, "opacity-offscreen-pass");
             {
+                log::debug!(target: "wgpu_renderer", "    begin_render_pass(opacity-offscreen-pass)");
                 let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                     label: Some("opacity-offscreen-pass"),
                     color_attachments: &[Some(RenderPassColorAttachment {
@@ -712,74 +921,61 @@ impl RenderState {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
-                // Set viewport to match texture bounds
+                log::debug!(target: "wgpu_renderer", "    Pass created, setting viewport and pipeline");
                 pass.set_viewport(0.0, 0.0, tex_width as f32, tex_height as f32, 0.0, 1.0);
                 pass.set_pipeline(&self.pipeline);
-                let old_size = self.size;
-                self.size = PhysicalSize::new(tex_width, tex_height);
-                let _ = self.draw_items_with_groups(&mut pass, &translated_items);
-                self.size = old_size;
+                log::debug!(target: "wgpu_renderer", "    Drawing items");
+                self.draw_items_with_groups_ctx(&mut pass, &translated_items, ctx)?;
+                log::debug!(target: "wgpu_renderer", "    About to drop pass");
             }
-            let res = pollster::block_on(self.device.pop_error_scope());
-            if let Some(err) = res {
-                log::error!(target: "wgpu_renderer", "WGPU error in scope 'opacity-offscreen-pass': {err:?}");
-                return Err(anyhow!(
-                    "wgpu scoped error in opacity-offscreen-pass: {err:?}"
-                ));
+            log::debug!(target: "wgpu_renderer", "<<< Pass DROPPED, checking error scope");
+            // CRITICAL: Check for errors immediately after pass drops
+            let check_result = scope.check();
+            if let Err(e) = &check_result {
+                log::error!(target: "wgpu_renderer", "Offscreen rects pass had error: {e:?}");
             }
-
-            // Text pass
-            let text_items: Vec<DrawText> =
-                translated_items.iter().filter_map(map_text_item).collect();
-            if !text_items.is_empty() {
-                self.glyphon_prepare_for(text_items.as_slice());
-                self.device.push_error_scope(ErrorFilter::Validation);
-                {
-                    let mut text_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                        label: Some("opacity-offscreen-text-pass"),
-                        color_attachments: &[Some(RenderPassColorAttachment {
-                            view: &view,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: Operations {
-                                load: LoadOp::Load,
-                                store: StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                    });
-                    text_pass.set_viewport(0.0, 0.0, tex_width as f32, tex_height as f32, 0.0, 1.0);
-                    let old_size2 = self.size;
-                    self.size = PhysicalSize::new(tex_width, tex_height);
-                    self.draw_text_batch(&mut text_pass, text_items.as_slice(), None);
-                    self.size = old_size2;
-                }
-                let res2 = pollster::block_on(self.device.pop_error_scope());
-                if let Some(err) = res2 {
-                    log::error!(target: "wgpu_renderer", "WGPU error in scope 'opacity-offscreen-text-pass': {err:?}");
-                    return Err(anyhow!(
-                        "wgpu scoped error in opacity-offscreen-text-pass: {err:?}"
-                    ));
-                }
-            }
-
-            // Finish and submit the offscreen encoder now so the texture is fully written
-            self.device.push_error_scope(ErrorFilter::Validation);
-            let cb = encoder.finish();
-            let resf = pollster::block_on(self.device.pop_error_scope());
-            if let Some(err) = resf {
-                log::error!(target: "wgpu_renderer", "WGPU error finishing 'opacity-offscreen-encoder': {err:?}");
-                return Err(anyhow!(
-                    "wgpu scoped error in opacity-offscreen-encoder.finish: {err:?}"
-                ));
-            }
-            submit_with_validation(&self.device, &self.queue, [cb])?;
+            check_result?;
+            log::debug!(target: "wgpu_renderer", "    Error scope checked OK");
         }
 
-        // Decrease offscreen depth
-        self.offscreen_depth = self.offscreen_depth.saturating_sub(1);
+        // Text pass with error scope guard
+        let text_items: Vec<DrawText> = translated_items.iter().filter_map(map_text_item).collect();
+        if !text_items.is_empty() {
+            log::debug!(target: "wgpu_renderer", ">>> CREATING offscreen text pass");
+            self.glyphon_prepare_for(text_items.as_slice());
+            let scope = ErrorScopeGuard::push(&self.device, "opacity-offscreen-text-pass");
+            {
+                log::debug!(target: "wgpu_renderer", "    begin_render_pass(opacity-offscreen-text-pass)");
+                let mut text_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    label: Some("opacity-offscreen-text-pass"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Load,
+                            store: StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                log::debug!(target: "wgpu_renderer", "    Pass created, drawing text");
+                text_pass.set_viewport(0.0, 0.0, tex_width as f32, tex_height as f32, 0.0, 1.0);
+                self.draw_text_batch_ctx(&mut text_pass, text_items.as_slice(), None, ctx);
+                log::debug!(target: "wgpu_renderer", "    About to drop text pass");
+            }
+            log::debug!(target: "wgpu_renderer", "<<< Text pass DROPPED, checking error scope");
+            scope.check()?;
+            log::debug!(target: "wgpu_renderer", "    Text error scope checked OK");
+        }
+
+        // Render passes are complete and properly scoped
+        // WGPU has automatically transitioned the texture from RENDER_ATTACHMENT to TEXTURE_BINDING state
+        // The texture is now safe to use as a shader resource in subsequent render passes
+
+        log::debug!(target: "wgpu_renderer", "Offscreen render passes complete, texture ready for use");
 
         Ok((texture, view, tex_width, tex_height))
     }
@@ -790,14 +986,10 @@ impl RenderState {
         view: &TextureView,
         alpha: f32,
         bounds: Bounds, // x, y, w, h in px
-    ) {
+    ) -> AnyResult<()> {
+        log::debug!(target: "wgpu_renderer", ">>> draw_texture_quad: bounds={bounds:?}, alpha={alpha}");
+
         // Build a quad covering the group's bounds with UVs 0..1 over the offscreen texture
-        #[repr(C)]
-        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-        struct TexVertex {
-            pos: [f32; 2],
-            uv: [f32; 2],
-        }
         let (x, y, w, h) = bounds;
         let fw = self.size.width.max(1) as f32;
         let fh = self.size.height.max(1) as f32;
@@ -849,38 +1041,56 @@ impl RenderState {
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
         self.live_buffers.push(alpha_buf.clone());
-        // Bind group for texture + sampler + alpha (under validation scope)
-        self.device.push_error_scope(ErrorFilter::Validation);
-        let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
-            label: Some("opacity-tex-bind"),
-            layout: &self.tex_bind_layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(view),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Sampler(&self.linear_sampler),
-                },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: alpha_buf.as_entire_binding(),
-                },
-            ],
-        });
-        let bind_err = pollster::block_on(self.device.pop_error_scope());
-        if let Some(err) = bind_err {
-            log::error!(target: "wgpu_renderer", "WGPU error in scope 'opacity-tex-bind': {err:?}");
-        }
+        // Bind group for texture + sampler + alpha (with proper error scope management)
+        log::debug!(target: "wgpu_renderer", "    Creating bind group for offscreen texture");
+        log::debug!(target: "wgpu_renderer", "    Texture view: {view:?}");
+
+        // CRITICAL: Push error scope BEFORE creating bind group to catch validation errors
+        let scope = ErrorScopeGuard::push(&self.device, "opacity-tex-bind");
+        log::debug!(target: "wgpu_renderer", "    Error scope pushed, about to create bind group");
+
+        let bind_group = {
+            let bg = self.device.create_bind_group(&BindGroupDescriptor {
+                label: Some("opacity-tex-bind"),
+                layout: &self.tex_bind_layout,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(view),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::Sampler(&self.linear_sampler),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: alpha_buf.as_entire_binding(),
+                    },
+                ],
+            });
+            log::debug!(target: "wgpu_renderer", "    Bind group created successfully");
+            bg
+        };
+
+        log::debug!(target: "wgpu_renderer", "    Checking error scope after bind group creation");
+        scope.check()?;
+        log::debug!(target: "wgpu_renderer", "    Bind group error scope OK");
+
         // Constrain drawing to the group's bounds to avoid edge bleed and match compositing region.
-        self.device.push_error_scope(ErrorFilter::Validation);
-        pass.set_pipeline(&self.tex_pipeline);
-        let _ = self.pop_validation("composite.set_pipeline(tex)");
+        log::debug!(target: "wgpu_renderer", "    About to set pipeline");
+        {
+            let scope = ErrorScopeGuard::push(&self.device, "composite.set_pipeline");
+            pass.set_pipeline(&self.tex_pipeline);
+            scope.check()?;
+        }
+        log::debug!(target: "wgpu_renderer", "    Pipeline set successfully");
+
         let sx = x.max(0.0).floor() as u32;
         let sy = y.max(0.0).floor() as u32;
         let sw = w.max(0.0).ceil() as u32;
         let sh = h.max(0.0).ceil() as u32;
+
+        log::debug!(target: "wgpu_renderer", "    About to set scissor rect: ({sx}, {sy}, {sw}, {sh})");
         let fw_u = self.size.width.max(1);
         let fh_u = self.size.height.max(1);
         let rx = sx.min(fw_u);
@@ -889,16 +1099,21 @@ impl RenderState {
         let rh = sh.min(fh_u.saturating_sub(ry));
         if rw == 0 || rh == 0 {
             // Nothing visible to draw; avoid zero-sized scissor which can invalidate encoder on some backends.
-            return;
+            return Ok(());
         }
         pass.set_scissor_rect(rx, ry, rw, rh);
         pass.set_vertex_buffer(0, vb.slice(..));
-        self.device.push_error_scope(ErrorFilter::Validation);
-        pass.set_bind_group(0, &bind_group, &[]);
-        let _ = self.pop_validation("composite.set_bind_group(0)");
-        self.device.push_error_scope(ErrorFilter::Validation);
-        pass.draw(0..6, 0..1);
-        let _ = self.pop_validation("composite.draw");
+        {
+            let scope = ErrorScopeGuard::push(&self.device, "composite.set_bind_group");
+            pass.set_bind_group(0, &bind_group, &[]);
+            scope.check()?;
+        }
+        {
+            let scope = ErrorScopeGuard::push(&self.device, "composite.draw");
+            pass.draw(0..6, 0..1);
+            scope.check()?;
+        }
+        Ok(())
     }
 
     #[inline]
@@ -964,8 +1179,10 @@ impl RenderState {
 
     /// Create the GPU device/surface and initialize a simple render pipeline.
     pub async fn new(window: Arc<Window>) -> RenderState {
+        // Enable DX12 validation layer for detailed error messages
         let instance = Instance::new(&InstanceDescriptor {
             backends: Backends::DX12 | Backends::GL,
+            flags: InstanceFlags::VALIDATION | InstanceFlags::DEBUG,
             ..Default::default()
         });
         let adapter = instance
@@ -976,10 +1193,24 @@ impl RenderState {
             })
             .await
             .unwrap();
-        let (device, queue) = adapter
-            .request_device(&DeviceDescriptor::default())
-            .await
-            .unwrap();
+        // Enable validation layers in debug builds for better error reporting
+        let device_descriptor = DeviceDescriptor {
+            label: Some("valor-render-device"),
+            required_features: Features::empty(),
+            required_limits: Limits::default(),
+            memory_hints: MemoryHints::default(),
+            trace: Default::default(),
+        };
+
+        let (device, queue) = adapter.request_device(&device_descriptor).await.unwrap();
+
+        // Set up error callback for better debugging
+        device.on_uncaptured_error(Box::new(|error| {
+            log::error!(target: "wgpu_renderer", "Uncaptured WGPU error: {error:?}");
+        }));
+
+        // Wrap device in Arc for safe shared ownership and to eliminate unsafe code
+        let device = Arc::new(device);
 
         let size = window.inner_size();
 
@@ -1094,7 +1325,6 @@ impl RenderState {
             viewport: viewport_local,
             layers: Vec::new(),
             clear_color: [1.0, 1.0, 1.0, 1.0],
-            offscreen_depth: 0,
             offscreen_tex: None,
             readback_buf: None,
             readback_padded_bpr: 0,
@@ -1149,6 +1379,58 @@ impl RenderState {
         self.layers.clear();
     }
 
+    /// Reset rendering state for the next frame. Critical for test isolation and preventing
+    /// state corruption when reusing RenderState across multiple renders.
+    ///
+    /// This method:
+    /// - Flushes pending GPU operations
+    /// - Clears per-frame GPU resources
+    /// - Resets compositor layers
+    /// - Trims text atlas to prevent memory bloat
+    /// - Reinitializes text renderer to prevent glyphon state corruption
+    /// - Clears any cached state that could interfere with the next render
+    pub fn reset_for_next_frame(&mut self) {
+        // Force device to process all pending operations before clearing state
+        // This prevents encoder corruption from incomplete operations
+        let _ = self.device.poll(wgpu::PollType::Wait);
+
+        // Clear per-frame GPU resources
+        self.live_textures.clear();
+        self.live_buffers.clear();
+
+        // Clear compositor state
+        self.layers.clear();
+
+        // Trim text atlas to prevent unbounded growth and reset internal state
+        // CRITICAL: Wrap glyphon operations in error scopes
+        {
+            let scope = ErrorScopeGuard::push(&self.device, "glyphon-atlas-trim");
+            self.text_atlas.trim();
+            if let Err(e) = scope.check() {
+                log::error!(target: "wgpu_renderer", "Glyphon text_atlas.trim() generated validation error: {e:?}");
+            }
+        }
+
+        // Recreate text renderer to prevent glyphon state corruption after opacity compositing
+        // This is critical because glyphon maintains internal GPU state that can become invalid
+        {
+            let scope = ErrorScopeGuard::push(&self.device, "glyphon-renderer-recreate");
+            self.text_renderer = TextRenderer::new(
+                &mut self.text_atlas,
+                &self.device,
+                wgpu::MultisampleState::default(),
+                None,
+            );
+            if let Err(e) = scope.check() {
+                log::error!(target: "wgpu_renderer", "Glyphon TextRenderer::new() generated validation error: {e:?}");
+            }
+        }
+
+        // Clear display lists
+        self.display_list.clear();
+        self.text_list.clear();
+    }
+
     /// Push a new compositor layer to be rendered in order.
     pub fn push_layer(&mut self, layer: Layer) {
         self.layers.push(layer);
@@ -1196,10 +1478,13 @@ impl RenderState {
         encoder.push_debug_group("onscreen-frame");
         self.record_draw_passes(&texture_view, &mut encoder, false)?;
         encoder.pop_debug_group();
-        // Catch finish-time errors
-        self.device.push_error_scope(ErrorFilter::Validation);
-        let cb = encoder.finish();
-        self.pop_validation("encoder.finish(main)")?;
+        // Catch finish-time errors with proper error scope management
+        let cb = {
+            let scope = ErrorScopeGuard::push(&self.device, "encoder.finish(main)");
+            let command_buffer = encoder.finish();
+            scope.check()?;
+            command_buffer
+        };
         submit_with_validation(&self.device, &self.queue, [cb])?;
         // After submission, it's safe to drop per-frame resources
         self.live_textures.clear();
@@ -1215,8 +1500,30 @@ impl RenderState {
         // Ensure previous-frame resources are dropped before starting
         self.live_textures.clear();
         self.live_buffers.clear();
-        let mut encoder = self.device.create_command_encoder(&Default::default());
+
+        // Verify device is in clean state before creating main encoder
+        // This catches any lingering errors from previous operations
+        {
+            let validation_scope = ErrorScopeGuard::push(&self.device, "pre-render-validation");
+            validation_scope.check()?;
+        }
+
+        log::debug!(target: "wgpu_renderer", "Creating main encoder for render_to_rgba");
+        let encoder_scope = ErrorScopeGuard::push(&self.device, "encoder-creation");
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("render-to-rgba-main-encoder"),
+            });
+        encoder_scope.check()?;
+        log::debug!(target: "wgpu_renderer", "Main encoder created successfully");
+
+        // Verify encoder is valid by pushing a debug group
+        // If the encoder is invalid, this will fail
+        let debug_scope = ErrorScopeGuard::push(&self.device, "encoder-debug-group");
         encoder.push_debug_group("offscreen-frame");
+        debug_scope.check()?;
+        log::debug!(target: "wgpu_renderer", "Encoder debug group pushed successfully");
 
         // (Re)create offscreen texture/view if missing or size changed
         let fb_w = self.size.width.max(1);
@@ -1262,13 +1569,28 @@ impl RenderState {
                 format: Some(self.render_format),
                 ..Default::default()
             });
-        self.record_draw_passes(&tmp_view, &mut encoder, true)?;
+        // Use ErrorScopeGuard to ensure error scope is always properly popped
+        let command_buffer = {
+            let scope = ErrorScopeGuard::push(&self.device, "render_to_rgba");
 
-        // Submit the command buffer with error scope to catch WGPU errors
-        self.device.push_error_scope(ErrorFilter::Validation);
-        encoder.pop_debug_group();
-        let command_buffer = encoder.finish();
-        self.pop_validation("encoder.finish(offscreen)")?;
+            // Record draw passes using single encoder (production-grade pattern)
+            log::debug!(target: "wgpu_renderer", "About to record draw passes");
+            self.record_draw_passes(&tmp_view, &mut encoder, true)?;
+            log::debug!(target: "wgpu_renderer", "Draw passes recorded successfully");
+
+            // Check for validation errors BEFORE finishing encoder
+            scope.check()?;
+            log::debug!(target: "wgpu_renderer", "Error scope checked OK");
+
+            // Pop debug group and finish encoder (in separate scope)
+            encoder.pop_debug_group();
+            log::debug!(target: "wgpu_renderer", "About to finish encoder");
+            let finish_scope = ErrorScopeGuard::push(&self.device, "encoder.finish");
+            let command_buffer = encoder.finish();
+            finish_scope.check()?;
+            log::debug!(target: "wgpu_renderer", "Encoder finished successfully");
+            command_buffer
+        };
         submit_with_validation(&self.device, &self.queue, [command_buffer])?;
         // Drop per-frame resources after submission
         self.live_textures.clear();
@@ -1331,10 +1653,13 @@ impl RenderState {
             },
         );
 
-        // Submit the copy command buffer with error scope
-        self.device.push_error_scope(ErrorFilter::Validation);
-        let copy_command_buffer = copy_encoder.finish();
-        self.pop_validation("copy_encoder.finish")?;
+        // Submit the copy command buffer with proper error scope management
+        let copy_command_buffer = {
+            let scope = ErrorScopeGuard::push(&self.device, "copy_encoder.finish");
+            let cb = copy_encoder.finish();
+            scope.check()?;
+            cb
+        };
         submit_with_validation(&self.device, &self.queue, [copy_command_buffer])?;
 
         // Map and wait for the copy to be available

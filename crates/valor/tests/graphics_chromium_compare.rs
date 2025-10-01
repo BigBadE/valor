@@ -1,5 +1,6 @@
 #![allow(
     dead_code,
+    deprecated,
     clippy::min_ident_chars,
     clippy::too_many_lines,
     clippy::branches_sharing_code,
@@ -43,10 +44,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 use wgpu_backend::RenderState;
-use winit::dpi::PhysicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
+#[cfg(not(target_os = "windows"))]
 use winit::event_loop::EventLoop;
+use winit::event_loop::EventLoopBuilder;
 #[cfg(target_os = "windows")]
-use winit::platform::windows::EventLoopBuilderExtWindows as _;
+use winit::platform::windows::EventLoopBuilderExtWindows;
 use winit::window::Window;
 
 mod common;
@@ -279,31 +282,37 @@ fn build_valor_display_list_for(
     Ok(DisplayList::from_items(items))
 }
 
+// Counter to track which fixture we're rendering
+static RENDER_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 static RENDER_STATE: OnceLock<Mutex<RenderState>> = OnceLock::new();
 static WINDOW: OnceLock<Arc<Window>> = OnceLock::new();
 
 fn rasterize_display_list_to_rgba(dl: &DisplayList, width: u32, height: u32) -> Result<Vec<u8>> {
     // Initialize single runtime
-    let rt = RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().expect("tokio runtime"));
 
-    // Initialize single hidden window + RenderState once, then reuse and resize per render
     let state_mutex = RENDER_STATE.get_or_init(|| {
-        // Create a hidden window using a temporary EventLoop, then drop the loop.
-        #[allow(deprecated, reason = "Platform-specific event loop builder")]
+        let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
         let window = {
-            let mut builder = EventLoop::<()>::builder();
+            // Use Windows-specific EventLoopBuilder to allow creation on any thread
             #[cfg(target_os = "windows")]
-            {
-                let _ = builder.with_any_thread(true);
-            }
-            let el = builder.build().expect("failed to create event loop");
-            el.create_window(
-                Window::default_attributes()
-                    .with_visible(false)
-                    .with_inner_size(PhysicalSize::new(width, height)),
-            )
-            .expect("failed to create hidden window")
+            let event_loop = EventLoopBuilder::new()
+                .with_any_thread(true)
+                .build()
+                .expect("failed to create event loop");
+
+            #[cfg(not(target_os = "windows"))]
+            let event_loop = EventLoop::new().expect("failed to create event loop");
+
+            event_loop
+                .create_window(
+                    Window::default_attributes()
+                        .with_title("Valor Test")
+                        .with_inner_size(LogicalSize::new(width, height))
+                        .with_visible(false),
+                )
+                .expect("failed to create hidden window")
         };
         let window = Arc::new(window);
         let _ = WINDOW.set(window.clone());
@@ -312,10 +321,47 @@ fn rasterize_display_list_to_rgba(dl: &DisplayList, width: u32, height: u32) -> 
     });
 
     let mut state = state_mutex.lock().expect("lock render state");
+    let render_num = RENDER_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+    log::info!(
+        "=== Rendering fixture #{} with {} items ===",
+        render_num + 1,
+        dl.items.len()
+    );
+
+    // Log display list contents for debugging
+    if render_num >= 25 {
+        // Log details for fixtures around the problematic one
+        log::info!("Display list #{} contents:", render_num + 1);
+        for (i, item) in dl.items.iter().enumerate() {
+            log::info!("  Item {i}: {item:?}");
+        }
+    }
+
+    // Reset state to prevent corruption from previous renders
+    // This flushes GPU operations, clears resources, and reinitializes text renderer
+    state.reset_for_next_frame();
     // Ensure size matches current request
     state.resize(PhysicalSize::new(width, height));
     state.set_retained_display_list(dl.clone());
-    state.render_to_rgba()
+
+    // Render with comprehensive error handling
+    let result = state.render_to_rgba();
+
+    // If render failed, log detailed error information
+    if let Err(e) = &result {
+        log::error!("=== RENDER FAILED for fixture #{} ===", render_num + 1);
+        log::error!("Error: {e:?}");
+        log::error!("Display list had {} items", dl.items.len());
+        log::error!("Display list items:");
+        for (i, item) in dl.items.iter().enumerate() {
+            log::error!("  Item {i}: {item:?}");
+        }
+    } else {
+        log::info!("=== Fixture #{} rendered successfully ===", render_num + 1);
+    }
+
+    result
 }
 
 #[test]

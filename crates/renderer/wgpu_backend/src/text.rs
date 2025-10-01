@@ -1,3 +1,4 @@
+use crate::state::{ErrorScopeGuard, Layer, RenderState};
 use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Color as GlyphonColor, Metrics, Resolution, Shaping, TextArea,
     TextBounds,
@@ -233,8 +234,6 @@ fn intersect_scissor(a: Scissor, b: Scissor) -> Scissor {
     (x0, y0, w, h)
 }
 
-use crate::state::{Layer, RenderState};
-
 impl RenderState {
     /// Prepare glyphon buffers for the current text list and upload glyphs into the atlas.
     pub(crate) fn glyphon_prepare(&mut self) {
@@ -283,23 +282,39 @@ impl RenderState {
             });
         }
         // Prepare text (atlas upload + layout)
-        self.viewport.update(
-            &self.queue,
-            Resolution {
-                width: framebuffer_width,
-                height: framebuffer_height,
-            },
-        );
+        // CRITICAL: Wrap glyphon operations in error scopes to catch validation errors
+        {
+            let scope = ErrorScopeGuard::push(&self.device, "glyphon-viewport-update");
+            self.viewport.update(
+                &self.queue,
+                Resolution {
+                    width: framebuffer_width,
+                    height: framebuffer_height,
+                },
+            );
+            if let Err(e) = scope.check() {
+                log::error!(target: "wgpu_renderer", "Glyphon viewport.update() generated error: {e:?}");
+                return;
+            }
+        }
+
         let areas_count = areas.len();
-        let prep_res = self.text_renderer.prepare(
-            &self.device,
-            &self.queue,
-            &mut self.font_system,
-            &mut self.text_atlas,
-            &self.viewport,
-            areas,
-            &mut self.swash_cache,
-        );
+        let prep_res = {
+            let scope = ErrorScopeGuard::push(&self.device, "glyphon-text-prepare");
+            let result = self.text_renderer.prepare(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.text_atlas,
+                &self.viewport,
+                areas,
+                &mut self.swash_cache,
+            );
+            if let Err(e) = scope.check() {
+                log::error!(target: "wgpu_renderer", "Glyphon text_renderer.prepare() generated validation error: {e:?}");
+            }
+            result
+        };
         debug!(
             target: "wgpu_renderer",
             "glyphon_prepare: areas={areas_count} viewport={framebuffer_width}x{framebuffer_height} result={prep_res:?}"
@@ -353,23 +368,39 @@ impl RenderState {
                 custom_glyphs: &[],
             });
         }
-        self.viewport.update(
-            &self.queue,
-            Resolution {
-                width: framebuffer_width,
-                height: framebuffer_height,
-            },
-        );
+        // CRITICAL: Wrap glyphon operations in error scopes
+        {
+            let scope = ErrorScopeGuard::push(&self.device, "glyphon-viewport-update-for");
+            self.viewport.update(
+                &self.queue,
+                Resolution {
+                    width: framebuffer_width,
+                    height: framebuffer_height,
+                },
+            );
+            if let Err(e) = scope.check() {
+                log::error!(target: "wgpu_renderer", "Glyphon viewport.update() (for) generated error: {e:?}");
+                return;
+            }
+        }
+
         let areas_len = areas.len();
-        let prep_res = self.text_renderer.prepare(
-            &self.device,
-            &self.queue,
-            &mut self.font_system,
-            &mut self.text_atlas,
-            &self.viewport,
-            areas,
-            &mut self.swash_cache,
-        );
+        let prep_res = {
+            let scope = ErrorScopeGuard::push(&self.device, "glyphon-text-prepare-for");
+            let result = self.text_renderer.prepare(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.text_atlas,
+                &self.viewport,
+                areas,
+                &mut self.swash_cache,
+            );
+            if let Err(e) = scope.check() {
+                log::error!(target: "wgpu_renderer", "Glyphon text_renderer.prepare() (for) generated validation error: {e:?}");
+            }
+            result
+        };
         debug!(
             target: "wgpu_renderer",
             "glyphon_prepare_for: items={} areas={} viewport={}x{} result={:?}",
@@ -401,9 +432,22 @@ impl RenderState {
             Some((x, y, w, h)) => pass.set_scissor_rect(x, y, w, h),
             None => pass.set_scissor_rect(0, 0, self.size.width.max(1), self.size.height.max(1)),
         }
-        let _ = self
-            .text_renderer
-            .render(&self.text_atlas, &self.viewport, pass);
+        // CRITICAL: Glyphon's render() can generate validation errors
+        // Wrap in error scope to catch and propagate them
+        {
+            let scope = ErrorScopeGuard::push(&self.device, "glyphon-text-render");
+            if let Err(e) = self
+                .text_renderer
+                .render(&self.text_atlas, &self.viewport, pass)
+            {
+                log::error!(target: "wgpu_renderer", "Glyphon text_renderer.render() failed: {e:?}");
+                // Don't propagate glyphon errors as they may be non-fatal
+            }
+            if let Err(e) = scope.check() {
+                log::error!(target: "wgpu_renderer", "Glyphon text_renderer.render() generated validation error: {e:?}");
+                // Log but don't propagate to avoid breaking the entire render due to text rendering issues
+            }
+        }
     }
 
     #[inline]
