@@ -1,6 +1,6 @@
 //! WGPU backend implementation as a standalone crate within the renderer module.
 //! This crate contains all WGPU-specific rendering code and depends on the renderer crate
-//! for backend-agnostic types like DisplayList and DrawText.
+//! for backend-agnostic types like `DisplayList` and `DrawText`.
 
 /// Error handling utilities for WGPU operations.
 mod error;

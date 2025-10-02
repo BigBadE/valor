@@ -6,7 +6,7 @@ use crate::error::submit_with_validation;
 
 /// Logical encoder that manages multiple real encoders for proper D3D12 resource transitions.
 ///
-/// D3D12 requires resource state transitions (RENDER_TARGET → PIXEL_SHADER_RESOURCE) to happen
+/// D3D12 requires resource state transitions (`RENDER_TARGET` → `PIXEL_SHADER_RESOURCE`) to happen
 /// between command buffer submissions. This abstraction provides a single logical encoder interface
 /// while managing multiple real encoders underneath, submitting command buffers at strategic points.
 ///
@@ -22,7 +22,7 @@ pub struct LogicalEncoder {
 
 impl LogicalEncoder {
     /// Create a new logical encoder.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             current_encoder: None,
             label_counter: 0,

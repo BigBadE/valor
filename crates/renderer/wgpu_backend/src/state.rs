@@ -50,6 +50,16 @@ pub(crate) type LayerEntry = Option<(Vec<DisplayItem>, Vec<OpacityComposite>, Ve
 /// Type alias for scissor rectangle: (x, y, width, height).
 type ScissorRect = Option<(u32, u32, u32, u32)>;
 
+/// Parameters for offscreen rendering passes.
+struct OffscreenRenderParams<'render> {
+    encoder: &'render mut CommandEncoder,
+    view: &'render TextureView,
+    translated_items: &'render [DisplayItem],
+    tex_width: u32,
+    tex_height: u32,
+    ctx: RenderContext,
+}
+
 /// Parameters for retained pass rendering to reduce argument count.
 struct RetainedPassParams<'items> {
     /// Display items to render.
@@ -71,21 +81,32 @@ struct TexVertex {
 /// Render performance metrics for observability and debugging.
 #[derive(Debug, Clone, Default)]
 pub struct RenderMetrics {
+    /// Frame rendering time in milliseconds.
     pub frame_time_ms: f64,
+    /// Number of draw calls issued.
     pub draw_calls: u32,
+    /// Total vertices rendered in the frame.
     pub vertices_rendered: u32,
+    /// Total texture memory used in bytes.
     pub texture_memory_bytes: u64,
+    /// Number of errors encountered during rendering.
     pub error_count: u32,
+    /// Number of opacity groups rendered.
     pub opacity_groups_rendered: u32,
 }
 
 /// Limits to prevent pathological content from exhausting resources.
 #[derive(Debug, Clone)]
 pub struct RenderLimits {
+    /// Maximum number of display items allowed per frame.
     pub max_display_items: usize,
+    /// Maximum texture dimension size in pixels.
     pub max_texture_size: u32,
+    /// Maximum number of draw calls allowed per frame.
     pub max_draw_calls_per_frame: u32,
+    /// Maximum depth of nested opacity groups.
     pub max_nested_opacity_groups: u32,
+    /// Maximum total texture memory in bytes.
     pub max_texture_memory_bytes: u64,
 }
 
@@ -290,72 +311,6 @@ pub struct RenderState {
 }
 
 impl RenderState {
-    /// Get a reference to the window.
-    #[inline]
-    pub(crate) const fn window(&self) -> &Arc<Window> {
-        &self.window
-    }
-
-    /// Get a reference to the device.
-    #[inline]
-    pub(crate) const fn device(&self) -> &Arc<Device> {
-        &self.device
-    }
-
-    /// Get a reference to the queue.
-    #[inline]
-    pub(crate) const fn queue(&self) -> &Queue {
-        &self.queue
-    }
-
-    /// Get the current size.
-    #[inline]
-    pub(crate) const fn size(&self) -> PhysicalSize<u32> {
-        self.size
-    }
-
-    /// Get a mutable reference to the text list.
-    #[inline]
-    pub(crate) const fn text_list_mut(&mut self) -> &mut Vec<DrawText> {
-        &mut self.text_list
-    }
-
-    /// Get a mutable reference to the font system.
-    #[inline]
-    pub(crate) const fn font_system_mut(&mut self) -> &mut FontSystem {
-        &mut self.font_system
-    }
-
-    /// Get a mutable reference to the swash cache.
-    #[inline]
-    pub(crate) const fn swash_cache_mut(&mut self) -> &mut SwashCache {
-        &mut self.swash_cache
-    }
-
-    /// Get a mutable reference to the text atlas.
-    #[inline]
-    pub(crate) const fn text_atlas_mut(&mut self) -> &mut TextAtlas {
-        &mut self.text_atlas
-    }
-
-    /// Get a mutable reference to the text renderer.
-    #[inline]
-    pub(crate) const fn text_renderer_mut(&mut self) -> &mut TextRenderer {
-        &mut self.text_renderer
-    }
-
-    /// Get a mutable reference to the glyphon cache.
-    #[inline]
-    pub(crate) const fn glyphon_cache_mut(&mut self) -> &mut Cache {
-        &mut self.glyphon_cache
-    }
-
-    /// Get a mutable reference to the viewport.
-    #[inline]
-    pub(crate) const fn viewport_mut(&mut self) -> &mut Viewport {
-        &mut self.viewport
-    }
-
     /// Preprocess a layer with the given encoder to collect opacity composites.
     ///
     /// # Errors
@@ -479,7 +434,8 @@ impl RenderState {
         // Offscreen opacity compositing is handled by record_draw_passes() using pre-collected
         // composites before opening the main pass. For any other contexts (including offscreen
         // renders), simply draw the group's items directly here.
-        let _unused = alpha; // alpha handled in higher-level compositing when applicable
+        // Note: alpha parameter is reserved for future use or higher-level compositing
+        let _ = alpha;
         // Use draw_items_with_groups to handle nested stacking contexts
         self.draw_items_with_groups(pass, group_items)
     }
@@ -657,6 +613,169 @@ impl RenderState {
     ///
     /// # Errors
     /// Returns an error if rendering or opacity group processing fails.
+    /// Render rectangles pass with layer, retained, or immediate mode.
+    ///
+    /// # Errors
+    /// Returns an error if rendering fails.
+    fn render_rectangles_pass(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        texture_view: &TextureView,
+        use_retained: bool,
+        use_layers: bool,
+        is_offscreen: bool,
+        main_load: LoadOp<Color>,
+    ) -> AnyResult<()> {
+        if !is_offscreen {
+            self.render_clear_pass(encoder, texture_view);
+        }
+
+        if use_layers {
+            self.render_layers_rectangles(encoder, texture_view, main_load)?;
+        } else if use_retained {
+            self.render_retained_rectangles(encoder, texture_view, main_load)?;
+        } else {
+            self.render_immediate_rectangles(encoder, texture_view, is_offscreen)?;
+        }
+        Ok(())
+    }
+
+    /// Render layers rectangles with opacity compositing.
+    ///
+    /// # Errors
+    /// Returns an error if layer processing or rendering fails.
+    fn render_layers_rectangles(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        texture_view: &TextureView,
+        main_load: LoadOp<Color>,
+    ) -> AnyResult<()> {
+        let per_layer: Vec<LayerEntry> = self
+            .layers
+            .clone()
+            .iter()
+            .map(|layer| self.preprocess_layer_with_encoder(encoder, layer))
+            .collect::<AnyResult<Vec<_>>>()?;
+
+        let has_opacity = per_layer
+            .iter()
+            .any(|entry| matches!(entry, Some((_, comps, _)) if !comps.is_empty()));
+        if has_opacity {
+            log::debug!(target: "wgpu_renderer", ">>> Collected layer opacity groups (no mid-frame submission)");
+        }
+
+        self.render_layers_pass(encoder, texture_view, main_load, per_layer);
+        Ok(())
+    }
+
+    /// Render retained display list rectangles with opacity compositing.
+    ///
+    /// # Errors
+    /// Returns an error if rendering or opacity composite collection fails.
+    fn render_retained_rectangles(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        texture_view: &TextureView,
+        main_load: LoadOp<Color>,
+    ) -> AnyResult<()> {
+        let Some(display_list) = self.retained_display_list.clone() else {
+            return Ok(());
+        };
+        let items: Vec<DisplayItem> = display_list.items;
+        let comps = self.collect_opacity_composites(encoder, &items)?;
+
+        log::debug!(target: "wgpu_renderer", ">>> Collected {} opacity groups (no mid-frame submission)", comps.len());
+
+        self.render_retained_pass(
+            encoder,
+            texture_view,
+            main_load,
+            RetainedPassParams {
+                items: &items,
+                comps,
+            },
+        );
+        Ok(())
+    }
+
+    /// Render immediate mode rectangles in a single batched draw call.
+    ///
+    /// # Errors
+    /// Returns an error if rendering fails.
+    fn render_immediate_rectangles(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        texture_view: &TextureView,
+        is_offscreen: bool,
+    ) -> AnyResult<()> {
+        let mut vertices: Vec<Vertex> = Vec::with_capacity(self.display_list.len() * 6);
+        for rect in &self.display_list {
+            let rgba = [rect.color[0], rect.color[1], rect.color[2], 1.0];
+            self.push_rect_vertices_ndc(
+                &mut vertices,
+                [rect.x, rect.y, rect.width, rect.height],
+                rgba,
+            );
+        }
+        let vertex_bytes = cast_slice(vertices.as_slice());
+        let vertex_buffer = self.device.create_buffer_init(&util::BufferInitDescriptor {
+            label: Some("rect-vertices"),
+            contents: vertex_bytes,
+            usage: BufferUsages::VERTEX,
+        });
+        self.vertex_buffer = vertex_buffer;
+        self.vertex_count = vertices.len() as u32;
+        let immediate_load = if is_offscreen {
+            LoadOp::Clear(Color::TRANSPARENT)
+        } else {
+            LoadOp::Load
+        };
+        self.render_immediate_pass(encoder, texture_view, immediate_load);
+        Ok(())
+    }
+
+    /// Render text pass for layer or retained mode.
+    fn render_text_pass(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        texture_view: &TextureView,
+        text_load: LoadOp<Color>,
+        use_retained: bool,
+        use_layers: bool,
+    ) {
+        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("text-pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: texture_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations {
+                    load: text_load,
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        debug!(target: "wgpu_renderer", "start text-pass");
+        pass.push_debug_group("text-pass");
+        if use_layers {
+            let batches =
+                batch_layer_texts_with_scissor(&self.layers, self.size.width, self.size.height);
+            self.draw_text_batches(&mut pass, batches);
+        } else if use_retained && let Some(display_list) = &self.retained_display_list {
+            let batches = batch_texts_with_scissor(display_list, self.size.width, self.size.height);
+            self.draw_text_batches(&mut pass, batches);
+        }
+        pass.pop_debug_group();
+        debug!(target: "wgpu_renderer", "end text-pass");
+    }
+
+    /// Record all draw passes (rectangles and text) for the current frame.
+    ///
+    /// # Errors
+    /// Returns an error if rendering fails.
     fn record_draw_passes(
         &mut self,
         texture_view: &TextureView,
@@ -669,119 +788,16 @@ impl RenderState {
         let text_load = LoadOp::Load;
 
         self.prepare_text_for_rendering(use_retained, use_layers);
+        self.render_rectangles_pass(
+            encoder,
+            texture_view,
+            use_retained,
+            use_layers,
+            is_offscreen,
+            main_load,
+        )?;
+        self.render_text_pass(encoder, texture_view, text_load, use_retained, use_layers);
 
-        // First pass: rectangles only
-        {
-            if !is_offscreen {
-                self.render_clear_pass(encoder, texture_view);
-            }
-
-            if use_layers {
-                // Pre-collect opacity composites for each layer BEFORE opening the main pass
-                // CRITICAL: All error scopes from offscreen passes must be checked before submission
-                let per_layer: Vec<LayerEntry> = self
-                    .layers
-                    .clone()
-                    .iter()
-                    .map(|layer| self.preprocess_layer_with_encoder(encoder, layer))
-                    .collect::<AnyResult<Vec<_>>>()?;
-
-                // NOTE: We do NOT submit here. All render passes (offscreen + main) use the same encoder.
-                // WGPU/D3D12 automatically inserts resource barriers between render passes within the same command buffer.
-                let has_opacity = per_layer
-                    .iter()
-                    .any(|entry| matches!(entry, Some((_, comps, _)) if !comps.is_empty()));
-                if has_opacity {
-                    log::debug!(target: "wgpu_renderer", ">>> Collected layer opacity groups (no mid-frame submission)");
-                }
-
-                // Open the main pass and draw layers: non-group items first, then composite groups
-                self.render_layers_pass(encoder, texture_view, main_load, per_layer);
-            } else if use_retained {
-                let Some(display_list) = self.retained_display_list.clone() else {
-                    return Ok(());
-                };
-                let items: Vec<DisplayItem> = display_list.items;
-                // Pre-collect opacity composites BEFORE opening the main pass
-                let comps = self.collect_opacity_composites(encoder, &items)?;
-
-                // NOTE: We do NOT submit here. All render passes (offscreen + main) use the same encoder.
-                // WGPU/D3D12 automatically inserts resource barriers between render passes within the same command buffer.
-                log::debug!(target: "wgpu_renderer", ">>> Collected {} opacity groups (no mid-frame submission)", comps.len());
-
-                self.render_retained_pass(
-                    encoder,
-                    texture_view,
-                    main_load,
-                    RetainedPassParams {
-                        items: &items,
-                        comps,
-                    },
-                );
-            } else {
-                // Immediate path: batch all rects into one draw call as before
-                let mut vertices: Vec<Vertex> = Vec::with_capacity(self.display_list.len() * 6);
-                for rect in &self.display_list {
-                    let rgba = [rect.color[0], rect.color[1], rect.color[2], 1.0];
-                    self.push_rect_vertices_ndc(
-                        &mut vertices,
-                        [rect.x, rect.y, rect.width, rect.height],
-                        rgba,
-                    );
-                }
-                let vertex_bytes = cast_slice(vertices.as_slice());
-                let vertex_buffer = self.device.create_buffer_init(&util::BufferInitDescriptor {
-                    label: Some("rect-vertices"),
-                    contents: vertex_bytes,
-                    usage: BufferUsages::VERTEX,
-                });
-                self.vertex_buffer = vertex_buffer;
-                self.vertex_count = vertices.len() as u32;
-                let immediate_load = if is_offscreen {
-                    LoadOp::Clear(Color::TRANSPARENT)
-                } else {
-                    LoadOp::Load
-                };
-                self.render_immediate_pass(encoder, texture_view, immediate_load);
-            }
-        }
-
-        // Second pass: text rendering
-        // CRITICAL: Ensure encoder is not borrowed when we return from this function
-        {
-            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("text-pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: texture_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: text_load,
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            debug!(target: "wgpu_renderer", "start text-pass");
-            pass.push_debug_group("text-pass");
-            if use_layers {
-                let batches =
-                    batch_layer_texts_with_scissor(&self.layers, self.size.width, self.size.height);
-                self.draw_text_batches(&mut pass, batches);
-            } else if use_retained && let Some(display_list) = &self.retained_display_list {
-                let batches =
-                    batch_texts_with_scissor(display_list, self.size.width, self.size.height);
-                self.draw_text_batches(&mut pass, batches);
-            }
-            pass.pop_debug_group();
-            debug!(target: "wgpu_renderer", "end text-pass");
-            // Explicitly drop the pass to ensure encoder is not borrowed
-            drop(pass);
-        };
-
-        // All render passes complete - encoder should not be borrowed at this point
         Ok(())
     }
 
@@ -1049,6 +1065,117 @@ impl RenderState {
     ///
     /// # Errors
     /// Returns an error if offscreen rendering or bind group creation fails.
+    /// Render rectangles to offscreen texture.
+    ///
+    /// # Errors
+    /// Returns an error if rendering fails.
+    fn render_offscreen_rects_pass(&mut self, params: OffscreenRenderParams<'_>) -> AnyResult<()> {
+        log::debug!(target: "wgpu_renderer", ">>> CREATING offscreen rects pass");
+        let mut pass = params.encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("opacity-offscreen-pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: params.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations {
+                    load: LoadOp::Clear(Color::TRANSPARENT),
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        log::debug!(target: "wgpu_renderer", "    Pass created, setting viewport and pipeline");
+        pass.set_viewport(
+            0.0,
+            0.0,
+            params.tex_width as f32,
+            params.tex_height as f32,
+            0.0,
+            1.0,
+        );
+        pass.set_pipeline(&self.pipeline);
+        log::debug!(target: "wgpu_renderer", "    Drawing items");
+        self.draw_items_with_groups_ctx(&mut pass, params.translated_items, params.ctx)?;
+        log::debug!(target: "wgpu_renderer", "<<< Pass DROPPED");
+        Ok(())
+    }
+
+    /// Render text to offscreen texture.
+    fn render_offscreen_text_pass(&mut self, params: OffscreenRenderParams<'_>) {
+        let text_items: Vec<DrawText> = params
+            .translated_items
+            .iter()
+            .filter_map(map_text_item)
+            .collect();
+        if text_items.is_empty() {
+            return;
+        }
+
+        log::debug!(target: "wgpu_renderer", ">>> CREATING offscreen text pass");
+        self.glyphon_prepare_for(text_items.as_slice());
+        let mut text_pass = params.encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("opacity-offscreen-text-pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: params.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations {
+                    load: LoadOp::Load,
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        log::debug!(target: "wgpu_renderer", "    Pass created, drawing text");
+        text_pass.set_viewport(
+            0.0,
+            0.0,
+            params.tex_width as f32,
+            params.tex_height as f32,
+            0.0,
+            1.0,
+        );
+        self.draw_text_batch_ctx(&mut text_pass, text_items.as_slice(), None, params.ctx);
+        log::debug!(target: "wgpu_renderer", "<<< Text pass DROPPED");
+    }
+
+    /// Create bind group for opacity compositing with alpha blending.
+    fn create_opacity_bind_group(&mut self, view: &TextureView, alpha: f32) -> BindGroup {
+        let alpha_buf = self.device.create_buffer_init(&util::BufferInitDescriptor {
+            label: Some("opacity-alpha"),
+            contents: cast_slice(&[alpha, 0.0f32, 0.0f32, 0.0f32]),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        });
+        self.live_buffers.push(alpha_buf.clone());
+
+        self.device.create_bind_group(&BindGroupDescriptor {
+            label: Some("opacity-tex-bind"),
+            layout: &self.tex_bind_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&self.linear_sampler),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: alpha_buf.as_entire_binding(),
+                },
+            ],
+        })
+    }
+
+    /// Render items to offscreen texture with bind group for opacity compositing.
+    ///
+    /// # Errors
+    /// Returns an error if rendering fails.
     fn render_items_to_offscreen_bounded_with_bind_group(
         &mut self,
         encoder: &mut CommandEncoder,
@@ -1064,9 +1191,6 @@ impl RenderState {
             x, y, width, height, tex_width, tex_height, items.len());
 
         let texture = self.create_offscreen_texture(tex_width, tex_height);
-        log::debug!(target: "wgpu_renderer", "Created offscreen texture: format={:?}, usage={:?}",
-            self.render_format, texture.usage());
-
         let view = texture.create_view(&TextureViewDescriptor {
             label: Some("offscreen-opacity-view"),
             format: Some(self.render_format),
@@ -1076,99 +1200,25 @@ impl RenderState {
         let ctx = RenderContext::new(PhysicalSize::new(tex_width, tex_height));
         let translated_items = Self::translate_items_to_local(items, x, y);
 
-        // Rects pass - simplified error handling
-        {
-            log::debug!(target: "wgpu_renderer", ">>> CREATING offscreen rects pass");
-            {
-                log::debug!(target: "wgpu_renderer", "    begin_render_pass(opacity-offscreen-pass)");
-                let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                    label: Some("opacity-offscreen-pass"),
-                    color_attachments: &[Some(RenderPassColorAttachment {
-                        view: &view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: Operations {
-                            load: LoadOp::Clear(Color::TRANSPARENT),
-                            store: StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                log::debug!(target: "wgpu_renderer", "    Pass created, setting viewport and pipeline");
-                pass.set_viewport(0.0, 0.0, tex_width as f32, tex_height as f32, 0.0, 1.0);
-                pass.set_pipeline(&self.pipeline);
-                log::debug!(target: "wgpu_renderer", "    Drawing items");
-                self.draw_items_with_groups_ctx(&mut pass, &translated_items, ctx)?;
-                log::debug!(target: "wgpu_renderer", "    About to drop pass");
-            };
-            log::debug!(target: "wgpu_renderer", "<<< Pass DROPPED");
-        };
+        self.render_offscreen_rects_pass(OffscreenRenderParams {
+            encoder,
+            view: &view,
+            translated_items: &translated_items,
+            tex_width,
+            tex_height,
+            ctx,
+        })?;
+        self.render_offscreen_text_pass(OffscreenRenderParams {
+            encoder,
+            view: &view,
+            translated_items: &translated_items,
+            tex_width,
+            tex_height,
+            ctx,
+        });
 
-        // Text pass with error scope guard
-        let text_items: Vec<DrawText> = translated_items.iter().filter_map(map_text_item).collect();
-        if !text_items.is_empty() {
-            log::debug!(target: "wgpu_renderer", ">>> CREATING offscreen text pass");
-            self.glyphon_prepare_for(text_items.as_slice());
-            // Simplified error handling
-            {
-                log::debug!(target: "wgpu_renderer", "    begin_render_pass(opacity-offscreen-text-pass)");
-                let mut text_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                    label: Some("opacity-offscreen-text-pass"),
-                    color_attachments: &[Some(RenderPassColorAttachment {
-                        view: &view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: Operations {
-                            load: LoadOp::Load,
-                            store: StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                log::debug!(target: "wgpu_renderer", "    Pass created, drawing text");
-                text_pass.set_viewport(0.0, 0.0, tex_width as f32, tex_height as f32, 0.0, 1.0);
-                self.draw_text_batch_ctx(&mut text_pass, text_items.as_slice(), None, ctx);
-                log::debug!(target: "wgpu_renderer", "    About to drop text pass");
-            };
-            log::debug!(target: "wgpu_renderer", "<<< Text pass DROPPED");
-        }
-
-        // Render passes are complete and properly scoped
-        // WGPU has automatically transitioned the texture from RENDER_ATTACHMENT to TEXTURE_BINDING state
-        // NOW create the bind group while encoder is between render passes
         log::debug!(target: "wgpu_renderer", "Offscreen render passes complete, creating bind group");
-
-        // Create uniform buffer for alpha (std140-like padded to 16 bytes)
-        let alpha_buf = self.device.create_buffer_init(&util::BufferInitDescriptor {
-            label: Some("opacity-alpha"),
-            contents: cast_slice(&[alpha, 0.0f32, 0.0f32, 0.0f32]),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-        self.live_buffers.push(alpha_buf.clone());
-
-        let bind_group = self.device.create_bind_group(&BindGroupDescriptor {
-            label: Some("opacity-tex-bind"),
-            layout: &self.tex_bind_layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(&view),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Sampler(&self.linear_sampler),
-                },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: alpha_buf.as_entire_binding(),
-                },
-            ],
-        });
-
+        let bind_group = self.create_opacity_bind_group(&view, alpha);
         log::debug!(target: "wgpu_renderer", "Bind group created, texture ready for compositing");
 
         Ok((texture, view, tex_width, tex_height, bind_group))

@@ -259,7 +259,7 @@ pub fn render_display_list_to_rgba(
         });
     }
     // Prepare text
-    let _unused = text_renderer.prepare(
+    let _unused_prepare = text_renderer.prepare(
         &device,
         &queue,
         &mut font_system,
@@ -339,7 +339,7 @@ pub fn render_display_list_to_rgba(
         });
         pass.set_viewport(0.0, 0.0, width as f32, height as f32, 0.0, 1.0);
         pass.set_scissor_rect(0, 0, width.max(1), height.max(1));
-        let _unused = text_renderer.render(&text_atlas, &viewport, &mut pass);
+        let _unused_render = text_renderer.render(&text_atlas, &viewport, &mut pass);
     };
 
     // Read back texture to CPU buffer using 256-byte aligned rows

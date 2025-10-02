@@ -75,16 +75,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 }
 ";
 
-pub fn build_pipeline_and_buffers(
-    device: &Device,
-    render_format: TextureFormat,
-) -> (RenderPipeline, Buffer, u32) {
-    let shader = device.create_shader_module(ShaderModuleDescriptor {
-        label: Some("basic-shader"),
-        source: ShaderSource::Wgsl(Cow::Borrowed(SHADER_WGSL)),
-    });
-
-    let vertex_buffers = [VertexBufferLayout {
+fn create_vertex_buffer_layout() -> VertexBufferLayout<'static> {
+    VertexBufferLayout {
         array_stride: size_of::<Vertex>() as BufferAddress,
         step_mode: VertexStepMode::Vertex,
         attributes: &[
@@ -101,7 +93,34 @@ pub fn build_pipeline_and_buffers(
                 shader_location: 1,
             },
         ],
-    }];
+    }
+}
+
+fn create_basic_blend_state() -> BlendState {
+    BlendState {
+        color: BlendComponent {
+            src_factor: BlendFactor::One,
+            dst_factor: BlendFactor::OneMinusSrcAlpha,
+            operation: BlendOperation::Add,
+        },
+        alpha: BlendComponent {
+            src_factor: BlendFactor::One,
+            dst_factor: BlendFactor::OneMinusSrcAlpha,
+            operation: BlendOperation::Add,
+        },
+    }
+}
+
+pub fn build_pipeline_and_buffers(
+    device: &Device,
+    render_format: TextureFormat,
+) -> (RenderPipeline, Buffer, u32) {
+    let shader = device.create_shader_module(ShaderModuleDescriptor {
+        label: Some("basic-shader"),
+        source: ShaderSource::Wgsl(Cow::Borrowed(SHADER_WGSL)),
+    });
+
+    let vertex_buffers = [create_vertex_buffer_layout()];
 
     let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some("pipeline-layout"),
@@ -129,19 +148,7 @@ pub fn build_pipeline_and_buffers(
             entry_point: Some("fs_main"),
             targets: &[Some(ColorTargetState {
                 format: render_format,
-                // Premultiplied alpha blending; shader outputs premultiplied color
-                blend: Some(BlendState {
-                    color: BlendComponent {
-                        src_factor: BlendFactor::One,
-                        dst_factor: BlendFactor::OneMinusSrcAlpha,
-                        operation: BlendOperation::Add,
-                    },
-                    alpha: BlendComponent {
-                        src_factor: BlendFactor::One,
-                        dst_factor: BlendFactor::OneMinusSrcAlpha,
-                        operation: BlendOperation::Add,
-                    },
-                }),
+                blend: Some(create_basic_blend_state()),
                 write_mask: ColorWrites::ALL,
             })],
             compilation_options: PipelineCompilationOptions::default(),
@@ -174,15 +181,8 @@ pub fn build_pipeline_and_buffers(
     (pipeline, vertex_buffer, vertices.len() as u32)
 }
 
-pub fn build_texture_pipeline(
-    device: &Device,
-    render_format: TextureFormat,
-) -> (RenderPipeline, BindGroupLayout, Sampler) {
-    let shader = device.create_shader_module(ShaderModuleDescriptor {
-        label: Some("texture-shader"),
-        source: ShaderSource::Wgsl(Cow::Borrowed(TEX_SHADER_WGSL)),
-    });
-    let bind_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+fn create_texture_bind_group_layout(device: &Device) -> BindGroupLayout {
+    device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: Some("tex-bind-layout"),
         entries: &[
             BindGroupLayoutEntry {
@@ -212,13 +212,11 @@ pub fn build_texture_pipeline(
                 count: None,
             },
         ],
-    });
-    let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-        label: Some("tex-pipeline-layout"),
-        bind_group_layouts: &[&bind_layout],
-        push_constant_ranges: &[],
-    });
-    let vbuf = [VertexBufferLayout {
+    })
+}
+
+fn create_texture_vertex_buffer_layout() -> VertexBufferLayout<'static> {
+    VertexBufferLayout {
         array_stride: (size_of::<f32>() as BufferAddress) * 4,
         step_mode: VertexStepMode::Vertex,
         attributes: &[
@@ -233,7 +231,24 @@ pub fn build_texture_pipeline(
                 shader_location: 1,
             },
         ],
-    }];
+    }
+}
+
+pub fn build_texture_pipeline(
+    device: &Device,
+    render_format: TextureFormat,
+) -> (RenderPipeline, BindGroupLayout, Sampler) {
+    let shader = device.create_shader_module(ShaderModuleDescriptor {
+        label: Some("texture-shader"),
+        source: ShaderSource::Wgsl(Cow::Borrowed(TEX_SHADER_WGSL)),
+    });
+    let bind_layout = create_texture_bind_group_layout(device);
+    let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some("tex-pipeline-layout"),
+        bind_group_layouts: &[&bind_layout],
+        push_constant_ranges: &[],
+    });
+    let vbuf = [create_texture_vertex_buffer_layout()];
     let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
         label: Some("texture-pipeline"),
         layout: Some(&pipeline_layout),
@@ -251,19 +266,7 @@ pub fn build_texture_pipeline(
             entry_point: Some("fs_main"),
             targets: &[Some(ColorTargetState {
                 format: render_format,
-                // Premultiplied alpha blending: shader outputs premultiplied RGBA
-                blend: Some(BlendState {
-                    color: BlendComponent {
-                        src_factor: BlendFactor::One, // RGB already multiplied by alpha in shader
-                        dst_factor: BlendFactor::OneMinusSrcAlpha,
-                        operation: BlendOperation::Add,
-                    },
-                    alpha: BlendComponent {
-                        src_factor: BlendFactor::One,
-                        dst_factor: BlendFactor::OneMinusSrcAlpha,
-                        operation: BlendOperation::Add,
-                    },
-                }),
+                blend: Some(create_basic_blend_state()),
                 write_mask: ColorWrites::ALL,
             })],
             compilation_options: PipelineCompilationOptions::default(),
