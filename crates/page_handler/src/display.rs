@@ -3,9 +3,9 @@ use css::layout_helpers::{collapse_whitespace, reorder_bidi_for_display};
 use css::style_types::{BorderStyle, ComputedStyle, Overflow, Position};
 use css_core::{LayoutNodeKind, LayoutRect};
 use js::NodeKey;
-use log::{debug, warn};
+use log::warn;
 use renderer::StackingContextBoundary;
-use renderer::{DisplayItem, DisplayList};
+use renderer::{DisplayItem, DisplayList, DrawRect, DrawText};
 use std::collections::HashMap;
 
 // Text shaping imports for measuring and line breaking
@@ -48,7 +48,9 @@ struct WalkCtx<'context> {
 /// Returns `Some` with the appropriate boundary type if the style creates
 /// a stacking context via opacity or positioned z-index.
 #[must_use]
-fn stacking_boundary_for(computed_style: &ComputedStyle) -> Option<StackingContextBoundary> {
+pub(crate) fn stacking_boundary_for(
+    computed_style: &ComputedStyle,
+) -> Option<StackingContextBoundary> {
     if let Some(alpha) = computed_style.opacity
         && alpha < 1.0
     {
@@ -160,9 +162,9 @@ fn derive_line_metrics_from_content(
             "glyph metrics fallback: no glyph line_height; using heuristic; content='{line_text}' size={font_size}"
         );
     }
-    let leading_px = used_line_height_opt
-        .map(|line_height| (line_height - (ascent_px + descent_px)).max(0.0))
-        .unwrap_or(0.0);
+    let leading_px = used_line_height_opt.map_or(0.0, |line_height| {
+        (line_height - (ascent_px + descent_px)).max(0.0)
+    });
     (ascent_px, descent_px, leading_px, used_line_height_opt)
 }
 
@@ -199,7 +201,11 @@ fn measure_text_width_px(text: &str, font_size: f32) -> i32 {
 /// Pushes border display items to the display list.
 ///
 /// Builds and appends border rectangles for all four sides if the border is visible.
-fn push_border_items(list: &mut DisplayList, rect: &LayoutRect, computed_style: &ComputedStyle) {
+pub(crate) fn push_border_items(
+    list: &mut DisplayList,
+    rect: &LayoutRect,
+    computed_style: &ComputedStyle,
+) {
     if let Some(items) = build_border_items(rect, computed_style) {
         for item in items {
             list.push(item);
@@ -284,7 +290,7 @@ fn build_border_items(
 ///
 /// Per CSS 2.2 paint order: negative z-index, normal flow, positioned auto/0, positive z-index.
 #[must_use]
-fn z_key_for_child(
+pub fn z_key_for_child(
     child: NodeKey,
     parent_map: &HashMap<NodeKey, NodeKey>,
     computed_map: &HashMap<NodeKey, ComputedStyle>,
@@ -308,9 +314,9 @@ fn z_key_for_child(
         }
         found
     };
-    let (position, z_index_opt) = style
-        .map(|computed_style| (computed_style.position, computed_style.z_index))
-        .unwrap_or((Position::Static, None));
+    let (position, z_index_opt) = style.map_or((Position::Static, None), |computed_style| {
+        (computed_style.position, computed_style.z_index)
+    });
     // CSS 2.2 stacking order (simplified):
     //  - Negative z-index positioned descendants behind
     //  - Normal flow (non-positioned)
@@ -346,7 +352,7 @@ pub trait DisplayBuilder: Send + Sync {
         &self,
         rects: &HashMap<NodeKey, LayoutRect>,
         snapshot: SnapshotSlice,
-    ) -> Vec<renderer::DrawRect>;
+    ) -> Vec<DrawRect>;
 
     /// Builds a list of text runs with font properties and clipping bounds.
     fn build_text_list(
@@ -354,7 +360,7 @@ pub trait DisplayBuilder: Send + Sync {
         rects: &HashMap<NodeKey, LayoutRect>,
         snapshot: SnapshotSlice,
         computed_map: &HashMap<NodeKey, ComputedStyle>,
-    ) -> Vec<renderer::DrawText>;
+    ) -> Vec<DrawText>;
 }
 
 /// Default implementation of `DisplayBuilder` using the module's display functions.
@@ -371,7 +377,7 @@ impl DisplayBuilder for DefaultDisplayBuilder {
         &self,
         rects: &HashMap<NodeKey, LayoutRect>,
         snapshot: SnapshotSlice,
-    ) -> Vec<renderer::DrawRect> {
+    ) -> Vec<DrawRect> {
         build_rect_list(rects, snapshot)
     }
 
@@ -381,7 +387,7 @@ impl DisplayBuilder for DefaultDisplayBuilder {
         rects: &HashMap<NodeKey, LayoutRect>,
         snapshot: SnapshotSlice,
         computed_map: &HashMap<NodeKey, ComputedStyle>,
-    ) -> Vec<renderer::DrawText> {
+    ) -> Vec<DrawText> {
         build_text_list(rects, snapshot, computed_map)
     }
 }
@@ -393,14 +399,14 @@ impl DisplayBuilder for DefaultDisplayBuilder {
 pub fn build_rect_list(
     rects: &HashMap<NodeKey, LayoutRect>,
     snapshot: SnapshotSlice,
-) -> Vec<renderer::DrawRect> {
-    let mut list: Vec<renderer::DrawRect> = Vec::new();
+) -> Vec<DrawRect> {
+    let mut list: Vec<DrawRect> = Vec::new();
     for (node, kind, _children) in snapshot {
         if !matches!(kind, LayoutNodeKind::Block { .. }) {
             continue;
         }
         if let Some(rect) = rects.get(node) {
-            list.push(renderer::DrawRect {
+            list.push(DrawRect {
                 x: rect.x,
                 y: rect.y,
                 width: rect.width,
@@ -424,8 +430,8 @@ pub fn build_text_list(
     rects: &HashMap<NodeKey, LayoutRect>,
     snapshot: SnapshotSlice,
     computed_map: &HashMap<NodeKey, ComputedStyle>,
-) -> Vec<renderer::DrawText> {
-    let mut list: Vec<renderer::DrawText> = Vec::new();
+) -> Vec<DrawText> {
+    let mut list: Vec<DrawText> = Vec::new();
     // Build a parent map so inline text can inherit from its element parent
     let mut parent_of: HashMap<NodeKey, NodeKey> = HashMap::new();
     for (parent, _kind, children) in snapshot {
@@ -494,8 +500,8 @@ pub fn build_text_list(
                             .saturating_sub(border_left + pad_left + pad_right + border_right);
                         (left_x, width_px)
                     })
-                    .unwrap_or(((rect.x.round() as i32), (rect.width.round() as i32)));
-                let max_width_px = content_width_px.max(0);
+                    .unwrap_or_else(|| ((rect.x.round() as i32), (rect.width.round() as i32)));
+                let max_width_px = content_width_px.max(0_i32);
                 // Prefer computed line-height when available; otherwise use real metrics if available.
                 let (ascent_px, descent_px, leading_px, line_height_from_glyph) =
                     derive_line_metrics_from_content(&collapsed, font_size);
@@ -514,13 +520,14 @@ pub fn build_text_list(
                 let lines = wrap_text_uax14(&collapsed, font_size, max_width_px);
                 for (line_index, raw_line) in lines.iter().enumerate() {
                     let visual_line = reorder_bidi_for_display(raw_line);
-                    let line_top = (rect.y.round() as i32) + (line_index as i32) * line_height;
+                    let line_top = (rect.y.round() as i32)
+                        + i32::try_from(line_index).unwrap_or(0_i32) * line_height;
                     let baseline_y = line_top + ascent;
                     // Use line box bounds: top at line_top; bottom at line_top + line_height
                     let top = line_top;
                     let bottom = line_top + line_height;
                     let bounds = Some((content_left_x, top, content_left_x + max_width_px, bottom));
-                    list.push(renderer::DrawText {
+                    list.push(DrawText {
                         x: content_left_x as f32,
                         y: baseline_y as f32,
                         text: visual_line,
@@ -539,7 +546,7 @@ pub fn build_text_list(
 ///
 /// Used for immediate-mode text rendering without computed styles. Derives line
 /// metrics from glyph shaping and wraps text using `UAX#14` line breaking.
-fn push_text_item(
+pub fn push_text_item(
     list: &mut DisplayList,
     rect: &LayoutRect,
     text: &str,
@@ -550,19 +557,19 @@ fn push_text_item(
     if collapsed.is_empty() {
         return;
     }
-    let max_width_px = (rect.width.round() as i32).max(0);
-    // Immediate path does not have computed styles; prefer glyph-provided line height.
+    let max_width_px = (rect.width.round() as i32).max(0i32);
     let (ascent_px, descent_px, leading_px, line_height_from_glyph) =
         derive_line_metrics_from_content(&collapsed, font_size);
     let used_line_height = line_height_from_glyph
         .unwrap_or_else(|| (ascent_px + descent_px + leading_px).max(font_size + 2.0));
     let line_height = used_line_height.round() as i32;
-    let ascent = ascent_px.round() as i32; // placeholder until face metrics are available
+    let ascent = ascent_px.round() as i32;
     let _descent = descent_px.round() as i32;
     let broken_lines = wrap_text_uax14(&collapsed, font_size, max_width_px);
     for (line_index, raw_line) in broken_lines.iter().enumerate() {
         let visual_line = reorder_bidi_for_display(raw_line);
-        let line_top = (rect.y.round() as i32) + (line_index as i32) * line_height;
+        let line_top =
+            (rect.y.round() as i32) + i32::try_from(line_index).unwrap_or(0_i32) * line_height;
         let baseline_y = line_top + ascent;
         let top = line_top;
         let bottom = line_top + line_height;
@@ -583,6 +590,24 @@ fn push_text_item(
     }
 }
 
+/// Trims trailing spaces from a string and returns it.
+fn trim_trailing_spaces(mut text: String) -> String {
+    while text.ends_with(' ') {
+        text.pop();
+    }
+    text
+}
+
+/// Emits a line from text slice, trimming trailing spaces.
+fn emit_line_if_nonempty(lines: &mut Vec<String>, text: &str, start: usize, end: usize) {
+    if let Some(slice_str) = text.get(start..end) {
+        let trimmed = trim_trailing_spaces(slice_str.to_owned());
+        if !trimmed.is_empty() {
+            lines.push(trimmed);
+        }
+    }
+}
+
 /// Breaks text into lines using Unicode line breaking (UAX#14).
 ///
 /// Greedily packs text runs while measuring shaped widths. This improves fidelity
@@ -597,9 +622,9 @@ fn push_text_item(
 #[must_use]
 fn wrap_text_uax14(text: &str, font_size: f32, max_width_px: i32) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
-    if max_width_px <= 0 || text.is_empty() {
+    if max_width_px <= 0i32 || text.is_empty() {
         if !text.is_empty() {
-            lines.push(text.to_string());
+            lines.push(text.to_owned());
         }
         return lines;
     }
@@ -611,48 +636,26 @@ fn wrap_text_uax14(text: &str, font_size: f32, max_width_px: i32) -> Vec<String>
             BreakOpportunity::Mandatory | BreakOpportunity::Allowed
         );
         if is_break {
-            // Measure candidate slice
-            let candidate = &text[start..index];
-            let width = measure_text_width_px(candidate, font_size);
-            if width <= max_width_px {
-                last_good = index;
-                continue;
+            if let Some(candidate) = text.get(start..index) {
+                let width = measure_text_width_px(candidate, font_size);
+                if width <= max_width_px {
+                    last_good = index;
+                    continue;
+                }
             }
-            // Emit last good (or force break at current if none)
             if last_good > start {
-                let mut slice = text[start..last_good].to_string();
-                // Trim trailing spaces at line end
-                while slice.ends_with(' ') {
-                    slice.pop();
-                }
-                if !slice.is_empty() {
-                    lines.push(slice);
-                }
+                emit_line_if_nonempty(&mut lines, text, start, last_good);
                 start = last_good;
             } else {
-                // Force character-level break to avoid infinite loop
                 let end = index.max(start + 1);
-                let mut slice = text[start..end].to_string();
-                while slice.ends_with(' ') {
-                    slice.pop();
-                }
-                if !slice.is_empty() {
-                    lines.push(slice);
-                }
+                emit_line_if_nonempty(&mut lines, text, start, end);
                 start = end;
                 last_good = start;
             }
         }
     }
-    // Remainder
     if start < text.len() {
-        let mut tail = text[start..].to_string();
-        while tail.ends_with(' ') {
-            tail.pop();
-        }
-        if !tail.is_empty() {
-            lines.push(tail);
-        }
+        emit_line_if_nonempty(&mut lines, text, start, text.len());
     }
     if lines.is_empty() {
         lines.push(String::new());
@@ -672,84 +675,7 @@ fn wrap_text_uax14(text: &str, font_size: f32, max_width_px: i32) -> Vec<String>
 /// Returns a hierarchical display list ready for GPU rendering.
 #[must_use]
 pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
-    // Helper: finds nearest ancestor with a computed style (for inline text inheritance).
-    fn nearest_style<'style>(
-        start: NodeKey,
-        parent_map: &HashMap<NodeKey, NodeKey>,
-        computed_map: &'style HashMap<NodeKey, ComputedStyle>,
-        computed_fallback: &'style HashMap<NodeKey, ComputedStyle>,
-        computed_robust: Option<&'style HashMap<NodeKey, ComputedStyle>>,
-    ) -> Option<&'style ComputedStyle> {
-        let mut current = Some(start);
-        while let Some(node) = current {
-            if let Some(computed_style) = computed_robust
-                .and_then(|map| map.get(&node))
-                .or_else(|| computed_fallback.get(&node))
-                .or_else(|| computed_map.get(&node))
-            {
-                return Some(computed_style);
-            }
-            current = parent_map.get(&node).copied();
-        }
-        None
-    }
-
-    // Helper: finds nearest ancestor with a layout rect (inline text nodes lack rects).
-    #[inline]
-    fn nearest_rect(
-        start: NodeKey,
-        parent_map: &HashMap<NodeKey, NodeKey>,
-        rects: &HashMap<NodeKey, LayoutRect>,
-    ) -> Option<LayoutRect> {
-        let mut current = Some(start);
-        while let Some(node) = current {
-            if let Some(rect) = rects.get(&node) {
-                return Some(*rect);
-            }
-            current = parent_map.get(&node).copied();
-        }
-        None
-    }
-
-    // Helper: orders children by z-index stacking buckets for correct paint order.
-    #[inline]
-    fn order_children(
-        children: &[NodeKey],
-        parent_map: &HashMap<NodeKey, NodeKey>,
-        computed_map: &HashMap<NodeKey, ComputedStyle>,
-        computed_fallback: &HashMap<NodeKey, ComputedStyle>,
-        computed_robust: Option<&HashMap<NodeKey, ComputedStyle>>,
-    ) -> Vec<NodeKey> {
-        let mut ordered: Vec<NodeKey> = children.to_vec();
-        ordered.sort_by_key(|child| {
-            let (bucket, dom_order) = z_key_for_child(
-                *child,
-                parent_map,
-                computed_map,
-                computed_fallback,
-                computed_robust,
-            );
-            (bucket, dom_order)
-        });
-        ordered
-    }
-
-    // Helper: processes children in z-index paint order.
-    #[inline]
-    fn process_children(list: &mut DisplayList, node: NodeKey, ctx: &WalkCtx<'_>) {
-        if let Some(children) = ctx.children_map.get(&node) {
-            let ordered = order_children(
-                children,
-                ctx.parent_map,
-                ctx.computed_map,
-                ctx.computed_fallback,
-                ctx.computed_robust.as_ref(),
-            );
-            for child in ordered {
-                recurse(list, child, ctx);
-            }
-        }
-    }
+    use crate::display_retained::{add_focus_ring, add_hud, add_selection_overlay, build_tree};
 
     let RetainedInputs {
         rects,
@@ -770,289 +696,34 @@ pub fn build_retained(inputs: RetainedInputs) -> DisplayList {
         kind_map.insert(key, kind);
         children_map.insert(key, children);
     }
-    // Parent map for inheritance fallbacks
-    let mut parent_map: HashMap<NodeKey, NodeKey> = HashMap::new();
 
+    let mut parent_map: HashMap<NodeKey, NodeKey> = HashMap::new();
     for (parent, children) in &children_map {
         for &child in children {
             parent_map.insert(child, *parent);
         }
     }
 
-    // Helper: Process a block node with a rect (background, borders, clip, stacking context)
-    fn process_block_with_rect(
-        list: &mut DisplayList,
-        node: NodeKey,
-        rect: &LayoutRect,
-        computed_style_opt: Option<&ComputedStyle>,
-        ctx: &WalkCtx<'_>,
-    ) {
-        let mut opened_ctx = false;
-        let boundary_opt = computed_style_opt.and_then(stacking_boundary_for);
-        if let Some(boundary) = boundary_opt {
-            list.push(DisplayItem::BeginStackingContext { boundary });
-            opened_ctx = true;
-        }
-        // Background fill
-        let fill_rgba_opt = computed_style_opt.map(|computed_style| {
-            let background = computed_style.background_color;
-            [
-                f32::from(background.red) / 255.0,
-                f32::from(background.green) / 255.0,
-                f32::from(background.blue) / 255.0,
-                f32::from(background.alpha) / 255.0,
-            ]
-        });
-        if let Some(fill_rgba) = fill_rgba_opt.filter(|rgba| rgba[3] > 0.0) {
-            list.push(DisplayItem::Rect {
-                x: rect.x,
-                y: rect.y,
-                width: rect.width,
-                height: rect.height,
-                color: fill_rgba,
-            });
-        }
-        // Borders
-        if let Some(computed_style) = computed_style_opt {
-            push_border_items(list, rect, computed_style);
-        }
-        // Overflow clip
-        let style_for_node = computed_style_opt.or_else(|| {
-            nearest_style(
-                node,
-                ctx.parent_map,
-                ctx.computed_map,
-                ctx.computed_fallback,
-                ctx.computed_robust.as_ref(),
-            )
-        });
-        let opened_clip = if let Some(computed_style) = style_for_node
-            && matches!(
-                computed_style.overflow,
-                Overflow::Hidden | Overflow::Clip | Overflow::Auto | Overflow::Scroll
-            ) {
-            let pad_left = computed_style.padding.left.max(0.0);
-            let pad_top = computed_style.padding.top.max(0.0);
-            let pad_right = computed_style.padding.right.max(0.0);
-            let pad_bottom = computed_style.padding.bottom.max(0.0);
-            let border_left = computed_style.border_width.left.max(0.0);
-            let border_top = computed_style.border_width.top.max(0.0);
-            let border_right = computed_style.border_width.right.max(0.0);
-            let border_bottom = computed_style.border_width.bottom.max(0.0);
-            let clip_x = rect.x + border_left + pad_left;
-            let clip_y = rect.y + border_top + pad_top;
-            let clip_width =
-                (rect.width - (border_left + pad_left + pad_right + border_right)).max(0.0);
-            let clip_height =
-                (rect.height - (border_top + pad_top + pad_bottom + border_bottom)).max(0.0);
-            list.push(DisplayItem::BeginClip {
-                x: clip_x,
-                y: clip_y,
-                width: clip_width,
-                height: clip_height,
-            });
-            true
-        } else {
-            false
-        };
-        process_children(list, node, ctx);
-        if opened_clip {
-            list.push(DisplayItem::EndClip);
-        }
-        if opened_ctx {
-            list.push(DisplayItem::EndStackingContext);
-        }
-    }
-
-    // Helper: Process a block node without a rect
-    fn process_block_without_rect(
-        list: &mut DisplayList,
-        node: NodeKey,
-        computed_style_opt: Option<&ComputedStyle>,
-        ctx: &WalkCtx<'_>,
-    ) {
-        let style_for_node_ctx = computed_style_opt.or_else(|| {
-            nearest_style(
-                node,
-                ctx.parent_map,
-                ctx.computed_map,
-                ctx.computed_fallback,
-                ctx.computed_robust.as_ref(),
-            )
-        });
-        let mut opened_ctx = false;
-        let boundary_opt = style_for_node_ctx.and_then(stacking_boundary_for);
-        if let Some(boundary) = boundary_opt {
-            list.push(DisplayItem::BeginStackingContext { boundary });
-            opened_ctx = true;
-        }
-        process_children(list, node, ctx);
-        if opened_ctx {
-            list.push(DisplayItem::EndStackingContext);
-        }
-    }
-
-    // Recursive tree walker that emits display items for each node.
-    fn recurse(list: &mut DisplayList, node: NodeKey, ctx: &WalkCtx<'_>) {
-        let Some(kind) = ctx.kind_map.get(&node) else {
-            return;
-        };
-        match kind {
-            LayoutNodeKind::Document => {
-                if let Some(children) = ctx.children_map.get(&node) {
-                    for &child in children {
-                        recurse(list, child, ctx);
-                    }
-                }
-            }
-            LayoutNodeKind::Block { .. } => {
-                let rect_opt = ctx.rects.get(&node);
-                let computed_style_opt = ctx
-                    .computed_robust
-                    .as_ref()
-                    .and_then(|map| map.get(&node))
-                    .or_else(|| ctx.computed_fallback.get(&node))
-                    .or_else(|| ctx.computed_map.get(&node));
-                if let Some(rect) = rect_opt {
-                    process_block_with_rect(list, node, rect, computed_style_opt, ctx);
-                } else {
-                    process_block_without_rect(list, node, computed_style_opt, ctx);
-                }
-            }
-            LayoutNodeKind::InlineText { text } => {
-                if text.trim().is_empty() {
-                    return;
-                }
-                if let Some(rect) = nearest_rect(node, ctx.parent_map, ctx.rects) {
-                    let (font_size, color_rgb) = nearest_style(
-                        node,
-                        ctx.parent_map,
-                        ctx.computed_map,
-                        ctx.computed_fallback,
-                        ctx.computed_robust.as_ref(),
-                    )
-                    .map_or((16.0, [0.0, 0.0, 0.0]), |computed_style| {
-                        let text_color = computed_style.color;
-                        (
-                            computed_style.font_size,
-                            [
-                                f32::from(text_color.red) / 255.0,
-                                f32::from(text_color.green) / 255.0,
-                                f32::from(text_color.blue) / 255.0,
-                            ],
-                        )
-                    });
-                    push_text_item(list, &rect, text, font_size, color_rgb);
-                }
-            }
-        }
-    }
-
     let mut list = DisplayList::new();
-    let ctx = WalkCtx {
-        kind_map: &kind_map,
-        children_map: &children_map,
-        rects: &rects,
-        computed_map: &computed_map,
-        computed_fallback: &computed_fallback,
-        computed_robust: &computed_robust,
-        parent_map: &parent_map,
-    };
-    recurse(&mut list, NodeKey::ROOT, &ctx);
-    debug!(
-        "[DL DEBUG] build_retained produced items={}",
-        list.items.len()
+    build_tree(
+        &mut list,
+        &kind_map,
+        &children_map,
+        &rects,
+        &computed_map,
+        &computed_fallback,
+        computed_robust.as_ref(),
+        &parent_map,
     );
 
-    // Render selection overlay as semi-transparent blue rectangles intersecting layout boxes
-    if let Some((x0_coord, y0_coord, x1_coord, y1_coord)) = selection_overlay {
-        let selection_x = x0_coord.min(x1_coord) as f32;
-        let selection_y = y0_coord.min(y1_coord) as f32;
-        let selection_width =
-            (x0_coord.max(x1_coord) - selection_x.round() as i32).max(0i32) as f32;
-        let selection_height =
-            (y0_coord.max(y1_coord) - selection_y.round() as i32).max(0i32) as f32;
-        let selection = LayoutRect {
-            x: selection_x,
-            y: selection_y,
-            width: selection_width,
-            height: selection_height,
-        };
-        #[allow(clippy::iter_over_hash_type)]
-        for rect in rects.values() {
-            let intersect_x = rect.x.max(selection.x);
-            let intersect_y = rect.y.max(selection.y);
-            let intersect_right = (rect.x + rect.width).min(selection.x + selection.width);
-            let intersect_bottom = (rect.y + rect.height).min(selection.y + selection.height);
-            let intersect_width = (intersect_right - intersect_x).max(0.0);
-            let intersect_height = (intersect_bottom - intersect_y).max(0.0);
-            if intersect_width > 0.0 && intersect_height > 0.0 {
-                list.push(DisplayItem::Rect {
-                    x: intersect_x,
-                    y: intersect_y,
-                    width: intersect_width,
-                    height: intersect_height,
-                    color: [0.2, 0.5, 1.0, 0.35],
-                });
-            }
-        }
-    }
-
-    // Render focus ring as a 4-sided border around the focused element
-    if let Some(focused) = focused_node
-        && let Some(focused_rect) = rects.get(&focused)
-    {
-        let focus_x = focused_rect.x;
-        let focus_y = focused_rect.y;
-        let focus_width = focused_rect.width;
-        let focus_height = focused_rect.height;
-        let focus_color = [0.2, 0.4, 1.0, 1.0];
-        let focus_thickness = 2.0f32;
-        // Top border
-        list.push(DisplayItem::Rect {
-            x: focus_x,
-            y: focus_y,
-            width: focus_width,
-            height: focus_thickness,
-            color: focus_color,
-        });
-        // Bottom border
-        list.push(DisplayItem::Rect {
-            x: focus_x,
-            y: focus_y + focus_height - focus_thickness,
-            width: focus_width,
-            height: focus_thickness,
-            color: focus_color,
-        });
-        // Left border
-        list.push(DisplayItem::Rect {
-            x: focus_x,
-            y: focus_y,
-            width: focus_thickness,
-            height: focus_height,
-            color: focus_color,
-        });
-        // Right border
-        list.push(DisplayItem::Rect {
-            x: focus_x + focus_width - focus_thickness,
-            y: focus_y,
-            width: focus_thickness,
-            height: focus_height,
-            color: focus_color,
-        });
-    }
-
-    if hud_enabled {
-        let hud = format!("restyled:{last_style_restyled_nodes} spill:{spillover_deferred}");
-        list.push(DisplayItem::Text {
-            x: 6.0,
-            y: 14.0,
-            text: hud,
-            color: [0.1, 0.1, 0.1],
-            font_size: 12.0,
-            bounds: None,
-        });
-    }
+    add_selection_overlay(&mut list, &rects, selection_overlay);
+    add_focus_ring(&mut list, &rects, focused_node);
+    add_hud(
+        &mut list,
+        hud_enabled,
+        spillover_deferred,
+        last_style_restyled_nodes,
+    );
 
     list
 }

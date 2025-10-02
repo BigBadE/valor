@@ -11,6 +11,8 @@ pub mod config;
 mod display;
 /// Display API methods (now integrated into state.rs)
 mod display_api;
+/// Display list building helpers for retained mode
+mod display_retained;
 /// Embedded chrome assets for valor:// URL scheme
 mod embedded_chrome;
 pub mod events;

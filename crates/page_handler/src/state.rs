@@ -940,7 +940,7 @@ impl HtmlPage {
     pub fn discovered_stylesheets_snapshot(&mut self) -> Result<Vec<String>, Error> {
         self.css_mirror.try_update_sync()?;
         let sheets = self.css_mirror.mirror_mut().discovered_stylesheets();
-        Ok(sheets.clone())
+        Ok(sheets)
     }
 
     /// Return a JSON string with key performance counters from the layouter to aid diagnostics (Phase 8).
