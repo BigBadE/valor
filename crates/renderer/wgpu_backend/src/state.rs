@@ -1420,7 +1420,7 @@ impl RenderState {
     ///
     /// # Errors
     /// Returns an error if adapter or device initialization fails.
-    async fn initialize_device() -> Result<(Arc<Device>, Queue), AnyhowError> {
+    async fn initialize_device() -> Result<(Instance, Adapter, Arc<Device>, Queue), AnyhowError> {
         let instance = Instance::new(&InstanceDescriptor {
             backends: Backends::DX12 | Backends::VULKAN | Backends::GL,
             flags: InstanceFlags::VALIDATION | InstanceFlags::DEBUG,
@@ -1448,35 +1448,17 @@ impl RenderState {
         device.on_uncaptured_error(Box::new(|error| {
             log::error!(target: "wgpu_renderer", "Uncaptured WGPU error: {error:?}");
         }));
-        Ok((Arc::new(device), queue))
+        Ok((instance, adapter, Arc::new(device), queue))
     }
 
     /// Setup surface with format selection and configuration.
-    async fn setup_surface(
+    fn setup_surface(
         window: &Arc<Window>,
+        instance: &Instance,
+        adapter: &Adapter,
         device: &Arc<Device>,
         size: PhysicalSize<u32>,
     ) -> SurfaceConfig {
-        let instance = Instance::new(&InstanceDescriptor {
-            backends: Backends::DX12 | Backends::VULKAN | Backends::GL,
-            flags: InstanceFlags::VALIDATION | InstanceFlags::DEBUG,
-            ..Default::default()
-        });
-        let adapter = instance
-            .request_adapter(&RequestAdapterOptions {
-                power_preference: PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await
-            .ok();
-        let Some(adapter) = adapter else {
-            return (
-                None,
-                TextureFormat::Rgba8Unorm,
-                TextureFormat::Rgba8UnormSrgb,
-            );
-        };
         instance.create_surface(Arc::clone(window)).map_or_else(
             |_| {
                 (
@@ -1486,7 +1468,7 @@ impl RenderState {
                 )
             },
             |surface| {
-                let capabilities = surface.get_capabilities(&adapter);
+                let capabilities = surface.get_capabilities(adapter);
                 if capabilities.formats.is_empty() {
                     (
                         None,
@@ -1562,10 +1544,10 @@ impl RenderState {
     /// # Errors
     /// Returns an error if no suitable GPU adapter is found or if device creation fails.
     pub async fn new(window: Arc<Window>) -> Result<Self, AnyhowError> {
-        let (device, queue) = Self::initialize_device().await?;
+        let (instance, adapter, device, queue) = Self::initialize_device().await?;
         let size = window.inner_size();
         let (surface_opt, surface_format, render_format) =
-            Self::setup_surface(&window, &device, size).await;
+            Self::setup_surface(&window, &instance, &adapter, &device, size);
         let (pipeline, vertex_buffer, vertex_count) =
             build_pipeline_and_buffers(&device, render_format);
         let (tex_pipeline, tex_bind_layout, linear_sampler) =
