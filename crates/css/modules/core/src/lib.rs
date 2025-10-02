@@ -1365,6 +1365,13 @@ impl Layouter {
     pub const fn computed_styles(&self) -> &HashMap<NodeKey, ComputedStyle> {
         &self.computed_styles
     }
+
+    #[inline]
+    /// Returns a reference to the children map for tree traversal.
+    pub const fn children_map(&self) -> &HashMap<NodeKey, Vec<NodeKey>> {
+        &self.children
+    }
+
     #[inline]
     /// Take and clear the accumulated dirty rectangles since the last query.
     pub fn take_dirty_rects(&mut self) -> Vec<LayoutRect> {

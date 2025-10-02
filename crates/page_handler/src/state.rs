@@ -1007,6 +1007,8 @@ impl HtmlPage {
 
         let mut items = Vec::new();
 
+        // Simple approach: iterate through all rects and draw backgrounds
+        // This gets basic rendering working; proper z-order and clipping can be added later
         for (key, rect) in &rects {
             if let Some(style) = styles.get(key) {
                 let background = &style.background_color;
