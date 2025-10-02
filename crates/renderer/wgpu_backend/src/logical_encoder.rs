@@ -16,7 +16,9 @@ use crate::error::submit_with_validation;
 /// - Automatic submission before texture usage to ensure proper state transitions
 /// - Resource lifetime management across submissions
 pub struct LogicalEncoder {
+    /// The current command encoder, if one exists.
     current_encoder: Option<CommandEncoder>,
+    /// Counter for generating unique encoder labels.
     label_counter: u32,
 }
 
@@ -31,19 +33,20 @@ impl LogicalEncoder {
 
     /// Get or create the current encoder.
     fn ensure_encoder(&mut self, device: &Arc<Device>) -> &mut CommandEncoder {
-        if self.current_encoder.is_none() {
+        self.current_encoder.get_or_insert_with(|| {
             self.label_counter += 1;
-            let encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            device.create_command_encoder(&CommandEncoderDescriptor {
                 label: Some(&format!("logical-encoder-{}", self.label_counter)),
-            });
-            self.current_encoder = Some(encoder);
-        }
-        self.current_encoder.as_mut().unwrap()
+            })
+        })
     }
 
     /// Submit the current encoder and immediately create a new one.
-    /// This is critical for D3D12 resource state transitions (RENDER_TARGET → PIXEL_SHADER_RESOURCE).
+    /// This is critical for D3D12 resource state transitions (`RENDER_TARGET` → `PIXEL_SHADER_RESOURCE`).
     /// Use this after offscreen rendering completes and before the main pass that will sample those textures.
+    ///
+    /// # Errors
+    /// Returns an error if command buffer submission fails.
     pub fn submit_and_renew(&mut self, device: &Arc<Device>, queue: &Queue) -> AnyResult<()> {
         let old_counter = self.label_counter;
         // Submit current encoder if it exists
@@ -69,6 +72,9 @@ impl LogicalEncoder {
 
     /// Submit the current encoder without creating a new one.
     /// Only use this for final cleanup.
+    ///
+    /// # Errors
+    /// Returns an error if command buffer submission fails.
     fn submit_current(&mut self, device: &Arc<Device>, queue: &Queue) -> AnyResult<()> {
         if let Some(encoder) = self.current_encoder.take() {
             let command_buffer = encoder.finish();
@@ -78,7 +84,7 @@ impl LogicalEncoder {
     }
 
     /// Get a mutable reference to the current encoder.
-    /// Use this to access encoder methods directly (begin_render_pass, push_debug_group, etc.)
+    /// Use this to access encoder methods directly (`begin_render_pass`, `push_debug_group`, etc.)
     pub fn encoder(&mut self, device: &Arc<Device>) -> &mut CommandEncoder {
         if self.current_encoder.is_none() {
             log::debug!(target: "wgpu_renderer", ">>> encoder(): creating initial encoder");
@@ -87,6 +93,9 @@ impl LogicalEncoder {
     }
 
     /// Finish all encoders and submit all remaining command buffers.
+    ///
+    /// # Errors
+    /// Returns an error if command buffer submission fails.
     pub fn finish_and_submit(mut self, device: &Arc<Device>, queue: &Queue) -> AnyResult<()> {
         log::debug!(target: "wgpu_renderer", ">>> finish_and_submit: encoder exists = {}", self.current_encoder.is_some());
         self.submit_current(device, queue)?;

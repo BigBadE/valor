@@ -75,7 +75,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 }
 ";
 
-fn create_vertex_buffer_layout() -> VertexBufferLayout<'static> {
+/// Create vertex buffer layout for basic rendering pipeline.
+const fn create_vertex_buffer_layout() -> VertexBufferLayout<'static> {
     VertexBufferLayout {
         array_stride: size_of::<Vertex>() as BufferAddress,
         step_mode: VertexStepMode::Vertex,
@@ -96,7 +97,8 @@ fn create_vertex_buffer_layout() -> VertexBufferLayout<'static> {
     }
 }
 
-fn create_basic_blend_state() -> BlendState {
+/// Create blend state for premultiplied alpha blending.
+const fn create_basic_blend_state() -> BlendState {
     BlendState {
         color: BlendComponent {
             src_factor: BlendFactor::One,
@@ -181,6 +183,7 @@ pub fn build_pipeline_and_buffers(
     (pipeline, vertex_buffer, vertices.len() as u32)
 }
 
+/// Create bind group layout for texture rendering pipeline.
 fn create_texture_bind_group_layout(device: &Device) -> BindGroupLayout {
     device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: Some("tex-bind-layout"),
@@ -215,7 +218,8 @@ fn create_texture_bind_group_layout(device: &Device) -> BindGroupLayout {
     })
 }
 
-fn create_texture_vertex_buffer_layout() -> VertexBufferLayout<'static> {
+/// Create vertex buffer layout for texture rendering pipeline.
+const fn create_texture_vertex_buffer_layout() -> VertexBufferLayout<'static> {
     VertexBufferLayout {
         array_stride: (size_of::<f32>() as BufferAddress) * 4,
         step_mode: VertexStepMode::Vertex,

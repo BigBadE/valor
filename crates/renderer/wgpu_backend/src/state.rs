@@ -52,11 +52,17 @@ type ScissorRect = Option<(u32, u32, u32, u32)>;
 
 /// Parameters for offscreen rendering passes.
 struct OffscreenRenderParams<'render> {
+    /// Command encoder for recording render commands.
     encoder: &'render mut CommandEncoder,
+    /// Texture view to render into.
     view: &'render TextureView,
+    /// Display items translated to local coordinates.
     translated_items: &'render [DisplayItem],
+    /// Texture width in pixels.
     tex_width: u32,
+    /// Texture height in pixels.
     tex_height: u32,
+    /// Render context with viewport information.
     ctx: RenderContext,
 }
 
@@ -66,6 +72,36 @@ struct RetainedPassParams<'items> {
     items: &'items [DisplayItem],
     /// Opacity composites to apply.
     comps: Vec<OpacityComposite>,
+}
+
+/// Parameters for rendering rectangles pass.
+struct RenderRectanglesParams<'render_pass> {
+    /// Command encoder for recording render commands.
+    encoder: &'render_pass mut CommandEncoder,
+    /// Texture view to render into.
+    texture_view: &'render_pass TextureView,
+    /// Whether to use retained mode rendering.
+    use_retained: bool,
+    /// Whether to use layered rendering.
+    use_layers: bool,
+    /// Whether this is an offscreen render.
+    is_offscreen: bool,
+    /// Load operation for the main pass.
+    main_load: LoadOp<Color>,
+}
+
+/// Parameters for text rendering pass.
+struct RenderTextParams<'text_pass> {
+    /// Command encoder for recording render commands.
+    encoder: &'text_pass mut CommandEncoder,
+    /// Texture view to render into.
+    texture_view: &'text_pass TextureView,
+    /// Load operation for the text pass.
+    text_load: LoadOp<Color>,
+    /// Whether to use retained mode rendering.
+    use_retained: bool,
+    /// Whether to use layered rendering.
+    use_layers: bool,
 }
 
 /// Vertex structure for texture quad rendering.
@@ -435,8 +471,8 @@ impl RenderState {
         // composites before opening the main pass. For any other contexts (including offscreen
         // renders), simply draw the group's items directly here.
         // Note: alpha parameter is reserved for future use or higher-level compositing
-        let _ = alpha;
         // Use draw_items_with_groups to handle nested stacking contexts
+        let _: f32 = alpha; // Reserved for future opacity compositing
         self.draw_items_with_groups(pass, group_items)
     }
 
@@ -617,25 +653,21 @@ impl RenderState {
     ///
     /// # Errors
     /// Returns an error if rendering fails.
-    fn render_rectangles_pass(
-        &mut self,
-        encoder: &mut CommandEncoder,
-        texture_view: &TextureView,
-        use_retained: bool,
-        use_layers: bool,
-        is_offscreen: bool,
-        main_load: LoadOp<Color>,
-    ) -> AnyResult<()> {
-        if !is_offscreen {
-            self.render_clear_pass(encoder, texture_view);
+    fn render_rectangles_pass(&mut self, params: &mut RenderRectanglesParams<'_>) -> AnyResult<()> {
+        if !params.is_offscreen {
+            self.render_clear_pass(params.encoder, params.texture_view);
         }
 
-        if use_layers {
-            self.render_layers_rectangles(encoder, texture_view, main_load)?;
-        } else if use_retained {
-            self.render_retained_rectangles(encoder, texture_view, main_load)?;
+        if params.use_layers {
+            self.render_layers_rectangles(params.encoder, params.texture_view, params.main_load)?;
+        } else if params.use_retained {
+            self.render_retained_rectangles(params.encoder, params.texture_view, params.main_load)?;
         } else {
-            self.render_immediate_rectangles(encoder, texture_view, is_offscreen)?;
+            self.render_immediate_rectangles(
+                params.encoder,
+                params.texture_view,
+                params.is_offscreen,
+            );
         }
         Ok(())
     }
@@ -699,15 +731,12 @@ impl RenderState {
     }
 
     /// Render immediate mode rectangles in a single batched draw call.
-    ///
-    /// # Errors
-    /// Returns an error if rendering fails.
     fn render_immediate_rectangles(
         &mut self,
         encoder: &mut CommandEncoder,
         texture_view: &TextureView,
         is_offscreen: bool,
-    ) -> AnyResult<()> {
+    ) {
         let mut vertices: Vec<Vertex> = Vec::with_capacity(self.display_list.len() * 6);
         for rect in &self.display_list {
             let rgba = [rect.color[0], rect.color[1], rect.color[2], 1.0];
@@ -731,26 +760,18 @@ impl RenderState {
             LoadOp::Load
         };
         self.render_immediate_pass(encoder, texture_view, immediate_load);
-        Ok(())
     }
 
     /// Render text pass for layer or retained mode.
-    fn render_text_pass(
-        &mut self,
-        encoder: &mut CommandEncoder,
-        texture_view: &TextureView,
-        text_load: LoadOp<Color>,
-        use_retained: bool,
-        use_layers: bool,
-    ) {
-        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+    fn render_text_pass(&mut self, params: &mut RenderTextParams<'_>) {
+        let mut pass = params.encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("text-pass"),
             color_attachments: &[Some(RenderPassColorAttachment {
-                view: texture_view,
+                view: params.texture_view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: Operations {
-                    load: text_load,
+                    load: params.text_load,
                     store: StoreOp::Store,
                 },
             })],
@@ -760,11 +781,13 @@ impl RenderState {
         });
         debug!(target: "wgpu_renderer", "start text-pass");
         pass.push_debug_group("text-pass");
-        if use_layers {
+        if params.use_layers {
             let batches =
                 batch_layer_texts_with_scissor(&self.layers, self.size.width, self.size.height);
             self.draw_text_batches(&mut pass, batches);
-        } else if use_retained && let Some(display_list) = &self.retained_display_list {
+        } else if params.use_retained
+            && let Some(display_list) = &self.retained_display_list
+        {
             let batches = batch_texts_with_scissor(display_list, self.size.width, self.size.height);
             self.draw_text_batches(&mut pass, batches);
         }
@@ -788,15 +811,21 @@ impl RenderState {
         let text_load = LoadOp::Load;
 
         self.prepare_text_for_rendering(use_retained, use_layers);
-        self.render_rectangles_pass(
+        self.render_rectangles_pass(&mut RenderRectanglesParams {
             encoder,
             texture_view,
             use_retained,
             use_layers,
             is_offscreen,
             main_load,
-        )?;
-        self.render_text_pass(encoder, texture_view, text_load, use_retained, use_layers);
+        })?;
+        self.render_text_pass(&mut RenderTextParams {
+            encoder,
+            texture_view,
+            text_load,
+            use_retained,
+            use_layers,
+        });
 
         Ok(())
     }
@@ -1069,7 +1098,10 @@ impl RenderState {
     ///
     /// # Errors
     /// Returns an error if rendering fails.
-    fn render_offscreen_rects_pass(&mut self, params: OffscreenRenderParams<'_>) -> AnyResult<()> {
+    fn render_offscreen_rects_pass(
+        &mut self,
+        params: &mut OffscreenRenderParams<'_>,
+    ) -> AnyResult<()> {
         log::debug!(target: "wgpu_renderer", ">>> CREATING offscreen rects pass");
         let mut pass = params.encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("opacity-offscreen-pass"),
@@ -1103,7 +1135,7 @@ impl RenderState {
     }
 
     /// Render text to offscreen texture.
-    fn render_offscreen_text_pass(&mut self, params: OffscreenRenderParams<'_>) {
+    fn render_offscreen_text_pass(&mut self, params: &mut OffscreenRenderParams<'_>) {
         let text_items: Vec<DrawText> = params
             .translated_items
             .iter()
@@ -1200,7 +1232,7 @@ impl RenderState {
         let ctx = RenderContext::new(PhysicalSize::new(tex_width, tex_height));
         let translated_items = Self::translate_items_to_local(items, x, y);
 
-        self.render_offscreen_rects_pass(OffscreenRenderParams {
+        self.render_offscreen_rects_pass(&mut OffscreenRenderParams {
             encoder,
             view: &view,
             translated_items: &translated_items,
@@ -1208,7 +1240,7 @@ impl RenderState {
             tex_height,
             ctx,
         })?;
-        self.render_offscreen_text_pass(OffscreenRenderParams {
+        self.render_offscreen_text_pass(&mut OffscreenRenderParams {
             encoder,
             view: &view,
             translated_items: &translated_items,

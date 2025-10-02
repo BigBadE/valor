@@ -501,7 +501,7 @@ pub fn build_text_list(
                         (left_x, width_px)
                     })
                     .unwrap_or_else(|| ((rect.x.round() as i32), (rect.width.round() as i32)));
-                let max_width_px = content_width_px.max(0_i32);
+                let max_width_px = content_width_px.max(0i32);
                 // Prefer computed line-height when available; otherwise use real metrics if available.
                 let (ascent_px, descent_px, leading_px, line_height_from_glyph) =
                     derive_line_metrics_from_content(&collapsed, font_size);
@@ -521,7 +521,7 @@ pub fn build_text_list(
                 for (line_index, raw_line) in lines.iter().enumerate() {
                     let visual_line = reorder_bidi_for_display(raw_line);
                     let line_top = (rect.y.round() as i32)
-                        + i32::try_from(line_index).unwrap_or(0_i32) * line_height;
+                        + i32::try_from(line_index).unwrap_or(0i32) * line_height;
                     let baseline_y = line_top + ascent;
                     // Use line box bounds: top at line_top; bottom at line_top + line_height
                     let top = line_top;
@@ -569,7 +569,7 @@ pub fn push_text_item(
     for (line_index, raw_line) in broken_lines.iter().enumerate() {
         let visual_line = reorder_bidi_for_display(raw_line);
         let line_top =
-            (rect.y.round() as i32) + i32::try_from(line_index).unwrap_or(0_i32) * line_height;
+            (rect.y.round() as i32) + i32::try_from(line_index).unwrap_or(0i32) * line_height;
         let baseline_y = line_top + ascent;
         let top = line_top;
         let bottom = line_top + line_height;
