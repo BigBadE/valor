@@ -25,7 +25,7 @@ use js::{
 };
 use js_engine_v8::V8Engine;
 use log::{info, trace};
-use renderer::{DisplayList, DrawRect, Renderer};
+use renderer::{DisplayItem, DisplayList, DrawRect, Renderer};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -997,11 +997,42 @@ impl HtmlPage {
     /// # Errors
     ///
     /// Returns an error if display list generation fails.
-    #[allow(dead_code, reason = "Public API used by valor crate")]
     pub fn display_list_retained_snapshot(&mut self) -> Result<DisplayList, Error> {
         let _unused = self.layouter_mirror.try_update_sync();
         let _unused2 = self.renderer_mirror.try_update_sync();
-        Ok(DisplayList::default())
+
+        let layouter = self.layouter_mirror.mirror_mut();
+        let rects = layouter.compute_layout_geometry();
+        let styles = layouter.computed_styles();
+
+        let mut items = Vec::new();
+
+        for (key, rect) in &rects {
+            if let Some(style) = styles.get(key) {
+                let background = &style.background_color;
+                if background.alpha > 0 {
+                    items.push(DisplayItem::Rect {
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                        color: [
+                            f32::from(background.red) / 255.0,
+                            f32::from(background.green) / 255.0,
+                            f32::from(background.blue) / 255.0,
+                            f32::from(background.alpha) / 255.0,
+                        ],
+                    });
+                }
+            }
+        }
+
+        info!(
+            "display_list_retained_snapshot: generated {} items from {} rects",
+            items.len(),
+            rects.len()
+        );
+        Ok(DisplayList::from_items(items))
     }
 
     /// Dispatch a pointer move event.

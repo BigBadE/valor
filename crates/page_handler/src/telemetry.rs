@@ -3,6 +3,8 @@
 //! This module is kept independent of `HtmlPage` internals; callers pass
 //! counter data explicitly for serialization and optional output.
 
+use log::info;
+
 /// Performance counters for layout and style computation.
 ///
 /// These counters track work done during page rendering and can be
@@ -60,6 +62,6 @@ pub fn perf_counters_json(counters: &PerfCounters) -> String {
 /// * `json_line` - The JSON string to emit
 pub fn maybe_emit(enabled: bool, json_line: &str) {
     if enabled {
-        log::info!("{json_line}");
+        info!("{json_line}");
     }
 }

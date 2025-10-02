@@ -2,6 +2,7 @@
 //! Root height and used height computations.
 
 use crate::INITIAL_CONTAINING_BLOCK_HEIGHT;
+use crate::LayoutNodeKind;
 use crate::LayoutRect;
 use css_display::build_inline_context_with_filter;
 use css_flexbox::{
@@ -21,9 +22,8 @@ use css_orchestrator::style_model::{
 };
 use css_text::{collapse_whitespace, default_line_height_px};
 use js::NodeKey;
+use log::debug;
 use std::collections::{HashMap, HashSet};
-
-use crate::LayoutNodeKind;
 
 use crate::chapter8::part_8_3_1_collapsing_margins as cm83;
 use crate::chapter9::part_9_4_1_block_formatting_context::establishes_block_formatting_context;
@@ -128,7 +128,7 @@ pub fn compute_root_heights(layouter: &Layouter, ctx: RootHeightsCtx) -> (i32, i
             },
         );
 
-    log::debug!(
+    debug!(
         "[ROOT-HEIGHT] root={:?} origin_y={} content_bottom={:?} last_pos_mb={} bottom_edge_collapsible={} pb={} bb={} -> content_h={}",
         ctx.root,
         content_origin,

@@ -816,7 +816,7 @@ impl Layouter {
             margin_top_eff
         );
         let ctx = Self::build_child_ctx(loop_ctx, inputs, clearance_floor_y, band_left, band_right);
-        log::debug!(
+        debug!(
             "[CTX] idx={} first={} parent_edge_collapsible={} y_cursor_in={} prev_bottom_in={} -> ctx.prev_bottom={} parent_self_top_margin={} leading_top_applied={} ancestor_applied_at_edge_for_children={}",
             inputs.index,
             inputs.index == loop_ctx.first_inflow_index,
@@ -1087,7 +1087,7 @@ impl Layouter {
         let placed = self.layout_one_block_child(child_key, ctx);
         if ctx.is_first_placed && !placed.parent_edge_collapsible {
             let (_px, parent_y) = cb10::parent_content_origin(&ctx.metrics);
-            log::debug!(
+            debug!(
                 "[FIRST-NONCOLL out] root={root:?} child={child_key:?} parent_y={parent_y} y_cursor={} y_out={} collapsed_top={} prev_bottom={} parent_self_top_margin={} clear_lifted={}",
                 ctx.y_cursor,
                 placed.y,
@@ -1098,7 +1098,7 @@ impl Layouter {
             );
         }
         if ctx.is_first_placed {
-            log::debug!(
+            debug!(
                 "[FIRST-INFLOW DIAG] parent_edge_collapsible={} pre_clear_y={} collapsed_top={} leading_contrib={} clear_lifted={} y_out={}",
                 placed.parent_edge_collapsible,
                 ctx.y_cursor,

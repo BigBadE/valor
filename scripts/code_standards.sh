@@ -15,14 +15,15 @@ run_all() {
   local BASE_LOG="warn,html5ever=warn,wgpu_hal=off,headless_chrome=warn"
   local USER_LOG_SPEC="${1-}"
   if [ -z "${USER_LOG_SPEC}" ]; then
-    export RUST_LOG="${BASE_LOG}"
+    local LOG_SPEC="${BASE_LOG}"
   else
-    export RUST_LOG="${BASE_LOG},${USER_LOG_SPEC}"
+    local LOG_SPEC="${BASE_LOG},${USER_LOG_SPEC}"
   fi
+  export RUST_LOG=LOG_SPEC
 
-  echo "[code_standards] Running cargo test..."
-  cargo test --all --all-features --test layouter_chromium_compare
-  cargo test --all --all-features --package valor
+  echo "[code_standards] Running cargo test with args ${LOG_SPEC}..."
+  cargo test --all --all-features --test layouter_chromium_compare -- --nocapture
+  cargo test --all --all-features --package valor -- --nocapture
 }
 
 cleanup_after_ice() {

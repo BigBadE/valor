@@ -5,6 +5,7 @@ use anyhow::Error;
 use core::hash::Hash;
 use indextree::{Arena, Node, NodeId};
 use js::{DOMUpdate, KeySpace, NodeKey, NodeKeyManager};
+use log::info;
 use serde_json::Value;
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -109,7 +110,7 @@ impl DOM {
                 self.apply_update(update);
             }
             // Test printing: summarize the batch we just applied
-            log::info!(
+            info!(
                 "DOM.update: applied batch_size={} InsertElement={} InsertText={} SetAttr={} RemoveNode={} EndOfDocument={}",
                 batch.len(),
                 insert_element_count,

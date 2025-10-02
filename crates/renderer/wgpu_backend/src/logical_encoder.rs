@@ -1,4 +1,5 @@
 use anyhow::Result as AnyResult;
+use log::{debug, warn};
 use std::sync::Arc;
 use wgpu::{CommandEncoder, CommandEncoderDescriptor, Device, Queue};
 
@@ -51,22 +52,22 @@ impl LogicalEncoder {
         let old_counter = self.label_counter;
         // Submit current encoder if it exists
         if let Some(encoder) = self.current_encoder.take() {
-            log::debug!(target: "wgpu_renderer", ">>> submit_and_renew: finishing encoder #{old_counter}");
+            debug!(target: "wgpu_renderer", ">>> submit_and_renew: finishing encoder #{old_counter}");
             let command_buffer = encoder.finish();
-            log::debug!(target: "wgpu_renderer", ">>> submit_and_renew: submitting command buffer");
+            debug!(target: "wgpu_renderer", ">>> submit_and_renew: submitting command buffer");
             submit_with_validation(device, queue, [command_buffer])?;
-            log::debug!(target: "wgpu_renderer", ">>> submit_and_renew: submission successful");
+            debug!(target: "wgpu_renderer", ">>> submit_and_renew: submission successful");
         } else {
-            log::warn!(target: "wgpu_renderer", ">>> submit_and_renew: no encoder to submit!");
+            warn!(target: "wgpu_renderer", ">>> submit_and_renew: no encoder to submit!");
         }
         // Immediately create a new encoder for subsequent work
         self.label_counter += 1;
-        log::debug!(target: "wgpu_renderer", ">>> submit_and_renew: creating new encoder #{}", self.label_counter);
+        debug!(target: "wgpu_renderer", ">>> submit_and_renew: creating new encoder #{}", self.label_counter);
         let new_encoder = device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some(&format!("logical-encoder-{}", self.label_counter)),
         });
         self.current_encoder = Some(new_encoder);
-        log::debug!(target: "wgpu_renderer", ">>> submit_and_renew: new encoder created successfully");
+        debug!(target: "wgpu_renderer", ">>> submit_and_renew: new encoder created successfully");
         Ok(())
     }
 
@@ -87,7 +88,7 @@ impl LogicalEncoder {
     /// Use this to access encoder methods directly (`begin_render_pass`, `push_debug_group`, etc.)
     pub fn encoder(&mut self, device: &Arc<Device>) -> &mut CommandEncoder {
         if self.current_encoder.is_none() {
-            log::debug!(target: "wgpu_renderer", ">>> encoder(): creating initial encoder");
+            debug!(target: "wgpu_renderer", ">>> encoder(): creating initial encoder");
         }
         self.ensure_encoder(device)
     }
@@ -97,9 +98,9 @@ impl LogicalEncoder {
     /// # Errors
     /// Returns an error if command buffer submission fails.
     pub fn finish_and_submit(mut self, device: &Arc<Device>, queue: &Queue) -> AnyResult<()> {
-        log::debug!(target: "wgpu_renderer", ">>> finish_and_submit: encoder exists = {}", self.current_encoder.is_some());
+        debug!(target: "wgpu_renderer", ">>> finish_and_submit: encoder exists = {}", self.current_encoder.is_some());
         self.submit_current(device, queue)?;
-        log::debug!(target: "wgpu_renderer", ">>> finish_and_submit: completed successfully");
+        debug!(target: "wgpu_renderer", ">>> finish_and_submit: completed successfully");
         Ok(())
     }
 }

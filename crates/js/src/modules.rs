@@ -1,4 +1,5 @@
 use anyhow::{Error as AnyhowError, Result as AnyhowResult};
+use log::warn;
 use std::collections::HashMap;
 use std::fs::read_to_string;
 use url::Url;
@@ -71,7 +72,7 @@ impl SimpleFileModuleResolver {
                     read_to_string(path)?
                 } else {
                     // Keep it non-fatal: return empty source to avoid panics while signaling unsupported types.
-                    log::warn!(
+                    warn!(
                         "ModuleResolver: skipping unsupported file extension for {}",
                         path.display()
                     );

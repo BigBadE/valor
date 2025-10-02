@@ -9,7 +9,7 @@ use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Cache, Color as GlyphonColor, FontSystem, Metrics, Resolution,
     Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
-use log::debug;
+use log::{debug, error};
 use pollster::block_on;
 use renderer::compositor::OpacityCompositor;
 use renderer::display_list::{
@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::mpsc::channel;
 use tracing::info_span;
 use wgpu::util::DeviceExt as _;
-use wgpu::{MultisampleState, PollType, *};
+use wgpu::*;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
@@ -217,7 +217,7 @@ impl ErrorScopeGuard {
         let fut = self.device.pop_error_scope();
         let res = block_on(fut);
         if let Some(err) = res {
-            log::error!(target: "wgpu_renderer", "WGPU uncaptured error: {err:?}");
+            error!(target: "wgpu_renderer", "WGPU uncaptured error: {err:?}");
             return Err(anyhow!(
                 "wgpu validation error in scope '{}': {err:?}",
                 self.label
@@ -231,14 +231,14 @@ impl Drop for ErrorScopeGuard {
     fn drop(&mut self) {
         if !self.checked {
             // CRITICAL: If check() wasn't called, this is a bug that will cause error scope imbalance
-            log::error!(
+            error!(
                 target: "wgpu_renderer",
                 "ErrorScopeGuard '{}' dropped without calling check() - this will cause error scope imbalance!",
                 self.label
             );
             // Pop the scope anyway to prevent imbalance, but log the error
             if let Err(error) = self.do_check() {
-                log::error!(target: "wgpu_renderer", "Unchecked error in scope '{}': {error:?}", self.label);
+                error!(target: "wgpu_renderer", "Unchecked error in scope '{}': {error:?}", self.label);
             }
         }
     }
@@ -282,6 +282,12 @@ pub enum Layer {
 pub struct RenderState {
     /// Window handle for the render target.
     window: Arc<Window>,
+    /// WGPU instance (must be kept alive for surface lifetime).
+    #[allow(
+        dead_code,
+        reason = "Instance must be kept alive for Surface<'static> lifetime"
+    )]
+    instance: Instance,
     /// GPU device for creating resources.
     device: Arc<Device>,
     /// Command queue for submitting work to the GPU.
@@ -310,7 +316,7 @@ pub struct RenderState {
     display_list: Vec<DrawRect>,
     /// Display list of text items to render.
     text_list: Vec<DrawText>,
-    /// Retained display list for Phase 6. When set via `set_retained_display_list`,
+    /// Retained display list. When set via `set_retained_display_list`,
     /// it becomes the source of truth and is flattened into the immediate lists.
     retained_display_list: Option<DisplayList>,
     // Glyphon text rendering state
@@ -540,13 +546,13 @@ impl RenderState {
         params: RetainedPassParams,
     ) {
         let RetainedPassParams { items, comps } = params;
-        log::debug!(target: "wgpu_renderer", "=== CREATING MAIN RENDER PASS (retained) ===");
-        log::debug!(target: "wgpu_renderer", "    Composites to apply: {}", comps.len());
-        log::debug!(target: "wgpu_renderer", "    Texture view: {texture_view:?}");
-        log::debug!(target: "wgpu_renderer", "    Load op: {main_load:?}");
+        debug!(target: "wgpu_renderer", "=== CREATING MAIN RENDER PASS (retained) ===");
+        debug!(target: "wgpu_renderer", "    Composites to apply: {}", comps.len());
+        debug!(target: "wgpu_renderer", "    Texture view: {texture_view:?}");
+        debug!(target: "wgpu_renderer", "    Load op: {main_load:?}");
         // Simplified: no error scope needed here, errors caught at submission
         {
-            log::debug!(target: "wgpu_renderer", "    About to call begin_render_pass(main-pass)...");
+            debug!(target: "wgpu_renderer", "    About to call begin_render_pass(main-pass)...");
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("main-pass"),
                 color_attachments: &[Some(RenderPassColorAttachment {
@@ -710,7 +716,7 @@ impl RenderState {
             .iter()
             .any(|entry| matches!(entry, Some((_, comps, _)) if !comps.is_empty()));
         if has_opacity {
-            log::debug!(target: "wgpu_renderer", ">>> Collected layer opacity groups (no mid-frame submission)");
+            debug!(target: "wgpu_renderer", ">>> Collected layer opacity groups (no mid-frame submission)");
         }
 
         self.render_layers_pass(encoder, texture_view, main_load, per_layer);
@@ -733,7 +739,8 @@ impl RenderState {
         let items: Vec<DisplayItem> = display_list.items;
         let comps = self.collect_opacity_composites(encoder, &items)?;
 
-        log::debug!(target: "wgpu_renderer", ">>> Collected {} opacity groups (no mid-frame submission)", comps.len());
+        debug!(target: "wgpu_renderer", ">>> Collected {} opacity groups (no mid-frame submission)", comps.len());
+        debug!(target: "wgpu_renderer", ">>> Rendering {} items", items.len());
 
         self.render_retained_pass(
             encoder,
@@ -1119,7 +1126,7 @@ impl RenderState {
         &mut self,
         params: &mut OffscreenRenderParams<'_>,
     ) -> AnyResult<()> {
-        log::debug!(target: "wgpu_renderer", ">>> CREATING offscreen rects pass");
+        debug!(target: "wgpu_renderer", ">>> CREATING offscreen rects pass");
         let mut pass = params.encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("opacity-offscreen-pass"),
             color_attachments: &[Some(RenderPassColorAttachment {
@@ -1135,7 +1142,7 @@ impl RenderState {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        log::debug!(target: "wgpu_renderer", "    Pass created, setting viewport and pipeline");
+        debug!(target: "wgpu_renderer", "    Pass created, setting viewport and pipeline");
         pass.set_viewport(
             0.0,
             0.0,
@@ -1145,9 +1152,9 @@ impl RenderState {
             1.0,
         );
         pass.set_pipeline(&self.pipeline);
-        log::debug!(target: "wgpu_renderer", "    Drawing items");
+        debug!(target: "wgpu_renderer", "    Drawing items");
         self.draw_items_with_groups_ctx(&mut pass, params.translated_items, params.ctx)?;
-        log::debug!(target: "wgpu_renderer", "<<< Pass DROPPED");
+        debug!(target: "wgpu_renderer", "<<< Pass DROPPED");
         Ok(())
     }
 
@@ -1162,7 +1169,7 @@ impl RenderState {
             return;
         }
 
-        log::debug!(target: "wgpu_renderer", ">>> CREATING offscreen text pass");
+        debug!(target: "wgpu_renderer", ">>> CREATING offscreen text pass");
         self.glyphon_prepare_for(text_items.as_slice());
         let mut text_pass = params.encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("opacity-offscreen-text-pass"),
@@ -1179,7 +1186,7 @@ impl RenderState {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        log::debug!(target: "wgpu_renderer", "    Pass created, drawing text");
+        debug!(target: "wgpu_renderer", "    Pass created, drawing text");
         text_pass.set_viewport(
             0.0,
             0.0,
@@ -1189,7 +1196,7 @@ impl RenderState {
             1.0,
         );
         self.draw_text_batch_ctx(&mut text_pass, text_items.as_slice(), None, params.ctx);
-        log::debug!(target: "wgpu_renderer", "<<< Text pass DROPPED");
+        debug!(target: "wgpu_renderer", "<<< Text pass DROPPED");
     }
 
     /// Create bind group for opacity compositing with alpha blending.
@@ -1236,7 +1243,7 @@ impl RenderState {
         let tex_width = (width.ceil() as u32).max(1);
         let tex_height = (height.ceil() as u32).max(1);
 
-        log::debug!(target: "wgpu_renderer", "render_items_to_offscreen_bounded: bounds=({}, {}, {}, {}), tex_size={}x{}, items={}",
+        debug!(target: "wgpu_renderer", "render_items_to_offscreen_bounded: bounds=({}, {}, {}, {}), tex_size={}x{}, items={}",
             x, y, width, height, tex_width, tex_height, items.len());
 
         let texture = self.create_offscreen_texture(tex_width, tex_height);
@@ -1266,9 +1273,9 @@ impl RenderState {
             ctx,
         });
 
-        log::debug!(target: "wgpu_renderer", "Offscreen render passes complete, creating bind group");
+        debug!(target: "wgpu_renderer", "Offscreen render passes complete, creating bind group");
         let bind_group = self.create_opacity_bind_group(&view, alpha);
-        log::debug!(target: "wgpu_renderer", "Bind group created, texture ready for compositing");
+        debug!(target: "wgpu_renderer", "Bind group created, texture ready for compositing");
 
         Ok((texture, view, tex_width, tex_height, bind_group))
     }
@@ -1281,7 +1288,7 @@ impl RenderState {
         bounds: Bounds, // x, y, w, h in px
     ) {
         let (rect_x, rect_y, rect_width, rect_height) = bounds;
-        log::debug!(target: "wgpu_renderer", ">>> draw_texture_quad_with_bind_group: bounds=({rect_x}, {rect_y}, {rect_width}, {rect_height})");
+        debug!(target: "wgpu_renderer", ">>> draw_texture_quad_with_bind_group: bounds=({rect_x}, {rect_y}, {rect_width}, {rect_height})");
 
         // Build a quad covering the group's bounds with UVs 0..1 over the offscreen texture
         let framebuffer_width = self.size.width.max(1) as f32;
@@ -1446,7 +1453,7 @@ impl RenderState {
             .await
             .map_err(|err| anyhow!("Failed to create GPU device: {err}"))?;
         device.on_uncaptured_error(Box::new(|error| {
-            log::error!(target: "wgpu_renderer", "Uncaptured WGPU error: {error:?}");
+            error!(target: "wgpu_renderer", "Uncaptured WGPU error: {error:?}");
         }));
         Ok((instance, adapter, Arc::new(device), queue))
     }
@@ -1555,6 +1562,7 @@ impl RenderState {
         let glyphon = Self::initialize_glyphon(&device, &queue, render_format, size);
         Ok(Self {
             window,
+            instance,
             device,
             queue,
             size,
@@ -1660,7 +1668,7 @@ impl RenderState {
             let scope = ErrorScopeGuard::push(&self.device, "glyphon-atlas-trim");
             self.text_atlas.trim();
             if let Err(error) = scope.check() {
-                log::error!(target: "wgpu_renderer", "Glyphon text_atlas.trim() generated validation error: {error:?}");
+                error!(target: "wgpu_renderer", "Glyphon text_atlas.trim() generated validation error: {error:?}");
             }
         }
 
@@ -1675,7 +1683,7 @@ impl RenderState {
                 None,
             );
             if let Err(error) = scope.check() {
-                log::error!(target: "wgpu_renderer", "Glyphon TextRenderer::new() generated validation error: {error:?}");
+                error!(target: "wgpu_renderer", "Glyphon TextRenderer::new() generated validation error: {error:?}");
             }
         }
 
@@ -2066,7 +2074,7 @@ impl RenderState {
             },
         );
         if let Err(error) = viewport_scope.check() {
-            log::error!(target: "wgpu_renderer", "Glyphon viewport.update() generated error: {error:?}");
+            error!(target: "wgpu_renderer", "Glyphon viewport.update() generated error: {error:?}");
             return;
         }
 
@@ -2082,9 +2090,9 @@ impl RenderState {
             &mut self.swash_cache,
         );
         if let Err(error) = prepare_scope.check() {
-            log::error!(target: "wgpu_renderer", "Glyphon text_renderer.prepare() generated validation error: {error:?}");
+            error!(target: "wgpu_renderer", "Glyphon text_renderer.prepare() generated validation error: {error:?}");
         }
-        log::debug!(
+        debug!(
             target: "wgpu_renderer",
             "glyphon_prepare: areas={areas_count} viewport={framebuffer_width}x{framebuffer_height} result={prep_res:?}"
         );
@@ -2113,7 +2121,7 @@ impl RenderState {
             },
         );
         if let Err(error) = viewport_scope_for.check() {
-            log::error!(target: "wgpu_renderer", "Glyphon viewport.update() (for) generated error: {error:?}");
+            error!(target: "wgpu_renderer", "Glyphon viewport.update() (for) generated error: {error:?}");
             return;
         }
 
@@ -2129,9 +2137,9 @@ impl RenderState {
             &mut self.swash_cache,
         );
         if let Err(error) = prepare_scope_for.check() {
-            log::error!(target: "wgpu_renderer", "Glyphon text_renderer.prepare() (for) generated validation error: {error:?}");
+            error!(target: "wgpu_renderer", "Glyphon text_renderer.prepare() (for) generated validation error: {error:?}");
         }
-        log::debug!(
+        debug!(
             target: "wgpu_renderer",
             "glyphon_prepare_for: items={} areas={} viewport={}x{} result={:?}",
             items.len(),
@@ -2169,10 +2177,10 @@ impl RenderState {
                 .text_renderer
                 .render(&self.text_atlas, &self.viewport, pass)
             {
-                log::error!(target: "wgpu_renderer", "Glyphon text_renderer.render() failed: {error:?}");
+                error!(target: "wgpu_renderer", "Glyphon text_renderer.render() failed: {error:?}");
             }
             if let Err(error) = scope.check() {
-                log::error!(target: "wgpu_renderer", "Glyphon text_renderer.render() generated validation error: {error:?}");
+                error!(target: "wgpu_renderer", "Glyphon text_renderer.render() generated validation error: {error:?}");
             }
         }
     }

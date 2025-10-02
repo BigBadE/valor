@@ -325,7 +325,7 @@ fn rasterize_display_list_to_rgba(dl: &DisplayList, width: u32, height: u32) -> 
     let mut state = state_mutex.lock().expect("lock render state");
     let render_num = RENDER_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    log::info!(
+    info!(
         "=== Rendering fixture #{} with {} items ===",
         render_num + 1,
         dl.items.len()
@@ -334,9 +334,9 @@ fn rasterize_display_list_to_rgba(dl: &DisplayList, width: u32, height: u32) -> 
     // Log display list contents for debugging
     if render_num >= 25 {
         // Log details for fixtures around the problematic one
-        log::info!("Display list #{} contents:", render_num + 1);
+        info!("Display list #{} contents:", render_num + 1);
         for (i, item) in dl.items.iter().enumerate() {
-            log::info!("  Item {i}: {item:?}");
+            info!("  Item {i}: {item:?}");
         }
     }
 
@@ -352,15 +352,15 @@ fn rasterize_display_list_to_rgba(dl: &DisplayList, width: u32, height: u32) -> 
 
     // If render failed, log detailed error information
     if let Err(e) = &result {
-        log::error!("=== RENDER FAILED for fixture #{} ===", render_num + 1);
-        log::error!("Error: {e:?}");
-        log::error!("Display list had {} items", dl.items.len());
-        log::error!("Display list items:");
+        error!("=== RENDER FAILED for fixture #{} ===", render_num + 1);
+        error!("Error: {e:?}");
+        error!("Display list had {} items", dl.items.len());
+        error!("Display list items:");
         for (i, item) in dl.items.iter().enumerate() {
-            log::error!("  Item {i}: {item:?}");
+            error!("  Item {i}: {item:?}");
         }
     } else {
-        log::info!("=== Fixture #{} rendered successfully ===", render_num + 1);
+        info!("=== Fixture #{} rendered successfully ===", render_num + 1);
     }
 
     result
@@ -457,7 +457,7 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
                 let t_decode = Instant::now();
                 let img = image::load_from_memory(&png_bytes)?.to_rgba8();
                 agg_png_decode += t_decode.elapsed();
-                log::debug!(
+                debug!(
                     "Chrome image decoded: width={}, height={}, buffer_size={}, expected_size={}",
                     img.width(),
                     img.height(),
@@ -498,7 +498,7 @@ fn chromium_graphics_smoke_compare_png() -> Result<()> {
             let t_decode = Instant::now();
             let img = image::load_from_memory(&png_bytes)?.to_rgba8();
             agg_png_decode += t_decode.elapsed();
-            log::debug!(
+            debug!(
                 "Chrome image decoded: width={}, height={}, buffer_size={}, expected_size={}",
                 img.width(),
                 img.height(),

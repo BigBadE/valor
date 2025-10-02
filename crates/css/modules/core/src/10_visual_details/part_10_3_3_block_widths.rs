@@ -73,7 +73,7 @@ pub fn compute_collapsed_and_position_public(
     let collapsed_pre_y = cm83::compute_y_position_public(parent_y, ctx.y_cursor, collapsed_top);
     let mut child_y = collapsed_pre_y;
     if ctx.is_first_placed {
-        log::debug!(
+        debug!(
             "[VERT-FIRST pre] key={child_key:?} parent_edge_collapsible={} parent_y={} y_cursor={} mt_eff={} collapsed_top={} clear={:?} floor_y={}",
             ctx.parent_edge_collapsible,
             parent_y,
@@ -84,14 +84,9 @@ pub fn compute_collapsed_and_position_public(
             ctx.clearance_floor_y
         );
     }
-    log::debug!(
+    debug!(
         "[VERT-POS pre] key={child_key:?} parent_y={} y_cursor={} collapsed_top={} clear={:?} floor_y={} -> pre_y={}",
-        parent_y,
-        ctx.y_cursor,
-        collapsed_top,
-        style.clear,
-        ctx.clearance_floor_y,
-        child_y
+        parent_y, ctx.y_cursor, collapsed_top, style.clear, ctx.clearance_floor_y, child_y
     );
     let mut clear_lifted = false;
     if matches!(style.float, Float::None)
@@ -107,14 +102,9 @@ pub fn compute_collapsed_and_position_public(
             clear_lifted = child_y > collapsed_pre_y;
         }
     }
-    log::debug!(
+    debug!(
         "[VERT-POS out] key={child_key:?} child_y={} used_bb_w={} child_x={} mt_eff={} bands=({}, {})",
-        child_y,
-        used_bb_w,
-        child_x,
-        margin_top_eff,
-        ctx.float_band_left,
-        ctx.float_band_right
+        child_y, used_bb_w, child_x, margin_top_eff, ctx.float_band_left, ctx.float_band_right
     );
     CollapsedPos {
         margin_top_eff,

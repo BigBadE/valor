@@ -1,4 +1,5 @@
 use anyhow::{Result as RendererResult, anyhow};
+use log::{debug, error};
 use pollster::block_on;
 use wgpu::{CommandBuffer, Device, ErrorFilter, Queue};
 
@@ -14,18 +15,18 @@ pub fn submit_with_validation<I>(
 where
     I: IntoIterator<Item = CommandBuffer>,
 {
-    log::debug!(target: "wgpu_renderer", ">>> submit_with_validation: pushing error scope");
+    debug!(target: "wgpu_renderer", ">>> submit_with_validation: pushing error scope");
     device.push_error_scope(ErrorFilter::Validation);
-    log::debug!(target: "wgpu_renderer", ">>> submit_with_validation: submitting command buffers");
+    debug!(target: "wgpu_renderer", ">>> submit_with_validation: submitting command buffers");
     queue.submit(submissions);
-    log::debug!(target: "wgpu_renderer", ">>> submit_with_validation: popping error scope");
+    debug!(target: "wgpu_renderer", ">>> submit_with_validation: popping error scope");
     let fut = device.pop_error_scope();
     let res = block_on(fut);
     if let Some(err) = res {
-        log::error!(target: "wgpu_renderer", "WGPU error (scoped submit): {err:?}");
+        error!(target: "wgpu_renderer", "WGPU error (scoped submit): {err:?}");
         return Err(anyhow!("wgpu scoped error on submit: {err:?}"));
     }
-    log::debug!(target: "wgpu_renderer", ">>> submit_with_validation: success");
+    debug!(target: "wgpu_renderer", ">>> submit_with_validation: success");
     Ok(())
 }
 
@@ -42,7 +43,7 @@ where
     let fut = device.pop_error_scope();
     let res = block_on(fut);
     if let Some(err) = res {
-        log::error!(target: "wgpu_renderer", "WGPU error in scope '{label}': {err:?}");
+        error!(target: "wgpu_renderer", "WGPU error in scope '{label}': {err:?}");
         return Err(anyhow!("wgpu scoped error in {label}: {err:?}"));
     }
     Ok(out)

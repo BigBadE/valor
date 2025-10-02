@@ -2,6 +2,7 @@
 
 use css_box::compute_box_sides;
 use css_orchestrator::style_model::ComputedStyle;
+use log::debug;
 
 use crate::SCROLLBAR_GUTTER_PX;
 use crate::chapter8::part_8_3_1_collapsing_margins::compute_root_y_after_top_collapse;
@@ -50,16 +51,9 @@ fn log_last_placed_child_diag(layouter: &Layouter, root: NodeKey, content_bottom
             .and_then(|map| map.get("id").cloned())
             .unwrap_or_default();
         let bottom_edge = ((rect.y + rect.height).round() as i32).saturating_add(raw_mb);
-        log::debug!(
+        debug!(
             "[ROOT-LAST DIAG] last_key={last_key:?} id=#{} rect=({}, {}, {}, {}) mb_raw={} bottom_edge={} content_bottom={:?}",
-            id_opt,
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            raw_mb,
-            bottom_edge,
-            content_bottom
+            id_opt, rect.x, rect.y, rect.width, rect.height, raw_mb, bottom_edge, content_bottom
         );
     }
 }
@@ -161,7 +155,7 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
         } else {
             rect_bottom.saturating_add(mb_out)
         };
-        log::debug!(
+        debug!(
             "[ROOT-LAST] (from loop) key={last_key:?} rect_bottom={rect_bottom} mb_out={mb_out} -> bottom_edge={bottom_edge}"
         );
         Some(bottom_edge)
@@ -215,14 +209,9 @@ pub fn compute_last_block_bottom_edge_impl(layouter: &Layouter, root: NodeKey) -
         .get(&last_key)
         .map_or(0i32, |style| style.margin.bottom as i32);
     let bottom_edge = ((rect.y + rect.height).round() as i32).saturating_add(raw_mb);
-    log::debug!(
+    debug!(
         "[ROOT-LAST] key={last_key:?} rect=({}, {}, {}, {}) mb_raw={} -> bottom_edge={}",
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height,
-        raw_mb,
-        bottom_edge
+        rect.x, rect.y, rect.width, rect.height, raw_mb, bottom_edge
     );
     Some(bottom_edge)
 }

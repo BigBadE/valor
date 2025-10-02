@@ -19,7 +19,7 @@
 )]
 use anyhow::{Result, anyhow};
 use image::ImageEncoder as _;
-use log::info;
+use log::{debug, info};
 use page_handler::config::ValorConfig;
 use page_handler::state::HtmlPage;
 use serde_json::Value;
@@ -102,7 +102,7 @@ pub fn write_png_rgba_if_changed(
     height: u32,
 ) -> Result<bool> {
     let expected_size = (width as usize) * (height as usize) * 4;
-    log::debug!(
+    debug!(
         "write_png_rgba_if_changed: width={}, height={}, expected_size={}, actual_size={}, path={}",
         width,
         height,

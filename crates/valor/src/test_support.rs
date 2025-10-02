@@ -9,7 +9,7 @@ use crate::factory::{ChromeInit, create_chrome_and_content};
 use anyhow::{Result, anyhow};
 use core::time::Duration;
 use image::{ColorType, ImageEncoder as _, codecs::png::PngEncoder};
-use log::warn;
+use log::{info, warn};
 use page_handler::config::ValorConfig;
 use page_handler::state::HtmlPage;
 use serde_json::{Number, Value, from_str, to_string};
@@ -156,7 +156,7 @@ pub fn write_cached_json_for_fixture(
     }
     let json_str = to_string(json_value).unwrap_or_else(|_| String::from("{}"));
     write(file, json_str)?;
-    log::info!(
+    info!(
         "[CACHE] wrote chromium JSON for {} to target/valor_layout_cache",
         canon.display()
     );
@@ -203,7 +203,7 @@ pub fn write_named_json_for_fixture(
     }
     let json_str = to_string(json_value).unwrap_or_else(|_| String::from("{}"));
     write(file, json_str)?;
-    log::info!(
+    info!(
         "[CACHE] wrote {} JSON for {} to target/valor_layout_cache",
         name,
         canon.display()
