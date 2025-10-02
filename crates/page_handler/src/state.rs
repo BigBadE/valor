@@ -1,11 +1,10 @@
 use crate::accessibility::ax_tree_snapshot_from;
 use crate::config::ValorConfig;
-use crate::display::{DefaultDisplayBuilder, DisplayBuilder};
 use crate::embedded_chrome::get_embedded_chrome_asset;
 use crate::events::KeyMods;
 use crate::runtime::{DefaultJsRuntime, JsRuntime as _};
 use crate::scheduler::FrameScheduler;
-use crate::snapshots::{IRect, Snapshot};
+use crate::snapshots::IRect;
 use crate::telemetry::PerfCounters;
 use crate::url::stream_url;
 use crate::{focus as focus_mod, selection, telemetry as telemetry_mod};
@@ -103,12 +102,8 @@ pub struct HtmlPage {
     url: Url,
     /// ES module resolver/bundler adapter (JS crate) for side-effect modules.
     module_resolver: Box<dyn ModuleResolver>,
-    /// Display builder used to construct display lists from layout and styles.
-    display_builder: Box<dyn DisplayBuilder>,
     /// Frame scheduler to coalesce layout per frame with a budget (Phase 5).
     frame_scheduler: FrameScheduler,
-    /// Whether to draw a small perf HUD overlay in display list snapshots.
-    hud_enabled: bool,
     /// Diagnostics: number of nodes restyled in the last tick.
     last_style_restyled_nodes: u64,
     /// Whether we've dispatched `DOMContentLoaded` to JS listeners.
@@ -289,13 +284,11 @@ impl HtmlPage {
             script_counter: 0,
             url: url.clone(),
             module_resolver: Box::new(SimpleFileModuleResolver::new()),
-            display_builder: Box::new(DefaultDisplayBuilder),
             frame_scheduler,
             last_style_restyled_nodes: 0,
             dom_content_loaded_fired: false,
             style_nodes_rebuilt_after_load: false,
             needs_redraw: false,
-            hud_enabled: config.hud_enabled,
             telemetry_enabled: config.telemetry_enabled,
         })
     }
@@ -733,43 +726,14 @@ impl HtmlPage {
     }
 
     // Internal accessors for sibling modules (events, etc.).
-    /// Get a mutable reference to the JS engine.
-    pub(crate) const fn js_engine_mut(&mut self) -> &mut V8Engine {
-        &mut self.js_engine
-    }
-    /// Get a mutable reference to the host context.
-    pub(crate) const fn host_context_mut(&mut self) -> &mut HostContext {
-        &mut self.host_context
-    }
-    /// Try to synchronize the layouter mirror.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if synchronization fails.
-    pub(crate) fn layouter_try_update_sync(&mut self) -> Result<(), Error> {
-        self.layouter_mirror.try_update_sync()
-    }
     /// Return a snapshot of the layouter's current geometry per node.
     pub fn layouter_geometry_mut(&mut self) -> HashMap<NodeKey, LayoutRect> {
         self.layouter_mirror.mirror_mut().compute_layout_geometry()
-    }
-    /// Get a mutable snapshot from the layouter.
-    pub(crate) fn layouter_snapshot_mut(&mut self) -> Snapshot {
-        self.layouter_mirror.mirror_mut().snapshot()
-    }
-    /// Get the current layouter snapshot.
-    pub(crate) fn layouter_snapshot(&self) -> Snapshot {
-        self.layouter_mirror.mirror().snapshot()
     }
     /// Clone and return the layouter's current attributes map (id/class/style) keyed by `NodeKey`.
     pub fn layouter_attrs_map(&mut self) -> HashMap<NodeKey, HashMap<String, String>> {
         self.layouter_mirror.mirror_mut().attrs_map()
     }
-    /// Get the computed styles from the layouter.
-    pub(crate) fn layouter_computed_styles(&self) -> HashMap<NodeKey, ComputedStyle> {
-        self.layouter_mirror.mirror().computed_styles().clone()
-    }
-
     /// Ensure a layout pass has been run at least once or if material dirt is pending.
     /// This synchronous helper is intended for display snapshot code paths that
     /// cannot await the normal async update loop but need non-empty geometry.
@@ -885,26 +849,6 @@ impl HtmlPage {
             NodeKey::ROOT,
         );
         let _unused = lay.apply_update(EndOfDocument);
-    }
-    /// Get a reference to the display builder.
-    pub(crate) fn display_builder(&self) -> &dyn DisplayBuilder {
-        &*self.display_builder
-    }
-    /// Get the current selection overlay rectangle.
-    pub(crate) const fn selection_overlay(&self) -> Option<IRect> {
-        self.selection_overlay
-    }
-    /// Check if the HUD is enabled.
-    pub(crate) const fn hud_enabled(&self) -> bool {
-        self.hud_enabled
-    }
-    /// Get the number of deferred frame operations.
-    pub(crate) const fn frame_spillover_deferred(&self) -> u64 {
-        self.frame_scheduler.deferred()
-    }
-    /// Get the number of nodes restyled in the last style pass.
-    pub(crate) const fn last_style_restyled_nodes(&self) -> u64 {
-        self.last_style_restyled_nodes
     }
     /// Perform hit testing at the given coordinates.
     pub(crate) const fn layouter_hit_test(&mut self, x: i32, y: i32) -> Option<NodeKey> {

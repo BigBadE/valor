@@ -7,8 +7,6 @@
 
 pub mod accessibility;
 pub mod config;
-/// Display list building and rendering utilities
-mod display;
 /// Display API methods (now integrated into state.rs)
 mod display_api;
 /// Display list building helpers for retained mode

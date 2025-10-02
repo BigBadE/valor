@@ -346,6 +346,23 @@ pub struct RenderState {
     live_buffers: Vec<Buffer>,
 }
 
+/// Surface configuration result: (surface, `surface_format`, `render_format`).
+type SurfaceConfig = (Option<Surface<'static>>, TextureFormat, TextureFormat);
+
+/// Glyphon rendering resources for initialization.
+struct GlyphonResources {
+    /// Font system for text rendering.
+    font_system: FontSystem,
+    /// Text atlas for glyph caching.
+    text_atlas: TextAtlas,
+    /// Text renderer for drawing.
+    text_renderer: TextRenderer,
+    /// Glyphon cache.
+    glyphon_cache: Cache,
+    /// Viewport for coordinate transformation.
+    viewport: Viewport,
+}
+
 impl RenderState {
     /// Preprocess a layer with the given encoder to collect opacity composites.
     ///
@@ -1399,12 +1416,11 @@ impl RenderState {
         })
     }
 
-    /// Create the GPU device/surface and initialize a simple render pipeline.
+    /// Initialize GPU device and queue.
     ///
     /// # Errors
-    /// Returns an error if no suitable GPU adapter is found or if device creation fails.
-    pub async fn new(window: Arc<Window>) -> Result<Self, AnyhowError> {
-        // Enable DX12 validation layer for detailed error messages
+    /// Returns an error if adapter or device initialization fails.
+    async fn initialize_device() -> Result<(Arc<Device>, Queue), AnyhowError> {
         let instance = Instance::new(&InstanceDescriptor {
             backends: Backends::DX12 | Backends::VULKAN | Backends::GL,
             flags: InstanceFlags::VALIDATION | InstanceFlags::DEBUG,
@@ -1418,7 +1434,6 @@ impl RenderState {
             })
             .await
             .map_err(|err| anyhow!("Failed to find a suitable GPU adapter: {err}"))?;
-        // Enable validation layers in debug builds for better error reporting
         let device_descriptor = DeviceDescriptor {
             label: Some("valor-render-device"),
             required_features: Features::empty(),
@@ -1426,112 +1441,136 @@ impl RenderState {
             memory_hints: MemoryHints::default(),
             trace: Trace::default(),
         };
-
         let (device, queue) = adapter
             .request_device(&device_descriptor)
             .await
             .map_err(|err| anyhow!("Failed to create GPU device: {err}"))?;
-
-        // Set up error callback for better debugging
         device.on_uncaptured_error(Box::new(|error| {
             log::error!(target: "wgpu_renderer", "Uncaptured WGPU error: {error:?}");
         }));
+        Ok((Arc::new(device), queue))
+    }
 
-        // Wrap device in Arc for safe shared ownership and to eliminate unsafe code
-        let device = Arc::new(device);
-
-        let size = window.inner_size();
-
-        // Try to create a surface; if capabilities are empty, fall back to offscreen mode.
-        let (surface_opt, surface_format, render_format) =
-            instance.create_surface(Arc::clone(&window)).map_or_else(
-                |_| {
+    /// Setup surface with format selection and configuration.
+    async fn setup_surface(
+        window: &Arc<Window>,
+        device: &Arc<Device>,
+        size: PhysicalSize<u32>,
+    ) -> SurfaceConfig {
+        let instance = Instance::new(&InstanceDescriptor {
+            backends: Backends::DX12 | Backends::VULKAN | Backends::GL,
+            flags: InstanceFlags::VALIDATION | InstanceFlags::DEBUG,
+            ..Default::default()
+        });
+        let adapter = instance
+            .request_adapter(&RequestAdapterOptions {
+                power_preference: PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .ok();
+        let Some(adapter) = adapter else {
+            return (
+                None,
+                TextureFormat::Rgba8Unorm,
+                TextureFormat::Rgba8UnormSrgb,
+            );
+        };
+        instance.create_surface(Arc::clone(window)).map_or_else(
+            |_| {
+                (
+                    None,
+                    TextureFormat::Rgba8Unorm,
+                    TextureFormat::Rgba8UnormSrgb,
+                )
+            },
+            |surface| {
+                let capabilities = surface.get_capabilities(&adapter);
+                if capabilities.formats.is_empty() {
                     (
                         None,
                         TextureFormat::Rgba8Unorm,
                         TextureFormat::Rgba8UnormSrgb,
                     )
-                },
-                |surface| {
-                    let capabilities = surface.get_capabilities(&adapter);
-                    if capabilities.formats.is_empty() {
-                        // Headless path: no surface formats available
-                        (
-                            None,
-                            TextureFormat::Rgba8Unorm,
-                            TextureFormat::Rgba8UnormSrgb,
-                        )
-                    } else {
-                        // Prefer RGBA8 for consistent channel ordering; fall back to the first available format
-                        let sfmt = capabilities
-                            .formats
-                            .iter()
-                            .copied()
-                            .find(|format| {
-                                matches!(
-                                    format,
-                                    TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb
-                                )
-                            })
-                            .unwrap_or(capabilities.formats[0]);
-                        // Use the base (non-sRGB) surface format, but render to an sRGB view
-                        let surface_fmt = match sfmt {
-                            TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8Unorm,
-                            other => other,
-                        };
-                        let render_fmt = TextureFormat::Rgba8UnormSrgb;
-                        // Configure the surface before creating the pipeline
-                        let surface_config = SurfaceConfiguration {
-                            usage: TextureUsages::RENDER_ATTACHMENT,
-                            format: surface_fmt,
-                            // Request compatibility with the sRGB-format texture view we are going to create later.
-                            view_formats: vec![render_fmt],
-                            alpha_mode: CompositeAlphaMode::Auto,
-                            width: size.width,
-                            height: size.height,
-                            desired_maximum_frame_latency: 2,
-                            present_mode: PresentMode::AutoVsync,
-                        };
-                        surface.configure(&device, &surface_config);
-                        (Some(surface), surface_fmt, render_fmt)
-                    }
-                },
-            );
+                } else {
+                    let sfmt = capabilities
+                        .formats
+                        .iter()
+                        .copied()
+                        .find(|format| {
+                            matches!(
+                                format,
+                                TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb
+                            )
+                        })
+                        .unwrap_or(capabilities.formats[0]);
+                    let surface_fmt = match sfmt {
+                        TextureFormat::Rgba8UnormSrgb => TextureFormat::Rgba8Unorm,
+                        other => other,
+                    };
+                    let render_fmt = TextureFormat::Rgba8UnormSrgb;
+                    let surface_config = SurfaceConfiguration {
+                        usage: TextureUsages::RENDER_ATTACHMENT,
+                        format: surface_fmt,
+                        view_formats: vec![render_fmt],
+                        alpha_mode: CompositeAlphaMode::Auto,
+                        width: size.width,
+                        height: size.height,
+                        desired_maximum_frame_latency: 2,
+                        present_mode: PresentMode::AutoVsync,
+                    };
+                    surface.configure(device, &surface_config);
+                    (Some(surface), surface_fmt, render_fmt)
+                }
+            },
+        )
+    }
 
-        // Build pipeline and buffers now that formats are known
-        let (pipeline, vertex_buffer, vertex_count) =
-            build_pipeline_and_buffers(&device, render_format);
-        let (tex_pipeline, tex_bind_layout, linear_sampler) =
-            build_texture_pipeline(&device, render_format);
-
-        // Initialize glyphon text subsystem
-        let glyphon_cache_local = Cache::new(&device);
-        let mut text_atlas_local =
-            TextAtlas::new(&device, &queue, &glyphon_cache_local, render_format);
-        let text_renderer_local = TextRenderer::new(
-            &mut text_atlas_local,
-            &device,
-            MultisampleState::default(),
-            None,
-        );
-        let mut viewport_local = Viewport::new(&device, &glyphon_cache_local);
-        viewport_local.update(
-            &queue,
+    /// Initialize Glyphon text rendering subsystem.
+    fn initialize_glyphon(
+        device: &Arc<Device>,
+        queue: &Queue,
+        render_format: TextureFormat,
+        size: PhysicalSize<u32>,
+    ) -> GlyphonResources {
+        let glyphon_cache = Cache::new(device);
+        let mut text_atlas = TextAtlas::new(device, queue, &glyphon_cache, render_format);
+        let text_renderer =
+            TextRenderer::new(&mut text_atlas, device, MultisampleState::default(), None);
+        let mut viewport = Viewport::new(device, &glyphon_cache);
+        viewport.update(
+            queue,
             Resolution {
                 width: size.width,
                 height: size.height,
             },
         );
+        let mut font_system = FontSystem::new();
+        font_system.db_mut().load_system_fonts();
+        GlyphonResources {
+            font_system,
+            text_atlas,
+            text_renderer,
+            glyphon_cache,
+            viewport,
+        }
+    }
 
-        // Ensure system fonts are available for glyphon
-        let mut font_system_runtime = FontSystem::new();
-        font_system_runtime.db_mut().load_system_fonts();
-
-        // Log any uncaptured WGPU errors to help diagnose backend issues
-        device.on_uncaptured_error(Box::new(|error| {
-            log::error!(target: "wgpu_renderer", "WGPU uncaptured error: {error:?}");
-        }));
-
+    /// Create the GPU device/surface and initialize a simple render pipeline.
+    ///
+    /// # Errors
+    /// Returns an error if no suitable GPU adapter is found or if device creation fails.
+    pub async fn new(window: Arc<Window>) -> Result<Self, AnyhowError> {
+        let (device, queue) = Self::initialize_device().await?;
+        let size = window.inner_size();
+        let (surface_opt, surface_format, render_format) =
+            Self::setup_surface(&window, &device, size).await;
+        let (pipeline, vertex_buffer, vertex_count) =
+            build_pipeline_and_buffers(&device, render_format);
+        let (tex_pipeline, tex_bind_layout, linear_sampler) =
+            build_texture_pipeline(&device, render_format);
+        let glyphon = Self::initialize_glyphon(&device, &queue, render_format, size);
         Ok(Self {
             window,
             device,
@@ -1549,13 +1588,12 @@ impl RenderState {
             display_list: Vec::new(),
             text_list: Vec::new(),
             retained_display_list: None,
-            // Glyphon text state
-            font_system: font_system_runtime,
+            font_system: glyphon.font_system,
             swash_cache: SwashCache::new(),
-            text_atlas: text_atlas_local,
-            text_renderer: text_renderer_local,
-            glyphon_cache: glyphon_cache_local,
-            viewport: viewport_local,
+            text_atlas: glyphon.text_atlas,
+            text_renderer: glyphon.text_renderer,
+            glyphon_cache: glyphon.glyphon_cache,
+            viewport: glyphon.viewport,
             layers: Vec::new(),
             clear_color: [1.0, 1.0, 1.0, 1.0],
             offscreen_tex: None,
