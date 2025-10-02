@@ -30,11 +30,19 @@ impl DamageRect {
 
     /// Check if this rectangle intersects another.
     #[must_use]
-    pub const fn intersects(self, other: Self) -> bool {
-        let self_right = self.x + self.width as i32;
-        let self_bottom = self.y + self.height as i32;
-        let other_right = other.x + other.width as i32;
-        let other_bottom = other.y + other.height as i32;
+    pub fn intersects(self, other: Self) -> bool {
+        let self_right = self
+            .x
+            .saturating_add(i32::try_from(self.width).unwrap_or(i32::MAX));
+        let self_bottom = self
+            .y
+            .saturating_add(i32::try_from(self.height).unwrap_or(i32::MAX));
+        let other_right = other
+            .x
+            .saturating_add(i32::try_from(other.width).unwrap_or(i32::MAX));
+        let other_bottom = other
+            .y
+            .saturating_add(i32::try_from(other.height).unwrap_or(i32::MAX));
 
         self.x < other_right
             && self_right > other.x
@@ -47,13 +55,25 @@ impl DamageRect {
     pub fn union(self, other: Self) -> Self {
         let x = self.x.min(other.x);
         let y = self.y.min(other.y);
-        let right = (self.x + self.width as i32).max(other.x + other.width as i32);
-        let bottom = (self.y + self.height as i32).max(other.y + other.height as i32);
+        let self_right = self
+            .x
+            .saturating_add(i32::try_from(self.width).unwrap_or(i32::MAX));
+        let other_right = other
+            .x
+            .saturating_add(i32::try_from(other.width).unwrap_or(i32::MAX));
+        let self_bottom = self
+            .y
+            .saturating_add(i32::try_from(self.height).unwrap_or(i32::MAX));
+        let other_bottom = other
+            .y
+            .saturating_add(i32::try_from(other.height).unwrap_or(i32::MAX));
+        let right = self_right.max(other_right);
+        let bottom = self_bottom.max(other_bottom);
         Self {
             x,
             y,
-            width: (right - x) as u32,
-            height: (bottom - y) as u32,
+            width: u32::try_from(right.saturating_sub(x)).unwrap_or(0),
+            height: u32::try_from(bottom.saturating_sub(y)).unwrap_or(0),
         }
     }
 
@@ -79,7 +99,7 @@ pub struct DamageTracker {
 impl DamageTracker {
     /// Create a new damage tracker.
     #[must_use]
-    pub fn new(framebuffer_width: u32, framebuffer_height: u32) -> Self {
+    pub const fn new(framebuffer_width: u32, framebuffer_height: u32) -> Self {
         Self {
             damaged_rects: Vec::new(),
             framebuffer_width,
@@ -102,16 +122,29 @@ impl DamageTracker {
     /// Add a damaged rectangle.
     pub fn damage_rect(&mut self, rect: DamageRect) {
         // Clamp to framebuffer bounds
-        let x = rect.x.max(0);
-        let y = rect.y.max(0);
-        let right = (rect.x + rect.width as i32).min(self.framebuffer_width as i32);
-        let bottom = (rect.y + rect.height as i32).min(self.framebuffer_height as i32);
+        let x = rect.x.max(0i32);
+        let y = rect.y.max(0i32);
+        let rect_right = rect
+            .x
+            .saturating_add(i32::try_from(rect.width).unwrap_or(i32::MAX));
+        let rect_bottom = rect
+            .y
+            .saturating_add(i32::try_from(rect.height).unwrap_or(i32::MAX));
+        let fb_width = i32::try_from(self.framebuffer_width).unwrap_or(i32::MAX);
+        let fb_height = i32::try_from(self.framebuffer_height).unwrap_or(i32::MAX);
+        let right = rect_right.min(fb_width);
+        let bottom = rect_bottom.min(fb_height);
 
         if right <= x || bottom <= y {
             return; // Empty rect
         }
 
-        let clamped = DamageRect::new(x, y, (right - x) as u32, (bottom - y) as u32);
+        let clamped = DamageRect::new(
+            x,
+            y,
+            u32::try_from(right - x).unwrap_or(0),
+            u32::try_from(bottom - y).unwrap_or(0),
+        );
 
         // Try to merge with existing rects
         let mut merged = false;
@@ -170,46 +203,68 @@ impl DamageTracker {
             return;
         }
 
-        // Simple greedy merging: find the two most overlapping rects and merge them
+        let (best_i, best_j) = self.find_best_merge_candidates();
+        self.merge_pair(best_i, best_j);
+    }
+
+    /// Find the best pair of rects to merge (most overlap or smallest if no overlap).
+    fn find_best_merge_candidates(&self) -> (usize, usize) {
         let mut best_i = 0;
         let mut best_j = 1;
         let mut best_overlap = 0;
 
-        for i in 0..self.damaged_rects.len() {
-            for j in (i + 1)..self.damaged_rects.len() {
-                if self.damaged_rects[i].intersects(self.damaged_rects[j]) {
-                    let union = self.damaged_rects[i].union(self.damaged_rects[j]);
-                    let overlap = self.damaged_rects[i].area() + self.damaged_rects[j].area()
-                        - union.area();
-                    if overlap > best_overlap {
-                        best_overlap = overlap;
-                        best_i = i;
-                        best_j = j;
-                    }
+        for first_idx in 0..self.damaged_rects.len() {
+            for second_idx in (first_idx + 1)..self.damaged_rects.len() {
+                let overlap = self.calculate_overlap(first_idx, second_idx);
+                if overlap > best_overlap {
+                    best_overlap = overlap;
+                    best_i = first_idx;
+                    best_j = second_idx;
                 }
             }
         }
 
         if best_overlap > 0 {
-            let merged = self.damaged_rects[best_i].union(self.damaged_rects[best_j]);
-            self.damaged_rects.remove(best_j);
-            self.damaged_rects[best_i] = merged;
+            (best_i, best_j)
         } else {
-            // No overlapping rects, merge the two smallest by area
-            let mut areas: Vec<(usize, u32)> = self
-                .damaged_rects
-                .iter()
-                .enumerate()
-                .map(|(i, r)| (i, r.area()))
-                .collect();
-            areas.sort_by_key(|a| a.1);
-            let i = areas[0].0;
-            let j = areas[1].0;
-            let merged = self.damaged_rects[i].union(self.damaged_rects[j]);
-            let (min_idx, max_idx) = if i < j { (i, j) } else { (j, i) };
-            self.damaged_rects.remove(max_idx);
-            self.damaged_rects[min_idx] = merged;
+            self.find_smallest_pair()
         }
+    }
+
+    /// Calculate overlap between two rects.
+    fn calculate_overlap(&self, first_idx: usize, second_idx: usize) -> u32 {
+        let first = &self.damaged_rects[first_idx];
+        let second = &self.damaged_rects[second_idx];
+        if !first.intersects(*second) {
+            return 0;
+        }
+        let union = first.union(*second);
+        first.area() + second.area() - union.area()
+    }
+
+    /// Find the two smallest rects when no overlaps exist.
+    fn find_smallest_pair(&self) -> (usize, usize) {
+        let mut areas: Vec<(usize, u32)> = self
+            .damaged_rects
+            .iter()
+            .enumerate()
+            .map(|(idx, rect)| (idx, rect.area()))
+            .collect();
+        areas.sort_by_key(|entry| entry.1);
+        let first_idx = areas[0].0;
+        let second_idx = areas[1].0;
+        if first_idx < second_idx {
+            (first_idx, second_idx)
+        } else {
+            (second_idx, first_idx)
+        }
+    }
+
+    /// Merge a pair of rects at the given indices.
+    fn merge_pair(&mut self, min_idx: usize, max_idx: usize) {
+        let merged = self.damaged_rects[min_idx].union(self.damaged_rects[max_idx]);
+        self.damaged_rects.remove(max_idx);
+        self.damaged_rects[min_idx] = merged;
     }
 }
 
@@ -224,6 +279,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::missing_panics_doc, reason = "Test function")]
     fn damage_all() {
         let mut tracker = DamageTracker::new(800, 600);
         tracker.damage_all();
@@ -231,6 +287,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::missing_panics_doc, reason = "Test function")]
+    #[allow(
+        clippy::default_numeric_fallback,
+        reason = "Test code with numeric literals"
+    )]
     fn damage_rect_merging() {
         let mut tracker = DamageTracker::new(800, 600);
         tracker.damage_rect(DamageRect::new(0, 0, 100, 100));
@@ -245,6 +306,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::missing_panics_doc, reason = "Test function")]
     fn clear_damage() {
         let mut tracker = DamageTracker::new(800, 600);
         tracker.damage_rect(DamageRect::new(0, 0, 100, 100));

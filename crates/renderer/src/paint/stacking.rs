@@ -7,7 +7,10 @@
 //! 4. Descendant inline content
 //! 5. Descendant positioned elements (by z-index)
 
-use std::cmp::Ordering;
+use core::cmp::Ordering;
+
+/// Clipping bounds (x, y, width, height).
+pub type ClipRect = (f32, f32, f32, f32);
 
 /// Stacking context level for CSS paint order.
 ///
@@ -56,12 +59,12 @@ impl StackingLevel {
     const fn sort_key(self) -> (i32, i32) {
         match self {
             Self::RootBackgroundAndBorders => (0, 0),
-            Self::NegativeZIndex(z) => (1, z),
+            Self::NegativeZIndex(z_value) => (1, z_value),
             Self::BlockDescendants => (2, 0),
             Self::Floats => (3, 0),
             Self::InlineContent => (4, 0),
             Self::PositionedZeroOrAuto => (5, 0),
-            Self::PositiveZIndex(z) => (6, z),
+            Self::PositiveZIndex(z_value) => (6, z_value),
         }
     }
 }
@@ -97,8 +100,8 @@ pub struct StackingContext {
     pub establishes_stacking_context: bool,
     /// Opacity value (1.0 = opaque).
     pub opacity: f32,
-    /// Clipping bounds (x, y, width, height).
-    pub clip: Option<(f32, f32, f32, f32)>,
+    /// Clipping bounds.
+    pub clip: Option<ClipRect>,
 }
 
 impl StackingContext {
@@ -138,7 +141,7 @@ impl StackingContext {
 
     /// Set clip bounds.
     #[must_use]
-    pub const fn with_clip(mut self, clip: (f32, f32, f32, f32)) -> Self {
+    pub const fn with_clip(mut self, clip: ClipRect) -> Self {
         self.clip = Some(clip);
         self
     }
@@ -178,6 +181,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::missing_panics_doc, reason = "Test function")]
     fn stacking_order() {
         let root = StackingLevel::RootBackgroundAndBorders;
         let neg_10 = StackingLevel::NegativeZIndex(-10);
@@ -200,6 +204,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::missing_panics_doc, reason = "Test function")]
     fn tree_order_breaks_ties() {
         let ctx1 = StackingContext::new(StackingLevel::BlockDescendants, 0);
         let ctx2 = StackingContext::new(StackingLevel::BlockDescendants, 1);
@@ -207,6 +212,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::missing_panics_doc, reason = "Test function")]
+    #[allow(
+        clippy::float_cmp,
+        reason = "Test assertion comparing exact float value"
+    )]
     fn opacity_establishes_context() {
         let ctx = StackingContext::new(StackingLevel::BlockDescendants, 0).with_opacity(0.5);
         assert!(ctx.establishes_stacking_context);

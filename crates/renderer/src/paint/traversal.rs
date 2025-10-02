@@ -44,10 +44,7 @@ pub struct PaintNode {
 /// # Returns
 /// Vector of paint order entries sorted from back to front
 #[must_use]
-pub fn traverse_paint_tree(
-    root: NodeId,
-    nodes: &HashMap<NodeId, PaintNode>,
-) -> Vec<PaintOrder> {
+pub fn traverse_paint_tree(root: NodeId, nodes: &HashMap<NodeId, PaintNode>) -> Vec<PaintOrder> {
     let mut result = Vec::new();
     traverse_node(root, nodes, 0, &mut result);
     result
@@ -92,7 +89,7 @@ fn traverse_node(
             .collect();
 
         // Sort children by stacking context
-        children_by_level.sort_by(|a, b| a.1.cmp(&b.1));
+        children_by_level.sort_by(|first, second| first.1.cmp(&second.1));
 
         // Traverse children in stacking order
         for (child_id, _) in children_by_level {
@@ -136,6 +133,8 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::missing_panics_doc, reason = "Test function")]
+    #[allow(clippy::similar_names, reason = "Test code with numbered variables")]
     fn simple_tree_order() {
         let mut nodes = HashMap::new();
         nodes.insert(
@@ -147,20 +146,10 @@ mod tests {
                 stacking_context: StackingContext::root(),
             },
         );
-        nodes.insert(create_node(
-            1,
-            Some(0),
-            vec![],
-            StackingLevel::BlockDescendants,
-            0,
-        ));
-        nodes.insert(create_node(
-            2,
-            Some(0),
-            vec![],
-            StackingLevel::BlockDescendants,
-            1,
-        ));
+        let (id1, node1) = create_node(1, Some(0), vec![], StackingLevel::BlockDescendants, 0);
+        nodes.insert(id1, node1);
+        let (id2, node2) = create_node(2, Some(0), vec![], StackingLevel::BlockDescendants, 1);
+        nodes.insert(id2, node2);
 
         let order = traverse_paint_tree(0, &nodes);
         assert_eq!(order.len(), 3);
@@ -171,6 +160,8 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::missing_panics_doc, reason = "Test function")]
+    #[allow(clippy::similar_names, reason = "Test code with numbered variables")]
     fn z_index_ordering() {
         let mut nodes = HashMap::new();
         nodes.insert(
@@ -182,27 +173,12 @@ mod tests {
                 stacking_context: StackingContext::root(),
             },
         );
-        nodes.insert(create_node(
-            1,
-            Some(0),
-            vec![],
-            StackingLevel::PositiveZIndex(10),
-            0,
-        ));
-        nodes.insert(create_node(
-            2,
-            Some(0),
-            vec![],
-            StackingLevel::NegativeZIndex(-5),
-            1,
-        ));
-        nodes.insert(create_node(
-            3,
-            Some(0),
-            vec![],
-            StackingLevel::BlockDescendants,
-            2,
-        ));
+        let (id1, node1) = create_node(1, Some(0), vec![], StackingLevel::PositiveZIndex(10), 0);
+        nodes.insert(id1, node1);
+        let (id2, node2) = create_node(2, Some(0), vec![], StackingLevel::NegativeZIndex(-5), 1);
+        nodes.insert(id2, node2);
+        let (id3, node3) = create_node(3, Some(0), vec![], StackingLevel::BlockDescendants, 2);
+        nodes.insert(id3, node3);
 
         let order = traverse_paint_tree(0, &nodes);
         assert_eq!(order.len(), 4);

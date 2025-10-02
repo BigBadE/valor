@@ -1,3 +1,13 @@
+// Extracted submodules for better organization
+pub(crate) mod error_scope;
+pub(crate) mod initialization;
+pub(crate) mod opacity;
+pub(crate) mod rectangles;
+pub(crate) mod text;
+
+// Re-export commonly used items from submodules
+// Note: These are used by the impl blocks below
+
 use crate::error::submit_with_validation;
 use crate::pipelines::{Vertex, build_pipeline_and_buffers, build_texture_pipeline};
 use crate::text::{

@@ -37,7 +37,7 @@ pub struct PaintStyle {
     /// Whether element is positioned.
     pub is_positioned: bool,
     /// Overflow clipping bounds.
-    pub overflow_clip: Option<(f32, f32, f32, f32)>,
+    pub overflow_clip: Option<super::stacking::ClipRect>,
 }
 
 impl Default for PaintStyle {
@@ -60,9 +60,27 @@ pub enum LayoutNodeKind {
     /// Block-level box.
     Block,
     /// Inline-level text.
-    InlineText { text: String },
+    InlineText {
+        /// Text content.
+        text: String,
+    },
     /// Positioned element.
     Positioned,
+}
+
+/// Data for adding a node to the paint tree.
+#[derive(Debug, Clone)]
+pub struct PaintNodeData {
+    /// Node identifier.
+    pub id: NodeId,
+    /// Parent node.
+    pub parent: Option<NodeId>,
+    /// Layout rectangle.
+    pub rect: LayoutRect,
+    /// Paint style.
+    pub style: PaintStyle,
+    /// Node kind.
+    pub kind: LayoutNodeKind,
 }
 
 /// Builder for creating display lists from layout tree.
@@ -90,34 +108,28 @@ impl DisplayListBuilder {
     }
 
     /// Add a layout node to the builder.
-    pub fn add_node(
-        &mut self,
-        id: NodeId,
-        parent: Option<NodeId>,
-        rect: LayoutRect,
-        style: PaintStyle,
-        kind: LayoutNodeKind,
-    ) {
-        self.rects.insert(id, rect);
-        self.styles.insert(id, style.clone());
-        self.kinds.insert(id, kind);
+    pub fn add_node(&mut self, node: PaintNodeData) {
+        let id = node.id;
+        let parent = node.parent;
+        self.rects.insert(id, node.rect);
+        self.styles.insert(id, node.style.clone());
+        self.kinds.insert(id, node.kind);
 
         // Determine stacking level
-        let level = if style.is_positioned {
-            if let Some(z) = style.z_index {
-                StackingLevel::from_z_index(z)
-            } else {
-                StackingLevel::PositionedZeroOrAuto
-            }
+        let level = if node.style.is_positioned {
+            node.style.z_index.map_or(
+                StackingLevel::PositionedZeroOrAuto,
+                StackingLevel::from_z_index,
+            )
         } else {
             StackingLevel::BlockDescendants
         };
 
         let mut stacking_context = StackingContext::new(level, id as u32);
-        if style.opacity < 1.0 {
-            stacking_context = stacking_context.with_opacity(style.opacity);
+        if node.style.opacity < 1.0 {
+            stacking_context = stacking_context.with_opacity(node.style.opacity);
         }
-        if let Some(clip) = style.overflow_clip {
+        if let Some(clip) = node.style.overflow_clip {
             stacking_context = stacking_context.with_clip(clip);
         }
 
@@ -132,10 +144,10 @@ impl DisplayListBuilder {
         );
 
         // Add to parent's children list
-        if let Some(parent_id) = parent {
-            if let Some(parent_node) = self.nodes.get_mut(&parent_id) {
-                parent_node.children.push(id);
-            }
+        if let Some(parent_id) = parent
+            && let Some(parent_node) = self.nodes.get_mut(&parent_id)
+        {
+            parent_node.children.push(id);
         }
     }
 
@@ -146,47 +158,64 @@ impl DisplayListBuilder {
         let mut items = Vec::new();
 
         for entry in paint_order {
-            if let Some(rect) = self.rects.get(&entry.node_id) {
-                if let Some(style) = self.styles.get(&entry.node_id) {
-                    // Paint background
-                    if style.background_color[3] > 0.0 {
-                        items.push(DisplayItem::Rect {
-                            x: rect.x,
-                            y: rect.y,
-                            width: rect.width,
-                            height: rect.height,
-                            color: [
-                                style.background_color[0],
-                                style.background_color[1],
-                                style.background_color[2],
-                                style.background_color[3],
-                            ],
-                        });
-                    }
-
-                    // Paint text content
-                    if let Some(LayoutNodeKind::InlineText { text }) =
-                        self.kinds.get(&entry.node_id)
-                    {
-                        items.push(DisplayItem::Text {
-                            x: rect.x,
-                            y: rect.y + style.font_size, // baseline
-                            text: text.clone(),
-                            color: style.text_color,
-                            font_size: style.font_size,
-                            bounds: Some((
-                                rect.x as i32,
-                                rect.y as i32,
-                                (rect.x + rect.width) as i32,
-                                (rect.y + rect.height) as i32,
-                            )),
-                        });
-                    }
-                }
-            }
+            self.paint_entry(&entry, &mut items);
         }
 
         DisplayList::from_items(items)
+    }
+
+    /// Paint a single entry in the paint order.
+    fn paint_entry(&self, entry: &super::traversal::PaintOrder, items: &mut Vec<DisplayItem>) {
+        let Some(rect) = self.rects.get(&entry.node_id) else {
+            return;
+        };
+        let Some(style) = self.styles.get(&entry.node_id) else {
+            return;
+        };
+
+        // Paint background
+        Self::paint_background(rect, style, items);
+
+        // Paint text content
+        self.paint_text_content(entry.node_id, rect, style, items);
+    }
+
+    /// Paint the background of a node.
+    fn paint_background(rect: &LayoutRect, style: &PaintStyle, items: &mut Vec<DisplayItem>) {
+        if style.background_color[3] > 0.0 {
+            items.push(DisplayItem::Rect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+                color: style.background_color,
+            });
+        }
+    }
+
+    /// Paint text content if this is a text node.
+    fn paint_text_content(
+        &self,
+        node_id: NodeId,
+        rect: &LayoutRect,
+        style: &PaintStyle,
+        items: &mut Vec<DisplayItem>,
+    ) {
+        if let Some(LayoutNodeKind::InlineText { text }) = self.kinds.get(&node_id) {
+            items.push(DisplayItem::Text {
+                x: rect.x,
+                y: rect.y + style.font_size, // baseline
+                text: text.clone(),
+                color: style.text_color,
+                font_size: style.font_size,
+                bounds: Some((
+                    rect.x.round() as i32,
+                    rect.y.round() as i32,
+                    (rect.x + rect.width).round() as i32,
+                    (rect.y + rect.height).round() as i32,
+                )),
+            });
+        }
     }
 }
 
@@ -201,40 +230,41 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::missing_panics_doc, reason = "Test function")]
     fn basic_display_list() {
         let mut builder = DisplayListBuilder::new();
 
-        builder.add_node(
-            0,
-            None,
-            LayoutRect {
+        builder.add_node(PaintNodeData {
+            id: 0,
+            parent: None,
+            rect: LayoutRect {
                 x: 0.0,
                 y: 0.0,
                 width: 800.0,
                 height: 600.0,
             },
-            PaintStyle {
+            style: PaintStyle {
                 background_color: [1.0, 1.0, 1.0, 1.0],
                 ..Default::default()
             },
-            LayoutNodeKind::Block,
-        );
+            kind: LayoutNodeKind::Block,
+        });
 
-        builder.add_node(
-            1,
-            Some(0),
-            LayoutRect {
+        builder.add_node(PaintNodeData {
+            id: 1,
+            parent: Some(0),
+            rect: LayoutRect {
                 x: 10.0,
                 y: 10.0,
                 width: 100.0,
                 height: 50.0,
             },
-            PaintStyle {
+            style: PaintStyle {
                 background_color: [0.0, 0.5, 1.0, 1.0],
                 ..Default::default()
             },
-            LayoutNodeKind::Block,
-        );
+            kind: LayoutNodeKind::Block,
+        });
 
         let display_list = builder.build(0);
         assert_eq!(display_list.items.len(), 2);

@@ -9,7 +9,16 @@ run_all() {
   cargo fmt
 
   echo "[code_standards] Running cargo clippy"
-  cargo clippy --all-targets --all-features -- -D warnings
+  # Run clippy, but if it fails, show compilation errors first
+  if ! cargo clippy --all-targets --all-features -- -D warnings 2>&1; then
+    echo ""
+    echo "[code_standards] ========================================="
+    echo "[code_standards] CLIPPY FAILED - Showing compilation errors:"
+    echo "[code_standards] ========================================="
+    # Extract and show actual compilation errors (E0xxx)
+    cargo clippy --all-targets --all-features -- -D warnings 2>&1 | grep -E "^error\[E[0-9]+\]" -A 10 || true
+    return 1
+  fi
 
   # Allow an optional logging spec as first argument; compose RUST_LOG so user entries override defaults.
   local BASE_LOG="warn,html5ever=warn,wgpu_hal=off,headless_chrome=warn"
