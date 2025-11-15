@@ -16,10 +16,6 @@ use crate::{ChildLayoutCtx, ContainerMetrics, LayoutNodeKind, Layouter};
 // Keep functions small and shallow to follow coding standards.
 
 /// Spec: §8.3.1 — Collapse two vertical margins (pair rules).
-#[allow(
-    dead_code,
-    reason = "Public API kept for direct spec-mapped calls; used by tests/future orchestrator paths"
-)]
 pub fn collapse_margins_pair(left: i32, right: i32) -> i32 {
     if left >= 0i32 && right >= 0i32 {
         return left.max(right);
@@ -91,10 +87,6 @@ pub fn effective_child_bottom_margin_public(
 }
 
 /// Spec: §8.3.1 — Collapse a list of vertical margins (algebraic sum of extremes).
-#[allow(
-    dead_code,
-    reason = "Public API kept for direct spec-mapped calls; used by tests/future orchestrator paths"
-)]
 pub fn collapse_margins_list(margins: &[i32]) -> i32 {
     if margins.is_empty() {
         return 0i32;
@@ -125,10 +117,6 @@ pub fn collapse_margins_list(margins: &[i32]) -> i32 {
 }
 
 /// Spec: §8.3.1 — Compute final outgoing bottom margin for a child box.
-#[allow(
-    dead_code,
-    reason = "Public API kept for direct spec-mapped calls; used by tests/future orchestrator paths"
-)]
 pub fn compute_margin_bottom_out(margin_top: i32, effective_bottom: i32, is_empty: bool) -> i32 {
     if is_empty {
         collapse_margins_pair(margin_top, effective_bottom)
@@ -138,10 +126,6 @@ pub fn compute_margin_bottom_out(margin_top: i32, effective_bottom: i32, is_empt
 }
 
 /// Spec: §8.3.1 — Outgoing bottom margin for first placed empty child.
-#[allow(
-    dead_code,
-    reason = "Public API kept for direct spec-mapped calls; used by tests/future orchestrator paths"
-)]
 pub fn compute_first_placed_empty_margin_bottom(
     previous_bottom: i32,
     parent_self_top: i32,

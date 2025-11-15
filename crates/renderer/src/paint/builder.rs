@@ -229,8 +229,11 @@ impl Default for DisplayListBuilder {
 mod tests {
     use super::*;
 
+    /// Test basic display list building with parent and child nodes.
+    ///
+    /// # Panics
+    /// Panics if the display list does not contain exactly 2 items.
     #[test]
-    #[allow(clippy::missing_panics_doc, reason = "Test function")]
     fn basic_display_list() {
         let mut builder = DisplayListBuilder::new();
 

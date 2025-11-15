@@ -4,8 +4,8 @@ use css_core::LayoutNodeKind;
 use js::NodeKey;
 use std::collections::HashMap;
 
-/// Type alias for attribute maps to reduce complexity.
-type AttrsMap<S, S2> = HashMap<NodeKey, HashMap<String, String, S2>, S>;
+/// Type alias for nested attribute maps with custom hashers.
+pub type AttrsMap<S, S2> = HashMap<NodeKey, HashMap<String, String, S2>, S>;
 
 /// Computes the next focusable element in tab order.
 ///

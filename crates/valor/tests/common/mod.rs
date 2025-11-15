@@ -1,259 +1,40 @@
-#![allow(
-    dead_code,
-    clippy::redundant_closure_for_method_calls,
-    clippy::map_unwrap_or,
-    clippy::ignored_unit_patterns,
-    clippy::explicit_iter_loop,
-    clippy::missing_const_for_fn,
-    let_underscore_drop,
-    clippy::doc_markdown,
-    clippy::return_and_then,
-    clippy::semicolon_outside_block,
-    clippy::or_fun_call,
-    clippy::print_stderr,
-    clippy::integer_division_remainder_used,
-    clippy::if_not_else,
-    clippy::same_name_method,
-    clippy::unused_trait_names,
-    reason = "Test support utilities with diagnostic helpers"
-)]
 use anyhow::{Result, anyhow};
-use image::ImageEncoder as _;
-use log::{debug, info};
-use page_handler::config::ValorConfig;
-use page_handler::state::HtmlPage;
-use serde_json::Value;
-use std::fs;
+use serde_json::{Value as JsonValue, to_string_pretty, value::Map as JsonMap};
+use std::collections::HashSet;
+use std::fs::{create_dir_all, read_dir, read_to_string, remove_dir_all, write};
 use std::path::{Path, PathBuf};
 use std::string::String as StdString;
-use std::time::Duration;
-use tokio::runtime::Runtime;
-use url::Url;
-use valor::factory::{ChromeInit, create_chrome_and_content};
-
-/// Returns the directory containing HTML fixtures for integration tests.
-pub fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-}
-
-/// Clear an artifacts subdirectory under `target/` if the provided harness source has changed.
-/// Returns the path to the (recreated) subdirectory.
-pub fn clear_artifacts_subdir_if_harness_changed(name: &str, harness_src: &str) -> Result<PathBuf> {
-    let dir = artifacts_subdir(name);
-    let _ = fs::create_dir_all(&dir);
-    let marker = dir.join(".harness_hash");
-    let current = format!("{:016x}", checksum_u64(harness_src));
-    let prev = fs::read_to_string(&marker).unwrap_or_default();
-    if prev.trim() != current {
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir)?;
-        fs::write(&marker, &current)?;
-    }
-    Ok(dir)
-}
-
-// ===== Shared artifacts and caching utilities =====
-
-/// Return the target directory for build/test outputs.
-pub fn target_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
-        return PathBuf::from(dir);
-    }
-    // Derive workspace root target from this crate's manifest dir: crates/valor -> ../../target
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.join("..").join("..").join("target")
-}
-
-/// Return a subdirectory under target for test artifacts.
-pub fn artifacts_subdir(name: &str) -> PathBuf {
-    target_dir().join(name)
-}
-
-/// Remove and recreate a directory, ignoring errors on remove.
-pub fn clear_dir(dir: &Path) -> Result<()> {
-    if dir.exists() {
-        let _ = fs::remove_dir_all(dir);
-    }
-    fs::create_dir_all(dir)?;
-    Ok(())
-}
-
-/// Write bytes to a path only if they differ from any existing contents. Returns true if written.
-pub fn write_bytes_if_changed(path: &Path, bytes: &[u8]) -> Result<bool> {
-    if let Ok(existing) = fs::read(path)
-        && existing == bytes
-    {
-        return Ok(false);
-    }
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    fs::write(path, bytes)?;
-    Ok(true)
-}
-
-/// Encode and write an RGBA8 image only if changed. Returns true if written.
-pub fn write_png_rgba_if_changed(
-    path: &Path,
-    rgba: &[u8],
-    width: u32,
-    height: u32,
-) -> Result<bool> {
-    let expected_size = (width as usize) * (height as usize) * 4;
-    debug!(
-        "write_png_rgba_if_changed: width={}, height={}, expected_size={}, actual_size={}, path={}",
-        width,
-        height,
-        expected_size,
-        rgba.len(),
-        path.display()
-    );
-
-    if rgba.len() != expected_size {
-        return Err(anyhow::anyhow!(
-            "Invalid buffer length: expected {} got {} for {}x{} image",
-            expected_size,
-            rgba.len(),
-            width,
-            height
-        ));
-    }
-
-    let mut buf = Vec::new();
-    {
-        let encoder = image::codecs::png::PngEncoder::new(&mut buf);
-        encoder.write_image(rgba, width, height, image::ColorType::Rgba8.into())?;
-    }
-    write_bytes_if_changed(path, &buf)
-}
-
-/// Set the layouter JSON cache directory to target/valor_layout_cache and create it.
-pub fn route_layouter_cache_to_target() -> Result<PathBuf> {
-    let dir = artifacts_subdir("valor_layout_cache");
-    fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
+use valor::test_support::{artifacts_subdir, fixtures_dir, fixtures_layout_dir};
 
 /// Clear the `target/valor_layout_cache` directory if the provided harness source has changed.
 /// Uses a small marker file to track the last seen harness hash.
+///
+/// # Errors
+/// Returns an error if directory or file operations fail.
 pub fn clear_valor_layout_cache_if_harness_changed(harness_src: &str) -> Result<()> {
+    const fn checksum_u64(input_str: &str) -> u64 {
+        let bytes = input_str.as_bytes();
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a 64-bit
+        let mut index = 0;
+        while index < bytes.len() {
+            hash ^= bytes[index] as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+            index += 1;
+        }
+        hash
+    }
+
     let dir = artifacts_subdir("valor_layout_cache");
-    let _ = fs::create_dir_all(&dir);
+    drop(create_dir_all(&dir));
     let marker = dir.join(".harness_hash");
     let current = format!("{:016x}", checksum_u64(harness_src));
-    let prev = fs::read_to_string(&marker).unwrap_or_default();
+    let prev = read_to_string(&marker).unwrap_or_default();
     if prev.trim() != current {
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir)?;
-        fs::write(&marker, &current)?;
+        drop(remove_dir_all(&dir));
+        create_dir_all(&dir)?;
+        write(&marker, &current)?;
     }
     Ok(())
-}
-
-fn checksum_u64(s: &str) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a 64-bit
-    for b in s.as_bytes() {
-        hash ^= *b as u64;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
-    }
-    hash
-}
-
-fn layout_cache_file_for_key(key: &str) -> PathBuf {
-    let dir = artifacts_subdir("valor_layout_cache");
-    let _ = fs::create_dir_all(&dir);
-    let h = checksum_u64(key);
-    dir.join(format!("{h:016x}.json"))
-}
-
-/// Read cached JSON for a fixture using a key derived from the fixture path and harness source.
-pub fn read_cached_json_for_fixture(fixture_path: &Path, harness_src: &str) -> Option<Value> {
-    let canon = fixture_path
-        .canonicalize()
-        .unwrap_or_else(|_| fixture_path.to_path_buf());
-    let content_hash = fs::read_to_string(&canon)
-        .map(|s| checksum_u64(&s))
-        .unwrap_or(0);
-    let key = format!(
-        "{}|{:016x}|{:016x}",
-        canon.display(),
-        checksum_u64(harness_src),
-        content_hash
-    );
-    let file = layout_cache_file_for_key(&key);
-    if !file.exists() {
-        return None;
-    }
-    fs::read_to_string(file)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-}
-
-/// Write cached JSON for a fixture using a key derived from the fixture path and harness source.
-pub fn write_cached_json_for_fixture(
-    fixture_path: &Path,
-    harness_src: &str,
-    v: &Value,
-) -> Result<()> {
-    let canon = fixture_path
-        .canonicalize()
-        .unwrap_or_else(|_| fixture_path.to_path_buf());
-    let content_hash = fs::read_to_string(&canon)
-        .map(|s| checksum_u64(&s))
-        .unwrap_or(0);
-    let key = format!(
-        "{}|{:016x}|{:016x}",
-        canon.display(),
-        checksum_u64(harness_src),
-        content_hash
-    );
-    let file = layout_cache_file_for_key(&key);
-    if let Some(parent) = file.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let s = serde_json::to_string(v).unwrap_or_else(|_| String::from("{}"));
-    fs::write(file, s)?;
-    info!(
-        "[CACHE] wrote chromium JSON for {} to target/valor_layout_cache",
-        canon.display()
-    );
-    Ok(())
-}
-
-/// Write a named JSON variant for a fixture (e.g., "chromium", "valor").
-pub fn write_named_json_for_fixture(
-    fixture_path: &Path,
-    harness_src: &str,
-    name: &str,
-    v: &Value,
-) -> Result<()> {
-    let canon = fixture_path
-        .canonicalize()
-        .unwrap_or_else(|_| fixture_path.to_path_buf());
-    let key = format!(
-        "{}|{:016x}|{}",
-        canon.display(),
-        checksum_u64(harness_src),
-        name
-    );
-    let file = layout_cache_file_for_key(&key);
-    if let Some(parent) = file.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let s = serde_json::to_string(v).unwrap_or_else(|_| String::from("{}"));
-    fs::write(file, s)?;
-    info!(
-        "[CACHE] wrote {} JSON for {} to target/valor_layout_cache",
-        name,
-        canon.display()
-    );
-    Ok(())
-}
-
-pub fn fixtures_layout_dir() -> PathBuf {
-    fixtures_dir().join("layout")
 }
 
 fn workspace_root_from_valor_manifest() -> PathBuf {
@@ -267,37 +48,33 @@ fn workspace_root_from_valor_manifest() -> PathBuf {
 fn module_css_fixture_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let root = workspace_root_from_valor_manifest();
-    let modules_dir = root.join("crates").join("css").join("modules");
-    if let Ok(entries) = fs::read_dir(&modules_dir) {
-        for ent in entries.filter_map(|e| e.ok()) {
-            let mdir = ent.path();
-            if mdir.is_dir() {
-                let p = mdir.join("tests").join("fixtures");
-                if p.exists() {
-                    roots.push(p);
+    let modules_parent = root.join("crates").join("css").join("modules");
+    if let Ok(entries) = read_dir(&modules_parent) {
+        for entry in entries.filter_map(Result::ok) {
+            let module_path = entry.path();
+            if module_path.is_dir() {
+                let fixture_path = module_path.join("tests").join("fixtures");
+                if fixture_path.exists() {
+                    roots.push(fixture_path);
                 }
             }
         }
     }
     roots
-}
-
-pub fn fixtures_css_dir() -> PathBuf {
-    fixtures_dir().join("css")
 }
 
 /// Discover layout fixture roots under every crate in the workspace: crates/*/tests/fixtures/layout
 fn workspace_crate_layout_fixture_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let root = workspace_root_from_valor_manifest();
-    let crates_dir = root.join("crates");
-    if let Ok(entries) = fs::read_dir(&crates_dir) {
-        for ent in entries.filter_map(|e| e.ok()) {
-            let cdir = ent.path();
-            if cdir.is_dir() {
-                let p = cdir.join("tests").join("fixtures").join("layout");
-                if p.exists() {
-                    roots.push(p);
+    let crates_parent = root.join("crates");
+    if let Ok(entries) = read_dir(&crates_parent) {
+        for entry in entries.filter_map(Result::ok) {
+            let krate_path = entry.path();
+            if krate_path.is_dir() {
+                let layout_path = krate_path.join("tests").join("fixtures").join("layout");
+                if layout_path.exists() {
+                    roots.push(layout_path);
                 }
             }
         }
@@ -305,44 +82,31 @@ fn workspace_crate_layout_fixture_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// Discover graphics fixture roots under every crate in the workspace: crates/*/tests/fixtures/graphics
-fn workspace_crate_graphics_fixture_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    let root = workspace_root_from_valor_manifest();
-    let crates_dir = root.join("crates");
-    if let Ok(entries) = fs::read_dir(&crates_dir) {
-        for ent in entries.filter_map(|e| e.ok()) {
-            let cdir = ent.path();
-            if cdir.is_dir() {
-                let p = cdir.join("tests").join("fixtures").join("graphics");
-                if p.exists() {
-                    roots.push(p);
-                }
-            }
-        }
-    }
-    roots
-}
-
+/// Recursively collect HTML files from a directory.
+///
+/// # Errors
+/// Returns an error if directory traversal fails.
 fn collect_html_recursively(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     let entries =
-        fs::read_dir(dir).map_err(|e| anyhow!("Failed to read dir {}: {}", dir.display(), e))?;
-    for entry in entries.filter_map(|e| e.ok()) {
-        let p = entry.path();
-        if p.is_dir() {
-            collect_html_recursively(&p, out)?;
-        } else if p
+        read_dir(dir).map_err(|err| anyhow!("Failed to read dir {}: {}", dir.display(), err))?;
+    for entry in entries.filter_map(Result::ok) {
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            collect_html_recursively(&entry_path, out)?;
+        } else if entry_path
             .extension()
-            .map(|ext| ext.eq_ignore_ascii_case("html"))
-            .unwrap_or(false)
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
         {
-            out.push(p);
+            out.push(entry_path);
         }
     }
     Ok(())
 }
 
 /// Discover all .html files under the tests/fixtures/layout directory recursively.
+///
+/// # Errors
+/// Returns an error if directory traversal fails.
 pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
     let mut files: Vec<PathBuf> = Vec::new();
     // Valor crate local layout fixtures
@@ -353,16 +117,17 @@ pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
         // Fallback: scan the legacy top-level fixtures dir non-recursively
         let legacy = fixtures_dir();
         if legacy.exists() {
-            let entries = fs::read_dir(&legacy)
-                .map_err(|e| anyhow!("Failed to read fixtures dir {}: {}", legacy.display(), e))?;
+            let entries = read_dir(&legacy).map_err(|err| {
+                anyhow!("Failed to read fixtures dir {}: {}", legacy.display(), err)
+            })?;
             files.extend(
                 entries
-                    .filter_map(|e| e.ok())
-                    .map(|e| e.path())
-                    .filter(|p| {
-                        p.extension()
-                            .map(|ext| ext.eq_ignore_ascii_case("html"))
-                            .unwrap_or(false)
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|legacy_path| {
+                        legacy_path
+                            .extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
                     }),
             );
         }
@@ -378,17 +143,16 @@ pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
 
     // Keep only files that are under a subdirectory of a fixtures folder (not directly under .../fixtures).
     // This applies both to valor's tests/fixtures/layout/* and each crate's tests/fixtures/layout/* structure.
-    files.retain(|p| {
+    files.retain(|entry_path| {
         // Must have a parent directory that is not named "fixtures" (i.e., at least one subdir)
-        let parent_not_fixtures = p
+        let parent_not_fixtures = entry_path
             .parent()
-            .and_then(|d| d.file_name())
-            .map(|n| n != "fixtures")
-            .unwrap_or(false);
+            .and_then(|dir_entry| dir_entry.file_name())
+            .is_some_and(|name| name != "fixtures");
 
         // And somewhere in its ancestors there must be a directory named "fixtures"
         let mut has_fixtures_ancestor = false;
-        for anc in p.ancestors().skip(1) {
+        for anc in entry_path.ancestors().skip(1) {
             // skip the file itself
             if let Some(name) = anc.file_name()
                 && name == "fixtures"
@@ -401,167 +165,297 @@ pub fn fixture_html_files() -> Result<Vec<PathBuf>> {
     });
     files.sort();
     // Deduplicate by canonical path to avoid duplicates from overlapping roots
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let mut unique = Vec::with_capacity(files.len());
-    for p in files {
-        let canon = p.canonicalize().unwrap_or(p.clone());
+    for entry_path in files {
+        let canon = entry_path
+            .canonicalize()
+            .unwrap_or_else(|_| entry_path.clone());
         if seen.insert(canon) {
-            unique.push(p);
+            unique.push(entry_path);
         }
     }
     Ok(unique)
 }
 
-/// Convert a local file Path to a file:// Url, after canonicalizing when possible.
-pub fn to_file_url(p: &Path) -> Result<Url> {
-    let canonical = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    Url::from_file_path(&canonical)
-        .map_err(|_| anyhow!("Invalid file path for URL: {}", canonical.display()))
-}
-
-/// Construct an HtmlPage using the provided Runtime and Url.
-pub fn create_page(rt: &Runtime, url: Url) -> Result<HtmlPage> {
-    let config = ValorConfig::from_env();
-    let page = rt.block_on(HtmlPage::new(rt.handle(), url, config))?;
-    Ok(page)
-}
-
-/// Construct chrome and content pages using the same wiring as the Valor binary.
-/// Returns the `ChromeInit` bundle from `valor::factory` for further use.
-pub fn create_chrome_and_content_for_tests(
-    rt: &Runtime,
-    initial_content_url: Url,
-) -> Result<ChromeInit> {
-    create_chrome_and_content(rt, initial_content_url)
-}
-
-/// Drive page.update() until parsing finishes, running an optional per-tick callback (e.g., drain mirrors).
-/// Returns true if finished within the allotted iterations.
-pub fn update_until_finished<F>(rt: &Runtime, page: &mut HtmlPage, mut per_tick: F) -> Result<bool>
-where
-    F: FnMut(&mut HtmlPage) -> Result<()>,
-{
-    let mut finished = page.parsing_finished();
-    // Bound each async update with a small timeout to avoid hangs inside the update path during tests.
-    // This keeps the test harness responsive even if an await-point stalls.
-    let per_tick_timeout = Duration::from_millis(25);
-    // Also enforce a hard wall-clock budget for the whole helper to avoid very long stalls if every tick times out.
-    let start_time = std::time::Instant::now();
-    let max_total_time = Duration::from_secs(15);
-    let mut timed_out_ticks: u32 = 0;
-    for iter in 0..10_000 {
-        // Abort if we exceeded the total time budget
-        if start_time.elapsed() > max_total_time {
-            eprintln!(
-                "update_until_finished: exceeded total time budget after {iter} iters ({timed_out_ticks} timeouts)"
-            );
-            break;
-        }
-        // Run one update tick with a timeout guard. If it times out, continue trying rather than hanging.
-        let update_result: Result<Result<(), anyhow::Error>, tokio::time::error::Elapsed> =
-            rt.block_on(async { tokio::time::timeout(per_tick_timeout, page.update()).await });
-        match update_result {
-            Ok(Ok(())) => { /* progressed */ }
-            Ok(Err(err)) => {
-                return Err(err);
-            }
-            Err(_elapsed) => {
-                timed_out_ticks = timed_out_ticks.saturating_add(1);
-            }
-        }
-
-        // Allow the caller to drain mirrors or perform additional per-tick work.
-        per_tick(page)?;
-        if page.parsing_finished() {
-            finished = true;
-            break;
-        }
-        if iter % 500 == 0 {
-            eprintln!(
-                "update_until_finished: iter={} finished={} timeouts={} elapsed_ms={}",
-                iter,
-                finished,
-                timed_out_ticks,
-                start_time.elapsed().as_millis()
-            );
-        }
-        // Yield to background tasks without requiring a Tokio reactor on this thread
-        std::thread::sleep(Duration::from_millis(1));
+fn extract_id_label(value: &JsonValue) -> Option<String> {
+    if let JsonValue::Object(map) = value
+        && let Some(JsonValue::Object(attrs)) = map.get("attrs")
+        && let Some(JsonValue::String(id)) = attrs.get("id")
+    {
+        return Some(format!("#{id}"));
     }
-    Ok(finished)
+    if let JsonValue::Object(map) = value
+        && let Some(JsonValue::String(id)) = map.get("id")
+    {
+        return Some(format!("#{id}"));
+    }
+    None
 }
 
-/// Drive page.update() until parsing finishes (no per-tick callback). Returns true if finished in time.
-pub fn update_until_finished_simple(rt: &Runtime, page: &mut HtmlPage) -> Result<bool> {
-    update_until_finished(rt, page, |_| Ok(()))
+fn is_element_object(value: &JsonValue) -> bool {
+    if let JsonValue::Object(map) = value {
+        map.contains_key("tag") && map.contains_key("rect")
+    } else {
+        false
+    }
 }
 
-/// Compare two serde_json Values with an epsilon for numeric differences.
+fn extract_rect_coords(rect_map: &JsonMap<String, JsonValue>) -> (f64, f64, f64, f64) {
+    let coord_x = rect_map.get("x").and_then(JsonValue::as_f64).unwrap_or(0.0);
+    let coord_y = rect_map.get("y").and_then(JsonValue::as_f64).unwrap_or(0.0);
+    let coord_width = rect_map
+        .get("width")
+        .and_then(JsonValue::as_f64)
+        .unwrap_or(0.0);
+    let coord_height = rect_map
+        .get("height")
+        .and_then(JsonValue::as_f64)
+        .unwrap_or(0.0);
+    (coord_x, coord_y, coord_width, coord_height)
+}
+
+fn format_child_summary(child_tag: &str, child_id: &str, rect: (f64, f64, f64, f64)) -> String {
+    let (coord_x, coord_y, coord_width, coord_height) = rect;
+    if child_id.is_empty() {
+        format!("<{child_tag}> rect=({coord_x:.0},{coord_y:.0},{coord_width:.0},{coord_height:.0})")
+    } else {
+        format!(
+            "<{child_tag} id=#{child_id}> rect=({coord_x:.0},{coord_y:.0},{coord_width:.0},{coord_height:.0})"
+        )
+    }
+}
+
+fn process_child_element(child: &JsonValue) -> Option<String> {
+    use serde_json::Value::*;
+    if let Object(child_map) = child {
+        let child_tag = child_map
+            .get("tag")
+            .and_then(|tag_val| tag_val.as_str())
+            .unwrap_or("");
+        let child_id = child_map
+            .get("id")
+            .and_then(|id_val| id_val.as_str())
+            .unwrap_or("");
+        let rect = if let Some(Object(rect_obj)) = child_map.get("rect") {
+            extract_rect_coords(rect_obj)
+        } else {
+            (0.0, 0.0, 0.0, 0.0)
+        };
+        Some(format_child_summary(child_tag, child_id, rect))
+    } else {
+        None
+    }
+}
+
+fn child_summary_lines(children: &[JsonValue]) -> Vec<JsonValue> {
+    let mut lines: Vec<JsonValue> = Vec::new();
+    for child in children {
+        if let Some(summary) = process_child_element(child) {
+            lines.push(JsonValue::String(summary));
+        }
+    }
+    lines
+}
+
+fn pretty_elem_with_compact_children(value: &JsonValue) -> String {
+    use serde_json::Value::*;
+    if let Object(map) = value {
+        // clone the element and replace children with compact summaries
+        let mut output_map = map.clone();
+        if let Some(Array(children)) = map.get("children") {
+            let lines = child_summary_lines(children);
+            output_map.insert("children".to_string(), Array(lines));
+        }
+        let json_object = Object(output_map);
+        to_string_pretty(&json_object).unwrap_or_else(|_| StdString::from("{}"))
+    } else {
+        to_string_pretty(value).unwrap_or_else(|_| StdString::from("{}"))
+    }
+}
+
+fn build_err(
+    kind: &str,
+    detail: &str,
+    path: &[String],
+    elem_stack: &[(JsonValue, JsonValue)],
+) -> String {
+    let path_str = format_path(path);
+    let (our_elem, chromium_elem) = if let Some((valor_elem, chromium_elem)) = elem_stack.last() {
+        (valor_elem, chromium_elem)
+    } else {
+        (&JsonValue::Null, &JsonValue::Null)
+    };
+    let our_str = pretty_elem_with_compact_children(our_elem);
+    let chromium_str = pretty_elem_with_compact_children(chromium_elem);
+    if detail.is_empty() {
+        format!("{path_str}: {kind}\nElement (our): {our_str}\nElement (chromium): {chromium_str}")
+    } else {
+        format!(
+            "{path_str}: {kind} — {detail}\nElement (our): {our_str}\nElement (chromium): {chromium_str}"
+        )
+    }
+}
+
+fn format_path(path: &[String]) -> String {
+    if path.is_empty() {
+        String::new()
+    } else {
+        let joined = path.join("");
+        joined
+            .strip_prefix('.')
+            .map_or_else(|| joined.clone(), ToString::to_string)
+    }
+}
+
+fn type_name(json_value: &JsonValue) -> &'static str {
+    match json_value {
+        JsonValue::Null => "null",
+        JsonValue::Bool(_) => "bool",
+        JsonValue::Number(_) => "number",
+        JsonValue::String(_) => "string",
+        JsonValue::Array(_) => "array",
+        JsonValue::Object(_) => "object",
+    }
+}
+
+type HelperFn = fn(
+    &JsonValue,
+    &JsonValue,
+    f64,
+    &mut Vec<String>,
+    &mut Vec<(JsonValue, JsonValue)>,
+) -> Result<(), String>;
+
+struct CompareContext<'cmp> {
+    eps: f64,
+    path: &'cmp mut Vec<String>,
+    elem_stack: &'cmp mut Vec<(JsonValue, JsonValue)>,
+    helper: HelperFn,
+}
+
+/// Compare two JSON arrays with epsilon tolerance.
+///
+/// # Errors
+/// Returns an error if arrays differ beyond epsilon threshold.
+fn compare_arrays(
+    actual_arr: &[JsonValue],
+    expected_arr: &[JsonValue],
+    ctx: &mut CompareContext<'_>,
+) -> Result<(), String> {
+    let eps = ctx.eps;
+    let path = ctx.path;
+    let elem_stack = ctx.elem_stack;
+    let helper = ctx.helper;
+    if actual_arr.len() != expected_arr.len() {
+        return Err(build_err(
+            "array length mismatch",
+            &format!("{} != {}", actual_arr.len(), expected_arr.len()),
+            path,
+            elem_stack,
+        ));
+    }
+    for (index, (actual_item, expected_item)) in
+        actual_arr.iter().zip(expected_arr.iter()).enumerate()
+    {
+        let is_children_ctx = path.last().is_some_and(|segment| segment == ".children");
+        if is_children_ctx {
+            let label = extract_id_label(actual_item)
+                .or_else(|| extract_id_label(expected_item))
+                .unwrap_or_else(|| index.to_string());
+            path.pop();
+            path.push(format!(".{label}"));
+        } else {
+            path.push(format!("[{index}]"));
+        }
+
+        let should_push = is_element_object(actual_item) && is_element_object(expected_item);
+        if should_push {
+            elem_stack.push((actual_item.clone(), expected_item.clone()));
+        }
+        let result = helper(actual_item, expected_item, eps, path, elem_stack);
+        if should_push {
+            elem_stack.pop();
+        }
+        path.pop();
+        result?;
+    }
+    Ok(())
+}
+
+/// Compare two JSON objects with epsilon tolerance.
+///
+/// # Errors
+/// Returns an error if objects differ beyond epsilon threshold.
+fn compare_objects(
+    actual_obj: &JsonMap<String, JsonValue>,
+    expected_obj: &JsonMap<String, JsonValue>,
+    ctx: &mut CompareContext<'_>,
+) -> Result<(), String> {
+    let eps = ctx.eps;
+    let path = ctx.path;
+    let elem_stack = ctx.elem_stack;
+    let helper = ctx.helper;
+    if actual_obj.len() != expected_obj.len() {
+        return Err(build_err(
+            "object size mismatch",
+            &format!("{} != {}", actual_obj.len(), expected_obj.len()),
+            path,
+            elem_stack,
+        ));
+    }
+    for (key, actual_val) in actual_obj {
+        match expected_obj.get(key) {
+            Some(expected_val) => {
+                path.push(format!(".{key}"));
+                let should_push = is_element_object(actual_val) && is_element_object(expected_val);
+                if should_push {
+                    elem_stack.push((actual_val.clone(), expected_val.clone()));
+                }
+                let result = helper(actual_val, expected_val, eps, path, elem_stack);
+                if should_push {
+                    elem_stack.pop();
+                }
+                path.pop();
+                result?;
+            }
+            None => {
+                return Err(build_err(
+                    "missing key in expected",
+                    &format!("'{key}'"),
+                    path,
+                    elem_stack,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Compare two `serde_json` Values with an epsilon for numeric differences.
 /// - Floats/integers are compared as f64 within `eps`.
 /// - Strings, bools, null are compared for exact equality.
 /// - Arrays/Objects must have identical structure and are compared recursively.
-///   Returns Ok(()) if equal under epsilon; Err with a path-detailed message otherwise.
-pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> Result<(), String> {
-    fn extract_id_label(v: &Value) -> Option<String> {
-        if let Value::Object(map) = v
-            && let Some(Value::Object(attrs)) = map.get("attrs")
-            && let Some(Value::String(id)) = attrs.get("id")
-        {
-            return Some(format!("#{id}"));
-        }
-        if let Value::Object(map) = v
-            && let Some(Value::String(id)) = map.get("id")
-        {
-            return Some(format!("#{id}"));
-        }
-        None
-    }
-
-    fn is_element_object(v: &Value) -> bool {
-        if let Value::Object(map) = v {
-            map.contains_key("tag") && map.contains_key("rect")
-        } else {
-            false
-        }
-    }
-
+///
+/// # Errors
+/// Returns `Err` with a path-detailed message if values differ beyond epsilon threshold.
+pub fn compare_json_with_epsilon(
+    actual: &JsonValue,
+    expected: &JsonValue,
+    eps: f64,
+) -> Result<(), String> {
+    /// Helper function to recursively compare JSON values with epsilon tolerance.
+    ///
+    /// # Errors
+    /// Returns `Err` with detailed path information if values differ.
     fn helper(
-        a: &Value,
-        b: &Value,
+        actual_value: &JsonValue,
+        expected_value: &JsonValue,
         eps: f64,
         path: &mut Vec<StdString>,
-        elem_stack: &mut Vec<(Value, Value)>,
+        elem_stack: &mut Vec<(JsonValue, JsonValue)>,
     ) -> Result<(), StdString> {
         use serde_json::Value::*;
-        type CmpFn = fn(
-            &serde_json::Value,
-            &serde_json::Value,
-            f64,
-            &mut Vec<StdString>,
-            &mut Vec<(serde_json::Value, serde_json::Value)>,
-        ) -> Result<(), StdString>;
-        struct CmpState<'cmp> {
-            eps: f64,
-            path: &'cmp mut Vec<StdString>,
-            elem_stack: &'cmp mut Vec<(serde_json::Value, serde_json::Value)>,
-        }
-        #[inline]
-        fn call_with_elem_ctx(
-            xv: &serde_json::Value,
-            yv: &serde_json::Value,
-            state: &mut CmpState<'_>,
-            helper: CmpFn,
-        ) -> Result<(), StdString> {
-            let should_push = is_element_object(xv) && is_element_object(yv);
-            if should_push {
-                state.elem_stack.push((xv.clone(), yv.clone()));
-            }
-            let result = helper(xv, yv, state.eps, state.path, state.elem_stack);
-            if should_push {
-                state.elem_stack.pop();
-            }
-            result
-        }
         // Special-case: ignore root-level rect width/height diffs (border-box model vs platform viewport quirks)
         // The path segments are stored as components like ".rect", ".width".
         if elem_stack.len() <= 1 && path.len() >= 2 {
@@ -571,223 +465,85 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
                 return Ok(());
             }
         }
-        match (a, b) {
+        match (actual_value, expected_value) {
             (Null, Null) => Ok(()),
-            (Bool(x), Bool(y)) => {
-                if x == y {
+            (Bool(actual_bool), Bool(expected_bool)) => {
+                if actual_bool == expected_bool {
                     Ok(())
                 } else {
                     Err(build_err(
                         "bool mismatch",
-                        &format!("{x} != {y}"),
+                        &format!("{actual_bool} != {expected_bool}"),
                         path,
                         elem_stack,
                     ))
                 }
             }
-            (Number(x), Number(y)) => match (x.as_f64(), y.as_f64()) {
-                (Some(xf), Some(yf)) => {
-                    if (xf - yf).abs() <= eps {
-                        Ok(())
-                    } else {
-                        Err(build_err(
-                            "number diff",
-                            &format!("{xf} vs {yf} exceeds eps {eps}"),
-                            path,
-                            elem_stack,
-                        ))
+            (Number(actual_num), Number(expected_num)) => {
+                match (actual_num.as_f64(), expected_num.as_f64()) {
+                    (Some(actual_float), Some(expected_float)) => {
+                        if (actual_float - expected_float).abs() <= eps {
+                            Ok(())
+                        } else {
+                            Err(build_err(
+                                "number diff",
+                                &format!("{actual_float} vs {expected_float} exceeds eps {eps}"),
+                                path,
+                                elem_stack,
+                            ))
+                        }
                     }
+                    _ => Err(build_err(
+                        "non-float number encountered",
+                        "",
+                        path,
+                        elem_stack,
+                    )),
                 }
-                _ => Err(build_err(
-                    "non-float number encountered",
-                    "",
-                    path,
-                    elem_stack,
-                )),
-            },
-            (String(xs), String(ys)) => {
-                if xs == ys {
+            }
+            (String(actual_str), String(expected_str)) => {
+                if actual_str == expected_str {
                     Ok(())
                 } else {
                     Err(build_err(
                         "string mismatch",
-                        &format!("'{xs}' != '{ys}'"),
+                        &format!("'{actual_str}' != '{expected_str}'"),
                         path,
                         elem_stack,
                     ))
                 }
             }
-            (Array(xa), Array(ya)) => {
-                if xa.len() != ya.len() {
-                    return Err(build_err(
-                        "array length mismatch",
-                        &format!("{} != {}", xa.len(), ya.len()),
-                        path,
-                        elem_stack,
-                    ));
-                }
-                for (i, (xe, ye)) in xa.iter().zip(ya.iter()).enumerate() {
-                    // If this array is a children array, label with element id and compress the path
-                    let is_children_ctx = path.last().map(|s| s == ".children").unwrap_or(false);
-                    if is_children_ctx {
-                        let label = extract_id_label(xe)
-                            .or_else(|| extract_id_label(ye))
-                            .unwrap_or_else(|| i.to_string());
-                        // Replace trailing ".children" with ".<label>" (label is "#id" or numeric)
-                        path.pop();
-                        path.push(format!(".{label}"));
-                    } else {
-                        path.push(format!("[{i}]"));
-                    }
-                    // Maintain element context for better error snippets
-                    let mut state = CmpState {
-                        eps,
-                        path,
-                        elem_stack,
-                    };
-                    let r = call_with_elem_ctx(xe, ye, &mut state, helper);
-                    path.pop();
-                    r?;
-                }
-                Ok(())
+            (Array(actual_arr), Array(expected_arr)) => {
+                let mut ctx = CompareContext {
+                    eps,
+                    path,
+                    elem_stack,
+                    helper,
+                };
+                compare_arrays(actual_arr, expected_arr, &mut ctx)
             }
-            (Object(xo), Object(yo)) => {
-                if xo.len() != yo.len() {
-                    return Err(build_err(
-                        "object size mismatch",
-                        &format!("{} != {}", xo.len(), yo.len()),
-                        path,
-                        elem_stack,
-                    ));
-                }
-                for (k, xv) in xo.iter() {
-                    match yo.get(k) {
-                        Some(yv) => {
-                            path.push(format!(".{k}"));
-                            // Keep element context
-                            let mut state = CmpState {
-                                eps,
-                                path,
-                                elem_stack,
-                            };
-                            let r = call_with_elem_ctx(xv, yv, &mut state, helper);
-                            path.pop();
-                            r?;
-                        }
-                        None => {
-                            return Err(build_err(
-                                "missing key in expected",
-                                &format!("'{k}'"),
-                                path,
-                                elem_stack,
-                            ));
-                        }
-                    }
-                }
-                Ok(())
+            (Object(actual_obj), Object(expected_obj)) => {
+                let mut ctx = CompareContext {
+                    eps,
+                    path,
+                    elem_stack,
+                    helper,
+                };
+                compare_objects(actual_obj, expected_obj, &mut ctx)
             }
-            (x, y) => Err(build_err(
+            (actual_other, expected_other) => Err(build_err(
                 "type mismatch",
-                &format!("{:?} vs {:?}", type_name(x), type_name(y)),
+                &format!(
+                    "{:?} vs {:?}",
+                    type_name(actual_other),
+                    type_name(expected_other)
+                ),
                 path,
                 elem_stack,
             )),
         }
     }
-
-    #[allow(
-        clippy::excessive_nesting,
-        reason = "Complex nested JSON comparison logic"
-    )]
-    fn build_err(
-        kind: &str,
-        detail: &str,
-        path: &[String],
-        elem_stack: &[(Value, Value)],
-    ) -> String {
-        fn child_summary_lines(children: &[serde_json::Value]) -> Vec<serde_json::Value> {
-            use serde_json::Value::*;
-            let mut lines: Vec<serde_json::Value> = Vec::new();
-            for c in children {
-                if let Object(cm) = c {
-                    let ctag = cm.get("tag").and_then(|x| x.as_str()).unwrap_or("");
-                    let cid = cm.get("id").and_then(|x| x.as_str()).unwrap_or("");
-                    let (cx, cy, cw, ch) = if let Some(Object(r)) = cm.get("rect") {
-                        let cx = r.get("x").and_then(|n| n.as_f64()).unwrap_or(0.0);
-                        let cy = r.get("y").and_then(|n| n.as_f64()).unwrap_or(0.0);
-                        let cw = r.get("width").and_then(|n| n.as_f64()).unwrap_or(0.0);
-                        let ch = r.get("height").and_then(|n| n.as_f64()).unwrap_or(0.0);
-                        (cx, cy, cw, ch)
-                    } else {
-                        (0.0, 0.0, 0.0, 0.0)
-                    };
-                    let s = if !cid.is_empty() {
-                        format!("<{ctag} id=#{cid}> rect=({cx:.0},{cy:.0},{cw:.0},{ch:.0})")
-                    } else {
-                        format!("<{ctag}> rect=({cx:.0},{cy:.0},{cw:.0},{ch:.0})")
-                    };
-                    lines.push(serde_json::Value::String(s));
-                }
-            }
-            lines
-        }
-
-        fn pretty_elem_with_compact_children(v: &Value) -> String {
-            use serde_json::Value::*;
-            if let Object(map) = v {
-                // clone the element and replace children with compact summaries
-                let mut omap = map.clone();
-                if let Some(Array(children)) = map.get("children") {
-                    let lines = child_summary_lines(children);
-                    omap.insert("children".to_string(), Array(lines));
-                }
-                let vv = Object(omap);
-                serde_json::to_string_pretty(&vv).unwrap_or_else(|_| StdString::from("{}"))
-            } else {
-                serde_json::to_string_pretty(v).unwrap_or_else(|_| StdString::from("{}"))
-            }
-        }
-
-        let path_str = format_path(path);
-        let (our_elem, ch_elem) = if let Some((a, b)) = elem_stack.last() {
-            (a, b)
-        } else {
-            (&Value::Null, &Value::Null)
-        };
-        let our_s = pretty_elem_with_compact_children(our_elem);
-        let ch_s = pretty_elem_with_compact_children(ch_elem);
-        if detail.is_empty() {
-            format!("{path_str}: {kind}\nElement (our): {our_s}\nElement (chromium): {ch_s}")
-        } else {
-            format!(
-                "{path_str}: {kind} — {detail}\nElement (our): {our_s}\nElement (chromium): {ch_s}"
-            )
-        }
-    }
-
-    fn format_path(path: &[String]) -> String {
-        if path.is_empty() {
-            String::new()
-        } else {
-            let joined = path.join("");
-            if let Some(stripped) = joined.strip_prefix('.') {
-                stripped.to_string()
-            } else {
-                joined
-            }
-        }
-    }
-    fn type_name(v: &Value) -> &'static str {
-        match v {
-            Value::Null => "null",
-            Value::Bool(_) => "bool",
-            Value::Number(_) => "number",
-            Value::String(_) => "string",
-            Value::Array(_) => "array",
-            Value::Object(_) => "object",
-        }
-    }
-    let mut elem_stack: Vec<(Value, Value)> = Vec::new();
+    let mut elem_stack: Vec<(JsonValue, JsonValue)> = Vec::new();
     // Seed context with root if it looks like an element
     if is_element_object(actual) && is_element_object(expected) {
         elem_stack.push((actual.clone(), expected.clone()));
@@ -797,7 +553,7 @@ pub fn compare_json_with_epsilon(actual: &Value, expected: &Value, eps: f64) -> 
 
 /// Returns a JS snippet that injects a CSS Reset into the current document in Chromium tests.
 /// This should be executed via `tab.evaluate(script, /*return_by_value=*/ false)` after navigation.
-pub fn css_reset_injection_script() -> &'static str {
+pub const fn css_reset_injection_script() -> &'static str {
     r#"(function(){
         try {
             var css = "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;font-family:monospace,'Courier New',Courier,Consolas,'Liberation Mono',Menlo,Monaco,'DejaVu Sans Mono',monospace;}html,body{margin:0 !important;padding:0 !important;}body{margin:0 !important;}h1,h2,h3,h4,h5,h6,p{margin:0;padding:0;}ul,ol{margin:0;padding:0;list-style:none;}";

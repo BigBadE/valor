@@ -1,4 +1,5 @@
-//! Inline formatting context (MVP): line box grouping and inline fragments
+//! Inline formatting context (MVP): line box grouping and inline fragments.
+//!
 //! Spec: CSS 2.2 §9.4.2 — Inline formatting context; CSS Display 3 §2
 //!   <https://www.w3.org/TR/CSS22/visuren.html#inline-formatting>
 //!   <https://www.w3.org/TR/css-display-3/>

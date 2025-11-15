@@ -96,7 +96,6 @@ mod real {
     }
 
     /// Dispatcher for host-bound functions installed through `HostBindings`.
-    #[allow(clippy::needless_pass_by_value, reason = "Required for v8 callback")]
     fn host_fn_dispatch(
         scope: &mut HandleScope,
         args: FunctionCallbackArguments,

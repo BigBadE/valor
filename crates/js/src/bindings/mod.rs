@@ -5,11 +5,6 @@
 //! Valor to install host-provided namespaces (for example, `console`) into
 //! any JavaScript engine adapter without depending on engine-specific APIs.
 
-#![allow(
-    clippy::cast_sign_loss,
-    reason = "NodeKey conversions require casting from signed to unsigned"
-)]
-
 use crate::dom_index::DomIndexState;
 use crate::{DOMUpdate, NodeKey, NodeKeyManager};
 use anyhow::Result;
@@ -204,21 +199,6 @@ pub struct CreatedNodeInfo {
     pub kind: CreatedNodeKind,
 }
 
-/// Internal helper to build a console logging function for a given level.
-#[allow(
-    dead_code,
-    reason = "Reserved for future use when console namespace needs dynamic log level functions"
-)]
-fn make_log_fn(level: LogLevel) -> Arc<HostFnSync> {
-    Arc::new(
-        move |context: &HostContext, arguments: Vec<JSValue>| -> Result<JSValue, JSError> {
-            let message = stringify_arguments(arguments);
-            context.logger.log(level, &message);
-            Ok(JSValue::Undefined)
-        },
-    )
-}
-
 /// Build the `console` namespace with standard logging methods.
 pub fn build_console_namespace() -> HostNamespace {
     let methods: [(&str, LogLevel); 4] = [
@@ -255,30 +235,30 @@ pub fn build_default_bindings() -> HostBindings {
         .with_namespace("performance", build_performance_namespace())
 }
 
-/// Build the `chromeHost` namespace. Functions are gated to `<valor://chrome>` origin
-/// and require an attached host command channel in `HostContext`.
-#[allow(
-    clippy::too_many_lines,
-    reason = "Chrome host namespace requires many navigation and tab management functions"
-)]
-pub fn build_chrome_host_namespace() -> HostNamespace {
-    // Helper to check privilege and get sender
-    let get_sender =
-        |context: &HostContext| -> Result<UnboundedSender<ChromeHostCommand>, JSError> {
-            if !context.page_origin.starts_with("valor://chrome") {
-                return Err(JSError::TypeError(String::from(
-                    "chromeHost is not available",
-                )));
-            }
-            context
-                .chrome_host_tx
-                .clone()
-                .ok_or_else(|| JSError::TypeError(String::from("chromeHost is not available")))
-        };
+/// Helper to check privilege and get sender for chrome host commands.
+///
+/// # Errors
+///
+/// Returns an error if the page origin is not `valor://chrome` or if no command channel is attached.
+fn get_chrome_host_sender(
+    context: &HostContext,
+) -> Result<UnboundedSender<ChromeHostCommand>, JSError> {
+    if !context.page_origin.starts_with("valor://chrome") {
+        return Err(JSError::TypeError(String::from(
+            "chromeHost is not available",
+        )));
+    }
+    context
+        .chrome_host_tx
+        .clone()
+        .ok_or_else(|| JSError::TypeError(String::from("chromeHost is not available")))
+}
 
-    let navigate_fn = Arc::new(
+/// Build navigate function for chrome host.
+fn build_navigate_fn() -> Arc<HostFnSync> {
+    Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-            let sender = get_sender(context)?;
+            let sender = get_chrome_host_sender(context)?;
             if args.is_empty() {
                 return Err(JSError::TypeError(String::from(
                     "navigate(url) requires 1 argument",
@@ -295,41 +275,53 @@ pub fn build_chrome_host_namespace() -> HostNamespace {
                 })?;
             Ok(JSValue::Undefined)
         },
-    );
+    )
+}
 
-    let back_fn = Arc::new(
+/// Build back function for chrome host.
+fn build_back_fn() -> Arc<HostFnSync> {
+    Arc::new(
         move |context: &HostContext, _args: Vec<JSValue>| -> Result<JSValue, JSError> {
-            let sender = get_sender(context)?;
+            let sender = get_chrome_host_sender(context)?;
             sender
                 .send(ChromeHostCommand::Back)
                 .map_err(|error| JSError::InternalError(format!("failed to send back: {error}")))?;
             Ok(JSValue::Undefined)
         },
-    );
+    )
+}
 
-    let forward_fn = Arc::new(
+/// Build forward function for chrome host.
+fn build_forward_fn() -> Arc<HostFnSync> {
+    Arc::new(
         move |context: &HostContext, _args: Vec<JSValue>| -> Result<JSValue, JSError> {
-            let sender = get_sender(context)?;
+            let sender = get_chrome_host_sender(context)?;
             sender.send(ChromeHostCommand::Forward).map_err(|error| {
                 JSError::InternalError(format!("failed to send forward: {error}"))
             })?;
             Ok(JSValue::Undefined)
         },
-    );
+    )
+}
 
-    let reload_fn = Arc::new(
+/// Build reload function for chrome host.
+fn build_reload_fn() -> Arc<HostFnSync> {
+    Arc::new(
         move |context: &HostContext, _args: Vec<JSValue>| -> Result<JSValue, JSError> {
-            let sender = get_sender(context)?;
+            let sender = get_chrome_host_sender(context)?;
             sender.send(ChromeHostCommand::Reload).map_err(|error| {
                 JSError::InternalError(format!("failed to send reload: {error}"))
             })?;
             Ok(JSValue::Undefined)
         },
-    );
+    )
+}
 
-    let open_tab_fn = Arc::new(
+/// Build `open_tab` function for chrome host.
+fn build_open_tab_fn() -> Arc<HostFnSync> {
+    Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-            let sender = get_sender(context)?;
+            let sender = get_chrome_host_sender(context)?;
             let url_opt = match args.first() {
                 Some(JSValue::String(string_value)) => Some(string_value.clone()),
                 _ => None,
@@ -341,13 +333,20 @@ pub fn build_chrome_host_namespace() -> HostNamespace {
                 })?;
             Ok(JSValue::Undefined)
         },
-    );
+    )
+}
 
-    let close_tab_fn = Arc::new(
+/// Build `close_tab` function for chrome host.
+fn build_close_tab_fn() -> Arc<HostFnSync> {
+    Arc::new(
         move |context: &HostContext, args: Vec<JSValue>| -> Result<JSValue, JSError> {
-            let sender = get_sender(context)?;
+            let sender = get_chrome_host_sender(context)?;
             let id_opt = match args.first() {
-                Some(JSValue::Number(number_value)) => Some(*number_value as u64),
+                Some(JSValue::Number(number_value))
+                    if *number_value >= 0.0f64 && number_value.is_finite() =>
+                {
+                    Some(number_value.trunc() as u64)
+                }
                 _ => None,
             };
             sender
@@ -357,15 +356,19 @@ pub fn build_chrome_host_namespace() -> HostNamespace {
                 })?;
             Ok(JSValue::Undefined)
         },
-    );
+    )
+}
 
+/// Build the `chromeHost` namespace. Functions are gated to `<valor://chrome>` origin
+/// and require an attached host command channel in `HostContext`.
+pub fn build_chrome_host_namespace() -> HostNamespace {
     HostNamespace::new()
-        .with_sync_fn("navigate", navigate_fn)
-        .with_sync_fn("back", back_fn)
-        .with_sync_fn("forward", forward_fn)
-        .with_sync_fn("reload", reload_fn)
-        .with_sync_fn("openTab", open_tab_fn)
-        .with_sync_fn("closeTab", close_tab_fn)
+        .with_sync_fn("navigate", build_navigate_fn())
+        .with_sync_fn("back", build_back_fn())
+        .with_sync_fn("forward", build_forward_fn())
+        .with_sync_fn("reload", build_reload_fn())
+        .with_sync_fn("openTab", build_open_tab_fn())
+        .with_sync_fn("closeTab", build_close_tab_fn())
 }
 
 /// `HostBindings` bundle containing only the `chromeHost` namespace.

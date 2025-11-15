@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Usage:
+#   ./scripts/verify.sh [--cov] [--ui-only]
+#
+# Flags:
+#   --cov       Run coverage testing (delegates to coverage.sh)
+#   --ui-only   Run only UI tests (skip Rust)
+#
+# Environment variables:
+#   RENDERER_CI   Set to skip clean step in CI environments
+
+check_allows() {
+  # This project does not allow ANY #[allow] or #[expect] annotations
+  # All warnings must be fixed, not silenced
+
+  # Find Rust files that have allow, expect, or cfg_attr with these
+  mapfile -t files < <(
+    find crates src -type f -name '*.rs' -print0 2>/dev/null |
+    xargs -0 grep -lE '#!?\[(allow|expect|cfg_attr.*(allow|expect))' 2>&1 | grep -v "No such file" || true
+  )
+
+  local violations=false
+
+  for file in "${files[@]}"; do
+    # Check for ANY allow or expect annotations
+    result=$(awk '
+      BEGIN { in_attr = 0; attr = "" }
+
+      {
+        # If currently collecting an attribute, continue
+        if (in_attr) {
+          attr = attr $0
+          if (index($0, "]")) {
+            if (attr ~ /(allow|expect)/) {
+              print "DISALLOWED:::" FILENAME ":::" attr
+            }
+            in_attr = 0
+            attr = ""
+          }
+          next
+        }
+
+        # Detect start of an attribute with allow or expect
+        if ($0 ~ /#(!)?\[.*(allow|expect)/) {
+          attr = $0
+          if (index($0, ")]")) {
+            if (attr ~ /(allow|expect)/) {
+              print "DISALLOWED:::" FILENAME ":::" attr
+            }
+            attr = ""
+          } else {
+            in_attr = 1
+          }
+        }
+      }
+
+      END {
+        if (in_attr && attr != "" && attr ~ /(allow|expect)/) {
+          print "DISALLOWED:::" FILENAME ":::" attr
+        }
+      }
+    ' "$file")
+
+    if [ -n "$result" ]; then
+      echo "ERROR: Found disallowed #[allow] or #[expect] annotation:"
+      echo "$result" | awk -F':::' '{print "  File: " $2; print "  Annotation: " $3}'
+      violations=true
+    fi
+  done
+
+  if $violations; then
+    echo ""
+    echo "NO #[allow] or #[expect] annotations are permitted in this project."
+    echo "All warnings must be fixed, not silenced."
+    echo "Fix the code instead of using #[allow] or #[expect]."
+    return 1
+  fi
+
+  return 0
+}
+
+check_ui_build() {
+  echo "[verify] Checking UI dependencies are installed..."
+  cd ui
+
+  # Check if node_modules exists
+  if [ ! -d "node_modules" ]; then
+    echo "[verify] Installing UI dependencies..."
+    pnpm install --frozen-lockfile
+  fi
+
+  echo "[verify] Running UI type check..."
+  if ! pnpm run test:types; then
+    echo "ERROR: TypeScript type errors found"
+    return 1
+  fi
+
+  echo "[verify] Building UI..."
+  if ! pnpm run build 2>&1 | tee /tmp/ui_build.log; then
+    echo "ERROR: UI build failed"
+    return 1
+  fi
+
+  # Check for warnings in build output
+  if grep -i "warning" /tmp/ui_build.log | grep -v "pnpm"; then
+    echo "ERROR: UI build produced warnings"
+    return 1
+  fi
+
+  # No UI-only tests - integration tests in Rust cover full lifecycle
+  cd ..
+  return 0
+}
+
+RUN_COVERAGE=false
+UI_ONLY=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --cov)
+      RUN_COVERAGE=true
+      ;;
+    --ui-only)
+      UI_ONLY=true
+      ;;
+    *)
+      # ignore unknown args (forward compatibility)
+      ;;
+  esac
+done
+
+echo "================================================"
+echo "Renderer Project Verification"
+echo "================================================"
+
+if [ "$UI_ONLY" = false ]; then
+  # Check for disallowed allow/expect annotations
+  echo "[verify] Checking for disallowed #[allow] and #[expect] annotations..."
+  if ! check_allows; then
+    echo "FATAL: check_allows failed" >&2
+    exit 1
+  fi
+
+  # Format and lint Rust code
+  echo "[verify] Formatting Rust code..."
+  cargo fmt --all
+
+  echo "[verify] Running Clippy..."
+  cargo clippy --all-targets --workspace -- -D warnings
+
+  echo "[verify] Building Rust workspace..."
+  cargo build --workspace
+fi
+
+# Check UI
+echo "[verify] Verifying UI..."
+if ! check_ui_build; then
+  echo "FATAL: UI verification failed" >&2
+  exit 1
+fi
+
+# Delegate to coverage.sh if --cov is passed
+if [ "$RUN_COVERAGE" = true ]; then
+  exec "$(dirname "${BASH_SOURCE[0]}")/coverage.sh"
+fi
+
+if [ "$UI_ONLY" = false ]; then
+  # Run full workspace tests
+  echo "[verify] Running Rust tests..."
+  cargo test --workspace -- --ignored
+
+  echo "[verify] Running integration tests..."
+  cargo test --test '*' || echo "Some integration tests skipped (require GPU/display)"
+fi
+
+# Clean old artifacts if not in CI
+if [ -z "${RENDERER_CI:-}" ] && [ "$UI_ONLY" = false ]; then
+  if command -v cargo-sweep &> /dev/null; then
+    echo "[verify] Cleaning old build artifacts..."
+    cargo sweep --time 7
+  fi
+fi
+
+echo ""
+echo "================================================"
+echo "✅ All verification checks passed!"
+echo "================================================"

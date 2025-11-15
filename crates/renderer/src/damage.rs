@@ -278,20 +278,22 @@ impl Default for DamageTracker {
 mod tests {
     use super::*;
 
+    /// Test that damage tracking can mark the entire surface as damaged.
+    ///
+    /// # Panics
+    /// Panics if the damage tracker does not report as fully damaged after calling `damage_all`.
     #[test]
-    #[allow(clippy::missing_panics_doc, reason = "Test function")]
     fn damage_all() {
         let mut tracker = DamageTracker::new(800, 600);
         tracker.damage_all();
         assert!(tracker.is_fully_damaged());
     }
 
+    /// Test that overlapping damage rectangles are properly merged.
+    ///
+    /// # Panics
+    /// Panics if the damaged rectangles are not properly merged or dimensions are incorrect.
     #[test]
-    #[allow(clippy::missing_panics_doc, reason = "Test function")]
-    #[allow(
-        clippy::default_numeric_fallback,
-        reason = "Test code with numeric literals"
-    )]
     fn damage_rect_merging() {
         let mut tracker = DamageTracker::new(800, 600);
         tracker.damage_rect(DamageRect::new(0, 0, 100, 100));
@@ -299,14 +301,17 @@ mod tests {
         // Should merge into one rect
         assert_eq!(tracker.get_damaged_rects().len(), 1);
         let rect = tracker.get_damaged_rects()[0];
-        assert_eq!(rect.x, 0);
-        assert_eq!(rect.y, 0);
+        assert_eq!(rect.x, 0i32);
+        assert_eq!(rect.y, 0i32);
         assert_eq!(rect.width, 150);
         assert_eq!(rect.height, 150);
     }
 
+    /// Test that damage tracking can be cleared.
+    ///
+    /// # Panics
+    /// Panics if damaged rectangles are not cleared after calling `clear`.
     #[test]
-    #[allow(clippy::missing_panics_doc, reason = "Test function")]
     fn clear_damage() {
         let mut tracker = DamageTracker::new(800, 600);
         tracker.damage_rect(DamageRect::new(0, 0, 100, 100));

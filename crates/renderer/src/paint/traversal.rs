@@ -4,6 +4,7 @@
 
 use super::stacking::{StackingContext, StackingLevel};
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 
 /// Unique identifier for a layout node.
 pub type NodeId = u64;
@@ -44,16 +45,19 @@ pub struct PaintNode {
 /// # Returns
 /// Vector of paint order entries sorted from back to front
 #[must_use]
-pub fn traverse_paint_tree(root: NodeId, nodes: &HashMap<NodeId, PaintNode>) -> Vec<PaintOrder> {
+pub fn traverse_paint_tree<S: BuildHasher>(
+    root: NodeId,
+    nodes: &HashMap<NodeId, PaintNode, S>,
+) -> Vec<PaintOrder> {
     let mut result = Vec::new();
     traverse_node(root, nodes, 0, &mut result);
     result
 }
 
 /// Recursively traverse a node and its children.
-fn traverse_node(
+fn traverse_node<S: BuildHasher>(
     node_id: NodeId,
-    nodes: &HashMap<NodeId, PaintNode>,
+    nodes: &HashMap<NodeId, PaintNode, S>,
     depth: u32,
     result: &mut Vec<PaintOrder>,
 ) {
@@ -132,9 +136,11 @@ mod tests {
         )
     }
 
+    /// Test that paint tree traversal respects simple tree order.
+    ///
+    /// # Panics
+    /// Panics if the traversal order is incorrect.
     #[test]
-    #[allow(clippy::missing_panics_doc, reason = "Test function")]
-    #[allow(clippy::similar_names, reason = "Test code with numbered variables")]
     fn simple_tree_order() {
         let mut nodes = HashMap::new();
         nodes.insert(
@@ -146,10 +152,12 @@ mod tests {
                 stacking_context: StackingContext::root(),
             },
         );
-        let (id1, node1) = create_node(1, Some(0), vec![], StackingLevel::BlockDescendants, 0);
-        nodes.insert(id1, node1);
-        let (id2, node2) = create_node(2, Some(0), vec![], StackingLevel::BlockDescendants, 1);
-        nodes.insert(id2, node2);
+        let (id1, first_child) =
+            create_node(1, Some(0), vec![], StackingLevel::BlockDescendants, 0);
+        nodes.insert(id1, first_child);
+        let (id2, second_child) =
+            create_node(2, Some(0), vec![], StackingLevel::BlockDescendants, 1);
+        nodes.insert(id2, second_child);
 
         let order = traverse_paint_tree(0, &nodes);
         assert_eq!(order.len(), 3);
@@ -159,9 +167,11 @@ mod tests {
         assert_eq!(order[2].node_id, 2);
     }
 
+    /// Test that paint tree traversal correctly orders nodes by z-index.
+    ///
+    /// # Panics
+    /// Panics if z-index ordering is not correct.
     #[test]
-    #[allow(clippy::missing_panics_doc, reason = "Test function")]
-    #[allow(clippy::similar_names, reason = "Test code with numbered variables")]
     fn z_index_ordering() {
         let mut nodes = HashMap::new();
         nodes.insert(
@@ -173,12 +183,15 @@ mod tests {
                 stacking_context: StackingContext::root(),
             },
         );
-        let (id1, node1) = create_node(1, Some(0), vec![], StackingLevel::PositiveZIndex(10), 0);
-        nodes.insert(id1, node1);
-        let (id2, node2) = create_node(2, Some(0), vec![], StackingLevel::NegativeZIndex(-5), 1);
-        nodes.insert(id2, node2);
-        let (id3, node3) = create_node(3, Some(0), vec![], StackingLevel::BlockDescendants, 2);
-        nodes.insert(id3, node3);
+        let (id1, positive_z_child) =
+            create_node(1, Some(0), vec![], StackingLevel::PositiveZIndex(10), 0);
+        nodes.insert(id1, positive_z_child);
+        let (id2, negative_z_child) =
+            create_node(2, Some(0), vec![], StackingLevel::NegativeZIndex(-5), 1);
+        nodes.insert(id2, negative_z_child);
+        let (id3, block_child) =
+            create_node(3, Some(0), vec![], StackingLevel::BlockDescendants, 2);
+        nodes.insert(id3, block_child);
 
         let order = traverse_paint_tree(0, &nodes);
         assert_eq!(order.len(), 4);

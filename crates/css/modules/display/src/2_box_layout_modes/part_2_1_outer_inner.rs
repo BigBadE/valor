@@ -21,11 +21,11 @@ pub const fn is_block_level_outer(display: Display) -> bool {
 mod tests {
     use super::*;
 
+    /// Test that `is_block_level_outer` correctly identifies block-level display types.
+    ///
+    /// # Panics
+    /// Panics if the function does not return expected values for various display types.
     #[test]
-    #[allow(
-        clippy::missing_panics_doc,
-        reason = "simple assertions in tiny unit test"
-    )]
     fn block_level_helper_matches_expectations() {
         assert!(is_block_level_outer(Display::Block));
         assert!(is_block_level_outer(Display::Flex));

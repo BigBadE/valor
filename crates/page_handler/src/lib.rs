@@ -15,11 +15,15 @@ mod display_retained;
 mod embedded_chrome;
 pub mod events;
 pub mod focus;
+/// Display list generation from layout and styles
+mod paint;
 /// JavaScript runtime abstraction and default runtime implementation
 mod runtime;
 pub mod scheduler;
 pub mod selection;
 pub mod snapshots;
+/// CSS stacking context and z-index handling
+mod stacking;
 pub mod state;
 pub mod telemetry;
 /// URL streaming utilities for http, https, file, and valor:// schemes

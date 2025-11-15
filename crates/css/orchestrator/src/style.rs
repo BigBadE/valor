@@ -255,9 +255,11 @@ enum BorderSide {
     Left,
 }
 
-/// Parse and apply per-side `border-<side>` shorthand tokens: <width> <style> <color> in any order.
-/// Only the targeted side's width/style/color are updated.
-/// Spec parsing model reference: CSS2.2 border shorthand tokenization (mirrored from `border`).
+/// Parse and apply per-side `border-<side>` shorthand tokens.
+///
+/// Accepts `<width> <style> <color>` in any order. Only the targeted side's width/style/color
+/// are updated. Spec parsing model reference: CSS2.2 border shorthand tokenization (mirrored
+/// from `border`).
 fn apply_border_side_shorthand_tokens(
     value: &str,
     computed: &mut style_model::ComputedStyle,

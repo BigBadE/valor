@@ -5,8 +5,9 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use wgpu_backend::RenderState;
 
 /// Global application state owned by the winit `ApplicationHandler`.
-/// Holds the async runtime, renderer, and all active pages (index 0 = chrome, 1 = content).
-/// Also maintains minimal input routing state for Phase 3.
+///
+/// Holds the async runtime, renderer, and all active pages (index 0 = chrome, 1 =
+/// content). Also maintains minimal input routing state for Phase 3.
 pub struct AppState {
     /// Tokio async runtime for running async operations.
     pub runtime: Runtime,

@@ -12,7 +12,8 @@ pub struct Vertex {
     pub color: [f32; 4],
 }
 
-/// Minimal WGSL shader that converts sRGB vertex colors to linear for correct blending into an sRGB target.
+/// Minimal WGSL shader for CSS-compliant sRGB-space rendering.
+/// CSS specifies that all blending occurs in sRGB space, not linear space.
 const SHADER_WGSL: &str = "
 struct VertexOut {
     @builtin(position) pos: vec4<f32>,
@@ -29,19 +30,11 @@ fn vs_main(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> V
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    // Input colors are in sRGB space. When rendering to an sRGB texture format,
-    // the GPU automatically handles linear<->sRGB conversions:
-    // - Shader outputs linear RGB
-    // - GPU converts to sRGB when writing to texture
-    // So we need to convert input sRGB to linear before outputting
+    // CSS spec requires blending in sRGB space (not linear).
+    // Input colors are already in sRGB, output them directly.
+    // Premultiply RGB by alpha for correct alpha blending.
     let c = in.color;
-    let rgb = c.xyz;
-    let lo = rgb / 12.92;
-    let hi = pow((rgb + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
-    let t = step(vec3<f32>(0.04045), rgb);
-    let linear_rgb = mix(lo, hi, t);
-    // Premultiply RGB by alpha for correct blending
-    return vec4<f32>(linear_rgb * c.w, c.w);
+    return vec4<f32>(c.xyz * c.w, c.w);
 }
 ";
 
@@ -68,9 +61,10 @@ fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>) -> VsOut {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let c = textureSample(t_color, t_sampler, in.uv);
-    // Texture already contains premultiplied RGB (rgb * alpha).
-    // To apply additional opacity, multiply the entire premultiplied color by the opacity factor.
-    // This correctly scales both the premultiplied RGB and alpha channels.
+    // CSS spec requires opacity blending in sRGB space.
+    // The offscreen texture contains sRGB-space premultiplied colors.
+    // We multiply by opacity in sRGB space (treating values as linear arithmetic).
+    // This matches CSS/Chrome behavior exactly.
     return c * u_params.alpha;
 }
 ";
@@ -108,6 +102,22 @@ const fn create_basic_blend_state() -> BlendState {
         alpha: BlendComponent {
             src_factor: BlendFactor::One,
             dst_factor: BlendFactor::OneMinusSrcAlpha,
+            operation: BlendOperation::Add,
+        },
+    }
+}
+
+/// Create blend state for opaque rendering (no blending, just replace).
+const fn create_opaque_blend_state() -> BlendState {
+    BlendState {
+        color: BlendComponent {
+            src_factor: BlendFactor::One,
+            dst_factor: BlendFactor::Zero,
+            operation: BlendOperation::Add,
+        },
+        alpha: BlendComponent {
+            src_factor: BlendFactor::One,
+            dst_factor: BlendFactor::Zero,
             operation: BlendOperation::Add,
         },
     }
@@ -289,4 +299,54 @@ pub fn build_texture_pipeline(
         ..Default::default()
     });
     (pipeline, bind_layout, sampler)
+}
+
+/// Build a pipeline for offscreen opacity group rendering without blending.
+///
+/// This pipeline outputs premultiplied alpha but doesn't blend with the destination, allowing
+/// proper opacity compositing in a separate pass.
+pub fn build_offscreen_pipeline(device: &Device, render_format: TextureFormat) -> RenderPipeline {
+    let shader = device.create_shader_module(ShaderModuleDescriptor {
+        label: Some("offscreen-shader"),
+        source: ShaderSource::Wgsl(Cow::Borrowed(SHADER_WGSL)),
+    });
+
+    let vertex_buffers = [create_vertex_buffer_layout()];
+
+    let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some("offscreen-pipeline-layout"),
+        bind_group_layouts: &[],
+        push_constant_ranges: &[],
+    });
+
+    device.create_render_pipeline(&RenderPipelineDescriptor {
+        label: Some("offscreen-pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &vertex_buffers,
+            compilation_options: PipelineCompilationOptions::default(),
+        },
+        primitive: PrimitiveState {
+            topology: PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: MultisampleState::default(),
+        fragment: Some(FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(ColorTargetState {
+                format: render_format,
+                // Use REPLACE blending (ONE, ZERO) for offscreen rendering
+                // This prevents double-blending when opacity is applied later
+                blend: Some(create_opaque_blend_state()),
+                write_mask: ColorWrites::ALL,
+            })],
+            compilation_options: PipelineCompilationOptions::default(),
+        }),
+        multiview: None,
+        cache: None,
+    })
 }

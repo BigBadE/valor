@@ -9,14 +9,13 @@ Valor is a browser engine written in Rust, implementing HTML parsing, CSS stylin
 ## Essential Commands
 
 ### Building and Testing
-- **Run all code standards checks**: `./scripts/code_standards.ps1` (PowerShell) or `./scripts/code_standards.sh` (Bash)
+- **Run all code standards checks**: `./scripts/verify.sh`
   - This runs: `cargo fmt`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all --all-features`
   - **IMPORTANT**: Always run this before finishing work on any changes
 - **Build the project**: `cargo build`
 - **Run the browser**: `cargo run`
 - **Run specific test suite**: `cargo test --all --all-features --test layouter_chromium_compare`
 - **Run tests for specific package**: `cargo test --all --all-features --package valor`
-- **Custom logging**: `./scripts/code_standards.sh "your,log,spec"` (appends to base log levels)
 
 ### JavaScript Engine Features
 The project supports both V8 and stub JavaScript engines via cargo features:

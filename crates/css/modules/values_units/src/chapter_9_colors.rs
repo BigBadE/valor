@@ -128,21 +128,45 @@ fn named_color(name: &str) -> Option<Color> {
     }
 }
 
-/// Parse `rgb()`/`rgba()` with integer components only (0..=255).
-/// Alpha is an optional 4th integer (0..=255).
+/// Parse RGB component value (integer 0-255).
+fn parse_rgb_component(int_value: Option<i32>) -> Option<u8> {
+    let int_val = int_value?;
+    let bounded = int_val.clamp(i32::from(u8::MIN), i32::from(u8::MAX));
+    u8::try_from(bounded).ok()
+}
+
+/// Parse alpha component value (float 0.0-1.0 or integer 0-255).
+fn parse_alpha_component(int_value: Option<i32>, float_value: f32) -> u8 {
+    int_value.map_or_else(
+        || {
+            let alpha_f32 = float_value.clamp(0.0, 1.0);
+            (alpha_f32 * 255.0).round() as u8
+        },
+        |int_val| {
+            let bounded = int_val.clamp(i32::from(u8::MIN), i32::from(u8::MAX));
+            u8::try_from(bounded).unwrap_or(0)
+        },
+    )
+}
+
+/// Parse `rgb()`/`rgba()` functions.
+/// RGB components are integers (0..=255).
+/// Alpha can be either a float (0.0..=1.0) or integer (0..=255).
 fn parse_rgb_function(name: &str, input: &mut Parser) -> Option<Color> {
     let lowercase = name.to_ascii_lowercase();
     let mut comps: Vec<u8> = Vec::with_capacity(4);
     while let Ok(token) = input.next_including_whitespace_and_comments() {
         match token.clone() {
-            Token::Number { int_value, .. } => {
-                if let Some(int_val) = int_value {
-                    let bounded = int_val.clamp(i32::from(u8::MIN), i32::from(u8::MAX));
-                    if comps.len() < 4
-                        && let Ok(component) = u8::try_from(bounded)
-                    {
+            Token::Number {
+                int_value, value, ..
+            } => {
+                if comps.len() < 3 {
+                    if let Some(component) = parse_rgb_component(int_value) {
                         comps.push(component);
                     }
+                } else if comps.len() == 3 {
+                    let component = parse_alpha_component(int_value, value);
+                    comps.push(component);
                 }
             }
             Token::Comma | Token::WhiteSpace(_) | Token::Comment(_) => {}

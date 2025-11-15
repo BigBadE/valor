@@ -2,6 +2,7 @@ use crate::accessibility::ax_tree_snapshot_from;
 use crate::config::ValorConfig;
 use crate::embedded_chrome::get_embedded_chrome_asset;
 use crate::events::KeyMods;
+use crate::paint;
 use crate::runtime::{DefaultJsRuntime, JsRuntime as _};
 use crate::scheduler::FrameScheduler;
 use crate::snapshots::IRect;
@@ -9,6 +10,7 @@ use crate::telemetry::PerfCounters;
 use crate::url::stream_url;
 use crate::{focus as focus_mod, selection, telemetry as telemetry_mod};
 use anyhow::{Error, anyhow};
+use core::mem::replace;
 use core::sync::atomic::AtomicU64;
 use css::style_types::ComputedStyle;
 use css::types::Stylesheet;
@@ -25,7 +27,7 @@ use js::{
 };
 use js_engine_v8::V8Engine;
 use log::{info, trace};
-use renderer::{DisplayItem, DisplayList, DrawRect, Renderer};
+use renderer::{DisplayList, DrawRect, Renderer};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -59,13 +61,24 @@ pub struct UpdateOutcome {
     pub redraw_needed: bool,
 }
 
-// TODO: Refactor HtmlPage to use a state machine or enums instead of multiple bools
-// to reduce the number of boolean fields (currently 5: hud_enabled, dom_content_loaded_fired,
-// style_nodes_rebuilt_after_load, needs_redraw, telemetry_enabled)
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "TODO: Refactor to use state machine or enums"
-)]
+/// Lifecycle event flags for the page.
+#[derive(Default)]
+struct LifecycleFlags {
+    /// Whether we've dispatched `DOMContentLoaded` to JS listeners.
+    dom_content_loaded_fired: bool,
+    /// One-time post-load guard to rebuild the `StyleEngine`'s node inventory from the Layouter.
+    style_nodes_rebuilt_after_load: bool,
+}
+
+/// Rendering and telemetry flags for the page.
+#[derive(Default)]
+struct RenderFlags {
+    /// Whether the last update produced visual changes that require a redraw.
+    needs_redraw: bool,
+    /// Whether to emit perf telemetry lines per tick.
+    telemetry_enabled: bool,
+}
+
 pub struct HtmlPage {
     /// Optional currently focused node for focus management.
     focused_node: Option<NodeKey>,
@@ -98,7 +111,6 @@ pub struct HtmlPage {
     /// Counter for tracking script execution.
     script_counter: u64,
     /// Current page URL.
-    #[allow(dead_code, reason = "URL is kept for future navigation and debugging")]
     url: Url,
     /// ES module resolver/bundler adapter (JS crate) for side-effect modules.
     module_resolver: Box<dyn ModuleResolver>,
@@ -106,15 +118,10 @@ pub struct HtmlPage {
     frame_scheduler: FrameScheduler,
     /// Diagnostics: number of nodes restyled in the last tick.
     last_style_restyled_nodes: u64,
-    /// Whether we've dispatched `DOMContentLoaded` to JS listeners.
-    dom_content_loaded_fired: bool,
-    /// One-time post-load guard to rebuild the `StyleEngine`'s node inventory from the Layouter
-    /// for deterministic style resolution in the normal update path.
-    style_nodes_rebuilt_after_load: bool,
-    /// Whether the last update produced visual changes that require a redraw.
-    needs_redraw: bool,
-    /// Whether to emit perf telemetry lines per tick.
-    telemetry_enabled: bool,
+    /// Lifecycle event flags for the page.
+    lifecycle: LifecycleFlags,
+    /// Rendering and telemetry flags for the page.
+    render: RenderFlags,
 }
 
 /// Helper to create DOM mirrors for the page.
@@ -197,7 +204,7 @@ impl HtmlPage {
         url: &Url,
     ) -> Result<JsContext, Error> {
         let mut js_engine =
-            V8Engine::new().map_err(|err| anyhow!("failed to init V8Engine: {}", err))?;
+            V8Engine::new().map_err(|err| anyhow!("failed to init V8Engine: {err}"))?;
         let logger = Arc::new(ConsoleLogger);
         let js_node_keys = Arc::new(Mutex::new(js_keyman));
         let js_local_id_counter = Arc::new(AtomicU64::new(0));
@@ -286,10 +293,11 @@ impl HtmlPage {
             module_resolver: Box::new(SimpleFileModuleResolver::new()),
             frame_scheduler,
             last_style_restyled_nodes: 0,
-            dom_content_loaded_fired: false,
-            style_nodes_rebuilt_after_load: false,
-            needs_redraw: false,
-            telemetry_enabled: config.telemetry_enabled,
+            lifecycle: LifecycleFlags::default(),
+            render: RenderFlags {
+                needs_redraw: false,
+                telemetry_enabled: config.telemetry_enabled,
+            },
         })
     }
 
@@ -298,6 +306,11 @@ impl HtmlPage {
     /// and awaited its completion.
     pub const fn parsing_finished(&self) -> bool {
         self.loader.is_none()
+    }
+
+    /// Returns the current page URL.
+    pub const fn url(&self) -> &Url {
+        &self.url
     }
 
     /// Execute any pending inline scripts from the parser
@@ -366,7 +379,7 @@ impl HtmlPage {
             let mut buffer: Vec<u8> = Vec::new();
             let mut stream = stream_url(url).await?;
             while let Some(chunk) = stream.next().await {
-                let bytes = chunk.map_err(|err| anyhow!("{}", err))?;
+                let bytes = chunk.map_err(|err| anyhow!("{err}"))?;
                 buffer.extend_from_slice(&bytes);
             }
             Ok::<String, Error>(String::from_utf8_lossy(&buffer).into_owned())
@@ -438,7 +451,7 @@ impl HtmlPage {
     ///
     /// Returns an error if event handling fails.
     pub(crate) fn handle_dom_content_loaded_if_needed(&mut self) -> Result<(), Error> {
-        if self.loader.is_none() && !self.dom_content_loaded_fired {
+        if self.loader.is_none() && !self.lifecycle.dom_content_loaded_fired {
             info!("HtmlPage: dispatching DOMContentLoaded");
             let _unused = self
                 .js_engine
@@ -447,7 +460,7 @@ impl HtmlPage {
                     "valor://dom_events",
                 );
             let _unused2 = self.js_engine.run_jobs();
-            self.dom_content_loaded_fired = true;
+            self.lifecycle.dom_content_loaded_fired = true;
             // After DOMContentLoaded, DOM listener mutations will be applied on the next regular tick.
             // Keep the DOM index mirror in sync in a non-blocking manner for tests.
             self.dom_index_mirror.try_update_sync()?;
@@ -488,34 +501,6 @@ impl HtmlPage {
         (tags_by_key, element_children, raw_children, text_by_key)
     }
 
-    /// Extract concatenated CSS text from inline <style> elements using the current layout snapshot.
-    #[allow(
-        dead_code,
-        reason = "Kept for future inline <style> extraction and test helpers"
-    )]
-    fn extract_inline_style_css(
-        tags_by_key: &HashMap<NodeKey, String>,
-        raw_children: &HashMap<NodeKey, Vec<NodeKey>>,
-        text_by_key: &HashMap<NodeKey, String>,
-    ) -> String {
-        let mut inline_style_css = String::new();
-        let tags_vec: Vec<_> = tags_by_key.iter().collect();
-        for (node, tag) in tags_vec {
-            if !tag.eq_ignore_ascii_case("style") {
-                continue;
-            }
-            let Some(children) = raw_children.get(node) else {
-                continue;
-            };
-            for child in children {
-                if let Some(txt) = text_by_key.get(child) {
-                    inline_style_css.push_str(txt);
-                }
-            }
-        }
-        inline_style_css
-    }
-
     /// Ensure `StyleEngine`'s node inventory is rebuilt once post-load for deterministic matching.
     fn maybe_rebuild_style_nodes_after_load(
         &mut self,
@@ -524,8 +509,8 @@ impl HtmlPage {
         _lay_attrs: &HashMap<NodeKey, HashMap<String, String>>,
     ) {
         // Orchestrator does not require an explicit rebuild; no-op guard retained for symmetry.
-        if self.loader.is_none() && !self.style_nodes_rebuilt_after_load {
-            self.style_nodes_rebuilt_after_load = true;
+        if self.loader.is_none() && !self.lifecycle.style_nodes_rebuilt_after_load {
+            self.lifecycle.style_nodes_rebuilt_after_load = true;
             trace!("process_css_and_styles: orchestrator ready");
         }
     }
@@ -638,7 +623,7 @@ impl HtmlPage {
             }
             // Request a redraw after any successful layout pass so retained display lists
             // can be rebuilt and presented even if dirty regions were coalesced away.
-            self.needs_redraw = true;
+            self.render.needs_redraw = true;
         } else {
             trace!("Layout skipped: no DOM/style changes in this tick");
             // Reset last-tick perf counters so observability reflects the no-op
@@ -687,7 +672,7 @@ impl HtmlPage {
         // Emit optional production telemetry for this tick per config
         self.emit_perf_telemetry_if_enabled();
         let outcome = UpdateOutcome {
-            redraw_needed: self.needs_redraw,
+            redraw_needed: self.render.needs_redraw,
         };
         Ok(outcome)
     }
@@ -698,9 +683,7 @@ impl HtmlPage {
 
     /// Return whether a redraw is needed since the last call and clear the flag.
     pub const fn take_needs_redraw(&mut self) -> bool {
-        let value = self.needs_redraw;
-        self.needs_redraw = false;
-        value
+        replace(&mut self.render.needs_redraw, false)
     }
 
     /// Evaluate arbitrary JS in the page's engine (testing helper) and flush microtasks.
@@ -743,7 +726,7 @@ impl HtmlPage {
         if need {
             let _unused = lay.compute_layout();
             // Mark that a redraw would be needed if a UI were present.
-            self.needs_redraw = true;
+            self.render.needs_redraw = true;
         }
     }
 
@@ -911,7 +894,7 @@ impl HtmlPage {
     /// Intended for external tooling to scrape logs; kept opt-in to avoid overhead.
     pub fn emit_perf_telemetry_if_enabled(&mut self) {
         telemetry_mod::maybe_emit(
-            self.telemetry_enabled,
+            self.render.telemetry_enabled,
             &self.perf_counters_snapshot_string(),
         );
     }
@@ -987,7 +970,6 @@ impl HtmlPage {
     }
 
     /// Get the background color from the page's computed styles.
-    #[allow(dead_code, reason = "Public API used by valor crate")]
     pub const fn background_rgba(&self) -> [f32; 4] {
         [1.0, 1.0, 1.0, 1.0]
     }
@@ -1004,65 +986,39 @@ impl HtmlPage {
         let layouter = self.layouter_mirror.mirror_mut();
         let rects = layouter.compute_layout_geometry();
         let styles = layouter.computed_styles();
+        let snapshot = layouter.snapshot();
 
-        let mut items = Vec::new();
-
-        // Simple approach: iterate through all rects and draw backgrounds
-        // This gets basic rendering working; proper z-order and clipping can be added later
-        for (key, rect) in &rects {
-            if let Some(style) = styles.get(key) {
-                let background = &style.background_color;
-                if background.alpha > 0 {
-                    items.push(DisplayItem::Rect {
-                        x: rect.x,
-                        y: rect.y,
-                        width: rect.width,
-                        height: rect.height,
-                        color: [
-                            f32::from(background.red) / 255.0,
-                            f32::from(background.green) / 255.0,
-                            f32::from(background.blue) / 255.0,
-                            f32::from(background.alpha) / 255.0,
-                        ],
-                    });
-                }
-            }
-        }
+        let display_list = paint::build_display_list(&rects, styles, &snapshot);
 
         info!(
             "display_list_retained_snapshot: generated {} items from {} rects",
-            items.len(),
+            display_list.items.len(),
             rects.len()
         );
-        Ok(DisplayList::from_items(items))
+        Ok(display_list)
     }
 
     /// Dispatch a pointer move event.
-    #[allow(dead_code, reason = "Public API used by valor crate")]
     pub const fn dispatch_pointer_move(&mut self, _x: f64, _y: f64) {
         // Pointer move handling
     }
 
     /// Dispatch a pointer down event.
-    #[allow(dead_code, reason = "Public API used by valor crate")]
     pub const fn dispatch_pointer_down(&mut self, _x: f64, _y: f64, _button: u32) {
         // Pointer down handling
     }
 
     /// Dispatch a pointer up event.
-    #[allow(dead_code, reason = "Public API used by valor crate")]
     pub const fn dispatch_pointer_up(&mut self, _x: f64, _y: f64, _button: u32) {
         // Pointer up handling
     }
 
     /// Dispatch a key down event.
-    #[allow(dead_code, reason = "Public API used by valor crate")]
     pub const fn dispatch_key_down(&mut self, _key: &str, _code: &str, _mods: KeyMods) {
         // Key down handling
     }
 
     /// Dispatch a key up event.
-    #[allow(dead_code, reason = "Public API used by valor crate")]
     pub const fn dispatch_key_up(&mut self, _key: &str, _code: &str, _mods: KeyMods) {
         // Key up handling
     }

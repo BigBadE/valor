@@ -64,11 +64,12 @@ impl HostLogger for ConsoleLogger {
     }
 }
 
-/// Return a small JavaScript snippet that defines a console object which forwards
-/// calls to the host via `__valor_host_post`. The message protocol is:
-///   `console|<level>|<joined-args>`
-/// where `<level>` is one of log, info, warn, error and `<joined-args>` is a space-
-/// joined `String()` representation of the arguments.
+/// Return a small JavaScript snippet that defines a console object.
+///
+/// The console object forwards calls to the host via `__valor_host_post`. The message
+/// protocol is: `console|<level>|<joined-args>` where `<level>` is one of log, info,
+/// warn, error and `<joined-args>` is a space-joined `String()` representation of the
+/// arguments.
 pub const fn console_shim_js() -> &'static str {
     "
     (function(){

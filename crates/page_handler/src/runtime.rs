@@ -18,11 +18,9 @@ pub trait JsRuntime {
     ///
     /// Used for logging and debugging purposes to identify which JS engine
     /// is active (e.g., "v8", "stub", "default").
-    #[allow(
-        dead_code,
-        reason = "name() is part of the trait API for runtime identification"
-    )]
-    fn name(&self) -> &'static str;
+    ///
+    /// Note: Currently unused but reserved for future logging/telemetry.
+    fn _name(&self) -> &'static str;
 
     /// Executes all pending timer callbacks that are ready to fire.
     ///
@@ -49,7 +47,7 @@ pub struct DefaultJsRuntime;
 
 impl JsRuntime for DefaultJsRuntime {
     #[inline]
-    fn name(&self) -> &'static str {
+    fn _name(&self) -> &'static str {
         "default"
     }
 

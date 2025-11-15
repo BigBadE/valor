@@ -110,64 +110,74 @@ lto = false
 
 [profile.dev.package."*"]
 opt-level = 3
-codegen-backend = "cranelift"
 
-[workspace.lints.rust]
-unsafe_code = "forbid"
-warnings = "deny"
-future-incompatible = "deny"
-let-underscore = "deny"
-nonstandard-style = "deny"
-refining-impl-trait = "deny"
-unused = { level = "deny", priority = -1 }
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
 
 # Strict lints, should not be changed.
 [workspace.lints.clippy]
 all = "deny"
-cargo = "deny"
 complexity = "deny"
 correctness = "deny"
 nursery = "deny"
 pedantic = "deny"
 perf = "deny"
-restriction = "deny"
 style = "deny"
 suspicious = "deny"
-as_conversions = { level = "allow", priority = 1 }
-allow_attributes = { level = "allow", priority = 1 }
-arbitrary_source_item_ordering = { level = "allow", priority = 1 }
-cast_precision_loss = { level = "allow", priority = 1 }
-else_if_without_else = { level = "allow", priority = 1 }
-multiple_crate_versions = { level = "allow", priority = 1 }
-module_name_repetitions = { level = "allow", priority = 1 }
-mod_module_files = { level = "allow", priority = 1 }
-blanket_clippy_restriction_lints = { level = "allow", priority = 1 }
-iter_over_hash_type = { level = "allow", priority = 1 }
-cargo_common_metadata = { level = "allow", priority = 1 }
-cast_possible_truncation = { level = "allow", priority = 1 }
-cast_sign_loss = { level = "allow", priority = 1 }
-pub_with_shorthand = { level = "allow", priority = 1 }
-exhaustive_structs = { level = "allow", priority = 1 }
-unseparated_literal_suffix = { level = "allow", priority = 1 }
-pattern_type_mismatch = { level = "allow", priority = 1 }
-std_instead_of_alloc = { level = "allow", priority = 1 }
-shadow_reuse = { level = "allow", priority = 1 }
-map_err_ignore = { level = "allow", priority = 1 }
-indexing_slicing = { level = "allow", priority = 1 }
-missing_inline_in_public_items = { level = "allow", priority = 1 }
+
+# Complexity
+only_used_in_recursion = { level = "allow", priority = 1 }
+
+# Nursery
 future_not_send = { level = "allow", priority = 1 }
-self_named_module_files = { level = "allow", priority = 1 }
+missing_const_for_fn = { level = "allow", priority = 1 }
 significant_drop_tightening = { level = "allow", priority = 1 }
-arithmetic_side_effects = { level = "allow", priority = 1 }
-missing-trait-methods = { level = "allow", priority = 1 }
-float_arithmetic = { level = "allow", priority = 1 }
-pub_use = { level = "allow", priority = 1 }
-must_use_candidate = { level = "allow", priority = 1 }
-exhaustive_enums = { level = "allow", priority = 1 }
-too-long-first-doc-paragraph = { level = "allow", priority = 1 }
-implicit_return = { level = "allow", priority = 1 }
-single_call_fn = { level = "allow", priority = 1 }
-question_mark_used = { level = "allow", priority = 1 }
-wildcard_imports = { level = "allow", priority = 1 }
-wildcard_enum_match_arm = { level = "allow", priority = 1 }
+
+# Pedantic
+cast_possible_truncation = { level = "allow", priority = 1 }
+cast_possible_wrap = { level = "allow", priority = 1 }
+cast_precision_loss = { level = "allow", priority = 1 }
+cast_sign_loss = { level = "allow", priority = 1 }
 implicit_hasher = { level = "allow", priority = 1 }
+must_use_candidate = { level = "allow", priority = 1 }
+wildcard_imports = { level = "allow", priority = 1 }
+
+# Restriction
+absolute_paths = { level = "deny", priority = 1 }
+allow_attributes_without_reason = { level = "deny", priority = 1 }
+assertions_on_result_states = { level = "deny", priority = 1 }
+clone_on_ref_ptr = { level = "deny", priority = 1 }
+expect_used = { level = "deny", priority = 1 }
+if_then_some_else_none = { level = "deny", priority = 1 }
+let_underscore_must_use = { level = "deny", priority = 1 }
+min_ident_chars = { level = "deny", priority = 1 }
+multiple_inherent_impl = { level = "deny", priority = 1 }
+mutex_atomic = { level = "deny", priority = 1 }
+mutex_integer = { level = "deny", priority = 1 }
+panic = { level = "deny", priority = 1 }
+print_stderr = { level = "deny", priority = 1 }
+print_stdout = { level = "deny", priority = 1 }
+redundant_type_annotations = { level = "deny", priority = 1 }
+renamed_function_params = { level = "deny", priority = 1 }
+rest_pat_in_fully_bound_structs = { level = "deny", priority = 1 }
+return_and_then = { level = "deny", priority = 1 }
+same_name_method = { level = "deny", priority = 1 }
+self_named_module_files = { level = "deny", priority = 1 }
+semicolon_inside_block = { level = "deny", priority = 1 }
+separated_literal_suffix = { level = "deny", priority = 1 }
+shadow_unrelated = { level = "deny", priority = 1 }
+single_char_lifetime_names = { level = "deny", priority = 1 }
+string_lit_chars_any = { level = "deny", priority = 1 }
+tests_outside_test_module = { level = "deny", priority = 1 }
+todo = { level = "deny", priority = 1 }
+try_err = { level = "deny", priority = 1 }
+undocumented_unsafe_blocks = { level = "deny", priority = 1 }
+unimplemented = { level = "deny", priority = 1 }
+unnecessary_safety_comment = { level = "deny", priority = 1 }
+unnecessary_safety_doc = { level = "deny", priority = 1 }
+unnecessary_self_imports = { level = "deny", priority = 1 }
+unneeded_field_pattern = { level = "deny", priority = 1 }
+unreachable = { level = "deny", priority = 1 }
+unused_result_ok = { level = "deny", priority = 1 }
+unused_trait_names = { level = "deny", priority = 1 }
+unwrap_used = { level = "deny", priority = 1 }

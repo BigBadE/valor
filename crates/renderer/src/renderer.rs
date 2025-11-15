@@ -89,9 +89,10 @@ impl RenderNode {
     }
 }
 
-/// Renderer mirrors DOM updates into a lightweight scene graph suitable for
-/// translation into GPU-ready draw lists. It does not perform GPU work itself;
-/// `RenderState` or another backend can consume its snapshots.
+/// Renderer mirrors DOM updates into a lightweight scene graph.
+///
+/// The scene graph is suitable for translation into GPU-ready draw lists. It does not
+/// perform GPU work itself; `RenderState` or another backend can consume its snapshots.
 pub struct Renderer {
     /// Map of node keys to render nodes.
     nodes: HashMap<NodeKey, RenderNode>,

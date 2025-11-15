@@ -49,25 +49,34 @@ pub struct ValorSink {
     script_nodes: RefCell<HashMap<NodeId, ScriptState>>,
 }
 
-/// State tracking for script elements during parsing.
-#[derive(Clone, Debug)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "Script state flags directly mirror HTML5 spec attributes"
-)]
-struct ScriptState {
-    /// Whether the script has a src attribute.
-    has_src: bool,
-    /// Buffer for inline script content.
-    buffer: String,
+/// Script loading attributes from HTML5 spec.
+#[derive(Clone, Debug, Default)]
+struct ScriptAttributes {
     /// Whether the script has defer attribute.
     defer: bool,
     /// Whether the script has async attribute.
     async_attr: bool,
-    /// Value of the src attribute if present.
-    src_value: Option<String>,
-    /// Whether the script is a module.
+    /// Whether the script is a module (type="module").
     is_module: bool,
+}
+
+/// State tracking for script elements during parsing.
+#[derive(Clone, Debug)]
+enum ScriptState {
+    /// External script with src attribute.
+    External {
+        /// Source URL for the external script.
+        src: String,
+        /// Script loading attributes.
+        attrs: ScriptAttributes,
+    },
+    /// Inline script without src.
+    Inline {
+        /// Accumulated script content buffer.
+        buffer: String,
+        /// Script loading attributes.
+        attrs: ScriptAttributes,
+    },
 }
 
 impl ValorSink {
@@ -90,6 +99,54 @@ impl ValorSink {
     /// Gets access to the DOM mirror (crate-visible).
     pub(crate) const fn dom(&self) -> &RefCell<DOMMirror<ParserDOMMirror>> {
         &self.dom
+    }
+
+    /// Update script state when adding attributes to a script element.
+    fn update_script_state_for_attr(&self, target: &NodeId, attr: &Attribute) {
+        let mut script_nodes = self.script_nodes.borrow_mut();
+        let Some(state) = script_nodes.get_mut(target) else {
+            return;
+        };
+
+        if attr.name.local.eq(&local_name!("src")) {
+            // Convert inline to external if src is added (both arms are same by design)
+            let new_state = match state {
+                ScriptState::Inline {
+                    attrs: script_attrs,
+                    ..
+                }
+                | ScriptState::External {
+                    attrs: script_attrs,
+                    ..
+                } => ScriptState::External {
+                    src: attr.value.to_string(),
+                    attrs: script_attrs.clone(),
+                },
+            };
+            *state = new_state;
+        }
+
+        // Update attributes in place
+        let attrs_ref = match state {
+            ScriptState::External {
+                attrs: script_attrs,
+                ..
+            }
+            | ScriptState::Inline {
+                attrs: script_attrs,
+                ..
+            } => script_attrs,
+        };
+
+        if attr.name.local.eq(&local_name!("defer")) {
+            attrs_ref.defer = true;
+        }
+        if attr.name.local.eq(&local_name!("async")) {
+            attrs_ref.async_attr = true;
+        }
+        if attr.name.local.eq(&local_name!("type")) && attr.value.to_ascii_lowercase() == "module" {
+            attrs_ref.is_module = true;
+        }
     }
 
     /// Fetches script source from a URL.
@@ -170,39 +227,48 @@ impl TreeSink for ValorSink {
         // Track the element's qualified name for correct elem_name reporting
         self.element_names.borrow_mut().insert(id, name.clone());
         let is_script = name.ns == html5ever::ns!(html) && name.local == local_name!("script");
-        let mut state = is_script.then(|| ScriptState {
-            has_src: false,
-            buffer: String::new(),
-            defer: false,
-            async_attr: false,
-            src_value: None,
-            is_module: false,
-        });
+
+        // Collect script attributes if this is a script element
+        let mut src_value: Option<String> = None;
+        let mut script_attrs = ScriptAttributes::default();
+
         for attr in attrs {
             let local = attr.name.local.to_string();
-            if let Some(ref mut script_state) = state {
+            if is_script {
                 if attr.name.local.eq(&local_name!("src")) {
-                    script_state.has_src = true;
-                    script_state.src_value = Some(attr.value.to_string());
+                    src_value = Some(attr.value.to_string());
                 }
                 if attr.name.local.eq(&local_name!("defer")) {
-                    script_state.defer = true;
+                    script_attrs.defer = true;
                 }
                 if attr.name.local.eq(&local_name!("async")) {
-                    script_state.async_attr = true;
+                    script_attrs.async_attr = true;
                 }
                 if attr.name.local.eq(&local_name!("type"))
                     && attr.value.to_ascii_lowercase() == "module"
                 {
-                    script_state.is_module = true;
+                    script_attrs.is_module = true;
                 }
             }
             let mut dom = self.dom.borrow_mut();
             let domm = dom.mirror_mut();
             domm.set_attr(id, local, attr.value.to_string());
         }
-        if let Some(script_state) = state {
-            self.script_nodes.borrow_mut().insert(id, script_state);
+
+        // Create the appropriate script state if this is a script
+        if is_script {
+            let state = if let Some(src) = src_value {
+                ScriptState::External {
+                    src,
+                    attrs: script_attrs,
+                }
+            } else {
+                ScriptState::Inline {
+                    buffer: String::new(),
+                    attrs: script_attrs,
+                }
+            };
+            self.script_nodes.borrow_mut().insert(id, state);
         }
         id
     }
@@ -230,10 +296,10 @@ impl TreeSink for ValorSink {
             }
             NodeOrText::AppendText(text) => {
                 // If appending under a <script> without src, collect the text
-                if let Some(entry) = self.script_nodes.borrow_mut().get_mut(parent)
-                    && !entry.has_src
+                if let Some(ScriptState::Inline { buffer, .. }) =
+                    self.script_nodes.borrow_mut().get_mut(parent)
                 {
-                    entry.buffer.push_str(text.as_ref());
+                    buffer.push_str(text.as_ref());
                 }
                 let node = self
                     .dom
@@ -290,38 +356,37 @@ impl TreeSink for ValorSink {
 
     fn pop(&self, node: &Self::Handle) {
         if let Some(state) = self.script_nodes.borrow_mut().remove(node) {
-            let (source, url_string) = if state.has_src {
-                state.src_value.as_deref().map_or_else(
-                    || (String::new(), String::new()),
-                    |src| {
-                        let resolved = self
-                            .base_url
-                            .join(src)
-                            .ok()
-                            .or_else(|| Url::parse(src).ok());
-                        let url_s = resolved
-                            .as_ref()
-                            .map_or_else(|| src.to_owned(), ToString::to_string);
-                        (self.fetch_script_source(src).unwrap_or_default(), url_s)
-                    },
-                )
-            } else {
-                let kind_tag = if state.is_module {
-                    "inline:module"
-                } else {
-                    "inline:script"
-                };
-                (state.buffer, String::from(kind_tag))
+            let (source, url_string, attrs) = match state {
+                ScriptState::External { src, attrs } => {
+                    let resolved = self
+                        .base_url
+                        .join(&src)
+                        .ok()
+                        .or_else(|| Url::parse(&src).ok());
+                    let url_s = resolved
+                        .as_ref()
+                        .map_or_else(|| src.clone(), ToString::to_string);
+                    let source = self.fetch_script_source(&src).unwrap_or_default();
+                    (source, url_s, attrs)
+                }
+                ScriptState::Inline { buffer, attrs } => {
+                    let kind_tag = if attrs.is_module {
+                        "inline:module"
+                    } else {
+                        "inline:script"
+                    };
+                    (buffer, String::from(kind_tag), attrs)
+                }
             };
             let job = ScriptJob {
-                kind: if state.is_module {
+                kind: if attrs.is_module {
                     ScriptKind::Module
                 } else {
                     ScriptKind::Classic
                 },
                 source,
                 url: url_string,
-                deferred: state.defer || state.is_module,
+                deferred: attrs.defer || attrs.is_module,
             };
             if job.deferred {
                 self.deferred_scripts.borrow_mut().push(job);
@@ -374,23 +439,8 @@ impl TreeSink for ValorSink {
                     attr.value.to_string(),
                 );
             }
-            if let Some(state) = self.script_nodes.borrow_mut().get_mut(target) {
-                if attr.name.local.eq(&local_name!("src")) {
-                    state.has_src = true;
-                    state.src_value = Some(attr.value.to_string());
-                }
-                if attr.name.local.eq(&local_name!("defer")) {
-                    state.defer = true;
-                }
-                if attr.name.local.eq(&local_name!("async")) {
-                    state.async_attr = true;
-                }
-                if attr.name.local.eq(&local_name!("type"))
-                    && attr.value.to_ascii_lowercase() == "module"
-                {
-                    state.is_module = true;
-                }
-            }
+            // Update script state if adding attributes to a script element
+            self.update_script_state_for_attr(target, &attr);
         }
     }
 

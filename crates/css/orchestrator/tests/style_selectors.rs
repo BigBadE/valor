@@ -1,20 +1,4 @@
 #![cfg(test)]
-#![allow(
-    clippy::missing_errors_doc,
-    reason = "Test helpers return Result for clear propagation"
-)]
-#![allow(
-    clippy::type_complexity,
-    reason = "Test sheet helper signature is verbose by nature"
-)]
-#![allow(
-    clippy::too_many_lines,
-    reason = "Integration-style test setup is verbose"
-)]
-#![allow(
-    clippy::missing_panics_doc,
-    reason = "Assertions in tests are expected"
-)]
 
 use core::error::Error;
 use css_orchestrator::NodeKey;
@@ -22,9 +6,15 @@ use css_orchestrator::{CoreEngine, style_model, types};
 use js::DOMUpdate;
 use std::collections::HashMap;
 
-fn sheet_for_selectors(
-    css_rules: Vec<(&str, Vec<(&str, &str, bool)>, types::Origin, u32)>,
-) -> types::Stylesheet {
+/// Type alias for CSS rule specification: (selector, declarations, origin, `source_order`)
+type CssRuleSpec<'rule> = (
+    &'rule str,
+    Vec<(&'rule str, &'rule str, bool)>,
+    types::Origin,
+    u32,
+);
+
+fn sheet_for_selectors(css_rules: Vec<CssRuleSpec<'_>>) -> types::Stylesheet {
     let mut rules = Vec::new();
     for (prelude, decls, origin, order) in css_rules {
         let mut out = Vec::new();
@@ -53,11 +43,61 @@ fn get_computed_for(engine: &CoreEngine, node: NodeKey) -> Option<style_model::C
     snapshot.get(&node).cloned()
 }
 
+/// Apply a DOM update to the core engine.
+///
+/// # Errors
+/// Returns an error if the DOM update cannot be applied.
 fn apply(core: &mut CoreEngine, update: DOMUpdate) -> Result<(), Box<dyn Error>> {
     core.apply_dom_update(update)?;
     Ok(())
 }
 
+/// Insert an element into the DOM.
+///
+/// # Errors
+/// Returns an error if the insert operation fails.
+fn insert_element(
+    core: &mut CoreEngine,
+    parent: NodeKey,
+    node: NodeKey,
+    tag: &str,
+    pos: usize,
+) -> Result<(), Box<dyn Error>> {
+    apply(
+        core,
+        DOMUpdate::InsertElement {
+            parent,
+            node,
+            tag: tag.into(),
+            pos,
+        },
+    )
+}
+
+/// Set an attribute on a DOM node.
+///
+/// # Errors
+/// Returns an error if the set attribute operation fails.
+fn set_attr(
+    core: &mut CoreEngine,
+    node: NodeKey,
+    name: &str,
+    value: &str,
+) -> Result<(), Box<dyn Error>> {
+    apply(
+        core,
+        DOMUpdate::SetAttr {
+            node,
+            name: name.into(),
+            value: value.into(),
+        },
+    )
+}
+
+/// Set up a test DOM structure with a section containing three child elements.
+///
+/// # Errors
+/// Returns an error if any DOM update fails to apply.
 fn setup_row_section(
     core: &mut CoreEngine,
     section: NodeKey,
@@ -65,102 +105,25 @@ fn setup_row_section(
     special: NodeKey,
     node_c: NodeKey,
 ) -> Result<(), Box<dyn Error>> {
-    apply(
-        core,
-        DOMUpdate::InsertElement {
-            parent: NodeKey::ROOT,
-            node: section,
-            tag: "section".into(),
-            pos: 0,
-        },
-    )?;
-    apply(
-        core,
-        DOMUpdate::SetAttr {
-            node: section,
-            name: "class".into(),
-            value: "row".into(),
-        },
-    )?;
-    apply(
-        core,
-        DOMUpdate::InsertElement {
-            parent: section,
-            node: node_a,
-            tag: "div".into(),
-            pos: 0,
-        },
-    )?;
-    apply(
-        core,
-        DOMUpdate::SetAttr {
-            node: node_a,
-            name: "class".into(),
-            value: "box".into(),
-        },
-    )?;
-    apply(
-        core,
-        DOMUpdate::SetAttr {
-            node: node_a,
-            name: "id".into(),
-            value: "a".into(),
-        },
-    )?;
-    apply(
-        core,
-        DOMUpdate::InsertElement {
-            parent: section,
-            node: special,
-            tag: "div".into(),
-            pos: 1,
-        },
-    )?;
-    apply(
-        core,
-        DOMUpdate::SetAttr {
-            node: special,
-            name: "class".into(),
-            value: "box".into(),
-        },
-    )?;
-    apply(
-        core,
-        DOMUpdate::SetAttr {
-            node: special,
-            name: "id".into(),
-            value: "special".into(),
-        },
-    )?;
-    apply(
-        core,
-        DOMUpdate::InsertElement {
-            parent: section,
-            node: node_c,
-            tag: "div".into(),
-            pos: 2,
-        },
-    )?;
-    apply(
-        core,
-        DOMUpdate::SetAttr {
-            node: node_c,
-            name: "class".into(),
-            value: "box".into(),
-        },
-    )?;
-    apply(
-        core,
-        DOMUpdate::SetAttr {
-            node: node_c,
-            name: "id".into(),
-            value: "c".into(),
-        },
-    )?;
+    insert_element(core, NodeKey::ROOT, section, "section", 0)?;
+    set_attr(core, section, "class", "row")?;
+    insert_element(core, section, node_a, "div", 0)?;
+    set_attr(core, node_a, "class", "box")?;
+    set_attr(core, node_a, "id", "a")?;
+    insert_element(core, section, special, "div", 1)?;
+    set_attr(core, special, "class", "box")?;
+    set_attr(core, special, "id", "special")?;
+    insert_element(core, section, node_c, "div", 2)?;
+    set_attr(core, node_c, "class", "box")?;
+    set_attr(core, node_c, "id", "c")?;
     apply(core, DOMUpdate::EndOfDocument)?;
     Ok(())
 }
 
+/// Test that ID selectors cascade over descendant class selectors.
+///
+/// # Errors
+/// Returns an error if DOM setup or style computation fails.
 #[test]
 fn cascade_id_over_descendant_class() -> Result<(), Box<dyn Error>> {
     let sheet = sheet_for_selectors(vec![
@@ -222,6 +185,10 @@ fn cascade_id_over_descendant_class() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Set up a test DOM structure with a section containing direct and nested child elements.
+///
+/// # Errors
+/// Returns an error if any DOM update fails to apply.
 fn setup_wrapper_section(
     core: &mut CoreEngine,
     section: NodeKey,
@@ -293,6 +260,10 @@ fn setup_wrapper_section(
     Ok(())
 }
 
+/// Test that child combinators (>) and descendant combinators work correctly.
+///
+/// # Errors
+/// Returns an error if DOM setup or style computation fails.
 #[test]
 fn combinator_child_vs_descendant() -> Result<(), Box<dyn Error>> {
     let sheet = sheet_for_selectors(vec![

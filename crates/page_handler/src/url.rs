@@ -36,7 +36,7 @@ pub async fn stream_url(
         "http" | "https" => {
             let response = reqwest_get(url.clone())
                 .await
-                .map_err(|err| anyhow!("Failed to fetch URL {}: {}", url, err))?;
+                .map_err(|err| anyhow!("Failed to fetch URL {url}: {err}"))?;
 
             if !response.status().is_success() {
                 return Err(anyhow!(
@@ -63,13 +63,13 @@ pub async fn stream_url(
         "valor" => {
             // We only support valor://chrome/* for now
             if url.host_str() != Some("chrome") {
-                return Err(anyhow!("Unsupported valor host: {}", url));
+                return Err(anyhow!("Unsupported valor host: {url}"));
             }
             let path = url.path();
             let Some(bytes) = get_embedded_chrome_asset(path)
                 .or_else(|| get_embedded_chrome_asset(&format!("valor://chrome{path}")))
             else {
-                return Err(anyhow!("Embedded asset not found for {}", url));
+                return Err(anyhow!("Embedded asset not found for {url}"));
             };
             let data = Bytes::from_static(bytes);
             let stream = once(Ok::<Bytes, Error>(data));

@@ -292,6 +292,12 @@ impl<T: DOMSubscriber> DOMMirror<T> {
     pub const fn mirror(&self) -> &T {
         &self.mirror
     }
+    /// Consume the `DOMMirror` and return the inner subscriber.
+    #[inline]
+    #[must_use]
+    pub fn into_inner(self) -> T {
+        self.mirror
+    }
     /// Send a batch of DOM changes back to the DOM runtime.
     ///
     /// # Errors

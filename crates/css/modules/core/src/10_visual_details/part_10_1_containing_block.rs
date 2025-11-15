@@ -5,10 +5,6 @@ use crate::ContainerMetrics;
 use crate::{HorizontalEdges, TopEdges};
 
 /// Spec: §10.1 — Build `ContainerMetrics` for a child from its used width and edge aggregates.
-#[allow(
-    dead_code,
-    reason = "Spec-mapped public API; used by tests/future callers"
-)]
 pub fn build_child_metrics(
     used_border_box_width: i32,
     horizontal: HorizontalEdges,
@@ -38,10 +34,6 @@ pub fn build_child_metrics(
 }
 
 /// Spec: §10.1 — Compute the parent's content origin from its margins, borders, and padding.
-#[allow(
-    dead_code,
-    reason = "Spec-mapped public API; used by tests/future callers"
-)]
 pub const fn parent_content_origin(metrics: &ContainerMetrics) -> (i32, i32) {
     let x = metrics
         .margin_left

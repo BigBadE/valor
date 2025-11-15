@@ -240,12 +240,8 @@ mod tests {
     /// Test that `compute_bounds` correctly calculates bounds for a single rect.
     ///
     /// # Panics
-    /// Panics if the test assertions fail.
+    /// Panics if `compute_bounds` returns `None` or the bounds are incorrect.
     #[test]
-    #[allow(
-        clippy::unwrap_used,
-        reason = "Test code may use unwrap for simplicity"
-    )]
     fn compute_bounds_single_rect() {
         let items = vec![DisplayItem::Rect {
             x: 10.0,
@@ -254,7 +250,12 @@ mod tests {
             height: 50.0,
             color: [1.0, 0.0, 0.0, 1.0],
         }];
-        let bounds = OpacityCompositor::compute_bounds(&items).unwrap();
+        let bounds = OpacityCompositor::compute_bounds(&items);
+        assert!(
+            bounds.is_some(),
+            "compute_bounds should return Some for non-empty items"
+        );
+        let bounds = bounds.unwrap_or_else(|| Rect::new(0.0, 0.0, 0.0, 0.0));
         assert!((bounds.x - 10.0).abs() < f32::EPSILON);
         assert!((bounds.y - 20.0).abs() < f32::EPSILON);
         assert!((bounds.width - 100.0).abs() < f32::EPSILON);

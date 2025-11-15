@@ -1,18 +1,19 @@
 //! Layouter: block formatting, margin collapsing, and minimal float placement.
 //!
 //! Primary references: CSS 2.2 §8.3.1 (Collapsing margins), §9.4.1 (Block formatting context),
-//! §9.5 (Floats), and §10.3.3 (Width of non-replaced elements).
-//! This module coordinates block children layout, float avoidance bands, and clearance floors.
-/// Spec reference: <https://www.w3.org/TR/CSS22>
-/// Spec-driven chapter/section modules live under dedicated directories; deprecated `chapters` module removed.
+//! §9.5 (Floats), and §10.3.3 (Width of non-replaced elements). This module coordinates block
+//! children layout, float avoidance bands, and clearance floors.
+//!
+//! Spec reference: <https://www.w3.org/TR/CSS22>. Spec-driven chapter/section modules live
+//! under dedicated directories; deprecated `chapters` module removed.
 pub(crate) mod orchestrator;
 // Chapter modules mapped to CSS 2.2 spec structure. These map numeric folders to valid identifiers.
 #[path = "10_visual_details/mod.rs"]
-mod chapter10;
+pub(crate) mod chapter10;
 #[path = "8_box_model/mod.rs"]
-mod chapter8;
+pub(crate) mod chapter8;
 #[path = "9_visual_formatting/mod.rs"]
-mod chapter9;
+pub(crate) mod chapter9;
 
 // Core types are defined in this file; external uses can import from css_core::types via re-exports.
 use crate::orchestrator::place_child::PlacedBlock;
@@ -330,9 +331,10 @@ pub type SnapshotEntry = (NodeKey, LayoutNodeKind, Vec<NodeKey>);
 /// Initial containing block width used for layout when no viewport is available.
 pub(crate) const INITIAL_CONTAINING_BLOCK_WIDTH: i32 = 800;
 /// Fixed vertical scrollbar gutter used to approximate Chromium on Windows.
-/// This is subtracted from the initial containing block width when computing the
-/// root container metrics so the available inline size matches Chromium.
-/// Updated to 16px to match Chrome's consistent scrollbar width with scrollbar-gutter: stable.
+///
+/// This is subtracted from the initial containing block width when computing the root container
+/// metrics so the available inline size matches Chromium. Updated to 16px to match Chrome's
+/// consistent scrollbar width with scrollbar-gutter: stable.
 pub(crate) const SCROLLBAR_GUTTER_PX: i32 = 16;
 
 /// Last placed child info used to compute the parent's content bottom per §10.6.3.

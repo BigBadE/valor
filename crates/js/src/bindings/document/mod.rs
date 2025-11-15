@@ -65,7 +65,9 @@ pub fn parse_key(value: &JSValue, name: &str) -> Result<NodeKey, JSError> {
 /// Helper to parse an optional usize from a number `JSValue`.
 pub fn parse_usize(value: &JSValue) -> Option<usize> {
     match value {
-        JSValue::Number(number) if *number >= 0.0f64 => Some(*number as usize),
+        JSValue::Number(number) if *number >= 0.0f64 && number.is_finite() => {
+            Some(number.trunc() as usize)
+        }
         _ => None,
     }
 }

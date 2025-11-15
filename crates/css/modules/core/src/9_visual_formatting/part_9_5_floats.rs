@@ -83,9 +83,11 @@ pub fn update_clearance_floors_for_float(
     (left, right)
 }
 
-/// Cap left/right float-avoidance bands so neither exceeds the parent content width and their
-/// sum does not exceed the parent content width. This prevents over-constraining available
-/// inline space when multiple floats overlap the query `y`.
+/// Cap left/right float-avoidance bands to prevent over-constraining.
+///
+/// Ensures neither band exceeds the parent content width and their sum does not exceed it.
+/// This prevents over-constraining available inline space when multiple floats overlap the
+/// query `y`.
 fn cap_bands(parent_content_width: i32, left_band: i32, right_band: i32) -> (i32, i32) {
     let mut left_capped = left_band.clamp(0i32, parent_content_width);
     let mut right_capped = right_band.clamp(0i32, parent_content_width);

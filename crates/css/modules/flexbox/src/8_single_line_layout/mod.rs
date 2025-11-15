@@ -183,9 +183,10 @@ fn build_main_placements(
 
 // removed: outer_sizes_and_sum (was unused after auto margin integration)
 
-/// Ensure the first item's offset aligns to main-start for Start and `SpaceBetween`
-/// when the main axis is not reversed. This guards against any accidental
-/// pre-gap/start offset leaks. No effect for other justify modes or reverse axes.
+/// Ensure the first item's offset aligns to main-start.
+///
+/// For Start and `SpaceBetween` when the main axis is not reversed, this guards against
+/// any accidental pre-gap/start offset leaks. No effect for other justify modes or reverse axes.
 fn clamp_first_offset_if_needed(
     justify_content: JustifyContent,
     main_reverse: bool,
@@ -734,12 +735,16 @@ pub fn layout_single_line(
     )
 }
 
-/// Resolve auto margins (§9.4) by distributing remaining space equally across all auto margin slots,
-/// then compute outer sizes and sum. Returns `(outer_sizes, effective_left_margins, auto_slots, sum_outer)`.
+/// Resolve auto margins (§9.4).
+///
+/// Distributes remaining space equally across all auto margin slots, then computes outer sizes
+/// and sum. Returns `(outer_sizes, effective_left_margins, auto_slots, sum_outer)`.
 type OuterCalc = (Vec<f32>, Vec<f32>, usize, f32);
 
-/// Distribute remaining main-axis free space across any auto margins, then produce effective
-/// left margins and outer sizes for each item. Returns `(outer_sizes, effective_left_margins, auto_slots, sum_outer)`.
+/// Distribute remaining main-axis free space across any auto margins.
+///
+/// Produces effective left margins and outer sizes for each item. Returns
+/// `(outer_sizes, effective_left_margins, auto_slots, sum_outer)`.
 fn resolve_auto_margins_and_outer(
     items: &[FlexChild],
     inner_sizes: &[f32],

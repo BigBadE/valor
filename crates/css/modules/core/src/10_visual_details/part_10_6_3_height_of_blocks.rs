@@ -413,9 +413,11 @@ fn apply_percent_min_max_from_parent(
     out
 }
 
-/// Try to resolve percentage height/min/max when the parent has a definite specified height (px).
-/// Build child container metrics and compute raw content height by laying out descendants.
-/// Returns `(content_height, last_positive_bottom_margin)`.
+/// Try to resolve percentage height/min/max for definite parent height.
+///
+/// When the parent has a definite specified height (px), builds child container metrics and
+/// computes raw content height by laying out descendants. Returns
+/// `(content_height, last_positive_bottom_margin)`.
 pub fn compute_child_content_height(layouter: &mut Layouter, cctx: ChildContentCtx) -> (i32, i32) {
     let container_style = layouter
         .computed_styles

@@ -1,10 +1,5 @@
 //! Shared test support utilities (moved from tests/common/mod.rs) so both tests and bins can reuse them.
 
-#![allow(
-    dead_code,
-    reason = "Test support module with utilities used selectively"
-)]
-
 use crate::factory::{ChromeInit, create_chrome_and_content};
 use anyhow::{Result, anyhow};
 use core::time::Duration;
@@ -14,7 +9,6 @@ use page_handler::config::ValorConfig;
 use page_handler::state::HtmlPage;
 use serde_json::{Number, Value, from_str, to_string};
 use std::collections::HashSet;
-use std::env::var as env_var;
 use std::fs::{
     self as std_fs, create_dir_all, read, read_dir, read_to_string, remove_dir_all, write,
 };
@@ -34,10 +28,8 @@ pub fn fixtures_dir() -> PathBuf {
 // ===== Shared artifacts and caching utilities =====
 
 /// Return the target directory for build/test outputs.
+/// Always uses the project root's target directory, ignoring `CARGO_TARGET_DIR`.
 pub fn target_dir() -> PathBuf {
-    if let Ok(dir) = env_var("CARGO_TARGET_DIR") {
-        return PathBuf::from(dir);
-    }
     // Derive workspace root target from this crate's manifest dir: crates/valor -> ../../target
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir.join("..").join("..").join("target")

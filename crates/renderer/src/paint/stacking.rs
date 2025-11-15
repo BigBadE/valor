@@ -180,8 +180,11 @@ impl Ord for StackingContext {
 mod tests {
     use super::*;
 
+    /// Test that stacking levels are ordered correctly according to CSS spec.
+    ///
+    /// # Panics
+    /// Panics if stacking levels are not ordered as expected.
     #[test]
-    #[allow(clippy::missing_panics_doc, reason = "Test function")]
     fn stacking_order() {
         let root = StackingLevel::RootBackgroundAndBorders;
         let neg_10 = StackingLevel::NegativeZIndex(-10);
@@ -203,23 +206,25 @@ mod tests {
         assert!(pos_1 < pos_10);
     }
 
+    /// Test that tree order is used to break ties between equal stacking levels.
+    ///
+    /// # Panics
+    /// Panics if tree order does not properly break ties.
     #[test]
-    #[allow(clippy::missing_panics_doc, reason = "Test function")]
     fn tree_order_breaks_ties() {
         let ctx1 = StackingContext::new(StackingLevel::BlockDescendants, 0);
         let ctx2 = StackingContext::new(StackingLevel::BlockDescendants, 1);
         assert!(ctx1 < ctx2);
     }
 
+    /// Test that opacity establishes a stacking context.
+    ///
+    /// # Panics
+    /// Panics if opacity does not establish stacking context or value is incorrect.
     #[test]
-    #[allow(clippy::missing_panics_doc, reason = "Test function")]
-    #[allow(
-        clippy::float_cmp,
-        reason = "Test assertion comparing exact float value"
-    )]
     fn opacity_establishes_context() {
         let ctx = StackingContext::new(StackingLevel::BlockDescendants, 0).with_opacity(0.5);
         assert!(ctx.establishes_stacking_context);
-        assert_eq!(ctx.opacity, 0.5);
+        assert!((ctx.opacity - 0.5).abs() < f32::EPSILON);
     }
 }
