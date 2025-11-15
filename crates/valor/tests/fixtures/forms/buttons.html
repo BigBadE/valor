@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Button Test</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: white;
+            font-family: sans-serif;
+        }
+        .container {
+            display: flex;
+            gap: 10px;
+            flex-direction: column;
+            max-width: 400px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            border: 2px solid #333;
+            background: #e0e0e0;
+            cursor: pointer;
+        }
+        .primary {
+            background: #007bff;
+            color: white;
+            border-color: #0056b3;
+        }
+        .success {
+            background: #28a745;
+            color: white;
+            border-color: #1e7e34;
+        }
+        .danger {
+            background: #dc3545;
+            color: white;
+            border-color: #bd2130;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <button>Default Button</button>
+        <button class="primary">Primary Button</button>
+        <button class="success">Success Button</button>
+        <button class="danger">Danger Button</button>
+        <button disabled>Disabled Button</button>
+    </div>
+</body>
+</html>

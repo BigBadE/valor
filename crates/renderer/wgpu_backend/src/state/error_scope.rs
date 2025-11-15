@@ -1,7 +1,6 @@
 //! WGPU error scope management for validation tracking.
 
 use anyhow::{Result as AnyResult, anyhow};
-use log::error;
 use pollster::block_on;
 use std::sync::Arc;
 use wgpu::{Device, ErrorFilter};
@@ -47,7 +46,6 @@ impl ErrorScopeGuard {
         let fut = self.device.pop_error_scope();
         let res = block_on(fut);
         if let Some(err) = res {
-            error!(target: "wgpu_renderer", "WGPU uncaptured error: {err:?}");
             return Err(anyhow!(
                 "wgpu validation error in scope '{}': {err:?}",
                 self.label
@@ -61,15 +59,8 @@ impl Drop for ErrorScopeGuard {
     fn drop(&mut self) {
         if !self.checked {
             // CRITICAL: If check() wasn't called, this is a bug that will cause error scope imbalance
-            error!(
-                target: "wgpu_renderer",
-                "ErrorScopeGuard '{}' dropped without calling check() - this will cause error scope imbalance!",
-                self.label
-            );
-            // Pop the scope anyway to prevent imbalance, but log the error
-            if let Err(error) = self.do_check() {
-                error!(target: "wgpu_renderer", "Unchecked error in scope '{}': {error:?}", self.label);
-            }
+            // Pop the scope anyway to prevent imbalance
+            drop(self.do_check());
         }
     }
 }

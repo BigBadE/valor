@@ -1,6 +1,7 @@
 [package]
 name = "valor"
 edition.workspace = true
+default-run = "valor"
 
 [lints]
 workspace = true

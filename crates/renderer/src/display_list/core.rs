@@ -14,10 +14,13 @@ pub type TextBoundsPx = (i32, i32, i32, i32);
 // Compact aliases to keep tuple-heavy types readable and satisfy clippy's type_complexity.
 pub type Scissor = (u32, u32, u32, u32);
 
+/// Gradient color stops as (offset, color) pairs, where offset is in [0,1].
+pub type GradientStops = Vec<(f32, [f32; 4])>;
+
 /// Stacking context boundary markers for proper opacity grouping.
 /// Spec: CSS 2.2 §9.9.1 - Stacking contexts
 /// Spec: CSS Compositing Level 1 §3.1 - Stacking context creation
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum StackingContextBoundary {
     /// Opacity less than 1.0 creates a stacking context
     /// Spec: <https://www.w3.org/TR/CSS22/zindex.html#stacking-context>
@@ -39,7 +42,7 @@ pub enum StackingContextBoundary {
 /// A single display list item.
 /// This MVP focuses on rectangles and text, with lightweight placeholders for
 /// clips and opacity that can be wired up later without breaking the API.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DisplayItem {
     /// Solid color rectangle in device-independent pixels. RGBA with premultiplied alpha not required; alpha in [0,1].
     Rect {
@@ -73,6 +76,68 @@ pub enum DisplayItem {
     BeginStackingContext { boundary: StackingContextBoundary },
     /// End the current stacking context (implicit - marks end of grouped content)
     EndStackingContext,
+    /// CSS border with optional border-radius.
+    /// Spec: CSS Backgrounds and Borders Module Level 3
+    /// <https://www.w3.org/TR/css-backgrounds-3/#borders>
+    Border {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        border_width: f32,
+        border_color: [f32; 4],
+        /// Single radius for MVP, can expand to per-corner radii later
+        border_radius: f32,
+    },
+    /// CSS box-shadow.
+    /// Spec: CSS Backgrounds and Borders Module Level 3
+    /// <https://www.w3.org/TR/css-backgrounds-3/#box-shadow>
+    BoxShadow {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        offset_x: f32,
+        offset_y: f32,
+        blur_radius: f32,
+        spread_radius: f32,
+        color: [f32; 4],
+    },
+    /// Image rendering (background or content images).
+    /// Spec: CSS Images Module Level 3
+    /// <https://www.w3.org/TR/css-images-3/>
+    Image {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        /// Reference to loaded image in resource pool
+        image_id: u32,
+    },
+    /// Linear gradient.
+    /// Spec: CSS Images Module Level 3 - Linear Gradients
+    /// <https://www.w3.org/TR/css-images-3/#linear-gradients>
+    LinearGradient {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        /// Gradient angle in radians (0 = horizontal, π/2 = vertical)
+        angle: f32,
+        /// Color stops as (offset, color) pairs, offset in [0,1]
+        stops: GradientStops,
+    },
+    /// Radial gradient.
+    /// Spec: CSS Images Module Level 3 - Radial Gradients
+    /// <https://www.w3.org/TR/css-images-3/#radial-gradients>
+    RadialGradient {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        /// Color stops as (offset, color) pairs, offset in [0,1]
+        stops: GradientStops,
+    },
 }
 
 impl Default for DisplayList {
@@ -83,7 +148,7 @@ impl Default for DisplayList {
 }
 
 /// A retained display list with a monotonically increasing generation counter.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DisplayList {
     /// Linear sequence of display items to be drawn in order.
     pub items: Vec<DisplayItem>,
@@ -178,8 +243,15 @@ impl DisplayList {
                 DisplayItem::BeginClip { .. }
                 | DisplayItem::EndClip
                 | DisplayItem::BeginStackingContext { .. }
-                | DisplayItem::EndStackingContext => {
+                | DisplayItem::EndStackingContext
+                | DisplayItem::Border { .. }
+                | DisplayItem::BoxShadow { .. }
+                | DisplayItem::Image { .. }
+                | DisplayItem::LinearGradient { .. }
+                | DisplayItem::RadialGradient { .. } => {
                     // Placeholders for future stateful rendering path.
+                    // These items require specialized rendering pipelines not yet
+                    // supported by the immediate-mode path.
                 }
             }
         }
@@ -256,6 +328,20 @@ fn intersect_scissors(scissor_a: Scissor, scissor_b: Scissor) -> Scissor {
     (left, top, width, height)
 }
 
+/// Helper to flush current quads into a batch if non-empty.
+fn flush_batch(
+    batches: &mut Vec<Batch>,
+    current_quads: &mut Vec<Quad>,
+    current_scissor: Option<Scissor>,
+) {
+    if !current_quads.is_empty() {
+        batches.push(Batch {
+            scissor: current_scissor,
+            quads: take(current_quads),
+        });
+    }
+}
+
 /// Compute batches from a `DisplayList` by segmenting on clip stack boundaries.
 /// - Returns batches each carrying a list of quads and an optional scissor rect in framebuffer pixels.
 /// - Applies Opacity by multiplying per-quad alpha (no offscreen compositing yet).
@@ -295,13 +381,7 @@ pub fn batch_display_list(
                 width,
                 height,
             } => {
-                // Flush current batch before pushing new scissor
-                if !current_quads.is_empty() {
-                    batches.push(Batch {
-                        scissor: current_scissor,
-                        quads: take(&mut current_quads),
-                    });
-                }
+                flush_batch(&mut batches, &mut current_quads, current_scissor);
                 let new_scissor = rect_to_scissor(
                     (*x, *y, *width, *height),
                     (framebuffer_width, framebuffer_height),
@@ -315,28 +395,22 @@ pub fn batch_display_list(
                 }
             }
             DisplayItem::EndClip => {
-                // Flush current batch before restoring scissor
-                if !current_quads.is_empty() {
-                    batches.push(Batch {
-                        scissor: current_scissor,
-                        quads: take(&mut current_quads),
-                    });
-                }
+                flush_batch(&mut batches, &mut current_quads, current_scissor);
                 let _: Option<Scissor> = scissor_stack.pop();
                 current_scissor = scissor_stack.iter().copied().reduce(intersect_scissors);
             }
             DisplayItem::BeginStackingContext { .. }
             | DisplayItem::EndStackingContext
-            | DisplayItem::Text { .. } => {
-                /* handled at a higher level by stacking context processor or text subsystem */
+            | DisplayItem::Text { .. }
+            | DisplayItem::Border { .. }
+            | DisplayItem::BoxShadow { .. }
+            | DisplayItem::Image { .. }
+            | DisplayItem::LinearGradient { .. }
+            | DisplayItem::RadialGradient { .. } => {
+                /* handled at a higher level by stacking context processor, text subsystem, or specialized pipelines */
             }
         }
     }
-    if !current_quads.is_empty() {
-        batches.push(Batch {
-            scissor: current_scissor,
-            quads: current_quads,
-        });
-    }
+    flush_batch(&mut batches, &mut current_quads, current_scissor);
     batches
 }

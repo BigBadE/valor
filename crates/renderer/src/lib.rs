@@ -17,6 +17,34 @@ pub use display_list::{
     TextBoundsPx, batch_display_list,
 };
 pub use paint::{DisplayListBuilder, StackingContext, StackingLevel, traverse_paint_tree};
-pub use render_graph::{Dependency, OpacityComposite, PassId, RenderGraph, RenderPass, ResourceId};
+pub use render_graph::{
+    AABB,
+    // Aliasing types
+    AliasGroup,
+    AliasingStats,
+    // Batching types
+    BatchType,
+    BatchingStats,
+    DeadPassEliminationPass,
+    Dependency,
+    DrawBatch,
+    Lifetime,
+    OpacityComposite,
+    // Optimization types
+    OptimizationPass,
+    OptimizationStats,
+    PassId,
+    PassMergingPass,
+    PassReorderingPass,
+    RenderGraph,
+    RenderPass,
+    ResourceId,
+    batch_draw_calls,
+    compute_alias_groups,
+    compute_lifetimes,
+    // Culling functions
+    frustum_cull,
+    occlusion_cull,
+};
 pub use renderer::{DrawRect, DrawText, RenderNode, RenderNodeKind, Renderer, SnapshotEntry};
 pub use resource_pool::{BindGroupHandle, BufferHandle, ResourcePool, TextureHandle};

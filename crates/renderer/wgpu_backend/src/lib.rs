@@ -6,6 +6,8 @@
 mod error;
 /// Logical encoder for command recording.
 mod logical_encoder;
+/// New pipeline builders for extended display items (Border, BoxShadow, Image, Gradients).
+mod new_pipelines;
 /// Offscreen rendering utilities.
 mod offscreen;
 /// Pipeline creation and vertex buffer management.
@@ -21,6 +23,11 @@ mod texture_pool;
 
 pub use error::{submit_with_validation, with_validation_scope};
 pub use logical_encoder::LogicalEncoder;
+pub use new_pipelines::{
+    BorderVertex, BoxShadowVertex, GradientStop, GradientUniforms, GradientVertex, ImageVertex,
+    build_border_pipeline, build_box_shadow_pipeline, build_gradient_pipeline,
+    build_image_pipeline,
+};
 pub use offscreen::render_display_list_to_rgba;
 pub use pipelines::{Vertex, build_pipeline_and_buffers, build_texture_pipeline};
 pub use state::{Layer, RenderState};

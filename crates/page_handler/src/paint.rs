@@ -138,7 +138,18 @@ fn paint_node_content(
 
         // Paint each child in order
         for stacking_child in sorted_children {
-            paint_node_recursive(stacking_child.key, ctx, items);
+            // Check if this child is an inline text node
+            if let Some((LayoutNodeKind::InlineText { text }, _)) =
+                ctx.node_map.get(&stacking_child.key)
+            {
+                // Paint text if it has a layout rect
+                if let Some(text_rect) = ctx.rects.get(&stacking_child.key) {
+                    paint_text(text, text_rect, style, items);
+                }
+            } else {
+                // Recursively paint non-text children
+                paint_node_recursive(stacking_child.key, ctx, items);
+            }
         }
     }
 
@@ -229,4 +240,41 @@ fn paint_borders(rect: &LayoutRect, style: &ComputedStyle, items: &mut Vec<Displ
             color: border_rgba,
         });
     }
+}
+
+/// Paint text content.
+fn paint_text(text: &str, rect: &LayoutRect, style: &ComputedStyle, items: &mut Vec<DisplayItem>) {
+    // Skip empty or whitespace-only text
+    if text.trim().is_empty() {
+        return;
+    }
+
+    // Extract text color from computed style
+    let text_color = [
+        f32::from(style.color.red) / 255.0,
+        f32::from(style.color.green) / 255.0,
+        f32::from(style.color.blue) / 255.0,
+    ];
+
+    // Get font size from computed style
+    let font_size = style.font_size;
+
+    // Calculate baseline offset: position text at the baseline, not the top
+    // For now, use a simple approximation: baseline is at ~80% of line height
+    let baseline_offset = font_size * 0.8;
+
+    // Create text display item
+    items.push(DisplayItem::Text {
+        x: rect.x,
+        y: rect.y + baseline_offset,
+        text: text.to_string(),
+        color: text_color,
+        font_size,
+        bounds: Some((
+            rect.x as i32,
+            rect.y as i32,
+            (rect.x + rect.width) as i32,
+            (rect.y + rect.height) as i32,
+        )),
+    });
 }

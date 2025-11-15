@@ -270,7 +270,7 @@ fn process_single_fixture(
     );
 
     let our_json = our_layout_json(layouter, &rects_external, &computed_for_serialization);
-    let harness_src = include_str!("../tests/layouter_chromium_compare.rs");
+    let harness_src = include_str!("../tests/chromium_compare.rs");
     let ch_json = get_chromium_layout_json(tab, input_path, harness_src)?;
     common::write_named_json_for_fixture(input_path, harness_src, "chromium", &ch_json)?;
     common::write_named_json_for_fixture(input_path, harness_src, "valor", &our_json)?;

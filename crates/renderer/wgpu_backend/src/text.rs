@@ -6,6 +6,13 @@ use renderer::renderer::DrawText;
 /// A batch of text items with an optional scissor rectangle.
 pub type TextBatch = (Option<Scissor>, Vec<DrawText>);
 
+/// Flush current text batch if non-empty.
+fn flush_batch(out: &mut Vec<TextBatch>, scissor: Option<Scissor>, texts: &mut Vec<DrawText>) {
+    if !texts.is_empty() {
+        out.push((scissor, take(texts)));
+    }
+}
+
 /// Batch text items from a display list with scissor rectangles.
 pub fn batch_texts_with_scissor(
     display_list: &DisplayList,
@@ -26,9 +33,7 @@ pub fn batch_texts_with_scissor(
                 width,
                 height,
             } => {
-                if !current_texts.is_empty() {
-                    out.push((current_scissor, take(&mut current_texts)));
-                }
+                flush_batch(&mut out, current_scissor, &mut current_texts);
                 let new_scissor =
                     rect_to_scissor((framebuffer_w, framebuffer_h), *x, *y, *width, *height);
                 let effective = current_scissor.map_or(new_scissor, |scissor| {
@@ -38,9 +43,7 @@ pub fn batch_texts_with_scissor(
                 current_scissor = Some(effective);
             }
             DisplayItem::EndClip => {
-                if !current_texts.is_empty() {
-                    out.push((current_scissor, take(&mut current_texts)));
-                }
+                flush_batch(&mut out, current_scissor, &mut current_texts);
                 stack.pop();
                 current_scissor = stack.iter().copied().reduce(intersect_scissor);
             }
@@ -76,13 +79,15 @@ pub fn batch_texts_with_scissor(
                     });
                 }
             }
-            DisplayItem::Rect { .. } => {}
+            DisplayItem::Rect { .. }
+            | DisplayItem::Border { .. }
+            | DisplayItem::BoxShadow { .. }
+            | DisplayItem::Image { .. }
+            | DisplayItem::LinearGradient { .. }
+            | DisplayItem::RadialGradient { .. } => {}
         }
     }
-
-    if !current_texts.is_empty() {
-        out.push((current_scissor, current_texts));
-    }
+    flush_batch(&mut out, current_scissor, &mut current_texts);
     out
 }
 
@@ -107,9 +112,7 @@ fn batch_single_layer(
                 width,
                 height,
             } => {
-                if !current_texts.is_empty() {
-                    out.push((current_scissor, take(&mut current_texts)));
-                }
+                flush_batch(out, current_scissor, &mut current_texts);
                 let new_scissor =
                     rect_to_scissor((framebuffer_w, framebuffer_h), *x, *y, *width, *height);
                 let effective = current_scissor.map_or(new_scissor, |scissor| {
@@ -119,9 +122,7 @@ fn batch_single_layer(
                 current_scissor = Some(effective);
             }
             DisplayItem::EndClip => {
-                if !current_texts.is_empty() {
-                    out.push((current_scissor, take(&mut current_texts)));
-                }
+                flush_batch(out, current_scissor, &mut current_texts);
                 stack.pop();
                 current_scissor = stack.iter().copied().reduce(intersect_scissor);
             }
@@ -157,7 +158,12 @@ fn batch_single_layer(
                     });
                 }
             }
-            DisplayItem::Rect { .. } => {}
+            DisplayItem::Rect { .. }
+            | DisplayItem::Border { .. }
+            | DisplayItem::BoxShadow { .. }
+            | DisplayItem::Image { .. }
+            | DisplayItem::LinearGradient { .. }
+            | DisplayItem::RadialGradient { .. } => {}
         }
     }
     if !current_texts.is_empty() {

@@ -165,41 +165,8 @@ impl OpacityCompositor {
         let mut found_any = false;
 
         for item in items {
-            match item {
-                DisplayItem::Rect {
-                    x,
-                    y,
-                    width,
-                    height,
-                    ..
-                } => {
-                    min_x = min_x.min(*x);
-                    min_y = min_y.min(*y);
-                    max_x = max_x.max(x + width);
-                    max_y = max_y.max(y + height);
-                    found_any = true;
-                }
-                DisplayItem::Text { x, y, bounds, .. } => {
-                    if let Some((left, top, right, bottom)) = bounds {
-                        min_x = min_x.min(*left as f32);
-                        min_y = min_y.min(*top as f32);
-                        max_x = max_x.max(*right as f32);
-                        max_y = max_y.max(*bottom as f32);
-                    } else {
-                        // Fallback: use text position with estimated size
-                        min_x = min_x.min(*x);
-                        min_y = min_y.min(*y);
-                        max_x = max_x.max(x + 100.0);
-                        max_y = max_y.max(y + 20.0);
-                    }
-                    found_any = true;
-                }
-                DisplayItem::BeginStackingContext { .. }
-                | DisplayItem::EndStackingContext
-                | DisplayItem::BeginClip { .. }
-                | DisplayItem::EndClip => {
-                    // These don't contribute to bounds
-                }
+            if Self::extend_bounds_with_item(item, &mut min_x, &mut min_y, &mut max_x, &mut max_y) {
+                found_any = true;
             }
         }
 
@@ -211,6 +178,110 @@ impl OpacityCompositor {
                 (max_y - min_y).max(1.0),
             )
         })
+    }
+
+    /// Handle Text and `BoxShadow` bounds extension.
+    fn extend_special_item_bounds(
+        item: &DisplayItem,
+        min_x: &mut f32,
+        min_y: &mut f32,
+        max_x: &mut f32,
+        max_y: &mut f32,
+    ) {
+        match item {
+            DisplayItem::Text { x, y, bounds, .. } => {
+                if let Some((left, top, right, bot)) = bounds.as_ref() {
+                    *min_x = min_x.min(*left as f32);
+                    *min_y = min_y.min(*top as f32);
+                    *max_x = max_x.max(*right as f32);
+                    *max_y = max_y.max(*bot as f32);
+                } else {
+                    *min_x = min_x.min(*x);
+                    *min_y = min_y.min(*y);
+                    *max_x = max_x.max(x + 100.0);
+                    *max_y = max_y.max(y + 20.0);
+                }
+            }
+            DisplayItem::BoxShadow {
+                x,
+                y,
+                width,
+                height,
+                offset_x,
+                offset_y,
+                blur_radius,
+                spread_radius,
+                ..
+            } => {
+                let ext = blur_radius + spread_radius;
+                *min_x = min_x.min(x + offset_x - ext);
+                *min_y = min_y.min(y + offset_y - ext);
+                *max_x = max_x.max(x + offset_x + width + ext);
+                *max_y = max_y.max(y + offset_y + height + ext);
+            }
+            _ => {}
+        }
+    }
+
+    /// Extend bounds with a single display item. Returns true if item had bounds.
+    fn extend_bounds_with_item(
+        item: &DisplayItem,
+        min_x: &mut f32,
+        min_y: &mut f32,
+        max_x: &mut f32,
+        max_y: &mut f32,
+    ) -> bool {
+        match item {
+            DisplayItem::Rect {
+                x,
+                y,
+                width,
+                height,
+                ..
+            }
+            | DisplayItem::Border {
+                x,
+                y,
+                width,
+                height,
+                ..
+            }
+            | DisplayItem::Image {
+                x,
+                y,
+                width,
+                height,
+                ..
+            }
+            | DisplayItem::LinearGradient {
+                x,
+                y,
+                width,
+                height,
+                ..
+            }
+            | DisplayItem::RadialGradient {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => {
+                *min_x = min_x.min(*x);
+                *min_y = min_y.min(*y);
+                *max_x = max_x.max(x + width);
+                *max_y = max_y.max(y + height);
+                true
+            }
+            DisplayItem::Text { .. } | DisplayItem::BoxShadow { .. } => {
+                Self::extend_special_item_bounds(item, min_x, min_y, max_x, max_y);
+                true
+            }
+            DisplayItem::BeginStackingContext { .. }
+            | DisplayItem::EndStackingContext
+            | DisplayItem::BeginClip { .. }
+            | DisplayItem::EndClip => false,
+        }
     }
 
     /// Get the exclude ranges for opacity groups.
@@ -255,11 +326,12 @@ mod tests {
             bounds.is_some(),
             "compute_bounds should return Some for non-empty items"
         );
-        let bounds = bounds.unwrap_or_else(|| Rect::new(0.0, 0.0, 0.0, 0.0));
-        assert!((bounds.x - 10.0).abs() < f32::EPSILON);
-        assert!((bounds.y - 20.0).abs() < f32::EPSILON);
-        assert!((bounds.width - 100.0).abs() < f32::EPSILON);
-        assert!((bounds.height - 50.0).abs() < f32::EPSILON);
+        if let Some(bounds) = bounds {
+            assert!((bounds.x - 10.0).abs() < f32::EPSILON);
+            assert!((bounds.y - 20.0).abs() < f32::EPSILON);
+            assert!((bounds.width - 100.0).abs() < f32::EPSILON);
+            assert!((bounds.height - 50.0).abs() < f32::EPSILON);
+        }
     }
 
     /// Test that `find_stacking_context_end` correctly finds matching end markers.

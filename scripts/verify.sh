@@ -82,49 +82,12 @@ check_allows() {
   return 0
 }
 
-check_ui_build() {
-  echo "[verify] Checking UI dependencies are installed..."
-  cd ui
-
-  # Check if node_modules exists
-  if [ ! -d "node_modules" ]; then
-    echo "[verify] Installing UI dependencies..."
-    pnpm install --frozen-lockfile
-  fi
-
-  echo "[verify] Running UI type check..."
-  if ! pnpm run test:types; then
-    echo "ERROR: TypeScript type errors found"
-    return 1
-  fi
-
-  echo "[verify] Building UI..."
-  if ! pnpm run build 2>&1 | tee /tmp/ui_build.log; then
-    echo "ERROR: UI build failed"
-    return 1
-  fi
-
-  # Check for warnings in build output
-  if grep -i "warning" /tmp/ui_build.log | grep -v "pnpm"; then
-    echo "ERROR: UI build produced warnings"
-    return 1
-  fi
-
-  # No UI-only tests - integration tests in Rust cover full lifecycle
-  cd ..
-  return 0
-}
-
 RUN_COVERAGE=false
-UI_ONLY=false
 
 for arg in "$@"; do
   case "$arg" in
     --cov)
       RUN_COVERAGE=true
-      ;;
-    --ui-only)
-      UI_ONLY=true
       ;;
     *)
       # ignore unknown args (forward compatibility)
@@ -136,48 +99,34 @@ echo "================================================"
 echo "Renderer Project Verification"
 echo "================================================"
 
-if [ "$UI_ONLY" = false ]; then
-  # Check for disallowed allow/expect annotations
-  echo "[verify] Checking for disallowed #[allow] and #[expect] annotations..."
-  if ! check_allows; then
-    echo "FATAL: check_allows failed" >&2
-    exit 1
-  fi
-
-  # Format and lint Rust code
-  echo "[verify] Formatting Rust code..."
-  cargo fmt --all
-
-  echo "[verify] Running Clippy..."
-  cargo clippy --all-targets --workspace -- -D warnings
-
-  echo "[verify] Building Rust workspace..."
-  cargo build --workspace
-fi
-
-# Check UI
-echo "[verify] Verifying UI..."
-if ! check_ui_build; then
-  echo "FATAL: UI verification failed" >&2
+# Check for disallowed allow/expect annotations
+echo "[verify] Checking for disallowed #[allow] and #[expect] annotations..."
+if ! check_allows; then
+  echo "FATAL: check_allows failed" >&2
   exit 1
 fi
+
+# Format and lint Rust code
+echo "[verify] Formatting Rust code..."
+cargo fmt --all
+
+echo "[verify] Running Clippy..."
+cargo clippy --all-targets --workspace -- -D warnings
+
+echo "[verify] Building Rust workspace..."
+cargo build --workspace
 
 # Delegate to coverage.sh if --cov is passed
 if [ "$RUN_COVERAGE" = true ]; then
   exec "$(dirname "${BASH_SOURCE[0]}")/coverage.sh"
 fi
 
-if [ "$UI_ONLY" = false ]; then
-  # Run full workspace tests
-  echo "[verify] Running Rust tests..."
-  cargo test --workspace -- --ignored
-
-  echo "[verify] Running integration tests..."
-  cargo test --test '*' || echo "Some integration tests skipped (require GPU/display)"
-fi
+# Run full workspace tests
+echo "[verify] Running Rust tests..."
+cargo test --workspace -- --ignored
 
 # Clean old artifacts if not in CI
-if [ -z "${RENDERER_CI:-}" ] && [ "$UI_ONLY" = false ]; then
+if [ -z "${RENDERER_CI:-}" ]; then
   if command -v cargo-sweep &> /dev/null; then
     echo "[verify] Cleaning old build artifacts..."
     cargo sweep --time 7

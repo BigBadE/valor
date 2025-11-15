@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Checkbox and Radio Test</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: white;
+            font-family: sans-serif;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #333;
+        }
+        .option {
+            margin-bottom: 8px;
+        }
+        input[type="checkbox"],
+        input[type="radio"] {
+            margin-right: 8px;
+        }
+        label {
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="form-group">
+        <div class="form-group-title">Checkboxes:</div>
+        <div class="option">
+            <input type="checkbox" id="cb1" checked />
+            <label for="cb1">Option 1 (checked)</label>
+        </div>
+        <div class="option">
+            <input type="checkbox" id="cb2" />
+            <label for="cb2">Option 2</label>
+        </div>
+        <div class="option">
+            <input type="checkbox" id="cb3" />
+            <label for="cb3">Option 3</label>
+        </div>
+    </div>
+    <div class="form-group">
+        <div class="form-group-title">Radio Buttons:</div>
+        <div class="option">
+            <input type="radio" id="r1" name="group1" checked />
+            <label for="r1">Choice A (selected)</label>
+        </div>
+        <div class="option">
+            <input type="radio" id="r2" name="group1" />
+            <label for="r2">Choice B</label>
+        </div>
+        <div class="option">
+            <input type="radio" id="r3" name="group1" />
+            <label for="r3">Choice C</label>
+        </div>
+    </div>
+</body>
+</html>
