@@ -23,11 +23,12 @@ fn test_minimal_chrome_evaluate() -> anyhow::Result<()> {
     eprintln!("Creating tab...");
     let tab = browser.new_tab()?;
 
-    eprintln!("Navigating to file:// URL...");
-    tab.navigate_to("file:///home/user/valor/crates/css/modules/display/tests/fixtures/layout/basics/01_display_none.html")?;
+    eprintln!("Navigating to http:// URL...");
+    tab.navigate_to("http://localhost:8888/01_display_none.html")?;
 
-    eprintln!("Sleeping 2 seconds...");
-    std::thread::sleep(Duration::from_secs(2));
+    eprintln!("Waiting for #a element to exist...");
+    let elem = tab.wait_for_element_with_custom_timeout("#a", Duration::from_secs(10))?;
+    eprintln!("Element found: {:?}", elem);
 
     eprintln!("Evaluating simple expression: 1 + 1...");
     let result = tab.evaluate("1 + 1", false)?;
