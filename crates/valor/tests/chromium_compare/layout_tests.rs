@@ -154,6 +154,7 @@ fn check_js_assertions(
 fn process_layout_fixture(
     input_path: &Path,
     runtime: &Runtime,
+    browser: &chromiumoxide::Browser,
     harness_src: &str,
     failed: &mut Vec<(String, String)>,
 ) -> Result<bool> {
@@ -175,46 +176,11 @@ fn process_layout_fixture(
     {
         cached_value
     } else {
-        // Create a SEPARATE runtime for Chromium to avoid nested block_on conflicts
-        let chromium_runtime = Runtime::new()?;
-        let chromium_value = chromium_runtime.block_on(async {
-            // Set up browser without custom wrapper
-            let chrome_path = std::path::PathBuf::from(
-                "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
-            );
-            use chromiumoxide::browser::{Browser, BrowserConfig};
-            use futures::StreamExt;
-
-            let config = BrowserConfig::builder()
-                .chrome_executable(chrome_path)
-                .no_sandbox()
-                .window_size(800, 600)
-                .arg("--force-device-scale-factor=1")
-                .arg("--hide-scrollbars")
-                .arg("--blink-settings=imagesEnabled=false")
-                .arg("--disable-gpu")
-                .arg("--disable-features=OverlayScrollbar")
-                .arg("--allow-file-access-from-files")
-                .arg("--disable-dev-shm-usage")
-                .arg("--disable-extensions")
-                .arg("--disable-background-networking")
-                .arg("--disable-sync")
-                .build()
-                .map_err(|e| anyhow::anyhow!("Browser config error: {}", e))?;
-
-            let (browser, mut handler) = Browser::launch(config).await?;
-
-            // Spawn handler on current runtime
-            let _handler_task = tokio::spawn(async move {
-                while let Some(_event) = handler.next().await {
-                    // Silently consume events
-                }
-            });
-
+        // Use the existing runtime and reused browser
+        let chromium_value = runtime.block_on(async {
             let page = browser.new_page("about:blank").await?;
             let result = chromium_layout_json_in_page(&page, input_path).await?;
             page.close().await?;
-            // Browser will be dropped here
             Ok::<_, anyhow::Error>(result)
         })?;
         write_cached_json_for_fixture(input_path, harness_src, &chromium_value)?;
@@ -259,9 +225,43 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
     );
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
     let runtime = Runtime::new()?;
+
+    // Create browser for this test
+    use chromiumoxide::browser::{Browser, BrowserConfig};
+    use futures::StreamExt;
+
+    let chrome_path = std::path::PathBuf::from(
+        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
+    );
+    let config = BrowserConfig::builder()
+        .chrome_executable(chrome_path)
+        .no_sandbox()
+        .window_size(800, 600)
+        .arg("--force-device-scale-factor=1")
+        .arg("--hide-scrollbars")
+        .arg("--blink-settings=imagesEnabled=false")
+        .arg("--disable-gpu")
+        .arg("--disable-features=OverlayScrollbar")
+        .arg("--allow-file-access-from-files")
+        .arg("--disable-dev-shm-usage")
+        .arg("--disable-extensions")
+        .arg("--disable-background-networking")
+        .arg("--disable-sync")
+        .build()
+        .map_err(|e| anyhow!("Browser config error: {}", e))?;
+
+    let (browser, mut handler) = runtime.block_on(Browser::launch(config))?;
+
+    // Spawn handler task
+    let _handler_task = runtime.spawn(async move {
+        while let Some(_event) = handler.next().await {
+            // Silently consume events
+        }
+    });
+
     let mut failed: Vec<(String, String)> = Vec::new();
 
-    process_layout_fixture(input_path, &runtime, harness_src, &mut failed)?;
+    process_layout_fixture(input_path, &runtime, &browser, harness_src, &mut failed)?;
 
     if failed.is_empty() {
         Ok(())
@@ -286,14 +286,49 @@ pub fn run_chromium_layouts() -> Result<()> {
     );
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
     let runtime = Runtime::new()?;
+
+    // Create one browser and event handler for all tests
+    use chromiumoxide::browser::{Browser, BrowserConfig};
+    use futures::StreamExt;
+
+    let chrome_path = std::path::PathBuf::from(
+        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
+    );
+    let config = BrowserConfig::builder()
+        .chrome_executable(chrome_path)
+        .no_sandbox()
+        .window_size(800, 600)
+        .arg("--force-device-scale-factor=1")
+        .arg("--hide-scrollbars")
+        .arg("--blink-settings=imagesEnabled=false")
+        .arg("--disable-gpu")
+        .arg("--disable-features=OverlayScrollbar")
+        .arg("--allow-file-access-from-files")
+        .arg("--disable-dev-shm-usage")
+        .arg("--disable-extensions")
+        .arg("--disable-background-networking")
+        .arg("--disable-sync")
+        .build()
+        .map_err(|e| anyhow!("Browser config error: {}", e))?;
+
+    let (browser, mut handler) = runtime.block_on(Browser::launch(config))?;
+
+    // Spawn handler task
+    let _handler_task = runtime.spawn(async move {
+        while let Some(_event) = handler.next().await {
+            // Silently consume events
+        }
+    });
+
     let mut failed: Vec<(String, String)> = Vec::new();
     let fixtures = get_filtered_fixtures("LAYOUT")?;
     let mut ran = 0;
     for input_path in fixtures {
-        if process_layout_fixture(&input_path, &runtime, harness_src, &mut failed)? {
+        if process_layout_fixture(&input_path, &runtime, &browser, harness_src, &mut failed)? {
             ran += 1;
         }
     }
+
     if failed.is_empty() {
         info!("[LAYOUT] {ran} fixtures passed");
         Ok(())
