@@ -34,9 +34,9 @@ once_cell.workspace = true
 unicode-linebreak.workspace = true
 
 [features]
-# V8 is the default JS engine; override with `--no-default-features --features js_stub` for stub.
-default = ["js_v8"]
-# Use V8-backed engine (pulls in rusty_v8)
-js_v8 = ["js_engine_v8/v8"]
+# Stub is temporarily the default for layout testing
+default = ["js_stub"]
+# Use V8-backed engine (pulls in rusty_v8) - temporarily disabled
+# js_v8 = ["js_engine_v8/v8"]
 # Use stub (no rusty_v8); useful for building/running tests without V8
 js_stub = ["js_engine_v8/stub"]
