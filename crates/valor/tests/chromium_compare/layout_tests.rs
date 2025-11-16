@@ -1,4 +1,4 @@
-use super::browser::{TestType, navigate_and_prepare_tab, setup_chrome_browser};
+use super::browser::{TestType, navigate_and_prepare_page, setup_chrome_browser};
 use super::common::{
     clear_valor_layout_cache_if_harness_changed, create_page, css_reset_injection_script,
     get_filtered_fixtures, init_test_logger, read_cached_json_for_fixture, to_file_url,
@@ -6,9 +6,9 @@ use super::common::{
 };
 use super::json_compare::compare_json_with_epsilon;
 use anyhow::{Result, anyhow};
+use chromiumoxide::page::Page;
 use css::style_types::{AlignItems, BoxSizing, ComputedStyle, Display, Overflow};
 use css_core::{LayoutNodeKind, LayoutRect, Layouter};
-use headless_chrome::Tab;
 use js::DOMSubscriber as _;
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
 use js::NodeKey;
@@ -16,7 +16,6 @@ use log::{error, info};
 use serde_json::{Map as JsonMap, Value as JsonValue, from_str, json};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 use tokio::runtime::Runtime;
 
 type LayouterWithStyles = (Layouter, HashMap<NodeKey, ComputedStyle>);
@@ -155,7 +154,7 @@ fn check_js_assertions(
 fn process_layout_fixture(
     input_path: &Path,
     runtime: &Runtime,
-    tab: &Arc<Tab>,
+    page: &Page,
     harness_src: &str,
     failed: &mut Vec<(String, String)>,
 ) -> Result<bool> {
@@ -177,7 +176,7 @@ fn process_layout_fixture(
     {
         cached_value
     } else {
-        let chromium_value = chromium_layout_json_in_tab(tab, input_path)?;
+        let chromium_value = runtime.block_on(chromium_layout_json_in_page(page, input_path))?;
         write_cached_json_for_fixture(input_path, harness_src, &chromium_value)?;
         chromium_value
     };
@@ -219,12 +218,12 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
         include_str!("browser.rs"),
     );
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
-    let browser = setup_chrome_browser(TestType::Layout)?;
-    let tab = browser.new_tab()?;
-    let mut failed: Vec<(String, String)> = Vec::new();
     let runtime = Runtime::new()?;
+    let browser = runtime.block_on(setup_chrome_browser(TestType::Layout))?;
+    let page = runtime.block_on(browser.new_page())?;
+    let mut failed: Vec<(String, String)> = Vec::new();
 
-    process_layout_fixture(input_path, &runtime, &tab, harness_src, &mut failed)?;
+    process_layout_fixture(input_path, &runtime, &page, harness_src, &mut failed)?;
 
     if failed.is_empty() {
         Ok(())
@@ -248,14 +247,14 @@ pub fn run_chromium_layouts() -> Result<()> {
         include_str!("browser.rs"),
     );
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
-    let browser = setup_chrome_browser(TestType::Layout)?;
-    let tab = browser.new_tab()?;
-    let mut failed: Vec<(String, String)> = Vec::new();
     let runtime = Runtime::new()?;
+    let browser = runtime.block_on(setup_chrome_browser(TestType::Layout))?;
+    let page = runtime.block_on(browser.new_page())?;
+    let mut failed: Vec<(String, String)> = Vec::new();
     let fixtures = get_filtered_fixtures("LAYOUT")?;
     let mut ran = 0;
     for input_path in fixtures {
-        if process_layout_fixture(&input_path, &runtime, &tab, harness_src, &mut failed)? {
+        if process_layout_fixture(&input_path, &runtime, &page, harness_src, &mut failed)? {
             ran += 1;
         }
     }
@@ -532,20 +531,18 @@ fn chromium_layout_extraction_script() -> &'static str {
     })()"
 }
 
-/// Extracts layout JSON from Chromium by evaluating JavaScript in a tab.
+/// Extracts layout JSON from Chromium by evaluating JavaScript in a page.
 ///
 /// # Errors
 ///
 /// Returns an error if navigation, script evaluation, or JSON parsing fails.
-fn chromium_layout_json_in_tab(tab: &Tab, path: &Path) -> Result<JsonValue> {
-    navigate_and_prepare_tab(tab, path)?;
+async fn chromium_layout_json_in_page(page: &Page, path: &Path) -> Result<JsonValue> {
+    navigate_and_prepare_page(page, path).await?;
     let script = chromium_layout_extraction_script();
-    let result = tab.evaluate(script, true)?;
-    let value = result
-        .value
-        .ok_or_else(|| anyhow!("No value returned from Chromium evaluate"))?;
-    let json_string = value
-        .as_str()
+    let result = page.evaluate(script).await?;
+    let json_string = result
+        .value()
+        .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Chromium returned non-string JSON for layout"))?;
     let parsed: JsonValue = from_str(json_string)?;
     Ok(parsed)
