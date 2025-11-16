@@ -27,6 +27,7 @@ pub fn setup_chrome_browser(test_type: TestType) -> Result<Browser> {
             vec![
                 OsStr::new("--disable-features=OverlayScrollbar"),
                 OsStr::new("--allow-file-access-from-files"),
+                OsStr::new("--disable-web-security"),  // Allow JavaScript execution on file:// URLs
                 OsStr::new("--disable-dev-shm-usage"),
                 OsStr::new("--no-sandbox"),
                 OsStr::new("--disable-extensions"),
@@ -48,8 +49,14 @@ pub fn setup_chrome_browser(test_type: TestType) -> Result<Browser> {
     ];
     args.extend(extra_args);
 
+    let chrome_path = std::path::PathBuf::from(
+        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
+    );
+
     let launch_opts = LaunchOptionsBuilder::default()
         .headless(true)
+        .path(Some(chrome_path))
+        .sandbox(false)  // Required when running as root
         .window_size(Some((800, 600)))
         .idle_browser_timeout(timeout)
         .args(args)
@@ -67,8 +74,8 @@ pub fn navigate_and_prepare_tab(tab: &Tab, path: &Path) -> Result<()> {
     tab.navigate_to(url.as_str())?;
 
     // For file:// URLs, both wait_until_navigated() and tab.evaluate() are unreliable.
-    // Use a simple sleep since local file:// loads are very fast.
-    std::thread::sleep(Duration::from_millis(300));
+    // Use a longer sleep to ensure page is fully loaded before JavaScript execution.
+    std::thread::sleep(Duration::from_secs(2));
 
     Ok(())
 }
