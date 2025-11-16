@@ -1,4 +1,4 @@
-use super::browser::{TestType, navigate_and_prepare_page, setup_chrome_browser};
+use super::browser::{ChromeBrowser, TestType, navigate_and_prepare_page, setup_chrome_browser};
 use super::common::{
     clear_valor_layout_cache_if_harness_changed, create_page, css_reset_injection_script,
     get_filtered_fixtures, init_test_logger, read_cached_json_for_fixture, to_file_url,
@@ -154,7 +154,7 @@ fn check_js_assertions(
 fn process_layout_fixture(
     input_path: &Path,
     runtime: &Runtime,
-    page: &Page,
+    browser: &ChromeBrowser,
     harness_src: &str,
     failed: &mut Vec<(String, String)>,
 ) -> Result<bool> {
@@ -176,7 +176,13 @@ fn process_layout_fixture(
     {
         cached_value
     } else {
-        let chromium_value = runtime.block_on(chromium_layout_json_in_page(page, input_path))?;
+        // Create a fresh page for each fixture to avoid state pollution
+        let chromium_value = runtime.block_on(async {
+            let page = browser.new_page().await?;
+            let result = chromium_layout_json_in_page(&page, input_path).await;
+            // Page will be dropped here, closing it
+            result
+        })?;
         write_cached_json_for_fixture(input_path, harness_src, &chromium_value)?;
         chromium_value
     };
@@ -220,10 +226,9 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
     let runtime = Runtime::new()?;
     let browser = runtime.block_on(setup_chrome_browser(TestType::Layout))?;
-    let page = runtime.block_on(browser.new_page())?;
     let mut failed: Vec<(String, String)> = Vec::new();
 
-    process_layout_fixture(input_path, &runtime, &page, harness_src, &mut failed)?;
+    process_layout_fixture(input_path, &runtime, &browser, harness_src, &mut failed)?;
 
     if failed.is_empty() {
         Ok(())
@@ -249,12 +254,11 @@ pub fn run_chromium_layouts() -> Result<()> {
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
     let runtime = Runtime::new()?;
     let browser = runtime.block_on(setup_chrome_browser(TestType::Layout))?;
-    let page = runtime.block_on(browser.new_page())?;
     let mut failed: Vec<(String, String)> = Vec::new();
     let fixtures = get_filtered_fixtures("LAYOUT")?;
     let mut ran = 0;
     for input_path in fixtures {
-        if process_layout_fixture(&input_path, &runtime, &page, harness_src, &mut failed)? {
+        if process_layout_fixture(&input_path, &runtime, &browser, harness_src, &mut failed)? {
             ran += 1;
         }
     }

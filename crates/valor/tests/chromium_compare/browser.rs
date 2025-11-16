@@ -80,13 +80,9 @@ pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser>
 ///
 /// # Errors
 ///
-/// Returns an error if navigation or script evaluation fails.
+/// Returns an error if navigation fails.
 pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
     let url = to_file_url(path)?;
     page.goto(url.as_str()).await?;
-
-    // For file:// URLs, use a longer sleep to ensure page is fully loaded before JavaScript execution.
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
     Ok(())
 }
