@@ -94,17 +94,27 @@ impl StackingChild {
     }
 }
 
-/// Sort children into CSS stacking order
+/// Sort children into CSS stacking order.
+/// Children without computed styles (like text nodes) are included in `BlockBackground` layer.
 pub fn sort_children_by_stacking_order(
     children: &[NodeKey],
     styles: &HashMap<NodeKey, ComputedStyle>,
 ) -> Vec<StackingChild> {
     let mut stacking_children: Vec<StackingChild> = children
         .iter()
-        .filter_map(|key| {
-            styles
-                .get(key)
-                .map(|style| StackingChild::from_style(*key, style))
+        .map(|key| {
+            // Get style if it exists, otherwise use default (for text nodes, etc.)
+            styles.get(key).map_or_else(
+                || {
+                    // Text nodes and other non-styled nodes go in BlockBackground layer
+                    StackingChild {
+                        key: *key,
+                        layer: StackingLayer::BlockBackground,
+                        z_index: 0,
+                    }
+                },
+                |style| StackingChild::from_style(*key, style),
+            )
         })
         .collect();
 

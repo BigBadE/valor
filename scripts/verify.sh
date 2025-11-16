@@ -123,7 +123,7 @@ fi
 
 # Run full workspace tests
 echo "[verify] Running Rust tests..."
-cargo test --workspace -- --ignored
+cargo nextest run --workspace
 
 # Clean old artifacts if not in CI
 if [ -z "${RENDERER_CI:-}" ]; then

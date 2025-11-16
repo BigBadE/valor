@@ -289,13 +289,16 @@ mod tests {
         assert!(lifetime.last_used_at.0 >= lifetime.created_at.0);
     }
 
-    /// Test alias grouping with non-overlapping lifetimes.
+    /// Test alias grouping with overlapping lifetimes.
+    ///
+    /// When two opacity groups are both composited in the same Main pass,
+    /// their lifetimes overlap and they cannot share the same texture.
     ///
     /// # Panics
     /// Panics if the assertions fail.
     #[test]
     fn alias_groups_non_overlapping() {
-        // Create two opacity groups that don't overlap in time
+        // Create two opacity groups that are both composited in the same Main pass
         let mut display_list = DisplayList::new();
 
         // First opacity group
@@ -311,7 +314,7 @@ mod tests {
         });
         display_list.items.push(DisplayItem::EndStackingContext);
 
-        // Second opacity group (non-overlapping)
+        // Second opacity group (composited in same Main pass)
         display_list.items.push(DisplayItem::BeginStackingContext {
             boundary: StackingContextBoundary::Opacity { alpha: 0.8 },
         });
@@ -327,10 +330,13 @@ mod tests {
         let compositor = OpacityCompositor::collect_from_display_list(&display_list);
         let graph = RenderGraph::build_from_display_list(&display_list, compositor.groups(), true);
         let lifetimes = compute_lifetimes(&graph);
+
         let groups = compute_alias_groups(&graph, &lifetimes);
 
-        // Both resources can share one texture (non-overlapping lifetimes)
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].resources.len(), 2);
+        // Both resources are composited in the same Main pass, so they have overlapping
+        // lifetimes and must use separate textures (2 groups, 1 resource each)
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].resources.len(), 1);
+        assert_eq!(groups[1].resources.len(), 1);
     }
 }

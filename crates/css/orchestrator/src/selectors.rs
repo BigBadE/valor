@@ -149,6 +149,32 @@ pub(crate) fn compute_specificity(selector: &Selector) -> Specificity {
     Specificity(ids, classes, tags)
 }
 
+/// Check if a `SimpleSelector` has any meaningful content.
+fn has_content(sel: &SimpleSelector) -> bool {
+    sel.universal || sel.tag.is_some() || sel.element_id.is_some() || !sel.classes.is_empty()
+}
+
+/// Skip over balanced parentheses in a character iterator.
+/// Consumes the opening '(' and all characters until the matching closing ')'.
+fn skip_balanced_parens<I>(chars: &mut Peekable<I>)
+where
+    I: Iterator<Item = char>,
+{
+    chars.next(); // Consume opening '('
+    let mut depth = 1;
+    while let Some(&character) = chars.peek() {
+        chars.next();
+        if character == '(' {
+            depth += 1;
+        } else if character == ')' {
+            depth -= 1;
+            if depth == 0 {
+                break;
+            }
+        }
+    }
+}
+
 /// Parse a single selector string into a `Selector`.
 fn parse_single_selector(selector_str: &str) -> Option<Selector> {
     let mut chars = selector_str.trim().chars().peekable();
@@ -164,11 +190,7 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
             chars.next();
         }
         if saw_whitespace {
-            if current.universal
-                || current.tag.is_some()
-                || current.element_id.is_some()
-                || !current.classes.is_empty()
-            {
+            if has_content(&current) {
                 commit_current_part(&mut parts, &mut current, Combinator::Descendant);
                 next_combinator = None;
             } else {
@@ -179,11 +201,7 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
             None => break,
             Some('>') => {
                 chars.next();
-                if current.universal
-                    || current.tag.is_some()
-                    || current.element_id.is_some()
-                    || !current.classes.is_empty()
-                {
+                if has_content(&current) {
                     commit_current_part(&mut parts, &mut current, Combinator::Child);
                     next_combinator = None;
                 } else {
@@ -195,6 +213,24 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
                 // Selectors Level 4 §2.2: https://www.w3.org/TR/selectors-4/#universal-selector
                 chars.next();
                 current.universal = true;
+            }
+            Some(':') => {
+                // Pseudo-class or pseudo-element. For now, skip entire selector.
+                // Pseudo-elements (::before, ::after) are not yet supported.
+                // When we encounter ':', we skip the rest of this selector to avoid parsing errors.
+                chars.next();
+                // Check if it's a pseudo-element (::)
+                if chars.peek().copied() == Some(':') {
+                    chars.next(); // Skip second ':'
+                }
+                // Skip the pseudo name
+                let _pseudo_name = consume_ident(&mut chars, true);
+                // Skip any function arguments like :nth-child(2n)
+                if chars.peek().copied() == Some('(') {
+                    skip_balanced_parens(&mut chars);
+                }
+                // Discard this selector part - return None from parse_single_selector
+                return None;
             }
             Some('#') => {
                 chars.next();
@@ -212,11 +248,7 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
             }
         }
     }
-    if current.universal
-        || current.tag.is_some()
-        || current.element_id.is_some()
-        || !current.classes.is_empty()
-    {
+    if has_content(&current) {
         parts.push(SelectorPart {
             sel: current,
             combinator_to_next: next_combinator.take(),

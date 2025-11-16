@@ -1,7 +1,3 @@
-//! Valor browser integration and test utilities.
+//! Valor browser integration.
 
 pub mod factory;
-
-pub mod test_support;
-
-pub mod layout_compare_core;

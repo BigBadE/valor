@@ -712,12 +712,167 @@ fn matches_selector(
     }
 }
 
+/// List of block-level HTML elements from the HTML5 spec.
+fn block_level_elements() -> Vec<&'static str> {
+    vec![
+        "html",
+        "body",
+        "div",
+        "p",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "ul",
+        "ol",
+        "li",
+        "dl",
+        "dt",
+        "dd",
+        "blockquote",
+        "pre",
+        "table",
+        "thead",
+        "tbody",
+        "tfoot",
+        "tr",
+        "th",
+        "td",
+        "form",
+        "fieldset",
+        "legend",
+        "section",
+        "article",
+        "aside",
+        "header",
+        "footer",
+        "main",
+        "nav",
+        "address",
+        "figure",
+        "figcaption",
+        "details",
+        "summary",
+        "dialog",
+        "hr",
+        "button",
+        "select",
+        "textarea",
+    ]
+}
+
+/// Create rules for block-level display elements.
+fn create_block_display_rules(source_order_start: u32) -> (Vec<types::Rule>, u32) {
+    let block_elements = block_level_elements();
+    let mut rules = Vec::with_capacity(block_elements.len());
+    let mut source_order = source_order_start;
+
+    for tag in block_elements {
+        rules.push(types::Rule {
+            origin: types::Origin::UserAgent,
+            source_order,
+            prelude: tag.to_string(),
+            declarations: vec![types::Declaration {
+                name: "display".to_string(),
+                value: "block".to_string(),
+                important: false,
+            }],
+        });
+        source_order += 1;
+    }
+
+    (rules, source_order)
+}
+
+/// Create a minimal user-agent stylesheet with default display values for block-level HTML elements.
+fn create_ua_stylesheet() -> types::Stylesheet {
+    let mut rules = Vec::new();
+    let mut source_order = 0u32;
+
+    // Add default color rule for the root element
+    rules.push(types::Rule {
+        origin: types::Origin::UserAgent,
+        source_order,
+        prelude: "html".to_string(),
+        declarations: vec![types::Declaration {
+            name: "color".to_string(),
+            value: "#000".to_string(), // Black text by default
+            important: false,
+        }],
+    });
+    source_order += 1;
+
+    let (block_rules, next_order) = create_block_display_rules(source_order);
+    rules.extend(block_rules);
+    source_order = next_order;
+
+    // Add form control user-agent styles per HTML5 spec and browser defaults
+
+    // textarea { overflow: auto }
+    rules.push(types::Rule {
+        origin: types::Origin::UserAgent,
+        source_order,
+        prelude: "textarea".to_string(),
+        declarations: vec![types::Declaration {
+            name: "overflow".to_string(),
+            value: "auto".to_string(),
+            important: false,
+        }],
+    });
+    source_order += 1;
+
+    // button { padding: 1px 6px } - browser default padding for buttons
+    rules.push(types::Rule {
+        origin: types::Origin::UserAgent,
+        source_order,
+        prelude: "button".to_string(),
+        declarations: vec![types::Declaration {
+            name: "padding".to_string(),
+            value: "1px 6px".to_string(),
+            important: false,
+        }],
+    });
+    source_order += 1;
+
+    // input { padding: 1px 2px } - browser default padding for inputs
+    rules.push(types::Rule {
+        origin: types::Origin::UserAgent,
+        source_order,
+        prelude: "input".to_string(),
+        declarations: vec![types::Declaration {
+            name: "padding".to_string(),
+            value: "1px 2px".to_string(),
+            important: false,
+        }],
+    });
+    source_order += 1;
+
+    // textarea { padding: 2px } - browser default padding for textarea
+    rules.push(types::Rule {
+        origin: types::Origin::UserAgent,
+        source_order,
+        prelude: "textarea".to_string(),
+        declarations: vec![types::Declaration {
+            name: "padding".to_string(),
+            value: "2px".to_string(),
+            important: false,
+        }],
+    });
+
+    types::Stylesheet {
+        rules,
+        origin: types::Origin::UserAgent,
+    }
+}
+
 // -------------- StyleComputer impl --------------
 impl StyleComputer {
-    /// Create a new `StyleComputer` with empty stylesheet and state.
+    /// Create a new `StyleComputer` with user-agent stylesheet and empty state.
     pub fn new() -> Self {
         Self {
-            sheet: types::Stylesheet::default(),
+            sheet: create_ua_stylesheet(),
             computed: HashMap::new(),
             style_changed: false,
             changed_nodes: Vec::new(),
@@ -730,9 +885,25 @@ impl StyleComputer {
         }
     }
 
-    /// Replace the current stylesheet and mark all known nodes as dirty.
-    pub fn replace_stylesheet(&mut self, sheet: types::Stylesheet) {
-        self.sheet = sheet;
+    /// Replace the current author stylesheet and merge with user-agent rules.
+    /// UA rules are always preserved and have lower precedence than author rules.
+    pub fn replace_stylesheet(&mut self, author_sheet: types::Stylesheet) {
+        // Create a new merged stylesheet with UA rules first (lower specificity)
+        let ua_sheet = create_ua_stylesheet();
+        let mut merged_rules = ua_sheet.rules;
+
+        // Add author rules after UA rules (higher source order)
+        let base_order = u32::try_from(merged_rules.len()).unwrap_or(0);
+        for mut rule in author_sheet.rules {
+            // Offset author rule source orders to come after UA rules
+            rule.source_order = rule.source_order.saturating_add(base_order);
+            merged_rules.push(rule);
+        }
+
+        self.sheet = types::Stylesheet {
+            rules: merged_rules,
+            origin: author_sheet.origin,
+        };
         self.style_changed = true;
         self.changed_nodes = self.tag_by_node.keys().copied().collect();
     }
@@ -1077,6 +1248,12 @@ fn apply_layout_keywords(
     if let Some(value) = decls.get("overflow") {
         computed.overflow = if value.eq_ignore_ascii_case("hidden") {
             style_model::Overflow::Hidden
+        } else if value.eq_ignore_ascii_case("auto") {
+            style_model::Overflow::Auto
+        } else if value.eq_ignore_ascii_case("scroll") {
+            style_model::Overflow::Scroll
+        } else if value.eq_ignore_ascii_case("clip") {
+            style_model::Overflow::Clip
         } else {
             style_model::Overflow::Visible
         };

@@ -259,14 +259,11 @@ fn paint_text(text: &str, rect: &LayoutRect, style: &ComputedStyle, items: &mut 
     // Get font size from computed style
     let font_size = style.font_size;
 
-    // Calculate baseline offset: position text at the baseline, not the top
-    // For now, use a simple approximation: baseline is at ~80% of line height
-    let baseline_offset = font_size * 0.8;
-
     // Create text display item
+    // Note: Glyphon positions text from the top-left corner, not the baseline
     items.push(DisplayItem::Text {
         x: rect.x,
-        y: rect.y + baseline_offset,
+        y: rect.y,
         text: text.to_string(),
         color: text_color,
         font_size,

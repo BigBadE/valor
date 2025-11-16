@@ -50,7 +50,8 @@ where
         if skip_predicate(*node) {
             continue;
         }
-        let is_block = styles.get(node).is_none_or(|style_ref| {
+        // Nodes without styles (like text nodes) are inline-level, not block-level
+        let is_block = styles.get(node).is_some_and(|style_ref| {
             let used = used_display_for_child(style_ref, parent_style, false);
             is_block_level_outer(used)
         });

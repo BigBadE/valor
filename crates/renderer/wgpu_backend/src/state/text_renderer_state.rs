@@ -186,7 +186,12 @@ impl TextRendererState {
     ) -> Vec<TextArea<'buffer>> {
         let mut areas = Vec::with_capacity(items.len());
         for (index, item) in items.iter().enumerate() {
-            let color = GlyphonColor(0xFF00_0000);
+            // Convert RGB [f32; 3] to Glyphon RGBA u32 format: 0xAABBGGRR
+            let red = (item.color[0] * 255.0).clamp(0.0, 255.0) as u32;
+            let green = (item.color[1] * 255.0).clamp(0.0, 255.0) as u32;
+            let blue = (item.color[2] * 255.0).clamp(0.0, 255.0) as u32;
+            let alpha = 0xFF; // Opaque
+            let color = GlyphonColor((alpha << 24) | (blue << 16) | (green << 8) | red);
             let bounds = match item.bounds {
                 Some((left, top, right, bottom)) => TextBounds {
                     left: i32::try_from((left as f32 * scale).round() as u32).unwrap_or(i32::MAX),

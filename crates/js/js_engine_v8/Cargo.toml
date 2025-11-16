@@ -12,14 +12,14 @@ log.workspace = true
 tokio = { workspace = true, optional = true }
 js.workspace = true
 
-# Make rusty_v8 optional and enable it via the "v8" feature.
-rusty_v8 = { workspace = true, optional = true }
+# Make v8 optional and enable it via the "v8" feature.
+v8 = { workspace = true, optional = true }
 
 [features]
 # By default we build with V8 enabled.
 default = ["v8"]
 # Enable the real V8 engine implementation.
-v8 = ["dep:rusty_v8"]
+v8 = ["dep:v8"]
 # Lightweight stub implementation that avoids pulling in rusty_v8.
 # Useful for building and running tests in environments without V8.
 stub = []

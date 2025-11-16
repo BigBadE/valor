@@ -4,6 +4,7 @@
 use crate::INITIAL_CONTAINING_BLOCK_HEIGHT;
 use crate::LayoutNodeKind;
 use crate::LayoutRect;
+use css_box::compute_box_sides;
 use css_display::build_inline_context_with_filter;
 use css_flexbox::{
     AlignContent as FlexAlignContent, AlignItems as FlexAlignItems, Axes as FlexAxes,
@@ -23,7 +24,7 @@ use css_orchestrator::style_model::{
 use css_text::{collapse_whitespace, default_line_height_px};
 use js::NodeKey;
 use log::debug;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::chapter8::part_8_3_1_collapsing_margins as cm83;
 use crate::chapter9::part_9_4_1_block_formatting_context::establishes_block_formatting_context;
@@ -211,15 +212,13 @@ fn container_layout_context(
 fn collect_item_shells(layouter: &Layouter, parent: NodeKey) -> Vec<(FlexItemRef, FlexItemStyle)> {
     // Only consider element block children for flex item collection; ignore text/anonymous nodes.
     let child_list = layouter.children.get(&parent).cloned().unwrap_or_default();
-    let mut block_nodes: HashSet<NodeKey> = HashSet::with_capacity(child_list.len());
-    for (key, kind, _kids) in layouter.snapshot() {
-        if matches!(kind, LayoutNodeKind::Block { .. }) {
-            block_nodes.insert(key);
-        }
-    }
     let mut out: Vec<(FlexItemRef, FlexItemStyle)> = Vec::with_capacity(child_list.len());
     for child in &child_list {
-        if !block_nodes.contains(child) {
+        // Check if child is a block element directly from layouter.nodes
+        if !matches!(
+            layouter.nodes.get(child),
+            Some(LayoutNodeKind::Block { .. })
+        ) {
             continue;
         }
         let style = layouter
@@ -342,10 +341,13 @@ pub fn compute_used_height(
 
     let mut computed_height = used_border_box_height(style);
     if style.height.is_none() {
-        // Resolve percentage height against parent's specified content height when definite.
-        if let Some(pct) = style.height_percent
+        // Check for form control intrinsic sizing first
+        if let Some(intrinsic_h) = intrinsic_height_for_form_control(layouter, child_key, style) {
+            computed_height = intrinsic_h;
+        } else if let Some(pct) = style.height_percent
             && let Some(parent_content_h) = parent_specified_content_height(layouter, child_key)
         {
+            // Resolve percentage height against parent's specified content height when definite.
             let target_content = ((parent_content_h as f32) * pct.max(0.0)).round() as i32;
             let child_pad = style.padding.top.max(0.0) + style.padding.bottom.max(0.0);
             let child_border = style.border_width.top.max(0.0) + style.border_width.bottom.max(0.0);
@@ -362,9 +364,6 @@ pub fn compute_used_height(
                 .saturating_add(extras.padding_bottom)
                 .saturating_add(extras.border_top)
                 .saturating_add(extras.border_bottom);
-            if computed_height == 0i32 && layouter.has_inline_text_descendant(child_key) {
-                computed_height = default_line_height_px(style);
-            }
         }
         // Apply percent min/max height constraints if present and parent definite.
         if let Some(parent_content_h) = parent_specified_content_height(layouter, child_key) {
@@ -450,8 +449,20 @@ fn block_child_content_height(layouter: &mut Layouter, cctx: ChildContentCtx) ->
         cctx.x,
         cctx.y,
     );
-    let (_reflowed, content_height, last_pos_mb, _last_info) =
+    let (_reflowed, mut content_height, last_pos_mb, _last_info) =
         layouter.layout_block_children(cctx.key, &child_metrics, cctx.ancestor_applied_at_edge);
+
+    // Per CSS 2.2 §10.6.3: if a block box contains only inline-level content,
+    // its height is the distance from the top of the topmost line box to the bottom
+    // of the bottommost line box. Add height for inline text content if present.
+    if content_height == 0
+        && let Some((_first_baseline, last_baseline)) = try_inline_baselines(layouter, cctx.key)
+    {
+        // If there's inline content, use the distance from top of first line to bottom of last line
+        // Use floor() to match Chrome's rounding behavior for text content heights
+        content_height = last_baseline.floor() as i32;
+    }
+
     (content_height, last_pos_mb)
 }
 
@@ -466,7 +477,7 @@ fn flex_child_content_height(
     let item_shells = collect_item_shells(layouter, cctx.key);
     let handles = collect_flex_items(&item_shells);
     let (main_items, cross_inputs, baseline_inputs) =
-        build_flex_item_inputs(layouter, &handles, direction);
+        build_flex_item_inputs(layouter, &handles, direction, cctx.used_border_box_width);
     let (justify, align_items_val, align_content_val, container_cross_size) =
         justify_align_context(container_style, direction, &cross_inputs);
     let container_inputs = FlexContainerInputs {
@@ -865,11 +876,279 @@ fn place_absolute_children(layouter: &mut Layouter, parent: NodeKey, ctx: AbsCon
     }
 }
 
+/// Get the HTML tag name for a given node key, if it's a Block element.
+fn get_element_tag(layouter: &Layouter, key: NodeKey) -> Option<String> {
+    let kind = layouter.nodes.get(&key)?;
+    match kind {
+        LayoutNodeKind::Block { tag } => Some(tag.clone()),
+        _ => None,
+    }
+}
+
+/// Compute intrinsic height for form control replaced elements per HTML5 spec.
+///
+/// Form controls have intrinsic dimensions that browsers use when no explicit height is set.
+/// Per CSS 2.2 §10.3.2 and HTML5 rendering suggestions:
+/// - `<button>`: Height based on text content + padding (typically ~40-45px with default UA padding)
+/// - `<input type="text/password/email">`: Fixed intrinsic height (~20-22px content + padding/border)
+/// - `<input type="checkbox/radio">`: Fixed 13x13px intrinsic size
+/// - `<textarea>`: Uses explicit width/height attributes or CSS
+///
+/// Returns `Some(border_box_height_px)` if the element is a form control with intrinsic sizing,
+/// or `None` if normal block height computation should be used.
+fn intrinsic_height_for_form_control(
+    layouter: &Layouter,
+    key: NodeKey,
+    style: &ComputedStyle,
+) -> Option<i32> {
+    let tag = get_element_tag(layouter, key)?;
+    let tag_lower = tag.to_lowercase();
+
+    match tag_lower.as_str() {
+        "button" => {
+            // Button intrinsic height: line-height + padding
+            // Chrome defaults: padding ~6px top/bottom, line-height ~normal (1.2em)
+            let line_h = style
+                .line_height
+                .unwrap_or_else(|| default_line_height_px(style) as f32);
+            let padding_vert = style.padding.top + style.padding.bottom;
+            let border_vert = style.border_width.top + style.border_width.bottom;
+            Some((line_h + padding_vert + border_vert).round() as i32)
+        }
+        "input" => {
+            // Input elements have intrinsic size based on font metrics
+            // Per HTML spec and browser behavior:
+            // - Text inputs: minimum line height = ~1.2em (middle ground between Firefox 1.25em and Chrome 1.15em)
+            // - Checkbox/radio: fixed 13×13px (not implemented - would require type attribute access)
+            //
+            // We don't have access to type attribute here, so assume text input
+            let min_line_height = style.font_size * 1.2;
+            let padding_vert = style.padding.top + style.padding.bottom;
+            let border_vert = style.border_width.top + style.border_width.bottom;
+            Some((min_line_height + padding_vert + border_vert).round() as i32)
+        }
+        "textarea" => {
+            // Textarea uses explicit height or defaults to ~2 rows
+            // If height is already set, caller will handle it
+            // Default: 2 lines of text
+            style.height.is_none().then(|| {
+                let line_h = style
+                    .line_height
+                    .unwrap_or_else(|| default_line_height_px(style) as f32);
+                let rows = 2.0f32;
+                let intrinsic_content_h = line_h * rows;
+                let padding_vert = style.padding.top + style.padding.bottom;
+                let border_vert = style.border_width.top + style.border_width.bottom;
+                (intrinsic_content_h + padding_vert + border_vert).round() as i32
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Estimate max-content width for an element based on text content and font size.
+///
+/// # Implementation Note
+///
+/// This uses a **heuristic approximation** rather than actual font metrics, which is consistent
+/// with the Valor architecture. The layout layer (`css_core`) intentionally does not have access
+/// to the font system (glyphon/`FontSystem`) - text shaping happens in the renderer layer after
+/// layout is complete. This maintains clean separation of concerns.
+///
+/// Similar to how `default_line_height_px()` uses `font_size * 1.2` instead of actual font
+/// metrics, this function estimates width based on character count and font size.
+///
+/// # CSS Specification Compliance
+///
+/// Per CSS Sizing Level 3 §4.1, the spec **intentionally does not define** how to calculate
+/// max-content width precisely, delegating to implementations. This heuristic is a valid approach.
+///
+/// # Heuristic Details
+///
+/// - Gathers all text content from inline text children
+/// - Estimates width as: `character_count` * `font_size` * 0.6
+///   - 0.6em per character approximates typical proportional fonts where narrow chars (i,l,t)
+///     and wide chars (m,w,M) average out
+/// - Uses minimum of 3em for elements with content
+///
+/// # Future Enhancement
+///
+/// A more accurate implementation would require either:
+/// - Adding a `TextMeasurementProvider` trait (following the `InlineBaselineProvider` pattern)
+/// - Or integrating actual font metrics into the layout layer (architectural change)
+fn estimate_max_content_width(layouter: &Layouter, key: NodeKey, style: &ComputedStyle) -> i32 {
+    let children = layouter.children.get(&key).cloned().unwrap_or_default();
+
+    // Collect text content from all inline text children
+    let mut total_text = String::new();
+    for child in &children {
+        if let Some(LayoutNodeKind::InlineText { text }) = layouter.nodes.get(child) {
+            total_text.push_str(text);
+        }
+    }
+
+    // Get font size from style (already defaults to 16px in ComputedStyle)
+    let font_size = style.font_size;
+
+    if total_text.is_empty() {
+        // No text content: use a minimum intrinsic width of 2em
+        return (font_size * 2.0) as i32;
+    }
+
+    // Heuristic: average character width is approximately 0.6em for typical fonts
+    // This accounts for variable-width fonts where narrow chars (i,l) and wide chars (m,w) balance out
+    let char_count = total_text.chars().count();
+    let estimated_width = (char_count as f32) * font_size * 0.6;
+
+    // Ensure minimum width of 3em for elements with content
+    let min_width = font_size * 3.0;
+    estimated_width.max(min_width) as i32
+}
+
+/// Compute flex basis for an item, using content-based sizing when no explicit dimension is set.
+///
+/// Per CSS Flexbox Level 1 §9.2, when flex-basis is auto, the item's main-size property is used;
+/// if that is also auto, we perform content-based sizing per CSS Sizing Level 3.
+fn compute_flex_basis(
+    layouter: &mut Layouter,
+    key: NodeKey,
+    style: &ComputedStyle,
+    direction: FlexDir,
+    container_used_width: i32,
+) -> f32 {
+    let basis_opt = style.flex_basis.or(match direction {
+        FlexDir::Row | FlexDir::RowReverse => style.width,
+        FlexDir::Column | FlexDir::ColumnReverse => style.height,
+    });
+
+    if let Some(explicit_basis) = basis_opt {
+        return explicit_basis.max(0.0);
+    }
+
+    // No explicit basis: use content measurement per CSS Sizing Level 3 intrinsic sizing
+    let sides = compute_box_sides(style);
+
+    match direction {
+        FlexDir::Row | FlexDir::RowReverse => {
+            // Main axis is horizontal: measure max-content width
+            let content_width = estimate_max_content_width(layouter, key, style);
+            let padding_border_horiz =
+                (sides.padding_left + sides.padding_right + sides.border_left + sides.border_right)
+                    .max(0);
+            (content_width + padding_border_horiz) as f32
+        }
+        FlexDir::Column | FlexDir::ColumnReverse => {
+            // Main axis is vertical: measure content height
+            let cctx = ChildContentCtx {
+                key,
+                used_border_box_width: container_used_width,
+                sides,
+                x: 0,
+                y: 0,
+                ancestor_applied_at_edge: false,
+            };
+            let (content_height, _last_mb) = layouter.compute_child_content_height(cctx);
+            let padding_border_vert =
+                (sides.padding_top + sides.padding_bottom + sides.border_top + sides.border_bottom)
+                    .max(0);
+            (content_height + padding_border_vert).max(0) as f32
+        }
+    }
+}
+
+/// Compute cross size triplet (size, min, max) for a flex item.
+/// Per CSS Flexbox Level 1, when cross-size is auto, we use content-based sizing.
+fn compute_cross_size(
+    layouter: &mut Layouter,
+    key: NodeKey,
+    style: &ComputedStyle,
+    direction: FlexDir,
+    container_used_width: i32,
+) -> CrossTriplet {
+    let (cross_explicit, min_c, mut max_c) = match direction {
+        FlexDir::Row | FlexDir::RowReverse => (
+            style.height,
+            style.min_height.unwrap_or(0.0).max(0.0),
+            style.max_height.unwrap_or(1_000_000.0).max(0.0),
+        ),
+        FlexDir::Column | FlexDir::ColumnReverse => (
+            style.width,
+            style.min_width.unwrap_or(0.0).max(0.0),
+            style.max_width.unwrap_or(1_000_000.0).max(0.0),
+        ),
+    };
+
+    let cross = cross_explicit.map_or_else(
+        || {
+            // No explicit cross size: measure content per CSS Sizing Level 3
+            let sides = compute_box_sides(style);
+
+            match direction {
+                FlexDir::Row | FlexDir::RowReverse => {
+                    // Cross axis is vertical (height): measure content height
+                    let cctx = ChildContentCtx {
+                        key,
+                        used_border_box_width: container_used_width,
+                        sides,
+                        x: 0,
+                        y: 0,
+                        ancestor_applied_at_edge: false,
+                    };
+                    let (content_height, _last_mb) = layouter.compute_child_content_height(cctx);
+                    let padding_border_vert = (sides.padding_top
+                        + sides.padding_bottom
+                        + sides.border_top
+                        + sides.border_bottom)
+                        .max(0);
+                    (content_height + padding_border_vert).max(0) as f32
+                }
+                FlexDir::Column | FlexDir::ColumnReverse => {
+                    // Cross axis is horizontal (width): measure max-content width
+                    let content_width = estimate_max_content_width(layouter, key, style);
+                    let padding_border_horiz = (sides.padding_left
+                        + sides.padding_right
+                        + sides.border_left
+                        + sides.border_right)
+                        .max(0);
+                    (content_width + padding_border_horiz) as f32
+                }
+            }
+        },
+        |explicit| explicit.max(0.0),
+    );
+
+    if max_c < min_c {
+        max_c = min_c;
+    }
+    (cross, min_c, max_c)
+}
+
+/// Compute baseline metrics for a flex item.
+fn compute_baseline_metrics(
+    layouter: &Layouter,
+    key: NodeKey,
+    style: &ComputedStyle,
+    cross: f32,
+) -> (f32, f32) {
+    if let Some((first_real, last_real)) = try_inline_baselines(layouter, key) {
+        (first_real.max(0.0), last_real.max(0.0))
+    } else {
+        let line_h_px = style
+            .line_height
+            .unwrap_or_else(|| default_line_height_px(style) as f32)
+            .max(0.0);
+        let first_baseline = line_h_px.min(cross).max(0.0);
+        let last_baseline = (cross - first_baseline).max(0.0).min(cross);
+        (first_baseline, last_baseline)
+    }
+}
+
 /// Build `FlexChild` inputs and cross constraints for the given item list.
 fn build_flex_item_inputs(
-    layouter: &Layouter,
+    layouter: &mut Layouter,
     items: &[FlexItem],
     direction: FlexDir,
+    container_used_width: i32,
 ) -> FlexInputsTriple {
     let mut main_items: Vec<FlexChild> = Vec::with_capacity(items.len());
     let mut cross_inputs: Vec<CrossTriplet> = Vec::with_capacity(items.len());
@@ -881,11 +1160,8 @@ fn build_flex_item_inputs(
             .get(&key)
             .cloned()
             .unwrap_or_else(ComputedStyle::default);
-        let basis_opt = style_item.flex_basis.or(match direction {
-            FlexDir::Row | FlexDir::RowReverse => style_item.width,
-            FlexDir::Column | FlexDir::ColumnReverse => style_item.height,
-        });
-        let flex_basis = basis_opt.unwrap_or(0.0).max(0.0);
+        let flex_basis =
+            compute_flex_basis(layouter, key, &style_item, direction, container_used_width);
         let (min_main, mut max_main) = match direction {
             FlexDir::Row | FlexDir::RowReverse => (
                 style_item.min_width.unwrap_or(0.0).max(0.0),
@@ -913,36 +1189,15 @@ fn build_flex_item_inputs(
             margin_left_auto: false,
             margin_right_auto: false,
         });
-        let (cross, min_c, mut max_c) = match direction {
-            FlexDir::Row | FlexDir::RowReverse => (
-                style_item.height.unwrap_or(0.0).max(0.0),
-                style_item.min_height.unwrap_or(0.0).max(0.0),
-                style_item.max_height.unwrap_or(1_000_000.0).max(0.0),
-            ),
-            FlexDir::Column | FlexDir::ColumnReverse => (
-                style_item.width.unwrap_or(0.0).max(0.0),
-                style_item.min_width.unwrap_or(0.0).max(0.0),
-                style_item.max_width.unwrap_or(1_000_000.0).max(0.0),
-            ),
-        };
-        if max_c < min_c {
-            max_c = min_c;
-        }
+        let (cross, min_c, max_c) =
+            compute_cross_size(layouter, key, &style_item, direction, container_used_width);
         cross_inputs.push((cross, min_c, max_c));
-        // Baseline metrics [Approximation → Improved]:
-        // 1) Prefer real baselines from inline/text engine when available.
-        // 2) Fallback heuristic: first = line-height clamped to cross; last = cross - first.
-        if let Some((first_real, last_real)) = try_inline_baselines(layouter, key) {
-            baseline_inputs.push(Some((first_real.max(0.0), last_real.max(0.0))));
-        } else {
-            let line_h_px = style_item
-                .line_height
-                .unwrap_or_else(|| default_line_height_px(&style_item) as f32)
-                .max(0.0);
-            let first_baseline = line_h_px.min(cross).max(0.0);
-            let last_baseline = (cross - first_baseline).max(0.0).min(cross);
-            baseline_inputs.push(Some((first_baseline, last_baseline)));
-        }
+        baseline_inputs.push(Some(compute_baseline_metrics(
+            layouter,
+            key,
+            &style_item,
+            cross,
+        )));
     }
     (main_items, cross_inputs, baseline_inputs)
 }
@@ -1040,6 +1295,7 @@ fn write_pairs_and_measure(
         } else {
             place.main_size
         };
+
         layouter.rects.insert(
             key,
             LayoutRect {

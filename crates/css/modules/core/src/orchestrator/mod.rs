@@ -1,9 +1,12 @@
 //! Orchestrator: entry points and root aggregation for layout.
 
 use css_box::compute_box_sides;
+use css_display::LineBox;
 use css_orchestrator::style_model::ComputedStyle;
 use log::debug;
+use std::collections::HashMap;
 
+use crate::LayoutNodeKind;
 use crate::SCROLLBAR_GUTTER_PX;
 use crate::chapter8::part_8_3_1_collapsing_margins::compute_root_y_after_top_collapse;
 use crate::chapter9::part_9_4_1_block_formatting_context::establishes_block_formatting_context;
@@ -189,6 +192,10 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
         content_height,
         reflowed_count,
     );
+
+    // Assign rects to inline text nodes after block layout is complete
+    assign_text_rects(layouter);
+
     reflowed_count
 }
 
@@ -245,5 +252,131 @@ pub fn push_dirty_rect_if_changed_impl(
             width: width as f32,
             height: content_height.max(0i32) as f32,
         });
+    }
+}
+
+/// Find all parent nodes that have inline text children.
+fn find_parents_with_inline_text(layouter: &Layouter) -> Vec<NodeKey> {
+    let mut parents_with_text = Vec::new();
+    for (parent_key, children) in &layouter.children {
+        for child_key in children {
+            if matches!(
+                layouter.nodes.get(child_key),
+                Some(LayoutNodeKind::InlineText { .. })
+            ) {
+                parents_with_text.push(*parent_key);
+                break;
+            }
+        }
+    }
+    parents_with_text
+}
+
+/// Content box metrics for text layout.
+struct ContentBox {
+    x: f32,
+    y: f32,
+    width: f32,
+}
+
+/// Calculate content box position and dimensions for a parent element.
+fn calculate_content_box(parent_rect: &LayoutRect, parent_style: &ComputedStyle) -> ContentBox {
+    let padding_left = parent_style.padding.left.max(0.0);
+    let padding_top = parent_style.padding.top.max(0.0);
+    let border_left = parent_style.border_width.left.max(0.0);
+    let border_top = parent_style.border_width.top.max(0.0);
+
+    let content_x = parent_rect.x + padding_left + border_left;
+    let content_y = parent_rect.y + padding_top + border_top;
+    let content_width = parent_rect.width
+        - (padding_left
+            + parent_style.padding.right.max(0.0)
+            + border_left
+            + parent_style.border_width.right.max(0.0));
+
+    ContentBox {
+        x: content_x,
+        y: content_y,
+        width: content_width,
+    }
+}
+
+/// Assign rects to text nodes for a given set of lines.
+fn assign_line_rects(
+    layouter: &mut Layouter,
+    lines: &[LineBox],
+    kind_map: &HashMap<NodeKey, LayoutNodeKind>,
+    content_box: &ContentBox,
+    line_height: i32,
+) {
+    let mut y_offset = 0i32;
+    for line in lines {
+        for fragment in &line.fragments {
+            let child_key = fragment.node;
+            if matches!(
+                kind_map.get(&child_key),
+                Some(LayoutNodeKind::InlineText { .. })
+            ) {
+                let text_rect = LayoutRect {
+                    x: content_box.x,
+                    y: content_box.y + y_offset as f32,
+                    width: content_box.width,
+                    height: line_height as f32,
+                };
+                layouter.rects.insert(child_key, text_rect);
+            }
+        }
+        y_offset = y_offset.saturating_add(line_height);
+    }
+}
+
+/// Assign layout rects to inline text nodes based on their parent's rect.
+/// This is a simple implementation that places all text in a single line within the parent's content box.
+fn assign_text_rects(layouter: &mut Layouter) {
+    use css_display::build_inline_context_with_filter;
+    use css_text::{collapse_whitespace, default_line_height_px};
+
+    let parents_with_text = find_parents_with_inline_text(layouter);
+
+    for parent_key in parents_with_text {
+        let Some(children) = layouter.children.get(&parent_key).cloned() else {
+            continue;
+        };
+        let Some(parent_rect) = layouter.rects.get(&parent_key).copied() else {
+            continue;
+        };
+
+        let parent_style = layouter
+            .computed_styles
+            .get(&parent_key)
+            .cloned()
+            .unwrap_or_default();
+
+        let content_box = calculate_content_box(&parent_rect, &parent_style);
+
+        let mut kind_map = HashMap::new();
+        for (node_key, kind, _) in layouter.snapshot() {
+            kind_map.insert(node_key, kind);
+        }
+
+        let styles = &layouter.computed_styles;
+        let parent_style_opt = styles.get(&parent_key);
+
+        let skip_predicate = |node_key: NodeKey| -> bool {
+            if let Some(LayoutNodeKind::InlineText { text }) = kind_map.get(&node_key).cloned() {
+                collapse_whitespace(&text).is_empty()
+            } else {
+                false
+            }
+        };
+
+        let lines =
+            build_inline_context_with_filter(&children, styles, parent_style_opt, skip_predicate);
+        if lines.is_empty() {
+            continue;
+        }
+
+        let line_height = default_line_height_px(&parent_style);
+        assign_line_rects(layouter, &lines, &kind_map, &content_box, line_height);
     }
 }

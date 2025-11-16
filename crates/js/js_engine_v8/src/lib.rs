@@ -1,10 +1,10 @@
 //! JavaScript engine adapter with optional V8 backend and a lightweight stub.
 //!
-//! - When feature `v8` is enabled (default), this crate links `rusty_v8` and
+//! - When feature `v8` is enabled (default), this crate links the `v8` crate and
 //!   provides a real engine implementation `V8Engine`.
 //! - When `v8` is disabled, a stub `V8Engine` is compiled that implements the
 //!   `js::JsEngine` trait but performs no execution, allowing builds/tests
-//!   without `rusty_v8`.
+//!   without V8.
 
 #[cfg(not(feature = "v8"))]
 mod stub {
@@ -60,7 +60,7 @@ mod real {
     use js::Console;
     use js::runtime::RUNTIME_PRELUDE;
     use js::{HostBindings, HostContext, HostFnKind, HostNamespace, JSValue, JsEngine};
-    use rusty_v8::{
+    use v8::{
         Boolean, Context, ContextScope, CreateParams, External, Function,
         FunctionCallbackArguments, Global, HandleScope, Isolate, Local, Module, Number, Object,
         OwnedIsolate, Platform, ReturnValue, Script, ScriptOrigin, SharedRef, String as V8String,
