@@ -40,7 +40,7 @@ zstd.workspace = true
 [features]
 # Default to stub for layout tests (temporarily)
 default = ["js_stub"]
-# Use V8-backed engine
-js_v8 = ["js_engine_v8/v8", "page_handler/js_v8"]
+# Use V8-backed engine - temporarily disabled
+# js_v8 = ["js_engine_v8/v8", "page_handler/js_v8"]
 # Use stub engine (no rusty_v8)
 js_stub = ["js_engine_v8/stub", "page_handler/js_stub"]
