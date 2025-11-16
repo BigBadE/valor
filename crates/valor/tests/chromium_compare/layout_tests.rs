@@ -160,7 +160,8 @@ async fn process_layout_fixture(
 ) -> Result<bool> {
     let display_name = input_path.display().to_string();
 
-    // Run Valor operations in block_in_place with separate runtime to avoid conflicts
+    // Use block_in_place to move off async worker thread before calling valor_runtime.block_on()
+    // Even though it's a separate runtime, Tokio's thread-local checks still panic otherwise
     let layouter_result = tokio::task::block_in_place(|| {
         setup_layouter_for_fixture(valor_runtime, input_path)
     });
