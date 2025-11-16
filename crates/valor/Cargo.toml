@@ -36,6 +36,8 @@ image.workspace = true
 [dev-dependencies]
 js.workspace = true
 zstd.workspace = true
+chromiumoxide.workspace = true
+futures.workspace = true
 
 [features]
 # Default to stub for layout tests (temporarily)
