@@ -1,4 +1,4 @@
-use super::browser::{TestType, navigate_and_prepare_page, setup_chrome_browser};
+use super::browser::navigate_and_prepare_page;
 use super::common::{
     clear_valor_layout_cache_if_harness_changed, create_page, css_reset_injection_script,
     get_filtered_fixtures, init_test_logger, read_cached_json_for_fixture, to_file_url,
@@ -65,22 +65,22 @@ fn apply_element_attrs(layouter: &mut Layouter, node: NodeKey, attrs: &HashMap<S
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or layout computation fails.
-fn setup_layouter_for_fixture(runtime: &Runtime, input_path: &Path) -> Result<LayouterWithStyles> {
+async fn setup_layouter_for_fixture(runtime: &Runtime, input_path: &Path) -> Result<LayouterWithStyles> {
     let url = to_file_url(input_path)?;
-    let mut page = create_page(runtime, url)?;
+    let mut page = create_page(runtime, url).await?;
     page.eval_js(css_reset_injection_script())?;
     let mut layouter_mirror = page.create_mirror(Layouter::new());
 
-    let finished = update_until_finished(runtime, &mut page, |_page| {
+    let finished = update_until_finished(&mut page, |_page| {
         layouter_mirror.try_update_sync()?;
         Ok(())
-    })?;
+    }).await?;
 
     if !finished {
         return Err(anyhow!("Parsing did not finish"));
     }
 
-    runtime.block_on(page.update())?;
+    page.update().await?;
     layouter_mirror.try_update_sync()?;
 
     let (tags_by_key, element_children) = page.layout_structure_snapshot();
@@ -153,20 +153,15 @@ fn check_js_assertions(
 /// Returns an error if fixture processing, layouter setup, or JSON operations fail.
 async fn process_layout_fixture(
     input_path: &Path,
-    valor_runtime: &Runtime,
+    runtime: &Runtime,
     browser: &chromiumoxide::Browser,
     harness_src: &str,
     failed: &mut Vec<(String, String)>,
 ) -> Result<bool> {
     let display_name = input_path.display().to_string();
 
-    // Use block_in_place to move off async worker thread before calling valor_runtime.block_on()
-    // Even though it's a separate runtime, Tokio's thread-local checks still panic otherwise
-    let layouter_result = tokio::task::block_in_place(|| {
-        setup_layouter_for_fixture(valor_runtime, input_path)
-    });
-
-    let (mut layouter, computed_for_serialization) = match layouter_result {
+    // Simply await the async setup function - no block_on needed!
+    let (mut layouter, computed_for_serialization) = match setup_layouter_for_fixture(runtime, input_path).await {
         Ok(result) => result,
         Err(err) => {
             let msg = format!("Setup failed: {err}");
@@ -228,9 +223,8 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
     );
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
-    // Separate runtimes: one for Valor sync ops, one for Chromium async ops
-    let valor_runtime = Runtime::new()?;
-    let chromium_runtime = Runtime::new()?;
+    // Single runtime for all async operations
+    let runtime = Runtime::new()?;
 
     // Create browser for this test
     use chromiumoxide::browser::{Browser, BrowserConfig};
@@ -256,21 +250,24 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
         .build()
         .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
-    let (browser, mut handler) = chromium_runtime.block_on(Browser::launch(config))?;
+    let (mut browser, mut handler) = runtime.block_on(Browser::launch(config))?;
 
-    // Spawn handler task on chromium runtime
-    let _handler_task = chromium_runtime.spawn(async move {
+    // Spawn handler task
+    let _handler_task = runtime.spawn(async move {
         while let Some(_event) = handler.next().await {
             // Silently consume events
         }
     });
 
-    // Run in a single block_on on chromium runtime
-    let failed = chromium_runtime.block_on(async {
+    // Run in a single block_on - all operations are async and await naturally
+    let failed = runtime.block_on(async {
         let mut failed: Vec<(String, String)> = Vec::new();
-        process_layout_fixture(input_path, &valor_runtime, &browser, harness_src, &mut failed).await?;
+        process_layout_fixture(input_path, &runtime, &browser, harness_src, &mut failed).await?;
         Ok::<_, anyhow::Error>(failed)
     })?;
+
+    // Let browser drop naturally to clean up resources
+    drop(browser);
 
     if failed.is_empty() {
         Ok(())
@@ -295,9 +292,8 @@ pub fn run_chromium_layouts() -> Result<()> {
     );
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
-    // Separate runtimes: one for Valor sync ops, one for Chromium async ops
-    let valor_runtime = Runtime::new()?;
-    let chromium_runtime = Runtime::new()?;
+    // Single runtime for all async operations
+    let runtime = Runtime::new()?;
 
     // Create one browser and event handler for all tests
     use chromiumoxide::browser::{Browser, BrowserConfig};
@@ -323,22 +319,22 @@ pub fn run_chromium_layouts() -> Result<()> {
         .build()
         .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
-    let (browser, mut handler) = chromium_runtime.block_on(Browser::launch(config))?;
+    let (mut browser, mut handler) = runtime.block_on(Browser::launch(config))?;
 
-    // Spawn handler task on chromium runtime
-    let _handler_task = chromium_runtime.spawn(async move {
+    // Spawn handler task
+    let _handler_task = runtime.spawn(async move {
         while let Some(_event) = handler.next().await {
             // Silently consume events
         }
     });
 
-    // Run all fixtures in a single block_on on chromium runtime
-    let (ran, failed) = chromium_runtime.block_on(async {
+    // Run all fixtures in a single block_on - all operations are async and await naturally
+    let (ran, failed) = runtime.block_on(async {
         let mut failed: Vec<(String, String)> = Vec::new();
         let fixtures = get_filtered_fixtures("LAYOUT")?;
         let mut ran = 0;
         for input_path in fixtures {
-            if process_layout_fixture(&input_path, &valor_runtime, &browser, harness_src, &mut failed).await? {
+            if process_layout_fixture(&input_path, &runtime, &browser, harness_src, &mut failed).await? {
                 ran += 1;
             }
         }

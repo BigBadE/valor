@@ -254,13 +254,13 @@ async fn capture_chrome_png(page: &Page, path: &Path) -> Result<Vec<u8>> {
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or display list generation fails.
-fn build_valor_display_list_for(
+async fn build_valor_display_list_for(
+    runtime: &Runtime,
     path: &Path,
     viewport_w: u32,
     viewport_h: u32,
 ) -> Result<DisplayList> {
-    let runtime = Runtime::new()?;
-    let mut page = setup_page_for_fixture(&runtime, path)?;
+    let mut page = setup_page_for_fixture(runtime, path).await?;
     let display_list = page.display_list_retained_snapshot()?;
     let clear_color = page.background_rgba();
     let mut items = Vec::with_capacity(display_list.items.len() + 1);
@@ -633,6 +633,7 @@ struct FixtureContext<'ctx> {
     browser: &'ctx mut Option<ChromeBrowser>,
     page: &'ctx mut Option<Page>,
     timings: &'ctx mut Timings,
+    runtime: &'ctx Runtime,
 }
 
 /// Processes a single graphics fixture by comparing Chrome and Valor renders.
@@ -671,7 +672,7 @@ async fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
 
     let (width, height) = (784u32, 453u32);
     let t_build = Instant::now();
-    let display_list = build_valor_display_list_for(ctx.fixture, width, height)?;
+    let display_list = build_valor_display_list_for(ctx.runtime, ctx.fixture, width, height).await?;
     ctx.timings.build_dl += t_build.elapsed();
     debug!(
         "[GRAPHICS][DEBUG] {}: DL items={} (first 5: {:?})",
@@ -743,6 +744,7 @@ pub fn chromium_graphics_smoke_compare_png() -> Result<()> {
             browser: &mut browser,
             page: &mut page,
             timings: &mut timings,
+            runtime: &runtime,
         }))? {
             any_failed = true;
         }
