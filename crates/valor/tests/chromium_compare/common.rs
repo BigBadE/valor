@@ -363,6 +363,18 @@ pub async fn create_page(runtime: &Runtime, url: Url) -> Result<HtmlPage> {
     Ok(page)
 }
 
+/// Creates a new HTML page using the current tokio handle.
+///
+/// # Errors
+///
+/// Returns an error if page creation fails.
+pub async fn create_page_from_current(url: Url) -> Result<HtmlPage> {
+    let config = ValorConfig::from_env();
+    let handle = tokio::runtime::Handle::current();
+    let page = HtmlPage::new(&handle, url, config).await?;
+    Ok(page)
+}
+
 /// Sets up a page for a fixture by loading, parsing, and applying CSS reset.
 ///
 /// # Errors
