@@ -8,7 +8,6 @@ use std::collections::HashSet;
 use std::env;
 use std::fs::{create_dir_all, read, read_dir, read_to_string, remove_dir_all, write};
 use std::path::{Path, PathBuf};
-use std::thread::sleep;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::runtime::Runtime;
@@ -382,7 +381,7 @@ pub async fn setup_page_for_fixture(runtime: &Runtime, path: &Path) -> Result<Ht
         ));
     }
 
-    runtime.block_on(page.update())?;
+    page.update().await?;
     Ok(page)
 }
 
@@ -412,7 +411,6 @@ where
         if finished {
             break;
         }
-        sleep(Duration::from_millis(2));
     }
     Ok(finished)
 }
