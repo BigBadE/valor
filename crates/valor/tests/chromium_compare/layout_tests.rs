@@ -824,20 +824,6 @@ fn our_layout_json(
 
 fn chromium_layout_extraction_script() -> &'static str {
     "(function() {
-        // Inject CSS reset to match Valor test environment
-        (function(){
-            try {
-                var css = '*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;font-family:monospace;}html,body{margin:0!important;padding:0!important;}h1,h2,h3,h4,h5,h6,p{margin:0;padding:0;}ul,ol{margin:0;padding:0;list-style:none;}';
-                var existing = document.querySelector(\"style[data-valor-test-reset='1']\");
-                if (!existing) {
-                    var style = document.createElement('style');
-                    style.setAttribute('data-valor-test-reset','1');
-                    style.textContent = css;
-                    (document.head || document.documentElement).appendChild(style);
-                }
-            } catch (e) { /* ignore reset injection errors */ }
-        })();
-
         function shouldSkip(el) {
             if (!el || !el.tagName) return false;
             var tag = String(el.tagName).toLowerCase();
