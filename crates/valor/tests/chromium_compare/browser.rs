@@ -82,7 +82,16 @@ pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser>
 ///
 /// Returns an error if navigation fails.
 pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
+    use tokio::time::{timeout, Duration};
+
     let url = to_file_url(path)?;
-    page.goto(url.as_str()).await?;
+    log::info!("Navigating to: {}", url.as_str());
+
+    // Add 10 second timeout to navigation
+    timeout(Duration::from_secs(10), page.goto(url.as_str()))
+        .await
+        .map_err(|_| anyhow::anyhow!("Navigation timeout after 10s for {}", url.as_str()))??;
+
+    log::info!("Navigation completed for: {}", url.as_str());
     Ok(())
 }

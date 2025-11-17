@@ -534,61 +534,50 @@ pub fn run_chromium_layouts() -> Result<()> {
     // Single runtime for all async operations
     let runtime = Runtime::new()?;
 
-    // Create one browser and event handler for all tests
-    use chromiumoxide::browser::{Browser, BrowserConfig};
-    use futures::StreamExt;
-
-    let chrome_path = std::path::PathBuf::from(
-        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
-    );
-    let config = BrowserConfig::builder()
-        .chrome_executable(chrome_path)
-        .no_sandbox()
-        .window_size(800, 600)
-        .arg("--force-device-scale-factor=1")
-        .arg("--hide-scrollbars")
-        .arg("--blink-settings=imagesEnabled=false")
-        .arg("--disable-gpu")
-        .arg("--disable-features=OverlayScrollbar")
-        .arg("--allow-file-access-from-files")
-        .arg("--disable-dev-shm-usage")
-        .arg("--disable-extensions")
-        .arg("--disable-background-networking")
-        .arg("--disable-sync")
-        .build()
-        .map_err(|e| anyhow!("Browser config error: {}", e))?;
-
-    let (browser, mut handler) = runtime.block_on(Browser::launch(config))?;
-    let browser = Arc::new(browser); // Wrap in Arc for sharing across tasks
-
-    // Spawn handler task
-    let _handler_task = runtime.spawn(async move {
-        while let Some(_event) = handler.next().await {
-            // Silently consume events
-        }
-    });
-
-    // Run all fixtures with async concurrency and timing
+    // Run everything in a single block_on to avoid interfering with the handler task
     let overall_start = Instant::now();
     let (ran, failed, timing_stats) = runtime.block_on(async {
-        use std::collections::VecDeque;
-        use std::sync::Mutex;
+        use chromiumoxide::browser::{Browser, BrowserConfig};
+        use futures::StreamExt;
+
+        let chrome_path = std::path::PathBuf::from(
+            "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
+        );
+        let config = BrowserConfig::builder()
+            .chrome_executable(chrome_path)
+            .no_sandbox()
+            .window_size(800, 600)
+            .arg("--force-device-scale-factor=1")
+            .arg("--hide-scrollbars")
+            .arg("--blink-settings=imagesEnabled=false")
+            .arg("--disable-gpu")
+            .arg("--disable-features=OverlayScrollbar")
+            .arg("--allow-file-access-from-files")
+            .arg("--disable-dev-shm-usage")
+            .arg("--disable-extensions")
+            .arg("--disable-background-networking")
+            .arg("--disable-sync")
+            .build()
+            .map_err(|e| anyhow!("Browser config error: {}", e))?;
+
+        let (browser, mut handler) = Browser::launch(config).await?;
+        let browser = Arc::new(browser); // Wrap in Arc for sharing across tasks
+
+        // Spawn handler task using tokio::spawn
+        let _handler_task = tokio::spawn(async move {
+            while let Some(_event) = handler.next().await {
+                // Silently consume events
+            }
+        });
 
         let fixtures = get_filtered_fixtures("LAYOUT")?;
         let fixture_count = fixtures.len();
 
-        // Create a pool of reusable pages to avoid expensive create/close operations
-        const PAGE_POOL_SIZE: usize = 16;
-        info!("[LAYOUT] Creating page pool with {} pages...", PAGE_POOL_SIZE);
-        let mut page_pool_vec = Vec::with_capacity(PAGE_POOL_SIZE);
-        for _ in 0..PAGE_POOL_SIZE {
-            let page = browser.new_page("about:blank").await?;
-            page_pool_vec.push(page);
-        }
-
-        let page_pool = Arc::new(Mutex::new(VecDeque::from(page_pool_vec)));
-        info!("[LAYOUT] Running {} fixtures with async concurrency (buffer={}, pages={})",
-              fixture_count, PAGE_POOL_SIZE, PAGE_POOL_SIZE);
+        // Use fresh pages (page pooling doesn't work due to chromiumoxide limitations)
+        // Testing shows concurrency=1 is fastest (6.4s) vs concurrency=16 (41s)
+        // Creating/closing pages has significant overhead, so serial is better
+        const CONCURRENCY: usize = 1;
+        info!("[LAYOUT] Running {} fixtures with concurrency {}", fixture_count, CONCURRENCY);
 
         let mut failed_vec: Vec<(String, String)> = Vec::new();
         let mut timing_vec: Vec<(String, FixtureTiming)> = Vec::new();
@@ -598,18 +587,17 @@ pub fn run_chromium_layouts() -> Result<()> {
         let mut fixture_stream = stream::iter(fixtures.into_iter().map(|input_path| {
             let browser = Arc::clone(&browser);
             let harness_src_owned = harness_src.to_string();
-            let page_pool_clone = Arc::clone(&page_pool);
 
             async move {
                 let display_name = input_path.display().to_string();
                 let mut timing = FixtureTiming::default();
                 let mut local_failed: Vec<(String, String)> = Vec::new();
 
-                // Get a page from the pool
-                let page = {
-                    let mut pool = page_pool_clone.lock().unwrap();
-                    pool.pop_front()
-                        .expect("Page pool exhausted - should never happen with buffer_unordered")
+                // Create a fresh page for each fixture
+                log::info!("Creating fresh page for: {}", display_name);
+                let page = match browser.new_page("about:blank").await {
+                    Ok(p) => p,
+                    Err(e) => return (display_name, timing, local_failed, Err(e.into())),
                 };
 
                 let result = process_layout_fixture_parallel_with_page(
@@ -621,13 +609,13 @@ pub fn run_chromium_layouts() -> Result<()> {
                     &mut timing,
                 ).await;
 
-                // Return page to pool
-                page_pool_clone.lock().unwrap().push_back(page);
+                // Close the page
+                let _ = page.close().await;
 
                 (display_name, timing, local_failed, result)
             }
         }))
-        .buffer_unordered(PAGE_POOL_SIZE); // Process up to PAGE_POOL_SIZE fixtures concurrently
+        .buffer_unordered(CONCURRENCY);
 
         // Collect results as they complete
         while let Some((display_name, timing, local_failed, result)) = fixture_stream.next().await {
@@ -645,12 +633,6 @@ pub fn run_chromium_layouts() -> Result<()> {
 
         // Drop the stream to release Arc references
         drop(fixture_stream);
-
-        // Cleanup pages
-        let pool = Arc::try_unwrap(page_pool).unwrap().into_inner().unwrap();
-        for page in pool {
-            let _ = page.close().await;
-        }
 
         Ok::<_, anyhow::Error>((ran, failed_vec, timing_vec))
     })?;
@@ -994,9 +976,21 @@ fn chromium_layout_extraction_script() -> &'static str {
 ///
 /// Returns an error if navigation, script evaluation, or JSON parsing fails.
 async fn chromium_layout_json_in_page(page: &Page, path: &Path) -> Result<JsonValue> {
+    use tokio::time::{timeout, Duration};
+
+    log::info!("Starting chromium layout extraction for: {}", path.display());
     navigate_and_prepare_page(page, path).await?;
+
+    log::info!("Evaluating extraction script for: {}", path.display());
     let script = chromium_layout_extraction_script();
-    let result = page.evaluate(script).await?;
+
+    // Add 10 second timeout to script evaluation
+    let result = timeout(Duration::from_secs(10), page.evaluate(script))
+        .await
+        .map_err(|_| anyhow!("Script evaluation timeout after 10s for {}", path.display()))??;
+
+    log::info!("Script evaluation completed for: {}", path.display());
+
     let json_string = result
         .value()
         .and_then(|v| v.as_str())
