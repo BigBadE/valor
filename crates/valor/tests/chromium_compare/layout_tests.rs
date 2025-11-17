@@ -285,84 +285,6 @@ async fn process_layout_fixture_parallel_with_page(
     result
 }
 
-/// Processes a single layout fixture for parallel execution (uses current tokio handle).
-///
-/// # Errors
-///
-/// Returns an error if fixture processing, layouter setup, or JSON operations fail.
-async fn process_layout_fixture_parallel(
-    input_path: &Path,
-    browser: &Arc<chromiumoxide::Browser>,
-    harness_src: &str,
-    failed: &mut Vec<(String, String)>,
-    timing: &mut FixtureTiming,
-) -> Result<bool> {
-    let display_name = input_path.display().to_string();
-    let fixture_start = Instant::now();
-
-    // Setup layouter
-    let setup_start = Instant::now();
-    let (mut layouter, computed_for_serialization) = match setup_layouter_for_fixture_current(input_path).await {
-        Ok(result) => result,
-        Err(err) => {
-            let msg = format!("Setup failed: {err}");
-            error!("[LAYOUT] {display_name} ... FAILED: {msg}");
-            failed.push((display_name.clone(), msg));
-            return Ok(false);
-        }
-    };
-    timing.setup_layouter = setup_start.elapsed();
-
-    // Compute geometry
-    let geometry_start = Instant::now();
-    let rects_external = layouter.compute_layout_geometry();
-    let our_json = our_layout_json(&layouter, &rects_external, &computed_for_serialization);
-    timing.compute_geometry = geometry_start.elapsed();
-
-    // Fetch or retrieve Chromium JSON
-    let chromium_start = Instant::now();
-    let ch_json = if let Some(cached_value) = read_cached_json_for_fixture(input_path, harness_src)
-    {
-        cached_value
-    } else {
-        // Await directly - no block_on() to avoid blocking the event handler
-        let page = browser.as_ref().new_page("about:blank").await?;
-        let chromium_value = chromium_layout_json_in_page(&page, input_path).await?;
-        page.close().await?;
-        write_cached_json_for_fixture(input_path, harness_src, &chromium_value)?;
-        chromium_value
-    };
-    timing.chromium_fetch = chromium_start.elapsed();
-
-    // Write JSON files and compare
-    let comparison_start = Instant::now();
-    write_named_json_for_fixture(input_path, harness_src, "chromium", &ch_json)?;
-    write_named_json_for_fixture(input_path, harness_src, "valor", &our_json)?;
-    check_js_assertions(&ch_json, &display_name, failed);
-
-    let ch_layout_json = if ch_json.get("layout").is_some() || ch_json.get("asserts").is_some() {
-        ch_json.get("layout").cloned().unwrap_or_else(|| json!({}))
-    } else {
-        ch_json.clone()
-    };
-
-    let eps = f64::from(f32::EPSILON) * 3.0;
-    let result = match compare_json_with_epsilon(&our_json, &ch_layout_json, eps) {
-        Ok(()) => {
-            info!("[LAYOUT] {display_name} ... ok");
-            Ok(true)
-        }
-        Err(msg) => {
-            failed.push((display_name.clone(), msg));
-            Ok(false)
-        }
-    };
-    timing.json_comparison = comparison_start.elapsed();
-    timing.total = fixture_start.elapsed();
-
-    result
-}
-
 /// Processes a single layout fixture and compares it against Chromium (sequential version).
 ///
 /// # Errors
@@ -902,6 +824,20 @@ fn our_layout_json(
 
 fn chromium_layout_extraction_script() -> &'static str {
     "(function() {
+        // Inject CSS reset to match Valor test environment
+        (function(){
+            try {
+                var css = '*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;font-family:monospace;}html,body{margin:0!important;padding:0!important;}h1,h2,h3,h4,h5,h6,p{margin:0;padding:0;}ul,ol{margin:0;padding:0;list-style:none;}';
+                var existing = document.querySelector(\"style[data-valor-test-reset='1']\");
+                if (!existing) {
+                    var style = document.createElement('style');
+                    style.setAttribute('data-valor-test-reset','1');
+                    style.textContent = css;
+                    (document.head || document.documentElement).appendChild(style);
+                }
+            } catch (e) { /* ignore reset injection errors */ }
+        })();
+
         function shouldSkip(el) {
             if (!el || !el.tagName) return false;
             var tag = String(el.tagName).toLowerCase();
