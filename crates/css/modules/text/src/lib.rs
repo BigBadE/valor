@@ -29,11 +29,12 @@ pub const fn default_font_size_px() -> i32 {
 
 /// Compute a default line-height in pixels for a given style.
 /// CSS initial `line-height` is `normal`. Chrome uses ~1.125× font-size for body text.
+/// Chrome rounds up (ceiling) for line-height calculations to ensure sufficient space.
 pub fn default_line_height_px(style: &ComputedStyle) -> i32 {
     let font_size_px: f32 = if style.font_size > 0.0 {
         style.font_size
     } else {
         default_font_size_px() as f32
     };
-    (font_size_px * 1.125).round() as i32
+    (font_size_px * 1.125).ceil() as i32
 }
