@@ -74,26 +74,36 @@ pub fn compute_container_metrics_impl(
         .unwrap_or_else(ComputedStyle::default);
 
     let sides = compute_box_sides(&root_style);
-    // Normalize the initial containing block (ICB) edges to the viewport: for the chosen layout root
-    // (html/body), treat the top/left edges as having no padding/border when computing the container
-    // origin. This matches browser behavior where the canvas/viewport origin is at (0,0) and avoids
-    // shifting all descendants by any authored root-side borders.
-    // Spec notes:
-    //   - CSS 2.2 Visual formatting model root and initial containing block: the canvas has no border.
-    //   - getBoundingClientRect() for element boxes is measured relative to the viewport origin.
-    //     We align our ICB to (0,0) for parity with Chromium in tests.
-    let padding_left: i32 = 0; // sides.padding_left;
+    // Apply root element's padding per CSS 2.2 §8.1 Box Model.
+    // The root element's padding creates space between its border and content, just like any other element.
+    // Previous code incorrectly zeroed left/top padding while keeping right/bottom, breaking the box model.
+    let padding_left = sides.padding_left;
     let padding_right = sides.padding_right;
-    let padding_top: i32 = 0; // sides.padding_top;
+    let padding_top = sides.padding_top;
+    // Border edges are still zeroed to align the root's border-box at viewport origin (0,0).
+    // This matches browser behavior where the canvas starts at (0,0) but padding still applies.
     let border_left: i32 = 0; // sides.border_left;
     let border_right = sides.border_right;
     let border_top: i32 = 0; // sides.border_top;
-    let margin_left = 0i32;
-    let margin_top = 0i32;
-    // Apply a fixed scrollbar gutter for the viewport to approximate Chromium's reserved space.
-    // This brings our initial containing block into alignment with Chrome's layout width on Windows.
-    let scrollbar_gutter = SCROLLBAR_GUTTER_PX;
-    let total_border_box_width = icb_width.saturating_sub(scrollbar_gutter).max(0i32);
+    // Margins position the root element's border-box within the viewport.
+    let margin_left = sides.margin_left;
+    let margin_top = sides.margin_top;
+    // Only apply scrollbar gutter when overflow is not 'visible' (auto/scroll reserve space).
+    // Per spec: overflow:visible doesn't show scrollbars, so no gutter should be reserved.
+    use css_orchestrator::style_model::Overflow;
+    let scrollbar_gutter = if !matches!(root_style.overflow, Overflow::Visible) {
+        SCROLLBAR_GUTTER_PX
+    } else {
+        0
+    };
+    // Subtract margins from ICB width - margins are outside the border-box and reduce available space.
+    // For body{margin:8px}, this gives: 800 - 8 - 8 = 784px border-box width.
+    let margin_right = sides.margin_right;
+    let total_border_box_width = icb_width
+        .saturating_sub(scrollbar_gutter)
+        .saturating_sub(margin_left)
+        .saturating_sub(margin_right)
+        .max(0i32);
     let horizontal_non_content = padding_left
         .saturating_add(padding_right)
         .saturating_add(border_left)
@@ -112,6 +122,69 @@ pub fn compute_container_metrics_impl(
         margin_left,
         margin_top,
     }
+}
+
+/// Compute the bottom edge of inline text content when there are no block children.
+/// Returns the absolute bottom position of the last line of text.
+fn compute_inline_content_bottom(
+    layouter: &Layouter,
+    root: NodeKey,
+    metrics: &ContainerMetrics,
+) -> Option<i32> {
+    use css_display::build_inline_context_with_filter;
+    use css_text::{collapse_whitespace, default_line_height_px};
+
+    let children = layouter.children.get(&root)?;
+
+    let root_style = layouter
+        .computed_styles
+        .get(&root)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut kind_map = HashMap::new();
+    for (node_key, kind, _) in layouter.snapshot() {
+        kind_map.insert(node_key, kind);
+    }
+
+    let styles = &layouter.computed_styles;
+    let parent_style_opt = styles.get(&root);
+
+    let skip_predicate = |node_key: NodeKey| -> bool {
+        if let Some(LayoutNodeKind::InlineText { text }) = kind_map.get(&node_key).cloned() {
+            collapse_whitespace(&text).is_empty()
+        } else {
+            false
+        }
+    };
+
+    let lines =
+        build_inline_context_with_filter(children, styles, parent_style_opt, skip_predicate);
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    let line_height = root_style
+        .line_height
+        .map(|lh| lh.round() as i32)
+        .unwrap_or_else(|| default_line_height_px(&root_style));
+
+    let total_inline_height = line_height.saturating_mul(lines.len() as i32);
+
+    let content_origin_y = metrics
+        .margin_top
+        .saturating_add(metrics.border_top)
+        .saturating_add(metrics.padding_top);
+
+    let bottom_edge = content_origin_y.saturating_add(total_inline_height);
+
+    debug!(
+        "[INLINE-CONTENT] root={root:?} lines={} line_height={line_height} total_height={total_inline_height} -> bottom_edge={bottom_edge}",
+        lines.len()
+    );
+
+    Some(bottom_edge)
 }
 
 /// Lays out the root node and its children.
@@ -142,7 +215,7 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
     let root_y = compute_root_y_after_top_collapse(layouter, root, &metrics);
 
     // Prefer effective outgoing bottom margin from the placement loop if available.
-    let content_bottom = if let Some((last_key, rect_bottom, mb_out)) = last_placed_info {
+    let mut content_bottom = if let Some((last_key, rect_bottom, mb_out)) = last_placed_info {
         let root_style = layouter
             .computed_styles
             .get(&root)
@@ -165,6 +238,11 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
     } else {
         compute_last_block_bottom_edge_impl(layouter, root)
     };
+
+    // If no block children, check for inline text content and use its height
+    if content_bottom.is_none() {
+        content_bottom = compute_inline_content_bottom(layouter, root, &metrics);
+    }
     log_last_placed_child_diag(layouter, root, content_bottom);
     let root_y_aligned = root_y;
     let (content_height, root_height_border_box) = compute_root_heights(
@@ -376,7 +454,10 @@ fn assign_text_rects(layouter: &mut Layouter) {
             continue;
         }
 
-        let line_height = default_line_height_px(&parent_style);
+        let line_height = parent_style
+            .line_height
+            .map(|lh| lh.round() as i32)
+            .unwrap_or_else(|| default_line_height_px(&parent_style));
         assign_line_rects(layouter, &lines, &kind_map, &content_box, line_height);
     }
 }

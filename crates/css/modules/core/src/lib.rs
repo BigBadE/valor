@@ -1111,9 +1111,14 @@ impl Layouter {
             );
         }
         // Advance cursor. If clearance lifted the child above the collapsed-top pre-position,
-        // use the absolute placed y; otherwise advance in parent-relative space.
+        // convert the absolute placed y to parent-relative by subtracting parent content origin.
+        // This ensures y_cursor stays in consistent parent-relative coordinates for content_height.
         let y_next = if placed.clear_lifted {
-            placed.y.saturating_add(placed.content_height)
+            let (_parent_x, parent_y) = cb10::parent_content_origin(&ctx.metrics);
+            placed
+                .y
+                .saturating_sub(parent_y)
+                .saturating_add(placed.content_height)
         } else {
             ctx.y_cursor
                 .saturating_add(placed.collapsed_top)

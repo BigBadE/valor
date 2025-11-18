@@ -60,12 +60,14 @@ fn try_inline_baselines(layouter: &Layouter, node: NodeKey) -> Option<(f32, f32)
     if lines.is_empty() {
         return None;
     }
-    // Estimate baselines from default line-height
+    // Use explicit line-height if available, otherwise compute default
     let style = styles
         .get(&node)
         .cloned()
         .unwrap_or_else(ComputedStyle::default);
-    let lh_px = default_line_height_px(&style) as f32;
+    let lh_px = style
+        .line_height
+        .unwrap_or_else(|| default_line_height_px(&style) as f32);
     let first = lh_px.max(0.0);
     let last = (lines.len() as f32 * lh_px).max(first);
     Some((first, last))
@@ -916,16 +918,10 @@ fn intrinsic_height_for_form_control(
             Some((line_h + padding_vert + border_vert).round() as i32)
         }
         "input" => {
-            // Input elements have intrinsic size based on font metrics
-            // Per HTML spec and browser behavior:
-            // - Text inputs: minimum line height = ~1.2em (middle ground between Firefox 1.25em and Chrome 1.15em)
-            // - Checkbox/radio: fixed 13×13px (not implemented - would require type attribute access)
-            //
-            // We don't have access to type attribute here, so assume text input
-            let min_line_height = style.font_size * 1.2;
-            let padding_vert = style.padding.top + style.padding.bottom;
-            let border_vert = style.border_width.top + style.border_width.bottom;
-            Some((min_line_height + padding_vert + border_vert).round() as i32)
+            // Per HTML spec: checkbox/radio have fixed 13×13px border-box intrinsic size
+            // This is the total size including any UA padding/border
+            // We don't have access to type attribute, so use checkbox size as it's most common
+            Some(13)
         }
         "textarea" => {
             // Textarea uses explicit height or defaults to ~2 rows
@@ -941,6 +937,52 @@ fn intrinsic_height_for_form_control(
                 let border_vert = style.border_width.top + style.border_width.bottom;
                 (intrinsic_content_h + padding_vert + border_vert).round() as i32
             })
+        }
+        _ => None,
+    }
+}
+
+/// Get intrinsic width for form control elements per CSS 2.2 §10.3.2 (Replaced elements).
+///
+/// Spec: CSS 2.2 §10.3.2: "If 'width' has a computed value of 'auto', and the element has an
+/// intrinsic width, then that intrinsic width is the used value of 'width'."
+pub fn intrinsic_width_for_form_control_public(
+    layouter: &Layouter,
+    key: NodeKey,
+    style: &ComputedStyle,
+) -> Option<i32> {
+    use css_orchestrator::style_model::Display as CoreDisplay;
+
+    let tag = get_element_tag(layouter, key)?;
+    let tag_lower = tag.to_lowercase();
+
+    match tag_lower.as_str() {
+        "input" => {
+            // Per HTML spec: checkbox/radio have fixed 13×13px border-box intrinsic size
+            // This is the total size including any UA padding/border
+            Some(13)
+        }
+        "button" => {
+            // Buttons only use intrinsic width when inline or inline-flex
+            // Block buttons fill available width per CSS normal flow
+            match style.display {
+                CoreDisplay::Inline | CoreDisplay::InlineFlex => {
+                    let content_width = estimate_max_content_width(layouter, key, style);
+                    let padding_horiz = style.padding.left + style.padding.right;
+                    let border_horiz = style.border_width.left + style.border_width.right;
+                    Some(content_width + (padding_horiz + border_horiz).round() as i32)
+                }
+                _ => None, // Block buttons don't use intrinsic width
+            }
+        }
+        "textarea" => {
+            // Textarea default: ~20 characters wide (per HTML spec cols attribute default)
+            let char_width = style.font_size * 0.6; // avg character width
+            let cols = 20.0f32;
+            let content_width = char_width * cols;
+            let padding_horiz = style.padding.left + style.padding.right;
+            let border_horiz = style.border_width.left + style.border_width.right;
+            Some((content_width + padding_horiz + border_horiz).round() as i32)
         }
         _ => None,
     }

@@ -1,10 +1,11 @@
 use anyhow::Result;
-use headless_chrome::{Browser, LaunchOptionsBuilder, Tab};
-use std::ffi::OsStr;
+use chromiumoxide::browser::{Browser, BrowserConfig};
+use chromiumoxide::page::Page;
+use futures::StreamExt;
 use std::path::Path;
-use std::time::Duration;
+use tokio::task::JoinHandle;
 
-use super::common::{css_reset_injection_script, to_file_url};
+use super::common::to_file_url;
 
 /// Type of chromium comparison test being run.
 #[derive(Debug, Clone, Copy)]
@@ -15,57 +16,82 @@ pub enum TestType {
     Graphics,
 }
 
+/// Browser instance with background event handler.
+pub struct ChromeBrowser {
+    pub browser: Browser,
+    _handler: JoinHandle<()>,
+}
+
+impl ChromeBrowser {
+    /// Create a new tab/page.
+    pub async fn new_page(&self) -> Result<Page> {
+        Ok(self.browser.new_page("about:blank").await?)
+    }
+}
+
 /// Sets up a headless Chrome browser for comparison testing.
 ///
 /// # Errors
 ///
 /// Returns an error if browser launch fails.
-pub fn setup_chrome_browser(test_type: TestType) -> Result<Browser> {
-    let (timeout, extra_args): (Duration, Vec<&OsStr>) = match test_type {
-        TestType::Layout => (
-            Duration::from_secs(300),
-            vec![
-                OsStr::new("--disable-features=OverlayScrollbar"),
-                OsStr::new("--allow-file-access-from-files"),
-                OsStr::new("--disable-dev-shm-usage"),
-                OsStr::new("--no-sandbox"),
-                OsStr::new("--disable-extensions"),
-                OsStr::new("--disable-background-networking"),
-                OsStr::new("--disable-sync"),
-            ],
-        ),
-        TestType::Graphics => (
-            Duration::from_secs(120),
-            vec![OsStr::new("--force-color-profile=sRGB")],
-        ),
-    };
+pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser> {
+    let chrome_path = std::path::PathBuf::from(
+        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
+    );
 
-    let mut args = vec![
-        OsStr::new("--force-device-scale-factor=1"),
-        OsStr::new("--hide-scrollbars"),
-        OsStr::new("--blink-settings=imagesEnabled=false"),
-        OsStr::new("--disable-gpu"),
-    ];
-    args.extend(extra_args);
+    let config_builder = BrowserConfig::builder()
+        .chrome_executable(chrome_path)
+        .no_sandbox()
+        .window_size(800, 600)
+        .arg("--force-device-scale-factor=1")
+        .arg("--hide-scrollbars")
+        .arg("--blink-settings=imagesEnabled=false")
+        .arg("--disable-gpu")
+        .arg("--disable-features=OverlayScrollbar")
+        .arg("--allow-file-access-from-files")
+        .arg("--disable-dev-shm-usage")
+        .arg("--disable-extensions")
+        .arg("--disable-background-networking")
+        .arg("--disable-sync");
 
-    let launch_opts = LaunchOptionsBuilder::default()
-        .headless(true)
-        .window_size(Some((800, 600)))
-        .idle_browser_timeout(timeout)
-        .args(args)
-        .build()?;
-    Browser::new(launch_opts)
+    let (browser, mut handler) = Browser::launch(
+        config_builder
+            .build()
+            .map_err(|e| anyhow::anyhow!("Browser config error: {}", e))?
+    )
+    .await?;
+
+    // Spawn background handler for Chrome events
+    let handler_task = tokio::task::spawn(async move {
+        while let Some(event) = handler.next().await {
+            if let Err(e) = event {
+                eprintln!("Browser event error: {:?}", e);
+            }
+        }
+    });
+
+    Ok(ChromeBrowser {
+        browser,
+        _handler: handler_task,
+    })
 }
 
-/// Navigates a Chrome tab to a fixture and prepares it for testing.
+/// Navigates a Chrome page to a fixture and prepares it for testing.
 ///
 /// # Errors
 ///
-/// Returns an error if navigation or script evaluation fails.
-pub fn navigate_and_prepare_tab(tab: &Tab, path: &Path) -> Result<()> {
+/// Returns an error if navigation fails.
+pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
+    use tokio::time::{timeout, Duration};
+
     let url = to_file_url(path)?;
-    tab.navigate_to(url.as_str())?;
-    tab.wait_until_navigated()?;
-    let _result = tab.evaluate(css_reset_injection_script(), false)?;
+    log::info!("Navigating to: {}", url.as_str());
+
+    // Add 10 second timeout to navigation
+    timeout(Duration::from_secs(10), page.goto(url.as_str()))
+        .await
+        .map_err(|_| anyhow::anyhow!("Navigation timeout after 10s for {}", url.as_str()))??;
+
+    log::info!("Navigation completed for: {}", url.as_str());
     Ok(())
 }

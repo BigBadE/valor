@@ -3,6 +3,7 @@
 
 use crate::INITIAL_CONTAINING_BLOCK_HEIGHT;
 use crate::chapter10::part_10_1_containing_block as cb10;
+use crate::chapter10::part_10_6_3_height_of_blocks;
 use crate::{
     ChildLayoutCtx, CollapsedPos, HeightsAndMargins, HeightsCtx, LayoutRect, Layouter, VertCommit,
 };
@@ -454,13 +455,22 @@ pub fn place_child_public(
     let CollapsedPos {
         margin_top_eff,
         collapsed_top,
-        used_bb_w,
+        mut used_bb_w,
         child_x,
         child_y,
         x_adjust,
         y_adjust,
         clear_lifted,
     } = layouter.compute_collapsed_and_position(child_key, &ctx, &style, &sides);
+
+    // Override width for replaced elements (form controls) per CSS 2.2 §10.3.2
+    // "If 'width' has a computed value of 'auto', and the element has an intrinsic width,
+    // then that intrinsic width is the used value of 'width'."
+    if style.width.is_none() {
+        if let Some(intrinsic_w) = part_10_6_3_height_of_blocks::intrinsic_width_for_form_control_public(layouter, child_key, &style) {
+            used_bb_w = intrinsic_w;
+        }
+    }
 
     let HeightsAndMargins {
         computed_h,

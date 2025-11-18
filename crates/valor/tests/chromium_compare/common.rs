@@ -8,7 +8,6 @@ use std::collections::HashSet;
 use std::env;
 use std::fs::{create_dir_all, read, read_dir, read_to_string, remove_dir_all, write};
 use std::path::{Path, PathBuf};
-use std::thread::sleep;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::runtime::Runtime;
@@ -358,9 +357,21 @@ pub fn to_file_url(path: &Path) -> Result<Url> {
 /// # Errors
 ///
 /// Returns an error if page creation fails.
-pub fn create_page(runtime: &Runtime, url: Url) -> Result<HtmlPage> {
+pub async fn create_page(runtime: &Runtime, url: Url) -> Result<HtmlPage> {
     let config = ValorConfig::from_env();
-    let page = runtime.block_on(HtmlPage::new(runtime.handle(), url, config))?;
+    let page = HtmlPage::new(runtime.handle(), url, config).await?;
+    Ok(page)
+}
+
+/// Creates a new HTML page using the current tokio handle.
+///
+/// # Errors
+///
+/// Returns an error if page creation fails.
+pub async fn create_page_from_current(url: Url) -> Result<HtmlPage> {
+    let config = ValorConfig::from_env();
+    let handle = tokio::runtime::Handle::current();
+    let page = HtmlPage::new(&handle, url, config).await?;
     Ok(page)
 }
 
@@ -369,12 +380,12 @@ pub fn create_page(runtime: &Runtime, url: Url) -> Result<HtmlPage> {
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or script evaluation fails.
-pub fn setup_page_for_fixture(runtime: &Runtime, path: &Path) -> Result<HtmlPage> {
+pub async fn setup_page_for_fixture(runtime: &Runtime, path: &Path) -> Result<HtmlPage> {
     let url = to_file_url(path)?;
-    let mut page = create_page(runtime, url)?;
+    let mut page = create_page(runtime, url).await?;
     page.eval_js(css_reset_injection_script())?;
 
-    let finished = update_until_finished_simple(runtime, &mut page)?;
+    let finished = update_until_finished_simple(&mut page).await?;
     if !finished {
         return Err(anyhow!(
             "Page parsing did not finish for {}",
@@ -382,7 +393,7 @@ pub fn setup_page_for_fixture(runtime: &Runtime, path: &Path) -> Result<HtmlPage
         ));
     }
 
-    runtime.block_on(page.update())?;
+    page.update().await?;
     Ok(page)
 }
 
@@ -391,8 +402,7 @@ pub fn setup_page_for_fixture(runtime: &Runtime, path: &Path) -> Result<HtmlPage
 /// # Errors
 ///
 /// Returns an error if page update or callback execution fails.
-pub fn update_until_finished<F>(
-    runtime: &Runtime,
+pub async fn update_until_finished<F>(
     page: &mut HtmlPage,
     mut per_tick: F,
 ) -> Result<bool>
@@ -407,14 +417,12 @@ where
             warn!("update_until_finished: exceeded total time budget");
             break;
         }
-        let fut = page.update();
-        runtime.block_on(fut)?;
+        page.update().await?;
         per_tick(page)?;
         finished = page.parsing_finished();
         if finished {
             break;
         }
-        sleep(Duration::from_millis(2));
     }
     Ok(finished)
 }
@@ -424,8 +432,8 @@ where
 /// # Errors
 ///
 /// Returns an error if page update fails.
-pub fn update_until_finished_simple(runtime: &Runtime, page: &mut HtmlPage) -> Result<bool> {
-    update_until_finished(runtime, page, |_page| Ok(()))
+pub async fn update_until_finished_simple(page: &mut HtmlPage) -> Result<bool> {
+    update_until_finished(page, |_page| Ok(())).await
 }
 
 // ===== CSS reset for consistent test baseline =====

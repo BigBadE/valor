@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
-use headless_chrome::{Browser, Tab, protocol::cdp::Page::CaptureScreenshotFormatOption};
+use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
+use chromiumoxide::page::{Page, ScreenshotParams};
 use image::{RgbaImage, load_from_memory};
 use log::{debug, error, info};
 use renderer::{DisplayItem, DisplayList, batch_display_list};
@@ -18,7 +19,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 use zstd::bulk::{compress as zstd_compress, decompress as zstd_decompress};
 
-use super::browser::{TestType, navigate_and_prepare_tab, setup_chrome_browser};
+use super::browser::{ChromeBrowser, TestType, navigate_and_prepare_page, setup_chrome_browser};
 use super::common::{
     artifacts_subdir, get_filtered_fixtures, init_test_logger, setup_page_for_fixture,
     write_png_rgba_if_changed,
@@ -238,10 +239,14 @@ fn extract_text_masks(display_list: &DisplayList, width: u32, height: u32) -> Ve
 /// # Errors
 ///
 /// Returns an error if navigation or screenshot capture fails.
-fn capture_chrome_png(tab: &Tab, path: &Path) -> Result<Vec<u8>> {
-    navigate_and_prepare_tab(tab, path)?;
-    let png = tab.capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)?;
-    Ok(png)
+async fn capture_chrome_png(page: &Page, path: &Path) -> Result<Vec<u8>> {
+    navigate_and_prepare_page(page, path).await?;
+    let params = ScreenshotParams::builder()
+        .format(CaptureScreenshotFormat::Png)
+        .full_page(true)
+        .build();
+    let screenshot = page.screenshot(params).await?;
+    Ok(screenshot)
 }
 
 /// Builds a Valor display list for a given fixture.
@@ -249,13 +254,13 @@ fn capture_chrome_png(tab: &Tab, path: &Path) -> Result<Vec<u8>> {
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or display list generation fails.
-fn build_valor_display_list_for(
+async fn build_valor_display_list_for(
+    runtime: &Runtime,
     path: &Path,
     viewport_w: u32,
     viewport_h: u32,
 ) -> Result<DisplayList> {
-    let runtime = Runtime::new()?;
-    let mut page = setup_page_for_fixture(&runtime, path)?;
+    let mut page = setup_page_for_fixture(runtime, path).await?;
     let display_list = page.display_list_retained_snapshot()?;
     let clear_color = page.background_rgba();
     let mut items = Vec::with_capacity(display_list.items.len() + 1);
@@ -337,7 +342,13 @@ impl ApplicationHandler for WindowCreator {
 }
 
 fn initialize_render_state(width: u32, height: u32) -> &'static Mutex<RenderState> {
-    use winit::{event_loop::EventLoop, platform::windows::EventLoopBuilderExtWindows as _};
+    use winit::event_loop::EventLoop;
+    #[cfg(target_os = "windows")]
+    use winit::platform::windows::EventLoopBuilderExtWindows as _;
+    #[cfg(target_os = "linux")]
+    use winit::platform::x11::EventLoopBuilderExtX11 as _;
+    #[cfg(target_os = "macos")]
+    use winit::platform::macos::EventLoopBuilderExtMacOS as _;
 
     RENDER_STATE.get_or_init(|| {
         let runtime = Runtime::new().unwrap_or_else(|err| {
@@ -428,17 +439,15 @@ fn rasterize_display_list_to_rgba(
     result
 }
 
-type BrowserWithTab = (Browser, Arc<Tab>);
-
-/// Initializes a headless Chrome browser with a tab for graphics testing.
+/// Initializes a headless Chrome browser with a page for graphics testing.
 ///
 /// # Errors
 ///
-/// Returns an error if browser launch or tab creation fails.
-fn init_browser() -> Result<BrowserWithTab> {
-    let chrome_browser = setup_chrome_browser(TestType::Graphics)?;
-    let chrome_tab = chrome_browser.new_tab()?;
-    Ok((chrome_browser, chrome_tab))
+/// Returns an error if browser launch or page creation fails.
+async fn init_browser() -> Result<(ChromeBrowser, Page)> {
+    let chrome_browser = setup_chrome_browser(TestType::Graphics).await?;
+    let chrome_page = chrome_browser.new_page().await?;
+    Ok((chrome_browser, chrome_page))
 }
 
 /// Loads Chrome RGBA image data from cache or by capturing a screenshot.
@@ -446,11 +455,11 @@ fn init_browser() -> Result<BrowserWithTab> {
 /// # Errors
 ///
 /// Returns an error if file reading, browser initialization, screenshot capture, or image decoding fails.
-fn load_chrome_rgba(
+async fn load_chrome_rgba(
     stable_path: &Path,
     fixture: &Path,
-    browser: &mut Option<Browser>,
-    tab: &mut Option<Arc<Tab>>,
+    browser: &mut Option<ChromeBrowser>,
+    page: &mut Option<Page>,
     timings: &mut Timings,
 ) -> Result<RgbaImage> {
     let t_start = Instant::now();
@@ -464,13 +473,13 @@ fn load_chrome_rgba(
         }
     }
     if browser.is_none() {
-        let (chrome_browser, chrome_tab) = init_browser()?;
-        *tab = Some(chrome_tab);
+        let (chrome_browser, chrome_page) = init_browser().await?;
+        *page = Some(chrome_page);
         *browser = Some(chrome_browser);
     }
-    let tab_ref = tab.as_ref().ok_or_else(|| anyhow!("tab not initialized"))?;
+    let page_ref = page.as_ref().ok_or_else(|| anyhow!("page not initialized"))?;
     let t_cap = Instant::now();
-    let png_bytes = capture_chrome_png(tab_ref, fixture)?;
+    let png_bytes = capture_chrome_png(page_ref, fixture).await?;
     timings.chrome_capture += t_cap.elapsed();
     let t_decode = Instant::now();
     let img = load_from_memory(&png_bytes)?.to_rgba8();
@@ -621,9 +630,10 @@ struct FixtureContext<'ctx> {
     fixture: &'ctx Path,
     out_dir: &'ctx Path,
     failing_dir: &'ctx Path,
-    browser: &'ctx mut Option<Browser>,
-    tab: &'ctx mut Option<Arc<Tab>>,
+    browser: &'ctx mut Option<ChromeBrowser>,
+    page: &'ctx mut Option<Page>,
     timings: &'ctx mut Timings,
+    runtime: &'ctx Runtime,
 }
 
 /// Processes a single graphics fixture by comparing Chrome and Valor renders.
@@ -631,7 +641,7 @@ struct FixtureContext<'ctx> {
 /// # Errors
 ///
 /// Returns an error if fixture processing, rendering, or comparison fails.
-fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
+async fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
     let name = safe_stem(ctx.fixture);
     let canon = ctx
         .fixture
@@ -656,13 +666,13 @@ fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
         &stable_chrome_rgba_zst,
         ctx.fixture,
         ctx.browser,
-        ctx.tab,
+        ctx.page,
         ctx.timings,
-    )?;
+    ).await?;
 
     let (width, height) = (784u32, 453u32);
     let t_build = Instant::now();
-    let display_list = build_valor_display_list_for(ctx.fixture, width, height)?;
+    let display_list = build_valor_display_list_for(ctx.runtime, ctx.fixture, width, height).await?;
     ctx.timings.build_dl += t_build.elapsed();
     debug!(
         "[GRAPHICS][DEBUG] {}: DL items={} (first 5: {:?})",
@@ -719,21 +729,23 @@ pub fn chromium_graphics_smoke_compare_png() -> Result<()> {
         return Ok(());
     }
 
-    let mut browser: Option<Browser> = None;
-    let mut tab: Option<Arc<Tab>> = None;
+    let runtime = Runtime::new()?;
+    let mut browser: Option<ChromeBrowser> = None;
+    let mut page: Option<Page> = None;
     let mut any_failed = false;
     let mut ran = 0;
     let mut timings = Timings::new();
 
     for fixture in fixtures {
-        if process_single_fixture(&mut FixtureContext {
+        if runtime.block_on(process_single_fixture(&mut FixtureContext {
             fixture: &fixture,
             out_dir: &out_dir,
             failing_dir: &failing_dir,
             browser: &mut browser,
-            tab: &mut tab,
+            page: &mut page,
             timings: &mut timings,
-        })? {
+            runtime: &runtime,
+        }))? {
             any_failed = true;
         }
         ran += 1;
