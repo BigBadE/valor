@@ -60,12 +60,14 @@ fn try_inline_baselines(layouter: &Layouter, node: NodeKey) -> Option<(f32, f32)
     if lines.is_empty() {
         return None;
     }
-    // Estimate baselines from default line-height
+    // Use explicit line-height if available, otherwise compute default
     let style = styles
         .get(&node)
         .cloned()
         .unwrap_or_else(ComputedStyle::default);
-    let lh_px = default_line_height_px(&style) as f32;
+    let lh_px = style
+        .line_height
+        .unwrap_or_else(|| default_line_height_px(&style) as f32);
     let first = lh_px.max(0.0);
     let last = (lines.len() as f32 * lh_px).max(first);
     Some((first, last))
