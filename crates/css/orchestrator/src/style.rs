@@ -1274,8 +1274,12 @@ fn apply_layout_keywords(
     if let Some(value) = decls.get("display") {
         computed.display = if value.eq_ignore_ascii_case("block") {
             style_model::Display::Block
+        } else if value.eq_ignore_ascii_case("inline-block") {
+            style_model::Display::InlineBlock
         } else if value.eq_ignore_ascii_case("flex") {
             style_model::Display::Flex
+        } else if value.eq_ignore_ascii_case("inline-flex") {
+            style_model::Display::InlineFlex
         } else if value.eq_ignore_ascii_case("none") {
             style_model::Display::None
         } else if value.eq_ignore_ascii_case("contents") {

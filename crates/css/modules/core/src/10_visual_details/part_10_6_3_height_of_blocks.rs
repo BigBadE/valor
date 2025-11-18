@@ -966,10 +966,10 @@ pub fn intrinsic_width_for_form_control_public(
             None
         }
         "button" => {
-            // Buttons only use intrinsic width when inline or inline-flex
+            // Buttons use intrinsic width when inline, inline-block, or inline-flex
             // Block buttons fill available width per CSS normal flow
             match style.display {
-                CoreDisplay::Inline | CoreDisplay::InlineFlex => {
+                CoreDisplay::Inline | CoreDisplay::InlineBlock | CoreDisplay::InlineFlex => {
                     let content_width = estimate_max_content_width(layouter, key, style);
                     let padding_horiz = style.padding.left + style.padding.right;
                     let border_horiz = style.border_width.left + style.border_width.right;

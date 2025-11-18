@@ -676,6 +676,7 @@ const FLEX_BASIS: &str = "auto";
 const fn effective_display(display: Display) -> &'static str {
     match display {
         Display::Inline => "inline",
+        Display::InlineBlock => "inline-block",
         Display::Block | Display::Contents => "block",
         Display::Flex => "flex",
         Display::InlineFlex => "inline-flex",
