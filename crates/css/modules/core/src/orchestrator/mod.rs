@@ -88,8 +88,10 @@ pub fn compute_container_metrics_impl(
     let border_left: i32 = 0; // sides.border_left;
     let border_right = sides.border_right;
     let border_top: i32 = 0; // sides.border_top;
-    let margin_left = 0i32;
-    let margin_top = 0i32;
+    // Unlike padding/border which are zeroed to align viewport at (0,0), margins MUST be applied
+    // to properly position the root element's content. Browser UA stylesheets set body{margin:8px}.
+    let margin_left = sides.margin_left;
+    let margin_top = sides.margin_top;
     // Apply a fixed scrollbar gutter for the viewport to approximate Chromium's reserved space.
     // This brings our initial containing block into alignment with Chrome's layout width on Windows.
     let scrollbar_gutter = SCROLLBAR_GUTTER_PX;
