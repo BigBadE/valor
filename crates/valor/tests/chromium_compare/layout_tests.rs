@@ -1,6 +1,6 @@
 use super::browser::navigate_and_prepare_page;
 use super::common::{
-    clear_valor_layout_cache_if_harness_changed, create_page, css_reset_injection_script,
+    clear_valor_layout_cache_if_harness_changed, create_page,
     get_filtered_fixtures, init_test_logger, read_cached_json_for_fixture, to_file_url,
     update_until_finished, write_cached_json_for_fixture, write_named_json_for_fixture,
 };
@@ -80,7 +80,6 @@ fn apply_element_attrs(layouter: &mut Layouter, node: NodeKey, attrs: &HashMap<S
 async fn setup_layouter_for_fixture(runtime: &Runtime, input_path: &Path) -> Result<LayouterWithStyles> {
     let url = to_file_url(input_path)?;
     let mut page = create_page(runtime, url).await?;
-    page.eval_js(css_reset_injection_script())?;
     let mut layouter_mirror = page.create_mirror(Layouter::new());
 
     let finished = update_until_finished(&mut page, |_page| {
@@ -130,7 +129,6 @@ async fn setup_layouter_for_fixture_current(input_path: &Path) -> Result<Layoute
     use super::common::create_page_from_current;
     let url = to_file_url(input_path)?;
     let mut page = create_page_from_current(url).await?;
-    page.eval_js(css_reset_injection_script())?;
     let mut layouter_mirror = page.create_mirror(Layouter::new());
 
     let finished = update_until_finished(&mut page, |_page| {

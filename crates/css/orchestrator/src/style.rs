@@ -818,14 +818,14 @@ fn create_ua_stylesheet() -> types::Stylesheet {
     });
     source_order += 1;
 
-    // Add paragraph margin per browser UA stylesheets (Chromium uses margin-block: 1em)
+    // Add paragraph margin per browser UA stylesheets (Chromium uses margin-block: 1em = 16px at default font size)
     rules.push(types::Rule {
         origin: types::Origin::UserAgent,
         source_order,
         prelude: "p".to_string(),
         declarations: vec![types::Declaration {
             name: "margin".to_string(),
-            value: "1em 0".to_string(),
+            value: "16px 0".to_string(),
             important: false,
         }],
     });
