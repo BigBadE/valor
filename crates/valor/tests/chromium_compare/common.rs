@@ -402,10 +402,7 @@ pub async fn setup_page_for_fixture(runtime: &Runtime, path: &Path) -> Result<Ht
 /// # Errors
 ///
 /// Returns an error if page update or callback execution fails.
-pub async fn update_until_finished<F>(
-    page: &mut HtmlPage,
-    mut per_tick: F,
-) -> Result<bool>
+pub async fn update_until_finished<F>(page: &mut HtmlPage, mut per_tick: F) -> Result<bool>
 where
     F: FnMut(&mut HtmlPage) -> Result<()>,
 {

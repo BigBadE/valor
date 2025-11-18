@@ -6,14 +6,14 @@ fn test_minimal_chrome_evaluate() -> anyhow::Result<()> {
     env_logger::init();
 
     let chrome_path = std::path::PathBuf::from(
-        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
+        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
     );
 
     let launch_opts = LaunchOptionsBuilder::default()
         .headless(true)
         .path(Some(chrome_path))
-        .sandbox(false)  // Required when running as root
-        .args(vec![std::ffi::OsStr::new("--disable-web-security")])  // Allow JS execution on file:// URLs
+        .sandbox(false) // Required when running as root
+        .args(vec![std::ffi::OsStr::new("--disable-web-security")]) // Allow JS execution on file:// URLs
         .idle_browser_timeout(Duration::from_secs(30))
         .build()?;
 

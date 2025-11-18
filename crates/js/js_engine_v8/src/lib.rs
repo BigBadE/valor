@@ -60,14 +60,14 @@ mod real {
     use js::Console;
     use js::runtime::RUNTIME_PRELUDE;
     use js::{HostBindings, HostContext, HostFnKind, HostNamespace, JSValue, JsEngine};
+    use std::collections::HashMap;
+    use std::sync::Once;
     use v8::{
         Boolean, Context, ContextScope, CreateParams, External, Function,
         FunctionCallbackArguments, Global, HandleScope, Isolate, Local, Module, Number, Object,
         OwnedIsolate, Platform, ReturnValue, Script, ScriptOrigin, SharedRef, String as V8String,
         TryCatch, V8, Value, new_default_platform, null, undefined,
     };
-    use std::collections::HashMap;
-    use std::sync::Once;
 
     /// Escape a string so it can safely be embedded as a JavaScript literal.
     #[inline]

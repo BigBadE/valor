@@ -6,7 +6,7 @@ fn test_file_url_with_sleep() -> anyhow::Result<()> {
     env_logger::init();
 
     let chrome_path = std::path::PathBuf::from(
-        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
+        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
     );
 
     let launch_opts = LaunchOptionsBuilder::default()

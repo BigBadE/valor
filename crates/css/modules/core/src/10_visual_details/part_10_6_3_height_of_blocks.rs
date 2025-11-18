@@ -919,8 +919,8 @@ fn intrinsic_height_for_form_control(
         }
         "input" => {
             // Per HTML spec: checkbox/radio have fixed 13×13px border-box intrinsic size
-            // This is the total size including any UA padding/border
-            // We don't have access to type attribute, so use checkbox size as it's most common
+            // Note: We don't have access to type attribute to distinguish different input types
+            // Use the checkbox/radio size as the default; text inputs should have explicit height in CSS
             Some(13)
         }
         "textarea" => {
@@ -959,8 +959,11 @@ pub fn intrinsic_width_for_form_control_public(
     match tag_lower.as_str() {
         "input" => {
             // Per HTML spec: checkbox/radio have fixed 13×13px border-box intrinsic size
-            // This is the total size including any UA padding/border
-            Some(13)
+            // For text inputs: use CSS width or default to ~20ch (similar to textarea)
+            // Note: We don't have access to type attribute to distinguish checkbox/radio from text
+            // For now, don't apply intrinsic width - let CSS width take precedence
+            // Checkbox/radio sizing will be handled via explicit CSS when needed
+            None
         }
         "button" => {
             // Buttons only use intrinsic width when inline or inline-flex

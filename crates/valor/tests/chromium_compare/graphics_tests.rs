@@ -343,12 +343,12 @@ impl ApplicationHandler for WindowCreator {
 
 fn initialize_render_state(width: u32, height: u32) -> &'static Mutex<RenderState> {
     use winit::event_loop::EventLoop;
+    #[cfg(target_os = "macos")]
+    use winit::platform::macos::EventLoopBuilderExtMacOS as _;
     #[cfg(target_os = "windows")]
     use winit::platform::windows::EventLoopBuilderExtWindows as _;
     #[cfg(target_os = "linux")]
     use winit::platform::x11::EventLoopBuilderExtX11 as _;
-    #[cfg(target_os = "macos")]
-    use winit::platform::macos::EventLoopBuilderExtMacOS as _;
 
     RENDER_STATE.get_or_init(|| {
         let runtime = Runtime::new().unwrap_or_else(|err| {
@@ -477,7 +477,9 @@ async fn load_chrome_rgba(
         *page = Some(chrome_page);
         *browser = Some(chrome_browser);
     }
-    let page_ref = page.as_ref().ok_or_else(|| anyhow!("page not initialized"))?;
+    let page_ref = page
+        .as_ref()
+        .ok_or_else(|| anyhow!("page not initialized"))?;
     let t_cap = Instant::now();
     let png_bytes = capture_chrome_png(page_ref, fixture).await?;
     timings.chrome_capture += t_cap.elapsed();
@@ -668,11 +670,13 @@ async fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
         ctx.browser,
         ctx.page,
         ctx.timings,
-    ).await?;
+    )
+    .await?;
 
     let (width, height) = (784u32, 453u32);
     let t_build = Instant::now();
-    let display_list = build_valor_display_list_for(ctx.runtime, ctx.fixture, width, height).await?;
+    let display_list =
+        build_valor_display_list_for(ctx.runtime, ctx.fixture, width, height).await?;
     ctx.timings.build_dl += t_build.elapsed();
     debug!(
         "[GRAPHICS][DEBUG] {}: DL items={} (first 5: {:?})",
