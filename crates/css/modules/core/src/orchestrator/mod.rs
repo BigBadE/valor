@@ -100,7 +100,14 @@ pub fn compute_container_metrics_impl(
     } else {
         0
     };
-    let total_border_box_width = icb_width.saturating_sub(scrollbar_gutter).max(0i32);
+    // Subtract margins from ICB width - margins are outside the border-box and reduce available space.
+    // For body{margin:8px}, this gives: 800 - 8 - 8 = 784px border-box width.
+    let margin_right = sides.margin_right;
+    let total_border_box_width = icb_width
+        .saturating_sub(scrollbar_gutter)
+        .saturating_sub(margin_left)
+        .saturating_sub(margin_right)
+        .max(0i32);
     let horizontal_non_content = padding_left
         .saturating_add(padding_right)
         .saturating_add(border_left)
@@ -119,6 +126,69 @@ pub fn compute_container_metrics_impl(
         margin_left,
         margin_top,
     }
+}
+
+/// Compute the bottom edge of inline text content when there are no block children.
+/// Returns the absolute bottom position of the last line of text.
+fn compute_inline_content_bottom(
+    layouter: &Layouter,
+    root: NodeKey,
+    metrics: &ContainerMetrics,
+) -> Option<i32> {
+    use css_display::build_inline_context_with_filter;
+    use css_text::{collapse_whitespace, default_line_height_px};
+
+    let children = layouter.children.get(&root)?;
+
+    let root_style = layouter
+        .computed_styles
+        .get(&root)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut kind_map = HashMap::new();
+    for (node_key, kind, _) in layouter.snapshot() {
+        kind_map.insert(node_key, kind);
+    }
+
+    let styles = &layouter.computed_styles;
+    let parent_style_opt = styles.get(&root);
+
+    let skip_predicate = |node_key: NodeKey| -> bool {
+        if let Some(LayoutNodeKind::InlineText { text }) = kind_map.get(&node_key).cloned() {
+            collapse_whitespace(&text).is_empty()
+        } else {
+            false
+        }
+    };
+
+    let lines =
+        build_inline_context_with_filter(children, styles, parent_style_opt, skip_predicate);
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    let line_height = root_style
+        .line_height
+        .map(|lh| lh.round() as i32)
+        .unwrap_or_else(|| default_line_height_px(&root_style));
+
+    let total_inline_height = line_height.saturating_mul(lines.len() as i32);
+
+    let content_origin_y = metrics
+        .margin_top
+        .saturating_add(metrics.border_top)
+        .saturating_add(metrics.padding_top);
+
+    let bottom_edge = content_origin_y.saturating_add(total_inline_height);
+
+    debug!(
+        "[INLINE-CONTENT] root={root:?} lines={} line_height={line_height} total_height={total_inline_height} -> bottom_edge={bottom_edge}",
+        lines.len()
+    );
+
+    Some(bottom_edge)
 }
 
 /// Lays out the root node and its children.
@@ -149,7 +219,7 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
     let root_y = compute_root_y_after_top_collapse(layouter, root, &metrics);
 
     // Prefer effective outgoing bottom margin from the placement loop if available.
-    let content_bottom = if let Some((last_key, rect_bottom, mb_out)) = last_placed_info {
+    let mut content_bottom = if let Some((last_key, rect_bottom, mb_out)) = last_placed_info {
         let root_style = layouter
             .computed_styles
             .get(&root)
@@ -172,6 +242,11 @@ pub fn layout_root_impl(layouter: &mut Layouter) -> usize {
     } else {
         compute_last_block_bottom_edge_impl(layouter, root)
     };
+
+    // If no block children, check for inline text content and use its height
+    if content_bottom.is_none() {
+        content_bottom = compute_inline_content_bottom(layouter, root, &metrics);
+    }
     log_last_placed_child_diag(layouter, root, content_bottom);
     let root_y_aligned = root_y;
     let (content_height, root_height_border_box) = compute_root_heights(
