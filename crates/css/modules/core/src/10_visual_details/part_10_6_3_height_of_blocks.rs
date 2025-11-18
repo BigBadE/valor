@@ -948,6 +948,47 @@ fn intrinsic_height_for_form_control(
     }
 }
 
+/// Get intrinsic width for form control elements per CSS 2.2 §10.3.2 (Replaced elements).
+///
+/// Spec: CSS 2.2 §10.3.2: "If 'width' has a computed value of 'auto', and the element has an
+/// intrinsic width, then that intrinsic width is the used value of 'width'."
+pub fn intrinsic_width_for_form_control_public(
+    layouter: &Layouter,
+    key: NodeKey,
+    style: &ComputedStyle,
+) -> Option<i32> {
+    let tag = get_element_tag(layouter, key)?;
+    let tag_lower = tag.to_lowercase();
+
+    match tag_lower.as_str() {
+        "input" => {
+            // Per HTML spec: checkbox/radio have fixed 13×13px intrinsic size
+            // Text inputs have min-width based on size attribute (default ~20 chars)
+            // We don't have attribute access, so return checkbox size (13px) which is most common
+            let padding_horiz = style.padding.left + style.padding.right;
+            let border_horiz = style.border_width.left + style.border_width.right;
+            Some((13.0 + padding_horiz + border_horiz).round() as i32)
+        }
+        "button" => {
+            // Button width is based on content
+            let content_width = estimate_max_content_width(layouter, key, style);
+            let padding_horiz = style.padding.left + style.padding.right;
+            let border_horiz = style.border_width.left + style.border_width.right;
+            Some(content_width + (padding_horiz + border_horiz).round() as i32)
+        }
+        "textarea" => {
+            // Textarea default: ~20 characters wide (per HTML spec cols attribute default)
+            let char_width = style.font_size * 0.6; // avg character width
+            let cols = 20.0f32;
+            let content_width = char_width * cols;
+            let padding_horiz = style.padding.left + style.padding.right;
+            let border_horiz = style.border_width.left + style.border_width.right;
+            Some((content_width + padding_horiz + border_horiz).round() as i32)
+        }
+        _ => None,
+    }
+}
+
 /// Estimate max-content width for an element based on text content and font size.
 ///
 /// # Implementation Note

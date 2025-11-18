@@ -74,22 +74,18 @@ pub fn compute_container_metrics_impl(
         .unwrap_or_else(ComputedStyle::default);
 
     let sides = compute_box_sides(&root_style);
-    // Normalize the initial containing block (ICB) edges to the viewport: for the chosen layout root
-    // (html/body), treat the top/left edges as having no padding/border when computing the container
-    // origin. This matches browser behavior where the canvas/viewport origin is at (0,0) and avoids
-    // shifting all descendants by any authored root-side borders.
-    // Spec notes:
-    //   - CSS 2.2 Visual formatting model root and initial containing block: the canvas has no border.
-    //   - getBoundingClientRect() for element boxes is measured relative to the viewport origin.
-    //     We align our ICB to (0,0) for parity with Chromium in tests.
-    let padding_left: i32 = 0; // sides.padding_left;
+    // Apply root element's padding per CSS 2.2 §8.1 Box Model.
+    // The root element's padding creates space between its border and content, just like any other element.
+    // Previous code incorrectly zeroed left/top padding while keeping right/bottom, breaking the box model.
+    let padding_left = sides.padding_left;
     let padding_right = sides.padding_right;
-    let padding_top: i32 = 0; // sides.padding_top;
+    let padding_top = sides.padding_top;
+    // Border edges are still zeroed to align the root's border-box at viewport origin (0,0).
+    // This matches browser behavior where the canvas starts at (0,0) but padding still applies.
     let border_left: i32 = 0; // sides.border_left;
     let border_right = sides.border_right;
     let border_top: i32 = 0; // sides.border_top;
-    // Unlike padding/border which are zeroed to align viewport at (0,0), margins MUST be applied
-    // to properly position the root element's content. Browser UA stylesheets set body{margin:8px}.
+    // Margins position the root element's border-box within the viewport.
     let margin_left = sides.margin_left;
     let margin_top = sides.margin_top;
     // Only apply scrollbar gutter when overflow is not 'visible' (auto/scroll reserve space).
