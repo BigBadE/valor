@@ -75,8 +75,9 @@ fn try_inline_baselines(layouter: &Layouter, node: NodeKey) -> Option<(f32, f32)
 
 // Tests moved to dedicated directory to keep clippy pedantic clean for library code.
 
-/// Triplet describing an item's cross size constraints `(size, min, max)`.
-type CrossTriplet = (f32, f32, f32);
+/// Triplet describing an item's cross size constraints `(size, min, max, is_auto)`.
+/// `is_auto` indicates whether the cross-size was auto (for stretch alignment).
+type CrossTriplet = (f32, f32, f32, bool);
 /// Container context for flex layout: `(origin_xy, direction, axes, container_main_size, main_gap)`.
 type FlexContainerCtx = ((i32, i32), FlexDir, FlexAxes, f32, f32);
 /// Baseline metrics vector per item: `(first_baseline, last_baseline)` or `None` when unavailable.
@@ -208,6 +209,25 @@ fn container_layout_context(
         ),
     };
     (origin, direction, axes, container_main_size, main_gap)
+}
+
+/// Blockifies display value for flex items per CSS Flexbox §4.
+///
+/// Spec: <https://www.w3.org/TR/css-flexbox-1/#flex-items>
+///
+/// When an element becomes a flex item, its display value is blockified:
+/// - inline → block
+/// - inline-block → block
+/// - inline-table → table (not implemented yet)
+/// - inline-flex → flex
+/// - inline-grid → grid (not implemented yet)
+const fn blockify_flex_item_display(display: CoreDisplay) -> CoreDisplay {
+    match display {
+        CoreDisplay::Inline | CoreDisplay::InlineBlock => CoreDisplay::Block,
+        CoreDisplay::InlineFlex => CoreDisplay::Flex,
+        // Already block-level or other
+        other => other,
+    }
 }
 
 /// Collect normalized flex item shells from children of the container.
@@ -801,7 +821,7 @@ fn static_position_xy(
 ) -> (f32, f32) {
     let (item, cross_px, margin_cross_start) = build_abspos_item(child, style, ctx);
     let (container_inputs, cross_ctx) = build_abspos_contexts(ctx, inline_size, block_size);
-    let cross_inputs = [(cross_px, 0.0, 1e9)];
+    let cross_inputs = [(cross_px, 0.0, 1e9, false)];
     let cab = FlexCrossAndBaseline {
         cross_inputs: &cross_inputs,
         baseline_inputs: &[None],
@@ -946,10 +966,15 @@ fn intrinsic_height_for_form_control(
 ///
 /// Spec: CSS 2.2 §10.3.2: "If 'width' has a computed value of 'auto', and the element has an
 /// intrinsic width, then that intrinsic width is the used value of 'width'."
+///
+/// # Parameters
+///
+/// * `is_flex_item` - If true, the display value will be blockified per CSS Flexbox §4
 pub fn intrinsic_width_for_form_control_public(
     layouter: &Layouter,
     key: NodeKey,
     style: &ComputedStyle,
+    is_flex_item: bool,
 ) -> Option<i32> {
     use css_orchestrator::style_model::Display as CoreDisplay;
 
@@ -968,7 +993,13 @@ pub fn intrinsic_width_for_form_control_public(
         "button" => {
             // Buttons use intrinsic width when inline, inline-block, or inline-flex
             // Block buttons fill available width per CSS normal flow
-            match style.display {
+            // Per CSS Flexbox §4: blockify display for flex items
+            let effective_display = if is_flex_item {
+                blockify_flex_item_display(style.display)
+            } else {
+                style.display
+            };
+            match effective_display {
                 CoreDisplay::Inline | CoreDisplay::InlineBlock | CoreDisplay::InlineFlex => {
                     let content_width = estimate_max_content_width(layouter, key, style);
                     let padding_horiz = style.padding.left + style.padding.right;
@@ -1076,6 +1107,13 @@ fn compute_flex_basis(
     match direction {
         FlexDir::Row | FlexDir::RowReverse => {
             // Main axis is horizontal: measure max-content width
+            // For form controls, check if they have intrinsic width (with blockification)
+            if let Some(intrinsic_w) =
+                intrinsic_width_for_form_control_public(layouter, key, style, true)
+            {
+                return intrinsic_w as f32;
+            }
+
             let content_width = estimate_max_content_width(layouter, key, style);
             let padding_border_horiz =
                 (sides.padding_left + sides.padding_right + sides.border_left + sides.border_right)
@@ -1123,6 +1161,7 @@ fn compute_cross_size(
         ),
     };
 
+    let is_auto = cross_explicit.is_none();
     let cross = cross_explicit.map_or_else(
         || {
             // No explicit cross size: measure content per CSS Sizing Level 3
@@ -1149,6 +1188,13 @@ fn compute_cross_size(
                 }
                 FlexDir::Column | FlexDir::ColumnReverse => {
                     // Cross axis is horizontal (width): measure max-content width
+                    // For form controls, check if they have intrinsic width (with blockification)
+                    if let Some(intrinsic_w) =
+                        intrinsic_width_for_form_control_public(layouter, key, style, true)
+                    {
+                        return intrinsic_w as f32;
+                    }
+
                     let content_width = estimate_max_content_width(layouter, key, style);
                     let padding_border_horiz = (sides.padding_left
                         + sides.padding_right
@@ -1165,7 +1211,7 @@ fn compute_cross_size(
     if max_c < min_c {
         max_c = min_c;
     }
-    (cross, min_c, max_c)
+    (cross, min_c, max_c, is_auto)
 }
 
 /// Compute baseline metrics for a flex item.
@@ -1234,9 +1280,9 @@ fn build_flex_item_inputs(
             margin_left_auto: false,
             margin_right_auto: false,
         });
-        let (cross, min_c, max_c) =
+        let (cross, min_c, max_c, is_auto) =
             compute_cross_size(layouter, key, &style_item, direction, container_used_width);
-        cross_inputs.push((cross, min_c, max_c));
+        cross_inputs.push((cross, min_c, max_c, is_auto));
         baseline_inputs.push(Some(compute_baseline_metrics(
             layouter,
             key,
@@ -1285,7 +1331,7 @@ fn justify_align_context(
             .iter()
             .copied()
             .map(|triple| {
-                let (cross_val, _min_cross, _max_cross) = triple;
+                let (cross_val, _min_cross, _max_cross, _is_auto) = triple;
                 cross_val
             })
             .fold(0.0f32, f32::max);

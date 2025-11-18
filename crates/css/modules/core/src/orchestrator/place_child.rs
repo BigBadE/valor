@@ -469,7 +469,7 @@ pub fn place_child_public(
     if style.width.is_none() {
         if let Some(intrinsic_w) =
             part_10_6_3_height_of_blocks::intrinsic_width_for_form_control_public(
-                layouter, child_key, &style,
+                layouter, child_key, &style, false, // Not a flex item in normal flow
             )
         {
             used_bb_w = intrinsic_w;

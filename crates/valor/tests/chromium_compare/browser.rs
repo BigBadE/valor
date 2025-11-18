@@ -87,11 +87,33 @@ pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
     let url = to_file_url(path)?;
     log::info!("Navigating to: {}", url.as_str());
 
-    // Add 10 second timeout to navigation
+    // Navigate with timeout
     timeout(Duration::from_secs(10), page.goto(url.as_str()))
         .await
         .map_err(|_| anyhow::anyhow!("Navigation timeout after 10s for {}", url.as_str()))??;
 
-    log::info!("Navigation completed for: {}", url.as_str());
+    log::info!("Navigation completed, waiting for page to be fully ready");
+
+    // Wait for document to be fully loaded and layout to be stable
+    let ready_script = r#"
+        (function() {
+            return new Promise((resolve) => {
+                if (document.readyState === 'complete') {
+                    // Give a moment for layout to settle after load event
+                    setTimeout(resolve, 100);
+                } else {
+                    window.addEventListener('load', () => {
+                        setTimeout(resolve, 100);
+                    });
+                }
+            });
+        })()
+    "#;
+
+    timeout(Duration::from_secs(5), page.evaluate(ready_script))
+        .await
+        .map_err(|_| anyhow::anyhow!("Page ready timeout after 5s for {}", url.as_str()))??;
+
+    log::info!("Page fully loaded for: {}", url.as_str());
     Ok(())
 }
