@@ -92,9 +92,14 @@ pub fn compute_container_metrics_impl(
     // to properly position the root element's content. Browser UA stylesheets set body{margin:8px}.
     let margin_left = sides.margin_left;
     let margin_top = sides.margin_top;
-    // Apply a fixed scrollbar gutter for the viewport to approximate Chromium's reserved space.
-    // This brings our initial containing block into alignment with Chrome's layout width on Windows.
-    let scrollbar_gutter = SCROLLBAR_GUTTER_PX;
+    // Only apply scrollbar gutter when overflow is not 'visible' (auto/scroll reserve space).
+    // Per spec: overflow:visible doesn't show scrollbars, so no gutter should be reserved.
+    use css_orchestrator::style_model::Overflow;
+    let scrollbar_gutter = if !matches!(root_style.overflow, Overflow::Visible) {
+        SCROLLBAR_GUTTER_PX
+    } else {
+        0
+    };
     let total_border_box_width = icb_width.saturating_sub(scrollbar_gutter).max(0i32);
     let horizontal_non_content = padding_left
         .saturating_add(padding_right)
@@ -378,7 +383,10 @@ fn assign_text_rects(layouter: &mut Layouter) {
             continue;
         }
 
-        let line_height = default_line_height_px(&parent_style);
+        let line_height = parent_style
+            .line_height
+            .map(|lh| lh.round() as i32)
+            .unwrap_or_else(|| default_line_height_px(&parent_style));
         assign_line_rects(layouter, &lines, &kind_map, &content_box, line_height);
     }
 }
