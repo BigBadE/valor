@@ -39,7 +39,7 @@ static SHARED_BROWSER: Lazy<Mutex<Option<SharedBrowser>>> = Lazy::new(|| Mutex::
 /// # Errors
 ///
 /// Returns an error if browser creation fails.
-fn get_or_create_shared_browser() -> Result<(Arc<Runtime>, Handle, Arc<chromiumoxide::Browser>)> {
+async fn get_or_create_shared_browser() -> Result<(Arc<Runtime>, Handle, Arc<chromiumoxide::Browser>)> {
     let mut guard = SHARED_BROWSER.lock().unwrap();
 
     if let Some(shared) = guard.as_ref() {
@@ -54,14 +54,8 @@ fn get_or_create_shared_browser() -> Result<(Arc<Runtime>, Handle, Arc<chromiumo
     info!("[TIMING] Creating shared browser instance (first test only)");
     let browser_launch_start = Instant::now();
 
-    // Create a multi-threaded runtime with enough threads to prevent starvation
-    // One thread will run the CDP handler, others available for block_on calls
-    let runtime = Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(4)  // Ensure multiple worker threads
-            .enable_all()
-            .build()?
-    );
+    // Create default multi-threaded runtime (uses CPU core count)
+    let runtime = Arc::new(Runtime::new()?);
 
     use chromiumoxide::browser::{Browser, BrowserConfig};
 
@@ -85,8 +79,8 @@ fn get_or_create_shared_browser() -> Result<(Arc<Runtime>, Handle, Arc<chromiumo
         .build()
         .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
-    // Launch browser
-    let (browser, mut handler) = runtime.block_on(Browser::launch(config))?;
+    // Launch browser using async/await (no block_on!)
+    let (browser, mut handler) = Browser::launch(config).await?;
     let browser = Arc::new(browser);
 
     // Spawn handler task
@@ -468,7 +462,7 @@ async fn process_layout_fixture(
 /// # Errors
 ///
 /// Returns an error if browser setup, layout computation, or comparison fails.
-pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
+pub async fn run_single_layout_test(input_path: &Path) -> Result<()> {
     init_test_logger();
     let test_start = Instant::now();
 
@@ -480,33 +474,30 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
     );
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
-    // Get or create the shared browser instance
-    let (runtime, handle, browser) = get_or_create_shared_browser()?;
+    // Get or create the shared browser instance (now async!)
+    let (_runtime, handle, browser) = get_or_create_shared_browser().await?;
 
-    // Runtime has 4 worker threads, so block_on won't starve the CDP handler
+    // Execute test logic directly with async/await (no block_on!)
     let test_logic_start = Instant::now();
-    let failed = runtime.block_on(async {
-        let mut failed: Vec<(String, String)> = Vec::new();
-        let mut timing = FixtureTiming::default();
-        process_layout_fixture(
-            input_path,
-            &handle,
-            &browser,
-            harness_src,
-            &mut failed,
-            &mut timing,
-        )
-        .await?;
-        info!(
-            "[TIMING] Fixture internals: setup={:?}, geom={:?}, chrome={:?}, cmp={:?}, total={:?}",
-            timing.setup_layouter,
-            timing.compute_geometry,
-            timing.chromium_fetch,
-            timing.json_comparison,
-            timing.total
-        );
-        Ok::<_, anyhow::Error>(failed)
-    })?;
+    let mut failed: Vec<(String, String)> = Vec::new();
+    let mut timing = FixtureTiming::default();
+    process_layout_fixture(
+        input_path,
+        &handle,
+        &browser,
+        harness_src,
+        &mut failed,
+        &mut timing,
+    )
+    .await?;
+    info!(
+        "[TIMING] Fixture internals: setup={:?}, geom={:?}, chrome={:?}, cmp={:?}, total={:?}",
+        timing.setup_layouter,
+        timing.compute_geometry,
+        timing.chromium_fetch,
+        timing.json_comparison,
+        timing.total
+    );
     info!("[TIMING] Test logic execution: {:?}", test_logic_start.elapsed());
     info!("[TIMING] TOTAL TEST TIME: {:?}", test_start.elapsed());
 
@@ -523,7 +514,7 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error if browser setup fails or any layout comparisons fail.
-pub fn run_chromium_layouts() -> Result<()> {
+pub async fn run_chromium_layouts() -> Result<()> {
     init_test_logger();
     let harness_src = concat!(
         include_str!("layout_tests.rs"),
@@ -533,84 +524,81 @@ pub fn run_chromium_layouts() -> Result<()> {
     );
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
-    // Get or create shared browser instance
-    let (runtime, _handle, browser) = get_or_create_shared_browser()?;
+    // Get or create shared browser instance (now async!)
+    let (_runtime, _handle, browser) = get_or_create_shared_browser().await?;
 
-    // Runtime has 4 worker threads, so block_on won't starve the CDP handler
+    // Execute test logic directly with async/await (no block_on!)
     let overall_start = Instant::now();
-    let (ran, failed, timing_stats) = runtime.block_on(async {
-        use futures::StreamExt;
 
-        let fixtures = get_filtered_fixtures("LAYOUT")?;
-        let fixture_count = fixtures.len();
+    let fixtures = get_filtered_fixtures("LAYOUT")?;
+    let fixture_count = fixtures.len();
 
-        // Use fresh pages (page pooling doesn't work due to chromiumoxide limitations)
-        // Testing shows concurrency=1 is fastest (6.4s) vs concurrency=16 (41s)
-        // Creating/closing pages has significant overhead, so serial is better
-        const CONCURRENCY: usize = 1;
-        info!(
-            "[LAYOUT] Running {} fixtures with concurrency {}",
-            fixture_count, CONCURRENCY
-        );
+    // Use fresh pages (page pooling doesn't work due to chromiumoxide limitations)
+    // Testing shows concurrency=1 is fastest (6.4s) vs concurrency=16 (41s)
+    // Creating/closing pages has significant overhead, so serial is better
+    const CONCURRENCY: usize = 1;
+    info!(
+        "[LAYOUT] Running {} fixtures with concurrency {}",
+        fixture_count, CONCURRENCY
+    );
 
-        let mut failed_vec: Vec<(String, String)> = Vec::new();
-        let mut timing_vec: Vec<(String, FixtureTiming)> = Vec::new();
-        let mut ran = 0;
+    let mut failed_vec: Vec<(String, String)> = Vec::new();
+    let mut timing_vec: Vec<(String, FixtureTiming)> = Vec::new();
+    let mut ran = 0;
 
-        // Process fixtures concurrently using buffer_unordered
-        let mut fixture_stream = stream::iter(fixtures.into_iter().map(|input_path| {
-            let browser = Arc::clone(&browser);
-            let harness_src_owned = harness_src.to_string();
+    // Process fixtures concurrently using buffer_unordered
+    let mut fixture_stream = stream::iter(fixtures.into_iter().map(|input_path| {
+        let browser = Arc::clone(&browser);
+        let harness_src_owned = harness_src.to_string();
 
-            async move {
-                let display_name = input_path.display().to_string();
-                let mut timing = FixtureTiming::default();
-                let mut local_failed: Vec<(String, String)> = Vec::new();
+        async move {
+            let display_name = input_path.display().to_string();
+            let mut timing = FixtureTiming::default();
+            let mut local_failed: Vec<(String, String)> = Vec::new();
 
-                // Create a fresh page for each fixture
-                log::info!("Creating fresh page for: {}", display_name);
-                let page = match browser.new_page("about:blank").await {
-                    Ok(p) => p,
-                    Err(e) => return (display_name, timing, local_failed, Err(e.into())),
-                };
+            // Create a fresh page for each fixture
+            log::info!("Creating fresh page for: {}", display_name);
+            let page = match browser.new_page("about:blank").await {
+                Ok(p) => p,
+                Err(e) => return (display_name, timing, local_failed, Err(e.into())),
+            };
 
-                let result = process_layout_fixture_parallel_with_page(
-                    &input_path,
-                    &browser,
-                    &page,
-                    &harness_src_owned,
-                    &mut local_failed,
-                    &mut timing,
-                )
-                .await;
+            let result = process_layout_fixture_parallel_with_page(
+                &input_path,
+                &browser,
+                &page,
+                &harness_src_owned,
+                &mut local_failed,
+                &mut timing,
+            )
+            .await;
 
-                // Close the page
-                let _ = page.close().await;
+            // Close the page
+            let _ = page.close().await;
 
-                (display_name, timing, local_failed, result)
-            }
-        }))
-        .buffer_unordered(CONCURRENCY);
+            (display_name, timing, local_failed, result)
+        }
+    }))
+    .buffer_unordered(CONCURRENCY);
 
-        // Collect results as they complete
-        while let Some((display_name, timing, local_failed, result)) = fixture_stream.next().await {
-            timing_vec.push((display_name.clone(), timing));
-            failed_vec.extend(local_failed);
+    // Collect results as they complete
+    while let Some((display_name, timing, local_failed, result)) = fixture_stream.next().await {
+        timing_vec.push((display_name.clone(), timing));
+        failed_vec.extend(local_failed);
 
-            match result {
-                Ok(true) => ran += 1,
-                Ok(false) => {} // Already added to failed_vec
-                Err(e) => {
-                    error!("[LAYOUT] {} ... ERROR: {}", display_name, e);
-                }
+        match result {
+            Ok(true) => ran += 1,
+            Ok(false) => {} // Already added to failed_vec
+            Err(e) => {
+                error!("[LAYOUT] {} ... ERROR: {}", display_name, e);
             }
         }
+    }
 
-        // Drop the stream to release Arc references
-        drop(fixture_stream);
+    // Drop the stream to release Arc references
+    drop(fixture_stream);
 
-        Ok::<_, anyhow::Error>((ran, failed_vec, timing_vec))
-    })?;
+    let (ran, failed, timing_stats) = (ran, failed_vec, timing_vec);
 
     let overall_elapsed = overall_start.elapsed();
 
