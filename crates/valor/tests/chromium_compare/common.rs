@@ -357,8 +357,20 @@ pub fn to_file_url(path: &Path) -> Result<Url> {
 ///
 /// Returns an error if page creation fails.
 pub async fn create_page(handle: &tokio::runtime::Handle, url: Url) -> Result<HtmlPage> {
+    eprintln!("[DEBUG] create_page: Creating HtmlPage...");
     let config = ValorConfig::from_env();
     let page = HtmlPage::new(handle, url, config).await?;
+    eprintln!("[DEBUG] create_page: HtmlPage created, parser task spawned");
+
+    // CRITICAL: Yield to let the parser task start processing HTML!
+    // Without this, current_thread runtime deadlocks because:
+    // 1. Parser task is queued but not running
+    // 2. Test immediately calls page.update() which waits for parser
+    // 3. Parser never gets CPU time to process the stream
+    eprintln!("[DEBUG] create_page: Yielding to allow parser to start...");
+    tokio::task::yield_now().await;
+    eprintln!("[DEBUG] create_page: Yield complete");
+
     Ok(page)
 }
 
@@ -368,9 +380,21 @@ pub async fn create_page(handle: &tokio::runtime::Handle, url: Url) -> Result<Ht
 ///
 /// Returns an error if page creation fails.
 pub async fn create_page_from_current(url: Url) -> Result<HtmlPage> {
+    eprintln!("[DEBUG] create_page_from_current: Creating HtmlPage...");
     let config = ValorConfig::from_env();
     let handle = tokio::runtime::Handle::current();
     let page = HtmlPage::new(&handle, url, config).await?;
+    eprintln!("[DEBUG] create_page_from_current: HtmlPage created, parser task spawned");
+
+    // CRITICAL: Yield to let the parser task start processing HTML!
+    // Without this, current_thread runtime deadlocks because:
+    // 1. Parser task is queued but not running
+    // 2. Test immediately calls page.update() which waits for parser
+    // 3. Parser never gets CPU time to process the stream
+    eprintln!("[DEBUG] create_page_from_current: Yielding to allow parser to start...");
+    tokio::task::yield_now().await;
+    eprintln!("[DEBUG] create_page_from_current: Yield complete");
+
     Ok(page)
 }
 
@@ -408,15 +432,25 @@ where
     let mut finished = page.parsing_finished();
     let start_time = Instant::now();
     let max_total_time = Duration::from_secs(15);
-    for _iter in 0i32..10_000i32 {
+    eprintln!("[DEBUG] update_until_finished: Starting update loop, initial parsing_finished={}", finished);
+    for iter in 0i32..10_000i32 {
         if start_time.elapsed() > max_total_time {
             warn!("update_until_finished: exceeded total time budget");
             break;
         }
+        if iter < 5 {
+            eprintln!("[DEBUG] update_until_finished: iteration {} - calling page.update()", iter);
+        }
         page.update().await?;
+        // Yield after each update to give parser task CPU time in current_thread runtime
+        tokio::task::yield_now().await;
         per_tick(page)?;
         finished = page.parsing_finished();
+        if iter < 5 {
+            eprintln!("[DEBUG] update_until_finished: iteration {} - parsing_finished={}", iter, finished);
+        }
         if finished {
+            eprintln!("[DEBUG] update_until_finished: Parsing finished after {} iterations!", iter + 1);
             break;
         }
     }
