@@ -83,14 +83,17 @@ pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser>
 /// Returns an error if navigation fails.
 pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
     use tokio::time::{Duration, timeout};
+    use std::time::Instant;
 
     let url = to_file_url(path)?;
-    log::info!("Navigating to: {}", url.as_str());
+    log::info!("[TIMING] Starting navigation to: {}", url.as_str());
 
     // Navigate with timeout
+    let nav_start = Instant::now();
     timeout(Duration::from_secs(10), page.goto(url.as_str()))
         .await
         .map_err(|_| anyhow::anyhow!("Navigation timeout after 10s for {}", url.as_str()))??;
+    log::info!("[TIMING] Navigation (goto): {:?}", nav_start.elapsed());
 
     log::info!("Navigation completed, waiting for page to be fully ready");
 
@@ -110,9 +113,11 @@ pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
         })()
     "#;
 
+    let ready_start = Instant::now();
     timeout(Duration::from_secs(5), page.evaluate(ready_script))
         .await
         .map_err(|_| anyhow::anyhow!("Page ready timeout after 5s for {}", url.as_str()))??;
+    log::info!("[TIMING] Page ready wait: {:?}", ready_start.elapsed());
 
     log::info!("Page fully loaded for: {}", url.as_str());
     Ok(())

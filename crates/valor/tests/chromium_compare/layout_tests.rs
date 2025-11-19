@@ -376,6 +376,8 @@ async fn process_layout_fixture(
 /// Returns an error if browser setup, layout computation, or comparison fails.
 pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
     init_test_logger();
+    let test_start = Instant::now();
+
     let harness_src = concat!(
         include_str!("layout_tests.rs"),
         include_str!("common.rs"),
@@ -385,7 +387,9 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
     // Single runtime for all async operations
+    let runtime_start = Instant::now();
     let runtime = Runtime::new()?;
+    info!("[TIMING] Runtime creation: {:?}", runtime_start.elapsed());
 
     // Create browser for this test
     use chromiumoxide::browser::{Browser, BrowserConfig};
@@ -411,8 +415,10 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
         .build()
         .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
+    let browser_launch_start = Instant::now();
     let (browser, mut handler) = runtime.block_on(Browser::launch(config))?;
     let browser = Arc::new(browser);
+    info!("[TIMING] Browser launch: {:?}", browser_launch_start.elapsed());
 
     // Spawn handler task
     let _handler_task = runtime.spawn(async move {
@@ -422,6 +428,7 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
     });
 
     // Run in a single block_on - all operations are async and await naturally
+    let test_logic_start = Instant::now();
     let failed = runtime.block_on(async {
         let mut failed: Vec<(String, String)> = Vec::new();
         let mut timing = FixtureTiming::default();
@@ -435,7 +442,7 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
         )
         .await?;
         info!(
-            "Timing: setup={:?}, geom={:?}, chrome={:?}, cmp={:?}, total={:?}",
+            "[TIMING] Fixture internals: setup={:?}, geom={:?}, chrome={:?}, cmp={:?}, total={:?}",
             timing.setup_layouter,
             timing.compute_geometry,
             timing.chromium_fetch,
@@ -444,9 +451,13 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
         );
         Ok::<_, anyhow::Error>(failed)
     })?;
+    info!("[TIMING] Test logic execution: {:?}", test_logic_start.elapsed());
 
     // Let browser drop naturally to clean up resources
+    let browser_shutdown_start = Instant::now();
     drop(browser);
+    info!("[TIMING] Browser shutdown: {:?}", browser_shutdown_start.elapsed());
+    info!("[TIMING] TOTAL TEST TIME: {:?}", test_start.elapsed());
 
     if failed.is_empty() {
         Ok(())
@@ -930,18 +941,22 @@ async fn chromium_layout_json_in_page(page: &Page, path: &Path) -> Result<JsonVa
     use tokio::time::{Duration, timeout};
 
     log::info!(
-        "Starting chromium layout extraction for: {}",
+        "[TIMING] Starting chromium layout extraction for: {}",
         path.display()
     );
+    let nav_start = Instant::now();
     navigate_and_prepare_page(page, path).await?;
+    log::info!("[TIMING] navigate_and_prepare_page total: {:?}", nav_start.elapsed());
 
     log::info!("Evaluating extraction script for: {}", path.display());
     let script = chromium_layout_extraction_script();
 
     // Add 10 second timeout to script evaluation
+    let eval_start = Instant::now();
     let result = timeout(Duration::from_secs(10), page.evaluate(script))
         .await
         .map_err(|_| anyhow!("Script evaluation timeout after 10s for {}", path.display()))??;
+    log::info!("[TIMING] Script evaluation: {:?}", eval_start.elapsed());
 
     log::info!("Script evaluation completed for: {}", path.display());
 
