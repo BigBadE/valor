@@ -424,15 +424,23 @@ async fn process_layout_fixture(
         cached_value
     } else {
         // Create page directly with the target URL to avoid navigation issues
+        eprintln!("[DEBUG] Cache miss - creating new page for chromium fetch: {}", display_name);
         let url = to_file_url(input_path)?;
+        eprintln!("[DEBUG] About to call browser.new_page() with URL: {}", url);
         let page = browser.as_ref().new_page(url.as_str()).await?;
+        eprintln!("[DEBUG] browser.new_page() returned successfully!");
 
         // Give page time to load
+        eprintln!("[DEBUG] Sleeping 500ms for page load...");
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        eprintln!("[DEBUG] Sleep complete, about to extract chromium layout JSON");
 
         let chromium_value = chromium_layout_json_in_page_no_nav(&page, input_path).await?;
+        eprintln!("[DEBUG] Got chromium layout JSON, closing page");
         page.close().await?;
+        eprintln!("[DEBUG] Page closed, writing cache");
         write_cached_json_for_fixture(input_path, harness_src, &chromium_value)?;
+        eprintln!("[DEBUG] Cache written");
         chromium_value
     };
     timing.chromium_fetch = chromium_start.elapsed();
@@ -571,11 +579,19 @@ pub async fn run_chromium_layouts() -> Result<()> {
             let mut local_failed: Vec<(String, String)> = Vec::new();
 
             // Create a fresh page for each fixture
+            eprintln!("[DEBUG] About to create page for: {}", display_name);
             log::info!("Creating fresh page for: {}", display_name);
             let page = match browser.new_page("about:blank").await {
-                Ok(p) => p,
-                Err(e) => return (display_name, timing, local_failed, Err(e.into())),
+                Ok(p) => {
+                    eprintln!("[DEBUG] Page created successfully for: {}", display_name);
+                    p
+                }
+                Err(e) => {
+                    eprintln!("[DEBUG] Failed to create page for: {} - Error: {}", display_name, e);
+                    return (display_name, timing, local_failed, Err(e.into()));
+                }
             };
+            eprintln!("[DEBUG] Page variable assigned for: {}", display_name);
 
             let result = process_layout_fixture_parallel_with_page(
                 &input_path,
