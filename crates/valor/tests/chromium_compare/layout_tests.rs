@@ -20,10 +20,16 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::runtime::Handle;
+use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Mutex;
 
 type LayouterWithStyles = (Layouter, HashMap<NodeKey, ComputedStyle>);
+
+/// Global runtime shared by all tests. This allows parallel test execution
+/// while maintaining a single browser instance and its event handler.
+static GLOBAL_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
+    Runtime::new().expect("Failed to create global tokio runtime")
+});
 
 /// Shared browser instance for all tests to avoid launching Chrome 73 times.
 /// This is initialized on first access and reused for all subsequent tests.
@@ -460,7 +466,18 @@ async fn process_layout_fixture(
     result
 }
 
-/// Runs a single layout test for a given fixture path with a 5-second timeout.
+/// Synchronous wrapper for layout tests that spawns on the global runtime.
+/// This allows regular #[test] functions to run async code while sharing
+/// a single runtime and browser across all tests.
+///
+/// # Errors
+///
+/// Returns an error if the test fails or times out.
+pub fn run_single_layout_test_sync(input_path: &Path) -> Result<()> {
+    GLOBAL_RUNTIME.block_on(run_single_layout_test(input_path))
+}
+
+/// Runs a single layout test for a given fixture path with a 15-second timeout.
 ///
 /// # Errors
 ///
