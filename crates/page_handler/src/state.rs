@@ -449,7 +449,7 @@ impl HtmlPage {
             if done {
                 trace!("Loader finished, finalizing DOM");
                 let loader = self.loader.take().unwrap();
-                loader.await_completion()?;
+                loader.await_completion().await?;
             }
         }
         Ok(())
