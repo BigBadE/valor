@@ -442,13 +442,18 @@ impl HtmlPage {
     ///
     /// Returns an error if DOM finalization fails.
     async fn finalize_dom_loading_if_needed(&mut self) -> Result<(), Error> {
-        if self.loader.as_ref().is_some_and(HTMLParser::is_finished) {
-            let loader = self
-                .loader
-                .take()
-                .ok_or_else(|| anyhow!("Loader is finished and None!"))?;
-            trace!("Loader finished, finalizing DOM");
-            loader.finish().await?;
+        // Check if parsing has completed with a short timeout (1ms)
+        // This allows the parser task to make progress without blocking the page update
+        if let Some(loader) = &mut self.loader {
+            let done = loader
+                .poll_with_timeout(tokio::time::Duration::from_millis(1))
+                .await?;
+
+            if done {
+                trace!("Loader finished, finalizing DOM");
+                let loader = self.loader.take().unwrap();
+                loader.await_completion().await?;
+            }
         }
         Ok(())
     }

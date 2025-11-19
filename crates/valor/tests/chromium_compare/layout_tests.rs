@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::runtime::{Handle, Runtime};
+use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
 type LayouterWithStyles = (Layouter, HashMap<NodeKey, ComputedStyle>);
@@ -44,18 +44,15 @@ async fn get_or_create_shared_browser() -> Result<Arc<chromiumoxide::Browser>> {
 
     // Check if browser was created while we were waiting for the lock
     if let Some(shared) = guard.as_ref() {
-        eprintln!("[DEBUG] Reusing existing browser instance");
         return Ok(Arc::clone(&shared.browser));
     }
 
     // We have the lock and browser doesn't exist - create it
-    eprintln!("[DEBUG] Creating shared browser instance (THIS TEST WON THE RACE)");
     info!("[TIMING] Creating shared browser instance (first test only)");
     let browser_launch_start = Instant::now();
 
     use chromiumoxide::browser::{Browser, BrowserConfig};
 
-    eprintln!("[DEBUG] Building browser config...");
     let chrome_path = std::path::PathBuf::from(
         "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
     );
@@ -76,37 +73,21 @@ async fn get_or_create_shared_browser() -> Result<Arc<chromiumoxide::Browser>> {
         .build()
         .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
-    eprintln!("[DEBUG] About to launch browser...");
     // Launch browser on the CURRENT runtime (from #[tokio::test])
     // We hold the lock during this to prevent other tests from also launching
     let (browser, mut handler) = Browser::launch(config).await?;
-    eprintln!("[DEBUG] Browser launched! Creating Arc...");
     let browser = Arc::new(browser);
 
-    eprintln!("[DEBUG] Spawning handler task...");
     // Spawn handler task on the CURRENT runtime
     tokio::spawn(async move {
-        eprintln!("[DEBUG] Handler task started");
-        let mut event_count = 0;
-        while let Some(event) = handler.next().await {
-            event_count += 1;
-            if event_count <= 5 {
-                eprintln!("[DEBUG] Handler received event #{}", event_count);
-            }
+        while let Some(_event) = handler.next().await {
+            // Process Chrome DevTools Protocol events
         }
-        eprintln!("[DEBUG] Handler task ended after {} events", event_count);
     });
 
-    // CRITICAL: Yield to let the handler task start processing events!
-    // Without this, current_thread runtime deadlocks because:
-    // 1. Handler task is queued but not running
-    // 2. Test immediately calls browser.new_page().await which blocks
-    // 3. Handler never gets CPU time to process the response
-    eprintln!("[DEBUG] Yielding to allow handler to start...");
+    // Yield to let the handler task start processing events
     tokio::task::yield_now().await;
-    eprintln!("[DEBUG] Yield complete");
 
-    eprintln!("[DEBUG] Browser setup complete");
     info!("[TIMING] Shared browser launch: {:?}", browser_launch_start.elapsed());
 
     // Clone reference before storing
@@ -118,9 +99,6 @@ async fn get_or_create_shared_browser() -> Result<Arc<chromiumoxide::Browser>> {
     });
 
     // Lock is automatically released when guard goes out of scope
-
-    eprintln!("[DEBUG] Returning browser reference (lock will be released)");
-    // Return browser reference
     Ok(browser_clone)
 }
 
@@ -433,23 +411,15 @@ async fn process_layout_fixture(
         cached_value
     } else {
         // Create page directly with the target URL to avoid navigation issues
-        eprintln!("[DEBUG] Cache miss - creating new page for chromium fetch: {}", display_name);
         let url = to_file_url(input_path)?;
-        eprintln!("[DEBUG] About to call browser.new_page() with URL: {}", url);
         let page = browser.as_ref().new_page(url.as_str()).await?;
-        eprintln!("[DEBUG] browser.new_page() returned successfully!");
 
         // Give page time to load
-        eprintln!("[DEBUG] Sleeping 500ms for page load...");
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        eprintln!("[DEBUG] Sleep complete, about to extract chromium layout JSON");
 
         let chromium_value = chromium_layout_json_in_page_no_nav(&page, input_path).await?;
-        eprintln!("[DEBUG] Got chromium layout JSON, closing page");
         page.close().await?;
-        eprintln!("[DEBUG] Page closed, writing cache");
         write_cached_json_for_fixture(input_path, harness_src, &chromium_value)?;
-        eprintln!("[DEBUG] Cache written");
         chromium_value
     };
     timing.chromium_fetch = chromium_start.elapsed();
@@ -489,11 +459,9 @@ async fn process_layout_fixture(
 ///
 /// Returns an error if browser setup, layout computation, or comparison fails.
 pub async fn run_single_layout_test(input_path: &Path) -> Result<()> {
-    eprintln!("[DEBUG] ========== TEST STARTED: {} ==========", input_path.display());
     init_test_logger();
     let test_start = Instant::now();
 
-    eprintln!("[DEBUG] Preparing harness source...");
     let harness_src = concat!(
         include_str!("layout_tests.rs"),
         include_str!("common.rs"),
@@ -502,12 +470,10 @@ pub async fn run_single_layout_test(input_path: &Path) -> Result<()> {
     );
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
-    eprintln!("[DEBUG] Getting or creating shared browser...");
-    // Get or create the shared browser instance (now async!)
+    // Get or create the shared browser instance
     let browser = get_or_create_shared_browser().await?;
-    eprintln!("[DEBUG] Got browser reference");
 
-    // Execute test logic directly with async/await (no block_on!)
+    // Execute test logic
     let test_logic_start = Instant::now();
     let mut failed: Vec<(String, String)> = Vec::new();
     let mut timing = FixtureTiming::default();
@@ -588,19 +554,13 @@ pub async fn run_chromium_layouts() -> Result<()> {
             let mut local_failed: Vec<(String, String)> = Vec::new();
 
             // Create a fresh page for each fixture
-            eprintln!("[DEBUG] About to create page for: {}", display_name);
             log::info!("Creating fresh page for: {}", display_name);
             let page = match browser.new_page("about:blank").await {
-                Ok(p) => {
-                    eprintln!("[DEBUG] Page created successfully for: {}", display_name);
-                    p
-                }
+                Ok(p) => p,
                 Err(e) => {
-                    eprintln!("[DEBUG] Failed to create page for: {} - Error: {}", display_name, e);
                     return (display_name, timing, local_failed, Err(e.into()));
                 }
             };
-            eprintln!("[DEBUG] Page variable assigned for: {}", display_name);
 
             let result = process_layout_fixture_parallel_with_page(
                 &input_path,

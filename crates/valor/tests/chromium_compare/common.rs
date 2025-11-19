@@ -353,48 +353,30 @@ pub fn to_file_url(path: &Path) -> Result<Url> {
 
 /// Creates a new HTML page for the given URL.
 ///
+/// The parser runs in the background. Call page.update() repeatedly to check
+/// for parsing progress - it will naturally yield via timeout-based polling.
+///
 /// # Errors
 ///
 /// Returns an error if page creation fails.
 pub async fn create_page(handle: &tokio::runtime::Handle, url: Url) -> Result<HtmlPage> {
-    eprintln!("[DEBUG] create_page: Creating HtmlPage...");
     let config = ValorConfig::from_env();
     let page = HtmlPage::new(handle, url, config).await?;
-    eprintln!("[DEBUG] create_page: HtmlPage created, parser task spawned");
-
-    // CRITICAL: Yield to let the parser task start processing HTML!
-    // Without this, current_thread runtime deadlocks because:
-    // 1. Parser task is queued but not running
-    // 2. Test immediately calls page.update() which waits for parser
-    // 3. Parser never gets CPU time to process the stream
-    eprintln!("[DEBUG] create_page: Yielding to allow parser to start...");
-    tokio::task::yield_now().await;
-    eprintln!("[DEBUG] create_page: Yield complete");
-
     Ok(page)
 }
 
 /// Creates a new HTML page using the current tokio handle.
 ///
+/// The parser runs in the background. Call page.update() repeatedly to check
+/// for parsing progress - it will naturally yield via timeout-based polling.
+///
 /// # Errors
 ///
 /// Returns an error if page creation fails.
 pub async fn create_page_from_current(url: Url) -> Result<HtmlPage> {
-    eprintln!("[DEBUG] create_page_from_current: Creating HtmlPage...");
     let config = ValorConfig::from_env();
     let handle = tokio::runtime::Handle::current();
     let page = HtmlPage::new(&handle, url, config).await?;
-    eprintln!("[DEBUG] create_page_from_current: HtmlPage created, parser task spawned");
-
-    // CRITICAL: Yield to let the parser task start processing HTML!
-    // Without this, current_thread runtime deadlocks because:
-    // 1. Parser task is queued but not running
-    // 2. Test immediately calls page.update() which waits for parser
-    // 3. Parser never gets CPU time to process the stream
-    eprintln!("[DEBUG] create_page_from_current: Yielding to allow parser to start...");
-    tokio::task::yield_now().await;
-    eprintln!("[DEBUG] create_page_from_current: Yield complete");
-
     Ok(page)
 }
 
@@ -422,6 +404,10 @@ pub async fn setup_page_for_fixture(handle: &tokio::runtime::Handle, path: &Path
 
 /// Updates the page until parsing finishes, calling a callback per tick.
 ///
+/// Each update naturally yields to the parser task via timeout-based polling,
+/// so no manual yielding is needed. The parser runs in the background and
+/// page.update() checks for completion with a 1ms timeout on each call.
+///
 /// # Errors
 ///
 /// Returns an error if page update or callback execution fails.
@@ -429,32 +415,26 @@ pub async fn update_until_finished<F>(page: &mut HtmlPage, mut per_tick: F) -> R
 where
     F: FnMut(&mut HtmlPage) -> Result<()>,
 {
-    let mut finished = page.parsing_finished();
     let start_time = Instant::now();
     let max_total_time = Duration::from_secs(15);
-    eprintln!("[DEBUG] update_until_finished: Starting update loop, initial parsing_finished={}", finished);
-    for iter in 0i32..10_000i32 {
+
+    // Loop until parsing completes or timeout
+    while !page.parsing_finished() {
         if start_time.elapsed() > max_total_time {
-            warn!("update_until_finished: exceeded total time budget");
-            break;
+            warn!("update_until_finished: exceeded total time budget of 15s");
+            return Ok(false);
         }
-        if iter < 5 {
-            eprintln!("[DEBUG] update_until_finished: iteration {} - calling page.update()", iter);
-        }
+
+        // Update naturally yields via the 1ms timeout in finalize_dom_loading_if_needed
         page.update().await?;
-        // Yield after each update to give parser task CPU time in current_thread runtime
-        tokio::task::yield_now().await;
         per_tick(page)?;
-        finished = page.parsing_finished();
-        if iter < 5 {
-            eprintln!("[DEBUG] update_until_finished: iteration {} - parsing_finished={}", iter, finished);
-        }
-        if finished {
-            eprintln!("[DEBUG] update_until_finished: Parsing finished after {} iterations!", iter + 1);
-            break;
-        }
     }
-    Ok(finished)
+
+    // Final update after parsing completes
+    page.update().await?;
+    per_tick(page)?;
+
+    Ok(true)
 }
 
 /// Updates the page until parsing finishes without a per-tick callback.

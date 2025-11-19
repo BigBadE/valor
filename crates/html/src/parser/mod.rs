@@ -3,7 +3,7 @@
 mod html5ever_engine;
 
 use crate::parser::html5ever_engine::Html5everEngine;
-use anyhow::{Error, anyhow};
+use anyhow::Error;
 use bytes::Bytes;
 use core::mem;
 use indextree::{Arena, Node, NodeId};
@@ -443,20 +443,39 @@ impl HTMLParser {
         Ok(())
     }
 
+    /// Check if parsing has completed (non-blocking check).
     #[inline]
     pub fn is_finished(&self) -> bool {
         self.process_handle.is_finished()
     }
 
-    /// Finish the parser and wait for completion.
+    /// Wait for parser to complete, returning immediately if already finished.
     ///
     /// # Errors
-    /// Returns an error if the process is not finished or if joining fails.
+    /// Returns an error if parsing fails.
     #[inline]
-    pub async fn finish(self) -> Result<(), Error> {
-        if !self.process_handle.is_finished() {
-            return Err(anyhow!("Expected process to be finished, but it wasn't!"));
-        }
+    pub async fn await_completion(self) -> Result<(), Error> {
         self.process_handle.await?
+    }
+
+    /// Poll the parser with a timeout, returning whether parsing completed.
+    /// If parsing is already done, returns immediately without waiting.
+    ///
+    /// # Errors
+    /// Returns an error if parsing fails.
+    #[inline]
+    pub async fn poll_with_timeout(&mut self, timeout: tokio::time::Duration) -> Result<bool, Error> {
+        if self.process_handle.is_finished() {
+            return Ok(true);
+        }
+
+        // Use timeout to check if parsing completes soon
+        match tokio::time::timeout(timeout, &mut self.process_handle).await {
+            Ok(result) => {
+                let _ = result?;
+                Ok(true)
+            }
+            Err(_) => Ok(false), // Timeout - still parsing
+        }
     }
 }
