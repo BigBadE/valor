@@ -54,7 +54,14 @@ fn get_or_create_shared_browser() -> Result<(Arc<Runtime>, Handle, Arc<chromiumo
     info!("[TIMING] Creating shared browser instance (first test only)");
     let browser_launch_start = Instant::now();
 
-    let runtime = Arc::new(Runtime::new()?);
+    // Create a multi-threaded runtime with enough threads to prevent starvation
+    // One thread will run the CDP handler, others available for block_on calls
+    let runtime = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)  // Ensure multiple worker threads
+            .enable_all()
+            .build()?
+    );
 
     use chromiumoxide::browser::{Browser, BrowserConfig};
 
@@ -413,9 +420,14 @@ async fn process_layout_fixture(
     {
         cached_value
     } else {
-        // Await directly - no block_on() to avoid blocking the event handler
-        let page = browser.as_ref().new_page("about:blank").await?;
-        let chromium_value = chromium_layout_json_in_page(&page, input_path).await?;
+        // Create page directly with the target URL to avoid navigation issues
+        let url = to_file_url(input_path)?;
+        let page = browser.as_ref().new_page(url.as_str()).await?;
+
+        // Give page time to load
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let chromium_value = chromium_layout_json_in_page_no_nav(&page, input_path).await?;
         page.close().await?;
         write_cached_json_for_fixture(input_path, harness_src, &chromium_value)?;
         chromium_value
@@ -471,7 +483,7 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
     // Get or create the shared browser instance
     let (runtime, handle, browser) = get_or_create_shared_browser()?;
 
-    // Run in a single block_on - all operations are async and await naturally
+    // Runtime has 4 worker threads, so block_on won't starve the CDP handler
     let test_logic_start = Instant::now();
     let failed = runtime.block_on(async {
         let mut failed: Vec<(String, String)> = Vec::new();
@@ -524,7 +536,7 @@ pub fn run_chromium_layouts() -> Result<()> {
     // Get or create shared browser instance
     let (runtime, _handle, browser) = get_or_create_shared_browser()?;
 
-    // Run everything in a single block_on to avoid interfering with the handler task
+    // Runtime has 4 worker threads, so block_on won't starve the CDP handler
     let overall_start = Instant::now();
     let (ran, failed, timing_stats) = runtime.block_on(async {
         use futures::StreamExt;
@@ -940,6 +952,32 @@ fn chromium_layout_extraction_script() -> &'static str {
     })()"
 }
 
+/// Extracts layout JSON from Chromium by evaluating JavaScript (page already navigated).
+///
+/// # Errors
+///
+/// Returns an error if script evaluation or JSON parsing fails.
+async fn chromium_layout_json_in_page_no_nav(page: &Page, path: &Path) -> Result<JsonValue> {
+    use tokio::time::{Duration, timeout};
+
+    log::info!("Evaluating extraction script for: {}", path.display());
+    let script = chromium_layout_extraction_script();
+
+    // Add 10 second timeout to script evaluation
+    let eval_start = Instant::now();
+    let result = timeout(Duration::from_secs(10), page.evaluate(script))
+        .await
+        .map_err(|_| anyhow!("Script evaluation timeout after 10s for {}", path.display()))??;
+    log::info!("[TIMING] Script evaluation: {:?}", eval_start.elapsed());
+
+    let json_string = result
+        .value()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Chromium returned non-string JSON for layout"))?;
+    let parsed: JsonValue = from_str(json_string)?;
+    Ok(parsed)
+}
+
 /// Extracts layout JSON from Chromium by evaluating JavaScript in a page.
 ///
 /// # Errors
@@ -956,22 +994,5 @@ async fn chromium_layout_json_in_page(page: &Page, path: &Path) -> Result<JsonVa
     navigate_and_prepare_page(page, path).await?;
     log::info!("[TIMING] navigate_and_prepare_page total: {:?}", nav_start.elapsed());
 
-    log::info!("Evaluating extraction script for: {}", path.display());
-    let script = chromium_layout_extraction_script();
-
-    // Add 10 second timeout to script evaluation
-    let eval_start = Instant::now();
-    let result = timeout(Duration::from_secs(10), page.evaluate(script))
-        .await
-        .map_err(|_| anyhow!("Script evaluation timeout after 10s for {}", path.display()))??;
-    log::info!("[TIMING] Script evaluation: {:?}", eval_start.elapsed());
-
-    log::info!("Script evaluation completed for: {}", path.display());
-
-    let json_string = result
-        .value()
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow!("Chromium returned non-string JSON for layout"))?;
-    let parsed: JsonValue = from_str(json_string)?;
-    Ok(parsed)
+    chromium_layout_json_in_page_no_nav(page, path).await
 }
