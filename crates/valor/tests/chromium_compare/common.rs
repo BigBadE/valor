@@ -425,9 +425,12 @@ where
             return Ok(false);
         }
 
-        // Update naturally yields via the 1ms timeout in finalize_dom_loading_if_needed
+        // Update and yield to allow parser task to run
         page.update().await?;
         per_tick(page)?;
+
+        // Small sleep to yield to other tasks (parser running in background)
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
     // Final update after parsing completes
