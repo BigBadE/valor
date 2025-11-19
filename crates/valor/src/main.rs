@@ -29,7 +29,8 @@ mod window;
 ///
 /// # Panics
 /// Panics if the event loop cannot be created or if the application fails to run.
-pub fn main() {
+#[tokio::main]
+async fn main() {
     env_logger_init();
 
     let event_loop = match EventLoop::new() {
