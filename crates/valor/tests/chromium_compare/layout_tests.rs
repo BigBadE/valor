@@ -14,14 +14,93 @@ use js::DOMSubscriber as _;
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
 use js::NodeKey;
 use log::{error, info};
+use once_cell::sync::Lazy;
 use serde_json::{Map as JsonMap, Value as JsonValue, from_str, json};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 
 type LayouterWithStyles = (Layouter, HashMap<NodeKey, ComputedStyle>);
+
+/// Shared browser instance for all tests to avoid launching Chrome 73 times.
+/// This is initialized on first access and reused for all subsequent tests.
+struct SharedBrowser {
+    /// Runtime kept alive to run the browser event handler task.
+    _runtime: Runtime,
+    browser: Arc<chromiumoxide::Browser>,
+}
+
+static SHARED_BROWSER: Lazy<Mutex<Option<SharedBrowser>>> = Lazy::new(|| Mutex::new(None));
+
+/// Gets or creates the shared browser instance.
+///
+/// # Errors
+///
+/// Returns an error if browser creation fails.
+fn get_or_create_shared_browser() -> Result<(Runtime, Arc<chromiumoxide::Browser>)> {
+    let mut guard = SHARED_BROWSER.lock().unwrap();
+
+    if let Some(shared) = guard.as_ref() {
+        // Browser already exists, return handles to it
+        // We need to clone the Arc and create a reference to the runtime
+        // Since we can't clone Runtime, we'll need a different approach
+        // Let's store everything we need in the SharedBrowser struct
+        return Ok((Runtime::new()?, Arc::clone(&shared.browser)));
+    }
+
+    // First access - create the browser
+    info!("[TIMING] Creating shared browser instance (first test only)");
+    let browser_launch_start = Instant::now();
+
+    let runtime = Runtime::new()?;
+
+    use chromiumoxide::browser::{Browser, BrowserConfig};
+
+    let chrome_path = std::path::PathBuf::from(
+        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
+    );
+    let config = BrowserConfig::builder()
+        .chrome_executable(chrome_path)
+        .no_sandbox()
+        .window_size(800, 600)
+        .arg("--force-device-scale-factor=1")
+        .arg("--hide-scrollbars")
+        .arg("--blink-settings=imagesEnabled=false")
+        .arg("--disable-gpu")
+        .arg("--disable-features=OverlayScrollbar")
+        .arg("--allow-file-access-from-files")
+        .arg("--disable-dev-shm-usage")
+        .arg("--disable-extensions")
+        .arg("--disable-background-networking")
+        .arg("--disable-sync")
+        .build()
+        .map_err(|e| anyhow!("Browser config error: {}", e))?;
+
+    let (browser, mut handler) = runtime.block_on(Browser::launch(config))?;
+    let browser = Arc::new(browser);
+
+    // Spawn handler task that will live for the duration of all tests
+    runtime.spawn(async move {
+        while let Some(_event) = handler.next().await {
+            // Silently consume events
+        }
+    });
+
+    info!("[TIMING] Shared browser launch: {:?}", browser_launch_start.elapsed());
+
+    // Store the shared browser - but we have a problem with Runtime not being Clone
+    // Let's use a different approach: don't store the runtime, create fresh ones
+    let browser_clone = Arc::clone(&browser);
+    *guard = Some(SharedBrowser {
+        _runtime: runtime,
+        browser,
+    });
+
+    // Return fresh runtime and browser reference
+    Ok((Runtime::new()?, browser_clone))
+}
 
 #[derive(Default, Clone, Debug)]
 struct FixtureTiming {
@@ -386,46 +465,8 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
     );
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
-    // Single runtime for all async operations
-    let runtime_start = Instant::now();
-    let runtime = Runtime::new()?;
-    info!("[TIMING] Runtime creation: {:?}", runtime_start.elapsed());
-
-    // Create browser for this test
-    use chromiumoxide::browser::{Browser, BrowserConfig};
-    use futures::StreamExt;
-
-    let chrome_path = std::path::PathBuf::from(
-        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
-    );
-    let config = BrowserConfig::builder()
-        .chrome_executable(chrome_path)
-        .no_sandbox()
-        .window_size(800, 600)
-        .arg("--force-device-scale-factor=1")
-        .arg("--hide-scrollbars")
-        .arg("--blink-settings=imagesEnabled=false")
-        .arg("--disable-gpu")
-        .arg("--disable-features=OverlayScrollbar")
-        .arg("--allow-file-access-from-files")
-        .arg("--disable-dev-shm-usage")
-        .arg("--disable-extensions")
-        .arg("--disable-background-networking")
-        .arg("--disable-sync")
-        .build()
-        .map_err(|e| anyhow!("Browser config error: {}", e))?;
-
-    let browser_launch_start = Instant::now();
-    let (browser, mut handler) = runtime.block_on(Browser::launch(config))?;
-    let browser = Arc::new(browser);
-    info!("[TIMING] Browser launch: {:?}", browser_launch_start.elapsed());
-
-    // Spawn handler task
-    let _handler_task = runtime.spawn(async move {
-        while let Some(_event) = handler.next().await {
-            // Silently consume events
-        }
-    });
+    // Get or create the shared browser instance
+    let (runtime, browser) = get_or_create_shared_browser()?;
 
     // Run in a single block_on - all operations are async and await naturally
     let test_logic_start = Instant::now();
@@ -452,11 +493,6 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
         Ok::<_, anyhow::Error>(failed)
     })?;
     info!("[TIMING] Test logic execution: {:?}", test_logic_start.elapsed());
-
-    // Let browser drop naturally to clean up resources
-    let browser_shutdown_start = Instant::now();
-    drop(browser);
-    info!("[TIMING] Browser shutdown: {:?}", browser_shutdown_start.elapsed());
     info!("[TIMING] TOTAL TEST TIME: {:?}", test_start.elapsed());
 
     if failed.is_empty() {
@@ -482,44 +518,13 @@ pub fn run_chromium_layouts() -> Result<()> {
     );
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
-    // Single runtime for all async operations
-    let runtime = Runtime::new()?;
+    // Get or create shared browser instance
+    let (runtime, browser) = get_or_create_shared_browser()?;
 
     // Run everything in a single block_on to avoid interfering with the handler task
     let overall_start = Instant::now();
     let (ran, failed, timing_stats) = runtime.block_on(async {
-        use chromiumoxide::browser::{Browser, BrowserConfig};
         use futures::StreamExt;
-
-        let chrome_path = std::path::PathBuf::from(
-            "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
-        );
-        let config = BrowserConfig::builder()
-            .chrome_executable(chrome_path)
-            .no_sandbox()
-            .window_size(800, 600)
-            .arg("--force-device-scale-factor=1")
-            .arg("--hide-scrollbars")
-            .arg("--blink-settings=imagesEnabled=false")
-            .arg("--disable-gpu")
-            .arg("--disable-features=OverlayScrollbar")
-            .arg("--allow-file-access-from-files")
-            .arg("--disable-dev-shm-usage")
-            .arg("--disable-extensions")
-            .arg("--disable-background-networking")
-            .arg("--disable-sync")
-            .build()
-            .map_err(|e| anyhow!("Browser config error: {}", e))?;
-
-        let (browser, mut handler) = Browser::launch(config).await?;
-        let browser = Arc::new(browser); // Wrap in Arc for sharing across tasks
-
-        // Spawn handler task using tokio::spawn
-        let _handler_task = tokio::spawn(async move {
-            while let Some(_event) = handler.next().await {
-                // Silently consume events
-            }
-        });
 
         let fixtures = get_filtered_fixtures("LAYOUT")?;
         let fixture_count = fixtures.len();
