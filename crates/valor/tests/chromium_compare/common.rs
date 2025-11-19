@@ -10,7 +10,6 @@ use std::fs::{create_dir_all, read, read_dir, read_to_string, remove_dir_all, wr
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::Instant;
-use tokio::runtime::Runtime;
 use url::Url;
 
 // ===== CLI argument parsing =====
@@ -357,9 +356,9 @@ pub fn to_file_url(path: &Path) -> Result<Url> {
 /// # Errors
 ///
 /// Returns an error if page creation fails.
-pub async fn create_page(runtime: &Runtime, url: Url) -> Result<HtmlPage> {
+pub async fn create_page(handle: &tokio::runtime::Handle, url: Url) -> Result<HtmlPage> {
     let config = ValorConfig::from_env();
-    let page = HtmlPage::new(runtime.handle(), url, config).await?;
+    let page = HtmlPage::new(handle, url, config).await?;
     Ok(page)
 }
 
@@ -380,9 +379,9 @@ pub async fn create_page_from_current(url: Url) -> Result<HtmlPage> {
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or script evaluation fails.
-pub async fn setup_page_for_fixture(runtime: &Runtime, path: &Path) -> Result<HtmlPage> {
+pub async fn setup_page_for_fixture(handle: &tokio::runtime::Handle, path: &Path) -> Result<HtmlPage> {
     let url = to_file_url(path)?;
-    let mut page = create_page(runtime, url).await?;
+    let mut page = create_page(handle, url).await?;
     page.eval_js(css_reset_injection_script())?;
 
     let finished = update_until_finished_simple(&mut page).await?;

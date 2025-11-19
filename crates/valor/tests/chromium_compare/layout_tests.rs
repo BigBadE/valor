@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::runtime::Runtime;
+use tokio::runtime::{Handle, Runtime};
 
 type LayouterWithStyles = (Layouter, HashMap<NodeKey, ComputedStyle>);
 
@@ -28,33 +28,34 @@ type LayouterWithStyles = (Layouter, HashMap<NodeKey, ComputedStyle>);
 /// This is initialized on first access and reused for all subsequent tests.
 struct SharedBrowser {
     /// Runtime kept alive to run the browser event handler task.
-    _runtime: Runtime,
+    /// Wrapped in Arc to allow shared access for block_on calls.
+    runtime: Arc<Runtime>,
     browser: Arc<chromiumoxide::Browser>,
 }
 
 static SHARED_BROWSER: Lazy<Mutex<Option<SharedBrowser>>> = Lazy::new(|| Mutex::new(None));
 
-/// Gets or creates the shared browser instance.
+/// Gets or creates the shared browser and runtime.
 ///
 /// # Errors
 ///
 /// Returns an error if browser creation fails.
-fn get_or_create_shared_browser() -> Result<(Runtime, Arc<chromiumoxide::Browser>)> {
+fn get_or_create_shared_browser() -> Result<(Arc<Runtime>, Handle, Arc<chromiumoxide::Browser>)> {
     let mut guard = SHARED_BROWSER.lock().unwrap();
 
     if let Some(shared) = guard.as_ref() {
-        // Browser already exists, return handles to it
-        // We need to clone the Arc and create a reference to the runtime
-        // Since we can't clone Runtime, we'll need a different approach
-        // Let's store everything we need in the SharedBrowser struct
-        return Ok((Runtime::new()?, Arc::clone(&shared.browser)));
+        // Browser exists, return clones
+        let runtime = Arc::clone(&shared.runtime);
+        let handle = runtime.handle().clone();
+        let browser = Arc::clone(&shared.browser);
+        return Ok((runtime, handle, browser));
     }
 
     // First access - create the browser
     info!("[TIMING] Creating shared browser instance (first test only)");
     let browser_launch_start = Instant::now();
 
-    let runtime = Runtime::new()?;
+    let runtime = Arc::new(Runtime::new()?);
 
     use chromiumoxide::browser::{Browser, BrowserConfig};
 
@@ -90,16 +91,18 @@ fn get_or_create_shared_browser() -> Result<(Runtime, Arc<chromiumoxide::Browser
 
     info!("[TIMING] Shared browser launch: {:?}", browser_launch_start.elapsed());
 
-    // Store the shared browser - but we have a problem with Runtime not being Clone
-    // Let's use a different approach: don't store the runtime, create fresh ones
+    // Clone references before storing
+    let runtime_clone = Arc::clone(&runtime);
+    let handle = runtime.handle().clone();
     let browser_clone = Arc::clone(&browser);
+
     *guard = Some(SharedBrowser {
-        _runtime: runtime,
+        runtime,
         browser,
     });
 
-    // Return fresh runtime and browser reference
-    Ok((Runtime::new()?, browser_clone))
+    // Return runtime, handle, and browser reference
+    Ok((runtime_clone, handle, browser_clone))
 }
 
 #[derive(Default, Clone, Debug)]
@@ -157,11 +160,11 @@ fn apply_element_attrs(layouter: &mut Layouter, node: NodeKey, attrs: &HashMap<S
 ///
 /// Returns an error if page creation, parsing, or layout computation fails.
 async fn setup_layouter_for_fixture(
-    runtime: &Runtime,
+    handle: &Handle,
     input_path: &Path,
 ) -> Result<LayouterWithStyles> {
     let url = to_file_url(input_path)?;
-    let mut page = create_page(runtime, url).await?;
+    let mut page = create_page(handle, url).await?;
     let mut layouter_mirror = page.create_mirror(Layouter::new());
 
     let finished = update_until_finished(&mut page, |_page| {
@@ -375,7 +378,7 @@ async fn process_layout_fixture_parallel_with_page(
 /// Returns an error if fixture processing, layouter setup, or JSON operations fail.
 async fn process_layout_fixture(
     input_path: &Path,
-    runtime: &Runtime,
+    handle: &Handle,
     browser: &Arc<chromiumoxide::Browser>,
     harness_src: &str,
     failed: &mut Vec<(String, String)>,
@@ -387,7 +390,7 @@ async fn process_layout_fixture(
     // Setup layouter
     let setup_start = Instant::now();
     let (mut layouter, computed_for_serialization) =
-        match setup_layouter_for_fixture(runtime, input_path).await {
+        match setup_layouter_for_fixture(handle, input_path).await {
             Ok(result) => result,
             Err(err) => {
                 let msg = format!("Setup failed: {err}");
@@ -466,7 +469,7 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
     // Get or create the shared browser instance
-    let (runtime, browser) = get_or_create_shared_browser()?;
+    let (runtime, handle, browser) = get_or_create_shared_browser()?;
 
     // Run in a single block_on - all operations are async and await naturally
     let test_logic_start = Instant::now();
@@ -475,7 +478,7 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
         let mut timing = FixtureTiming::default();
         process_layout_fixture(
             input_path,
-            &runtime,
+            &handle,
             &browser,
             harness_src,
             &mut failed,
@@ -519,7 +522,7 @@ pub fn run_chromium_layouts() -> Result<()> {
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
     // Get or create shared browser instance
-    let (runtime, browser) = get_or_create_shared_browser()?;
+    let (runtime, _handle, browser) = get_or_create_shared_browser()?;
 
     // Run everything in a single block_on to avoid interfering with the handler task
     let overall_start = Instant::now();
