@@ -97,6 +97,15 @@ async fn get_or_create_shared_browser() -> Result<Arc<chromiumoxide::Browser>> {
         eprintln!("[DEBUG] Handler task ended after {} events", event_count);
     });
 
+    // CRITICAL: Yield to let the handler task start processing events!
+    // Without this, current_thread runtime deadlocks because:
+    // 1. Handler task is queued but not running
+    // 2. Test immediately calls browser.new_page().await which blocks
+    // 3. Handler never gets CPU time to process the response
+    eprintln!("[DEBUG] Yielding to allow handler to start...");
+    tokio::task::yield_now().await;
+    eprintln!("[DEBUG] Yield complete");
+
     eprintln!("[DEBUG] Browser setup complete");
     info!("[TIMING] Shared browser launch: {:?}", browser_launch_start.elapsed());
 
