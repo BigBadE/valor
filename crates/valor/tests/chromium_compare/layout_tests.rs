@@ -471,8 +471,8 @@ pub async fn run_single_layout_test(input_path: &Path) -> Result<()> {
     init_test_logger();
     let test_start = Instant::now();
 
-    // CRITICAL: 5-second timeout for entire test
-    let result = timeout(Duration::from_secs(5), async {
+    // Overall timeout for entire test (allows time for Chrome startup + operations)
+    let result = timeout(Duration::from_secs(15), async {
         let harness_src = concat!(
             include_str!("layout_tests.rs"),
             include_str!("common.rs"),
@@ -527,7 +527,7 @@ pub async fn run_single_layout_test(input_path: &Path) -> Result<()> {
         Ok(inner_result) => inner_result,
         Err(_) => {
             error!("TEST TIMEOUT after {:?} for: {}", elapsed, input_path.display());
-            Err(anyhow!("Test timeout after 5 seconds: {}", input_path.display()))
+            Err(anyhow!("Test timeout after 15 seconds: {}", input_path.display()))
         }
     }
 }
