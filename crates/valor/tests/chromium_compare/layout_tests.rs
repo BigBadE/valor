@@ -474,7 +474,13 @@ async fn process_layout_fixture(
 ///
 /// Returns an error if the test fails or times out.
 pub fn run_single_layout_test_sync(input_path: &Path) -> Result<()> {
-    GLOBAL_RUNTIME.block_on(run_single_layout_test(input_path))
+    // Spawn the future on the runtime and wait for completion
+    // This allows the runtime to continue processing other tasks
+    let path_buf = input_path.to_path_buf();
+    let handle = GLOBAL_RUNTIME.spawn(async move {
+        run_single_layout_test(&path_buf).await
+    });
+    GLOBAL_RUNTIME.block_on(handle)?
 }
 
 /// Runs a single layout test for a given fixture path with a 15-second timeout.
