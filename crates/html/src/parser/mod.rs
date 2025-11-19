@@ -392,7 +392,13 @@ impl HTMLParser {
         // First spawn an async task to collect bytes, then spawn_blocking for html5ever
         // This separates async I/O from !Send synchronous parsing
         let process_handle = tokio::task::spawn(async move {
-            Self::process_async_then_blocking(dom_mirror, inputs.byte_stream, inputs.script_tx, inputs.base_url).await
+            Self::process_async_then_blocking(
+                dom_mirror,
+                inputs.byte_stream,
+                inputs.script_tx,
+                inputs.base_url,
+            )
+            .await
         });
 
         Self { process_handle }
@@ -404,7 +410,9 @@ impl HTMLParser {
     ///
     /// # Errors
     /// Returns an error if byte collection, parsing, or DOM updates fail.
-    async fn process_async_then_blocking<S: Stream<Item = Result<Bytes, Error>> + Unpin + 'static>(
+    async fn process_async_then_blocking<
+        S: Stream<Item = Result<Bytes, Error>> + Unpin + 'static,
+    >(
         dom: DOMMirror<ParserDOMMirror>,
         mut byte_stream: S,
         script_tx: mpsc::UnboundedSender<ScriptJob>,

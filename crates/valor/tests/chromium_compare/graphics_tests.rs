@@ -7,8 +7,8 @@ use renderer::{DisplayItem, DisplayList, batch_display_list};
 use std::fs::{create_dir_all, read, read_dir, remove_dir_all, remove_file, write};
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wgpu_backend::RenderState;
 use winit::application::ApplicationHandler;
@@ -350,9 +350,7 @@ fn create_test_window(width: u32, height: u32) -> Result<Arc<Window>> {
     #[cfg(target_os = "linux")]
     use winit::platform::x11::EventLoopBuilderExtX11 as _;
 
-    let event_loop = EventLoop::builder()
-        .with_any_thread(true)
-        .build()?;
+    let event_loop = EventLoop::builder().with_any_thread(true).build()?;
 
     let mut app = WindowCreator::new(width, height);
     event_loop.run_app(&mut app)?;
@@ -658,8 +656,7 @@ async fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
 
     let (width, height) = (784u32, 453u32);
     let t_build = Instant::now();
-    let display_list =
-        build_valor_display_list_for(ctx.handle, ctx.fixture, width, height).await?;
+    let display_list = build_valor_display_list_for(ctx.handle, ctx.fixture, width, height).await?;
     ctx.timings.build_dl += t_build.elapsed();
     debug!(
         "[GRAPHICS][DEBUG] {}: DL items={} (first 5: {:?})",
@@ -740,7 +737,9 @@ pub async fn chromium_graphics_smoke_compare_png() -> Result<()> {
             timings: &mut timings,
             handle: &handle,
             render_state: &mut render_state,
-        }).await? {
+        })
+        .await?
+        {
             any_failed = true;
         }
         ran += 1;

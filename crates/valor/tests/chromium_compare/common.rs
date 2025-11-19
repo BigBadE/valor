@@ -385,7 +385,10 @@ pub async fn create_page_from_current(url: Url) -> Result<HtmlPage> {
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or script evaluation fails.
-pub async fn setup_page_for_fixture(handle: &tokio::runtime::Handle, path: &Path) -> Result<HtmlPage> {
+pub async fn setup_page_for_fixture(
+    handle: &tokio::runtime::Handle,
+    path: &Path,
+) -> Result<HtmlPage> {
     let url = to_file_url(path)?;
     let mut page = create_page(handle, url).await?;
     page.eval_js(css_reset_injection_script())?;

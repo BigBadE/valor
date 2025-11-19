@@ -82,8 +82,8 @@ pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser>
 ///
 /// Returns an error if navigation fails.
 pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
-    use tokio::time::{Duration, timeout};
     use std::time::Instant;
+    use tokio::time::{Duration, timeout};
 
     let url = to_file_url(path)?;
     log::info!("[TIMING] Starting navigation to: {}", url.as_str());
@@ -100,7 +100,8 @@ pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
     // Poll for document.readyState === 'complete'
     let ready_start = Instant::now();
     let ready_check = async {
-        for _ in 0..50 {  // Try up to 50 times (5 seconds with 100ms delay)
+        for _ in 0..50 {
+            // Try up to 50 times (5 seconds with 100ms delay)
             let result = page.evaluate("document.readyState").await?;
             if let Some(state) = result.value().and_then(|v| v.as_str()) {
                 if state == "complete" {

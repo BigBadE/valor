@@ -88,15 +88,16 @@ async fn get_or_create_shared_browser() -> Result<Arc<chromiumoxide::Browser>> {
     // Yield to let the handler task start processing events
     tokio::task::yield_now().await;
 
-    info!("[TIMING] Shared browser launch: {:?}", browser_launch_start.elapsed());
+    info!(
+        "[TIMING] Shared browser launch: {:?}",
+        browser_launch_start.elapsed()
+    );
 
     // Clone reference before storing
     let browser_clone = Arc::clone(&browser);
 
     // Store in the Option (we already have the lock)
-    *guard = Some(SharedBrowser {
-        browser,
-    });
+    *guard = Some(SharedBrowser { browser });
 
     // Lock is automatically released when guard goes out of scope
     Ok(browser_clone)
@@ -495,7 +496,10 @@ pub async fn run_single_layout_test(input_path: &Path) -> Result<()> {
         timing.json_comparison,
         timing.total
     );
-    info!("[TIMING] Test logic execution: {:?}", test_logic_start.elapsed());
+    info!(
+        "[TIMING] Test logic execution: {:?}",
+        test_logic_start.elapsed()
+    );
     info!("[TIMING] TOTAL TEST TIME: {:?}", test_start.elapsed());
 
     if failed.is_empty() {
@@ -979,7 +983,10 @@ async fn chromium_layout_json_in_page(page: &Page, path: &Path) -> Result<JsonVa
     );
     let nav_start = Instant::now();
     navigate_and_prepare_page(page, path).await?;
-    log::info!("[TIMING] navigate_and_prepare_page total: {:?}", nav_start.elapsed());
+    log::info!(
+        "[TIMING] navigate_and_prepare_page total: {:?}",
+        nav_start.elapsed()
+    );
 
     chromium_layout_json_in_page_no_nav(page, path).await
 }

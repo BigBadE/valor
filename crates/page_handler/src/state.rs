@@ -392,7 +392,9 @@ impl HtmlPage {
     fn fetch_url_text(&self, url: &Url) -> Result<String, Error> {
         // Note: This uses block_on and should be avoided in new code.
         // Use fetch_url_text_async() instead where possible.
-        self.host_context.tokio_handle.block_on(self.fetch_url_text_async(url))
+        self.host_context
+            .tokio_handle
+            .block_on(self.fetch_url_text_async(url))
     }
 
     /// Helper: evaluate a module job using the resolver and engine, handling inline roots.

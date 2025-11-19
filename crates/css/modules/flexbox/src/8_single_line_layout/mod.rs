@@ -559,29 +559,24 @@ fn build_line_pairs(ctx: &LineBuildCtx<'_>) -> Vec<(FlexPlacement, CrossPlacemen
         .iter()
         .zip(ctx.line_cross_inputs.iter())
         .enumerate()
-        .map(
-            |(index_in_line, (main_place, &item))| {
-                let within_line = align_single_line_cross(
-                    ctx.cross_ctx.align_items,
-                    ctx.line_cross_max,
-                    item,
-                );
-                let mut lifted = CrossPlacement {
-                    cross_size: within_line.cross_size,
-                    cross_offset: ctx.cross_accum_offset + within_line.cross_offset,
-                };
-                let bctx = BaselineAdjustCtx {
-                    align: ctx.cross_ctx.align_items,
-                    baselines: ctx.line_baselines,
-                    index_in_line,
-                    line_ref: ctx.line_ref,
-                    line_cross_max: ctx.line_cross_max,
-                    cross_accum_offset: ctx.cross_accum_offset,
-                };
-                adjust_cross_for_baseline(&bctx, &mut lifted);
-                (*main_place, lifted)
-            },
-        )
+        .map(|(index_in_line, (main_place, &item))| {
+            let within_line =
+                align_single_line_cross(ctx.cross_ctx.align_items, ctx.line_cross_max, item);
+            let mut lifted = CrossPlacement {
+                cross_size: within_line.cross_size,
+                cross_offset: ctx.cross_accum_offset + within_line.cross_offset,
+            };
+            let bctx = BaselineAdjustCtx {
+                align: ctx.cross_ctx.align_items,
+                baselines: ctx.line_baselines,
+                index_in_line,
+                line_ref: ctx.line_ref,
+                line_cross_max: ctx.line_cross_max,
+                cross_accum_offset: ctx.cross_accum_offset,
+            };
+            adjust_cross_for_baseline(&bctx, &mut lifted);
+            (*main_place, lifted)
+        })
         .collect()
 }
 
@@ -1329,7 +1324,8 @@ mod tests {
     /// # Panics
     /// Panics if center alignment does not center the item within the container cross-size.
     fn align_items_center_cross_axis() {
-        let placement = align_single_line_cross(AlignItems::Center, 200.0, (100.0, 0.0, 1e9, false));
+        let placement =
+            align_single_line_cross(AlignItems::Center, 200.0, (100.0, 0.0, 1e9, false));
         assert!(
             (placement.cross_size - 100.0).abs() < 0.001,
             "size remains item size"
