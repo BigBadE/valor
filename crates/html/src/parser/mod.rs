@@ -15,15 +15,14 @@ use std::collections::HashMap;
 use tokio::runtime::Handle;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task;
-use tokio::task::JoinHandle;
 use tokio_stream::{Stream, StreamExt as _};
 use url::Url;
 
 /// This is the parser itself, the DOM has refs here, and is
 /// responsible for sending DOM updates to the tree
 pub struct HTMLParser {
-    /// Handle to the async parsing process.
-    process_handle: JoinHandle<Result<(), Error>>,
+    /// Handle to the dedicated parser thread running LocalSet.
+    process_handle: std::thread::JoinHandle<Result<(), Error>>,
 }
 
 /// Inputs required to start the HTML parser.
@@ -367,7 +366,7 @@ impl DOMSubscriber for ParserDOMMirror {
 
 impl HTMLParser {
     #[inline]
-    pub fn parse<S>(handle: &Handle, mut inputs: ParseInputs<S>) -> Self
+    pub fn parse<S>(_handle: &Handle, mut inputs: ParseInputs<S>) -> Self
     where
         S: Stream<Item = Result<Bytes, Error>> + Send + Unpin + 'static,
     {
@@ -390,44 +389,49 @@ impl HTMLParser {
 
         // Wrap the parser mirror with DOMMirror so it can receive runtime DOM updates
         let dom_mirror = DOMMirror::new(mirror_out, inputs.dom_updates, mirror);
-        let process_handle = handle.spawn(Self::process(
-            dom_mirror,
-            inputs.byte_stream,
-            inputs.script_tx,
-            inputs.base_url,
-        ));
+
+        // Spawn on a dedicated thread with LocalSet - no spawn_blocking needed!
+        // This runs html5ever (!Send) on its own thread, eliminating double-spawn overhead
+        let process_handle = std::thread::spawn(move || {
+            Self::process_on_thread(dom_mirror, inputs.byte_stream, inputs.script_tx, inputs.base_url)
+        });
+
         Self { process_handle }
     }
 
-    /// Process the HTML byte stream and parse it into DOM updates.
+    /// Process the HTML byte stream on a dedicated thread with LocalSet.
     ///
-    /// Uses spawn_blocking for the !Send html5ever engine, avoiding channel overhead
-    /// by collecting chunks first. HTML files are typically small (< 100KB) so this
-    /// is more efficient than the channel-based streaming approach.
+    /// This runs html5ever directly without spawn_blocking overhead, using LocalSet
+    /// to handle the !Send html5ever engine on a single-threaded runtime.
     ///
     /// # Errors
     /// Returns an error if parsing or DOM updates fail.
-    #[inline]
-    pub async fn process<S: Stream<Item = Result<Bytes, Error>> + Send + Unpin + 'static>(
+    fn process_on_thread<S: Stream<Item = Result<Bytes, Error>> + Send + Unpin + 'static>(
         dom: DOMMirror<ParserDOMMirror>,
         mut byte_stream: S,
         script_tx: mpsc::UnboundedSender<ScriptJob>,
         base_url: Url,
     ) -> Result<(), Error> {
-        trace!("Started processing!");
+        // Create a current_thread runtime for this dedicated thread
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
 
-        // Collect all chunks first (HTML files are typically small < 100KB)
-        // This is faster than channel-based streaming for small files
-        let mut chunks = Vec::new();
-        while let Some(item) = byte_stream.next().await {
-            chunks.push(item?);
-        }
+        // Create LocalSet for !Send html5ever
+        let local = task::LocalSet::new();
 
-        // Parse in spawn_blocking - html5ever is !Send due to RefCell
-        task::spawn_blocking(move || {
+        local.block_on(&rt, async move {
+            trace!("Started processing with LocalSet on dedicated thread!");
+
+            // Collect all chunks (HTML files are typically small < 100KB)
+            let mut chunks = Vec::new();
+            while let Some(item) = byte_stream.next().await {
+                chunks.push(item?);
+            }
+
+            // Create and run html5ever engine directly - no spawn needed!
             let mut engine = Html5everEngine::new(dom, script_tx, base_url);
 
-            // Process all chunks synchronously
             for chunk in chunks {
                 engine.try_update_sync()?;
                 let text = String::from_utf8_lossy(&chunk);
@@ -436,8 +440,8 @@ impl HTMLParser {
 
             trace!("Finalizing parser");
             engine.finalize();
-            Ok::<(), Error>(())
-        }).await?
+            Ok(())
+        })
     }
 
     /// Check if parsing has completed (non-blocking check).
@@ -446,13 +450,15 @@ impl HTMLParser {
         self.process_handle.is_finished()
     }
 
-    /// Wait for parser to complete, returning immediately if already finished.
+    /// Wait for parser to complete.
     ///
     /// # Errors
-    /// Returns an error if parsing fails.
+    /// Returns an error if parsing fails or thread panicked.
     #[inline]
-    pub async fn await_completion(self) -> Result<(), Error> {
-        self.process_handle.await?
+    pub fn await_completion(self) -> Result<(), Error> {
+        self.process_handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("Parser thread panicked"))?
     }
 
     /// Poll the parser with a timeout, returning whether parsing completed.
@@ -465,8 +471,7 @@ impl HTMLParser {
     /// Returns an error if parsing fails.
     #[inline]
     pub fn poll_with_timeout(&self, _timeout: tokio::time::Duration) -> Result<bool, Error> {
-        // Simply check if finished - the timeout happens naturally through
-        // the async runtime's cooperative scheduling
+        // Simply check if finished
         Ok(self.process_handle.is_finished())
     }
 }
