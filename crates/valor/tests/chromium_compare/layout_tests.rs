@@ -409,17 +409,28 @@ async fn process_layout_fixture(
     let chromium_start = Instant::now();
     let ch_json = if let Some(cached_value) = read_cached_json_for_fixture(input_path, harness_src)
     {
+        info!("[TIMING] Chromium result from cache: {:?}", chromium_start.elapsed());
         cached_value
     } else {
         // Create page directly with the target URL to avoid navigation issues
         let url = to_file_url(input_path)?;
+        let page_create_start = Instant::now();
         let page = browser.as_ref().new_page(url.as_str()).await?;
+        info!("[TIMING] Chrome new_page: {:?}", page_create_start.elapsed());
 
-        // Give page time to load
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // Give page time to load - REDUCED from 500ms to 100ms
+        let sleep_start = Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        info!("[TIMING] Chrome sleep: {:?}", sleep_start.elapsed());
 
+        let eval_start = Instant::now();
         let chromium_value = chromium_layout_json_in_page_no_nav(&page, input_path).await?;
+        info!("[TIMING] Chrome evaluation total: {:?}", eval_start.elapsed());
+
+        let close_start = Instant::now();
         page.close().await?;
+        info!("[TIMING] Chrome page close: {:?}", close_start.elapsed());
+
         write_cached_json_for_fixture(input_path, harness_src, &chromium_value)?;
         chromium_value
     };
