@@ -418,11 +418,6 @@ async fn process_layout_fixture(
         let page = browser.as_ref().new_page(url.as_str()).await?;
         info!("[TIMING] Chrome new_page: {:?}", page_create_start.elapsed());
 
-        // Give page time to load - REDUCED from 500ms to 100ms
-        let sleep_start = Instant::now();
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        info!("[TIMING] Chrome sleep: {:?}", sleep_start.elapsed());
-
         let eval_start = Instant::now();
         let chromium_value = chromium_layout_json_in_page_no_nav(&page, input_path).await?;
         info!("[TIMING] Chrome evaluation total: {:?}", eval_start.elapsed());
