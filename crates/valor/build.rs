@@ -148,7 +148,7 @@ fn generate_fixture_tests() {
         test_code.push_str("    /// # Errors\n");
         test_code.push_str("    ///\n");
         test_code.push_str("    /// Returns an error if layout computation or comparison fails.\n");
-        test_code.push_str("    #[tokio::test]\n");
+        test_code.push_str("    #[tokio::test(flavor = \"multi_thread\")]\n");
         let _ignore1 = writeln!(test_code, "    async fn {test_name}() -> Result<()> {{");
         test_code.push_str("        common::init_test_logger();\n");
         let _ignore2 = writeln!(

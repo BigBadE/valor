@@ -27,35 +27,31 @@ type LayouterWithStyles = (Layouter, HashMap<NodeKey, ComputedStyle>);
 /// Shared browser instance for all tests to avoid launching Chrome 73 times.
 /// This is initialized on first access and reused for all subsequent tests.
 struct SharedBrowser {
-    /// Single runtime for both browser and tests - use spawn, not block_on!
-    runtime: Arc<Runtime>,
     browser: Arc<chromiumoxide::Browser>,
 }
 
 static SHARED_BROWSER: Lazy<Mutex<Option<SharedBrowser>>> = Lazy::new(|| Mutex::new(None));
 
-/// Gets or creates the shared browser and runtime.
+/// Gets or creates the shared browser (uses current tokio runtime).
 ///
 /// # Errors
 ///
 /// Returns an error if browser creation fails.
-async fn get_or_create_shared_browser() -> Result<(Arc<Runtime>, Handle, Arc<chromiumoxide::Browser>)> {
-    let mut guard = SHARED_BROWSER.lock().unwrap();
-
-    if let Some(shared) = guard.as_ref() {
-        // Browser exists, return runtime and browser
-        let runtime = Arc::clone(&shared.runtime);
-        let handle = runtime.handle().clone();
-        let browser = Arc::clone(&shared.browser);
-        return Ok((runtime, handle, browser));
+async fn get_or_create_shared_browser() -> Result<Arc<chromiumoxide::Browser>> {
+    // Check if browser already exists (quick check with lock)
+    {
+        let guard = SHARED_BROWSER.lock().unwrap();
+        if let Some(shared) = guard.as_ref() {
+            // Browser exists, return browser
+            let browser = Arc::clone(&shared.browser);
+            return Ok(browser);
+        }
+        // Drop guard before async operations
     }
 
-    // First access - create the browser
+    // First access - create the browser WITHOUT holding the lock
     info!("[TIMING] Creating shared browser instance (first test only)");
     let browser_launch_start = Instant::now();
-
-    // Create default multi-threaded runtime (uses CPU core count)
-    let runtime = Arc::new(Runtime::new()?);
 
     use chromiumoxide::browser::{Browser, BrowserConfig};
 
@@ -79,12 +75,12 @@ async fn get_or_create_shared_browser() -> Result<(Arc<Runtime>, Handle, Arc<chr
         .build()
         .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
-    // Launch browser using async/await (no block_on!)
+    // Launch browser on the CURRENT runtime (from #[tokio::test])
     let (browser, mut handler) = Browser::launch(config).await?;
     let browser = Arc::new(browser);
 
-    // Spawn handler task
-    runtime.spawn(async move {
+    // Spawn handler task on the CURRENT runtime
+    tokio::spawn(async move {
         while let Some(_event) = handler.next().await {
             // Silently consume events
         }
@@ -92,18 +88,19 @@ async fn get_or_create_shared_browser() -> Result<(Arc<Runtime>, Handle, Arc<chr
 
     info!("[TIMING] Shared browser launch: {:?}", browser_launch_start.elapsed());
 
-    // Clone references before storing
-    let runtime_clone = Arc::clone(&runtime);
-    let handle = runtime.handle().clone();
+    // Clone reference before storing
     let browser_clone = Arc::clone(&browser);
 
-    *guard = Some(SharedBrowser {
-        runtime,
-        browser,
-    });
+    // Now store in static - acquire lock only briefly
+    {
+        let mut guard = SHARED_BROWSER.lock().unwrap();
+        *guard = Some(SharedBrowser {
+            browser,
+        });
+    }
 
-    // Return runtime, handle, and browser reference
-    Ok((runtime_clone, handle, browser_clone))
+    // Return browser reference
+    Ok(browser_clone)
 }
 
 #[derive(Default, Clone, Debug)]
@@ -475,12 +472,13 @@ pub async fn run_single_layout_test(input_path: &Path) -> Result<()> {
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
     // Get or create the shared browser instance (now async!)
-    let (_runtime, handle, browser) = get_or_create_shared_browser().await?;
+    let browser = get_or_create_shared_browser().await?;
 
     // Execute test logic directly with async/await (no block_on!)
     let test_logic_start = Instant::now();
     let mut failed: Vec<(String, String)> = Vec::new();
     let mut timing = FixtureTiming::default();
+    let handle = tokio::runtime::Handle::current();
     process_layout_fixture(
         input_path,
         &handle,
@@ -525,7 +523,7 @@ pub async fn run_chromium_layouts() -> Result<()> {
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
     // Get or create shared browser instance (now async!)
-    let (_runtime, _handle, browser) = get_or_create_shared_browser().await?;
+    let browser = get_or_create_shared_browser().await?;
 
     // Execute test logic directly with async/await (no block_on!)
     let overall_start = Instant::now();
