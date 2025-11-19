@@ -148,14 +148,14 @@ fn generate_fixture_tests() {
         test_code.push_str("    /// # Errors\n");
         test_code.push_str("    ///\n");
         test_code.push_str("    /// Returns an error if layout computation or comparison fails.\n");
-        test_code.push_str("    #[test]\n");
-        let _ignore1 = writeln!(test_code, "    fn {test_name}() -> Result<()> {{");
+        test_code.push_str("    #[tokio::test(flavor = \"multi_thread\")]\n");
+        let _ignore1 = writeln!(test_code, "    async fn {test_name}() -> Result<()> {{");
         test_code.push_str("        common::init_test_logger();\n");
         let _ignore2 = writeln!(
             test_code,
             "        let path = PathBuf::from(r\"{file_path}\");"
         );
-        test_code.push_str("        layout_tests::run_single_layout_test_sync(&path)\n");
+        test_code.push_str("        layout_tests::run_single_layout_test(&path).await\n");
         test_code.push_str("    }\n\n");
     }
 

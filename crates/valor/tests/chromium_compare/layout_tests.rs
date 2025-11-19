@@ -79,13 +79,14 @@ async fn get_or_create_shared_browser() -> Result<Arc<chromiumoxide::Browser>> {
         .build()
         .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
-    // Launch browser on the CURRENT runtime (from #[tokio::test])
+    // Launch browser on the current runtime (from #[tokio::test])
     // We hold the lock during this to prevent other tests from also launching
     let (browser, mut handler) = Browser::launch(config).await?;
     let browser = Arc::new(browser);
 
-    // Spawn handler task on the CURRENT runtime
-    tokio::spawn(async move {
+    // CRITICAL: Spawn handler task on GLOBAL_RUNTIME (not the test's runtime!)
+    // This keeps the handler alive across all test runtimes
+    GLOBAL_RUNTIME.spawn(async move {
         while let Some(_event) = handler.next().await {
             // Process Chrome DevTools Protocol events
         }
@@ -464,19 +465,6 @@ async fn process_layout_fixture(
     timing.total = fixture_start.elapsed();
 
     result
-}
-
-/// Synchronous wrapper for layout tests that uses the global runtime.
-/// This allows regular #[test] functions to run async code while sharing
-/// a single runtime and browser across all tests.
-///
-/// # Errors
-///
-/// Returns an error if the test fails or times out.
-pub fn run_single_layout_test_sync(input_path: &Path) -> Result<()> {
-    // Simply block_on the async test function
-    // The shared browser mutex ensures proper synchronization
-    GLOBAL_RUNTIME.block_on(run_single_layout_test(input_path))
 }
 
 /// Runs a single layout test for a given fixture path with a 15-second timeout.
