@@ -18,9 +18,10 @@ use once_cell::sync::Lazy;
 use serde_json::{Map as JsonMap, Value as JsonValue, from_str, json};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::runtime::{Handle, Runtime};
+use tokio::sync::Mutex;
 
 type LayouterWithStyles = (Layouter, HashMap<NodeKey, ComputedStyle>);
 
@@ -38,23 +39,23 @@ static SHARED_BROWSER: Lazy<Mutex<Option<SharedBrowser>>> = Lazy::new(|| Mutex::
 ///
 /// Returns an error if browser creation fails.
 async fn get_or_create_shared_browser() -> Result<Arc<chromiumoxide::Browser>> {
-    // Check if browser already exists (quick check with lock)
-    {
-        let guard = SHARED_BROWSER.lock().unwrap();
-        if let Some(shared) = guard.as_ref() {
-            // Browser exists, return browser
-            let browser = Arc::clone(&shared.browser);
-            return Ok(browser);
-        }
-        // Drop guard before async operations
+    // Lock the mutex - this will wait if another test is creating the browser
+    let mut guard = SHARED_BROWSER.lock().await;
+
+    // Check if browser was created while we were waiting for the lock
+    if let Some(shared) = guard.as_ref() {
+        eprintln!("[DEBUG] Reusing existing browser instance");
+        return Ok(Arc::clone(&shared.browser));
     }
 
-    // First access - create the browser WITHOUT holding the lock
+    // We have the lock and browser doesn't exist - create it
+    eprintln!("[DEBUG] Creating shared browser instance (THIS TEST WON THE RACE)");
     info!("[TIMING] Creating shared browser instance (first test only)");
     let browser_launch_start = Instant::now();
 
     use chromiumoxide::browser::{Browser, BrowserConfig};
 
+    eprintln!("[DEBUG] Building browser config...");
     let chrome_path = std::path::PathBuf::from(
         "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
     );
@@ -75,30 +76,41 @@ async fn get_or_create_shared_browser() -> Result<Arc<chromiumoxide::Browser>> {
         .build()
         .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
+    eprintln!("[DEBUG] About to launch browser...");
     // Launch browser on the CURRENT runtime (from #[tokio::test])
+    // We hold the lock during this to prevent other tests from also launching
     let (browser, mut handler) = Browser::launch(config).await?;
+    eprintln!("[DEBUG] Browser launched! Creating Arc...");
     let browser = Arc::new(browser);
 
+    eprintln!("[DEBUG] Spawning handler task...");
     // Spawn handler task on the CURRENT runtime
     tokio::spawn(async move {
-        while let Some(_event) = handler.next().await {
-            // Silently consume events
+        eprintln!("[DEBUG] Handler task started");
+        let mut event_count = 0;
+        while let Some(event) = handler.next().await {
+            event_count += 1;
+            if event_count <= 5 {
+                eprintln!("[DEBUG] Handler received event #{}", event_count);
+            }
         }
+        eprintln!("[DEBUG] Handler task ended after {} events", event_count);
     });
 
+    eprintln!("[DEBUG] Browser setup complete");
     info!("[TIMING] Shared browser launch: {:?}", browser_launch_start.elapsed());
 
     // Clone reference before storing
     let browser_clone = Arc::clone(&browser);
 
-    // Now store in static - acquire lock only briefly
-    {
-        let mut guard = SHARED_BROWSER.lock().unwrap();
-        *guard = Some(SharedBrowser {
-            browser,
-        });
-    }
+    // Store in the Option (we already have the lock)
+    *guard = Some(SharedBrowser {
+        browser,
+    });
 
+    // Lock is automatically released when guard goes out of scope
+
+    eprintln!("[DEBUG] Returning browser reference (lock will be released)");
     // Return browser reference
     Ok(browser_clone)
 }
@@ -460,9 +472,11 @@ async fn process_layout_fixture(
 ///
 /// Returns an error if browser setup, layout computation, or comparison fails.
 pub async fn run_single_layout_test(input_path: &Path) -> Result<()> {
+    eprintln!("[DEBUG] ========== TEST STARTED: {} ==========", input_path.display());
     init_test_logger();
     let test_start = Instant::now();
 
+    eprintln!("[DEBUG] Preparing harness source...");
     let harness_src = concat!(
         include_str!("layout_tests.rs"),
         include_str!("common.rs"),
@@ -471,8 +485,10 @@ pub async fn run_single_layout_test(input_path: &Path) -> Result<()> {
     );
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
+    eprintln!("[DEBUG] Getting or creating shared browser...");
     // Get or create the shared browser instance (now async!)
     let browser = get_or_create_shared_browser().await?;
+    eprintln!("[DEBUG] Got browser reference");
 
     // Execute test logic directly with async/await (no block_on!)
     let test_logic_start = Instant::now();
