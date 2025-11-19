@@ -419,12 +419,12 @@ where
     F: FnMut(&mut HtmlPage) -> Result<()>,
 {
     let start_time = Instant::now();
-    let max_total_time = Duration::from_secs(15);
+    let max_total_time = Duration::from_secs(3);
 
     // Loop until parsing completes or timeout
     while !page.parsing_finished() {
         if start_time.elapsed() > max_total_time {
-            warn!("update_until_finished: exceeded total time budget of 15s");
+            warn!("update_until_finished: exceeded total time budget of 3s");
             return Ok(false);
         }
 

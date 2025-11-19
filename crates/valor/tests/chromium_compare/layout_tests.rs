@@ -460,59 +460,75 @@ async fn process_layout_fixture(
     result
 }
 
-/// Runs a single layout test for a given fixture path.
+/// Runs a single layout test for a given fixture path with a 5-second timeout.
 ///
 /// # Errors
 ///
-/// Returns an error if browser setup, layout computation, or comparison fails.
+/// Returns an error if browser setup, layout computation, comparison fails, or test times out.
 pub async fn run_single_layout_test(input_path: &Path) -> Result<()> {
+    use tokio::time::{timeout, Duration};
+
     init_test_logger();
     let test_start = Instant::now();
 
-    let harness_src = concat!(
-        include_str!("layout_tests.rs"),
-        include_str!("common.rs"),
-        include_str!("json_compare.rs"),
-        include_str!("browser.rs"),
-    );
-    clear_valor_layout_cache_if_harness_changed(harness_src)?;
+    // CRITICAL: 5-second timeout for entire test
+    let result = timeout(Duration::from_secs(5), async {
+        let harness_src = concat!(
+            include_str!("layout_tests.rs"),
+            include_str!("common.rs"),
+            include_str!("json_compare.rs"),
+            include_str!("browser.rs"),
+        );
+        clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
-    // Get or create the shared browser instance
-    let browser = get_or_create_shared_browser().await?;
+        // Get or create the shared browser instance
+        let browser = get_or_create_shared_browser().await?;
 
-    // Execute test logic
-    let test_logic_start = Instant::now();
-    let mut failed: Vec<(String, String)> = Vec::new();
-    let mut timing = FixtureTiming::default();
-    let handle = tokio::runtime::Handle::current();
-    process_layout_fixture(
-        input_path,
-        &handle,
-        &browser,
-        harness_src,
-        &mut failed,
-        &mut timing,
-    )
-    .await?;
-    info!(
-        "[TIMING] Fixture internals: setup={:?}, geom={:?}, chrome={:?}, cmp={:?}, total={:?}",
-        timing.setup_layouter,
-        timing.compute_geometry,
-        timing.chromium_fetch,
-        timing.json_comparison,
-        timing.total
-    );
-    info!(
-        "[TIMING] Test logic execution: {:?}",
-        test_logic_start.elapsed()
-    );
-    info!("[TIMING] TOTAL TEST TIME: {:?}", test_start.elapsed());
+        // Execute test logic
+        let test_logic_start = Instant::now();
+        let mut failed: Vec<(String, String)> = Vec::new();
+        let mut timing = FixtureTiming::default();
+        let handle = tokio::runtime::Handle::current();
+        process_layout_fixture(
+            input_path,
+            &handle,
+            &browser,
+            harness_src,
+            &mut failed,
+            &mut timing,
+        )
+        .await?;
+        info!(
+            "[TIMING] Fixture internals: setup={:?}, geom={:?}, chrome={:?}, cmp={:?}, total={:?}",
+            timing.setup_layouter,
+            timing.compute_geometry,
+            timing.chromium_fetch,
+            timing.json_comparison,
+            timing.total
+        );
+        info!(
+            "[TIMING] Test logic execution: {:?}",
+            test_logic_start.elapsed()
+        );
 
-    if failed.is_empty() {
-        Ok(())
-    } else {
-        let (name, msg) = &failed[0];
-        Err(anyhow!("{name}: {msg}"))
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            let (name, msg) = &failed[0];
+            Err(anyhow!("{name}: {msg}"))
+        }
+    })
+    .await;
+
+    let elapsed = test_start.elapsed();
+    info!("[TIMING] TOTAL TEST TIME: {:?}", elapsed);
+
+    match result {
+        Ok(inner_result) => inner_result,
+        Err(_) => {
+            error!("TEST TIMEOUT after {:?} for: {}", elapsed, input_path.display());
+            Err(anyhow!("Test timeout after 5 seconds: {}", input_path.display()))
+        }
     }
 }
 
@@ -960,11 +976,11 @@ async fn chromium_layout_json_in_page_no_nav(page: &Page, path: &Path) -> Result
     log::info!("Evaluating extraction script for: {}", path.display());
     let script = chromium_layout_extraction_script();
 
-    // Add 10 second timeout to script evaluation
+    // REDUCED: 2 second timeout to fail fast
     let eval_start = Instant::now();
-    let result = timeout(Duration::from_secs(10), page.evaluate(script))
+    let result = timeout(Duration::from_secs(2), page.evaluate(script))
         .await
-        .map_err(|_| anyhow!("Script evaluation timeout after 10s for {}", path.display()))??;
+        .map_err(|_| anyhow!("Chrome script evaluation timeout after 2s for {}", path.display()))??;
     log::info!("[TIMING] Script evaluation: {:?}", eval_start.elapsed());
 
     let json_string = result
