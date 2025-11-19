@@ -27,8 +27,7 @@ type LayouterWithStyles = (Layouter, HashMap<NodeKey, ComputedStyle>);
 /// Shared browser instance for all tests to avoid launching Chrome 73 times.
 /// This is initialized on first access and reused for all subsequent tests.
 struct SharedBrowser {
-    /// Runtime kept alive to run the browser event handler task.
-    /// Wrapped in Arc to allow shared access for block_on calls.
+    /// Single runtime for both browser and tests - use spawn, not block_on!
     runtime: Arc<Runtime>,
     browser: Arc<chromiumoxide::Browser>,
 }
@@ -44,7 +43,7 @@ fn get_or_create_shared_browser() -> Result<(Arc<Runtime>, Handle, Arc<chromiumo
     let mut guard = SHARED_BROWSER.lock().unwrap();
 
     if let Some(shared) = guard.as_ref() {
-        // Browser exists, return clones
+        // Browser exists, return runtime and browser
         let runtime = Arc::clone(&shared.runtime);
         let handle = runtime.handle().clone();
         let browser = Arc::clone(&shared.browser);
@@ -79,10 +78,11 @@ fn get_or_create_shared_browser() -> Result<(Arc<Runtime>, Handle, Arc<chromiumo
         .build()
         .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
+    // Launch browser
     let (browser, mut handler) = runtime.block_on(Browser::launch(config))?;
     let browser = Arc::new(browser);
 
-    // Spawn handler task that will live for the duration of all tests
+    // Spawn handler task
     runtime.spawn(async move {
         while let Some(_event) = handler.next().await {
             // Silently consume events
