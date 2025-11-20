@@ -419,15 +419,14 @@ async fn process_layout_fixture(
         info!("[TIMING] Chromium result from cache: {:?}", chromium_start.elapsed());
         cached_value
     } else {
-        // Create page directly with the target URL to avoid navigation issues
-        let url = to_file_url(input_path)?;
+        // Create blank page then navigate - this ensures proper page load waiting
         let page_create_start = Instant::now();
-        let page = browser.as_ref().new_page(url.as_str()).await?;
+        let page = browser.as_ref().new_page("about:blank").await?;
         info!("[TIMING] Chrome new_page: {:?}", page_create_start.elapsed());
 
         let eval_start = Instant::now();
-        let chromium_value = chromium_layout_json_in_page_no_nav(&page, input_path).await?;
-        info!("[TIMING] Chrome evaluation total: {:?}", eval_start.elapsed());
+        let chromium_value = chromium_layout_json_in_page(&page, input_path).await?;
+        info!("[TIMING] Chrome navigation + evaluation total: {:?}", eval_start.elapsed());
 
         let close_start = Instant::now();
         page.close().await?;
