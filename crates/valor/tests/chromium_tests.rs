@@ -10,9 +10,9 @@ mod test {
     /// # Errors
     ///
     /// Returns an error if layout tests fail or if graphics tests fail (when layout passes).
-    #[test]
-    fn run_chromium_tests() -> Result<()> {
-        chromium_compare::run_chromium_tests()
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_chromium_tests() -> Result<()> {
+        chromium_compare::run_chromium_tests().await
     }
 }
 

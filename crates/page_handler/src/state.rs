@@ -369,22 +369,32 @@ impl HtmlPage {
         self.fetch_url_text(&url).unwrap_or_default()
     }
 
-    /// Fetch URL text content.
+    /// Fetch URL text content asynchronously.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if fetching fails.
+    async fn fetch_url_text_async(&self, url: &Url) -> Result<String, Error> {
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut stream = stream_url(url).await?;
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.map_err(|err| anyhow!("{err}"))?;
+            buffer.extend_from_slice(&bytes);
+        }
+        Ok(String::from_utf8_lossy(&buffer).into_owned())
+    }
+
+    /// Fetch URL text content (synchronous wrapper for backwards compatibility).
     ///
     /// # Errors
     ///
     /// Returns an error if fetching fails.
     fn fetch_url_text(&self, url: &Url) -> Result<String, Error> {
-        let fut = async {
-            let mut buffer: Vec<u8> = Vec::new();
-            let mut stream = stream_url(url).await?;
-            while let Some(chunk) = stream.next().await {
-                let bytes = chunk.map_err(|err| anyhow!("{err}"))?;
-                buffer.extend_from_slice(&bytes);
-            }
-            Ok::<String, Error>(String::from_utf8_lossy(&buffer).into_owned())
-        };
-        self.host_context.tokio_handle.block_on(fut)
+        // Note: This uses block_on and should be avoided in new code.
+        // Use fetch_url_text_async() instead where possible.
+        self.host_context
+            .tokio_handle
+            .block_on(self.fetch_url_text_async(url))
     }
 
     /// Helper: evaluate a module job using the resolver and engine, handling inline roots.
@@ -434,13 +444,15 @@ impl HtmlPage {
     ///
     /// Returns an error if DOM finalization fails.
     async fn finalize_dom_loading_if_needed(&mut self) -> Result<(), Error> {
-        if self.loader.as_ref().is_some_and(HTMLParser::is_finished) {
-            let loader = self
-                .loader
-                .take()
-                .ok_or_else(|| anyhow!("Loader is finished and None!"))?;
-            trace!("Loader finished, finalizing DOM");
-            loader.finish().await?;
+        // Check if parsing has completed (non-blocking check)
+        if let Some(loader) = &self.loader {
+            let done = loader.poll_with_timeout(tokio::time::Duration::from_millis(1))?;
+
+            if done {
+                trace!("Loader finished, finalizing DOM");
+                let loader = self.loader.take().unwrap();
+                loader.await_completion().await?;
+            }
         }
         Ok(())
     }

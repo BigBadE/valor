@@ -155,7 +155,7 @@ fn generate_fixture_tests() {
             test_code,
             "        let path = PathBuf::from(r\"{file_path}\");"
         );
-        test_code.push_str("        layout_tests::run_single_layout_test(&path)\n");
+        test_code.push_str("        layout_tests::run_single_layout_test_sync(&path)\n");
         test_code.push_str("    }\n\n");
     }
 

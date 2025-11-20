@@ -1,27 +1,114 @@
 use super::browser::navigate_and_prepare_page;
 use super::common::{
-    clear_valor_layout_cache_if_harness_changed, create_page,
-    get_filtered_fixtures, init_test_logger, read_cached_json_for_fixture, to_file_url,
-    update_until_finished, write_cached_json_for_fixture, write_named_json_for_fixture,
+    clear_valor_layout_cache_if_harness_changed, create_page, get_filtered_fixtures,
+    init_test_logger, read_cached_json_for_fixture, to_file_url, update_until_finished,
+    write_cached_json_for_fixture, write_named_json_for_fixture,
 };
 use super::json_compare::compare_json_with_epsilon;
 use anyhow::{Result, anyhow};
 use chromiumoxide::page::Page;
 use css::style_types::{AlignItems, BoxSizing, ComputedStyle, Display, Overflow};
 use css_core::{LayoutNodeKind, LayoutRect, Layouter};
+use futures::stream::{self, StreamExt};
 use js::DOMSubscriber as _;
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
 use js::NodeKey;
 use log::{error, info};
+use once_cell::sync::Lazy;
 use serde_json::{Map as JsonMap, Value as JsonValue, from_str, json};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::runtime::Runtime;
-use futures::stream::{self, StreamExt};
+use tokio::runtime::{Handle, Runtime};
+use tokio::sync::Mutex;
 
 type LayouterWithStyles = (Layouter, HashMap<NodeKey, ComputedStyle>);
+
+/// Global runtime shared by all tests. This allows parallel test execution
+/// while maintaining a single browser instance and its event handler.
+static GLOBAL_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
+    Runtime::new().expect("Failed to create global tokio runtime")
+});
+
+/// Shared browser instance for all tests to avoid launching Chrome 73 times.
+/// This is initialized on first access and reused for all subsequent tests.
+struct SharedBrowser {
+    browser: Arc<chromiumoxide::Browser>,
+}
+
+static SHARED_BROWSER: Lazy<Mutex<Option<SharedBrowser>>> = Lazy::new(|| Mutex::new(None));
+
+/// Gets or creates the shared browser (uses current tokio runtime).
+///
+/// # Errors
+///
+/// Returns an error if browser creation fails.
+async fn get_or_create_shared_browser() -> Result<Arc<chromiumoxide::Browser>> {
+    // Lock the mutex - this will wait if another test is creating the browser
+    let mut guard = SHARED_BROWSER.lock().await;
+
+    // Check if browser was created while we were waiting for the lock
+    if let Some(shared) = guard.as_ref() {
+        return Ok(Arc::clone(&shared.browser));
+    }
+
+    // We have the lock and browser doesn't exist - create it
+    info!("[TIMING] Creating shared browser instance (first test only)");
+    let browser_launch_start = Instant::now();
+
+    use chromiumoxide::browser::{Browser, BrowserConfig};
+
+    let chrome_path = std::path::PathBuf::from(
+        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
+    );
+    let config = BrowserConfig::builder()
+        .chrome_executable(chrome_path)
+        .no_sandbox()
+        .window_size(800, 600)
+        .arg("--force-device-scale-factor=1")
+        .arg("--hide-scrollbars")
+        .arg("--blink-settings=imagesEnabled=false")
+        .arg("--disable-gpu")
+        .arg("--disable-features=OverlayScrollbar")
+        .arg("--allow-file-access-from-files")
+        .arg("--disable-dev-shm-usage")
+        .arg("--disable-extensions")
+        .arg("--disable-background-networking")
+        .arg("--disable-sync")
+        .build()
+        .map_err(|e| anyhow!("Browser config error: {}", e))?;
+
+    // Launch browser on the current runtime (from #[tokio::test])
+    // We hold the lock during this to prevent other tests from also launching
+    let (browser, mut handler) = Browser::launch(config).await?;
+    let browser = Arc::new(browser);
+
+    // CRITICAL: Spawn handler task on GLOBAL_RUNTIME (not the test's runtime!)
+    // This keeps the handler alive across all test runtimes
+    GLOBAL_RUNTIME.spawn(async move {
+        while let Some(_event) = handler.next().await {
+            // Process Chrome DevTools Protocol events
+        }
+    });
+
+    // Yield to let the handler task start processing events
+    tokio::task::yield_now().await;
+
+    info!(
+        "[TIMING] Shared browser launch: {:?}",
+        browser_launch_start.elapsed()
+    );
+
+    // Clone reference before storing
+    let browser_clone = Arc::clone(&browser);
+
+    // Store in the Option (we already have the lock)
+    *guard = Some(SharedBrowser { browser });
+
+    // Lock is automatically released when guard goes out of scope
+    Ok(browser_clone)
+}
 
 #[derive(Default, Clone, Debug)]
 struct FixtureTiming {
@@ -77,15 +164,19 @@ fn apply_element_attrs(layouter: &mut Layouter, node: NodeKey, attrs: &HashMap<S
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or layout computation fails.
-async fn setup_layouter_for_fixture(runtime: &Runtime, input_path: &Path) -> Result<LayouterWithStyles> {
+async fn setup_layouter_for_fixture(
+    handle: &Handle,
+    input_path: &Path,
+) -> Result<LayouterWithStyles> {
     let url = to_file_url(input_path)?;
-    let mut page = create_page(runtime, url).await?;
+    let mut page = create_page(handle, url).await?;
     let mut layouter_mirror = page.create_mirror(Layouter::new());
 
     let finished = update_until_finished(&mut page, |_page| {
         layouter_mirror.try_update_sync()?;
         Ok(())
-    }).await?;
+    })
+    .await?;
 
     if !finished {
         return Err(anyhow!("Parsing did not finish"));
@@ -134,7 +225,8 @@ async fn setup_layouter_for_fixture_current(input_path: &Path) -> Result<Layoute
     let finished = update_until_finished(&mut page, |_page| {
         layouter_mirror.try_update_sync()?;
         Ok(())
-    }).await?;
+    })
+    .await?;
 
     if !finished {
         return Err(anyhow!("Parsing did not finish"));
@@ -224,15 +316,16 @@ async fn process_layout_fixture_parallel_with_page(
 
     // Setup layouter
     let setup_start = Instant::now();
-    let (mut layouter, computed_for_serialization) = match setup_layouter_for_fixture_current(input_path).await {
-        Ok(result) => result,
-        Err(err) => {
-            let msg = format!("Setup failed: {err}");
-            error!("[LAYOUT] {display_name} ... FAILED: {msg}");
-            failed.push((display_name.clone(), msg));
-            return Ok(false);
-        }
-    };
+    let (mut layouter, computed_for_serialization) =
+        match setup_layouter_for_fixture_current(input_path).await {
+            Ok(result) => result,
+            Err(err) => {
+                let msg = format!("Setup failed: {err}");
+                error!("[LAYOUT] {display_name} ... FAILED: {msg}");
+                failed.push((display_name.clone(), msg));
+                return Ok(false);
+            }
+        };
     timing.setup_layouter = setup_start.elapsed();
 
     // Compute geometry
@@ -290,7 +383,7 @@ async fn process_layout_fixture_parallel_with_page(
 /// Returns an error if fixture processing, layouter setup, or JSON operations fail.
 async fn process_layout_fixture(
     input_path: &Path,
-    runtime: &Runtime,
+    handle: &Handle,
     browser: &Arc<chromiumoxide::Browser>,
     harness_src: &str,
     failed: &mut Vec<(String, String)>,
@@ -301,15 +394,16 @@ async fn process_layout_fixture(
 
     // Setup layouter
     let setup_start = Instant::now();
-    let (mut layouter, computed_for_serialization) = match setup_layouter_for_fixture(runtime, input_path).await {
-        Ok(result) => result,
-        Err(err) => {
-            let msg = format!("Setup failed: {err}");
-            error!("[LAYOUT] {display_name} ... FAILED: {msg}");
-            failed.push((display_name.clone(), msg));
-            return Ok(false);
-        }
-    };
+    let (mut layouter, computed_for_serialization) =
+        match setup_layouter_for_fixture(handle, input_path).await {
+            Ok(result) => result,
+            Err(err) => {
+                let msg = format!("Setup failed: {err}");
+                error!("[LAYOUT] {display_name} ... FAILED: {msg}");
+                failed.push((display_name.clone(), msg));
+                return Ok(false);
+            }
+        };
     timing.setup_layouter = setup_start.elapsed();
 
     // Compute geometry
@@ -322,12 +416,23 @@ async fn process_layout_fixture(
     let chromium_start = Instant::now();
     let ch_json = if let Some(cached_value) = read_cached_json_for_fixture(input_path, harness_src)
     {
+        info!("[TIMING] Chromium result from cache: {:?}", chromium_start.elapsed());
         cached_value
     } else {
-        // Await directly - no block_on() to avoid blocking the event handler
-        let page = browser.as_ref().new_page("about:blank").await?;
-        let chromium_value = chromium_layout_json_in_page(&page, input_path).await?;
+        // Create page directly with the target URL to avoid navigation issues
+        let url = to_file_url(input_path)?;
+        let page_create_start = Instant::now();
+        let page = browser.as_ref().new_page(url.as_str()).await?;
+        info!("[TIMING] Chrome new_page: {:?}", page_create_start.elapsed());
+
+        let eval_start = Instant::now();
+        let chromium_value = chromium_layout_json_in_page_no_nav(&page, input_path).await?;
+        info!("[TIMING] Chrome evaluation total: {:?}", eval_start.elapsed());
+
+        let close_start = Instant::now();
         page.close().await?;
+        info!("[TIMING] Chrome page close: {:?}", close_start.elapsed());
+
         write_cached_json_for_fixture(input_path, harness_src, &chromium_value)?;
         chromium_value
     };
@@ -362,77 +467,85 @@ async fn process_layout_fixture(
     result
 }
 
-/// Runs a single layout test for a given fixture path.
+/// Synchronous wrapper that runs tests on the global runtime.
+/// This allows regular #[test] functions to share a single runtime and browser.
 ///
 /// # Errors
 ///
-/// Returns an error if browser setup, layout computation, or comparison fails.
-pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
+/// Returns an error if the test fails or times out.
+pub fn run_single_layout_test_sync(input_path: &Path) -> Result<()> {
+    GLOBAL_RUNTIME.block_on(run_single_layout_test(input_path))
+}
+
+/// Runs a single layout test for a given fixture path with a 15-second timeout.
+///
+/// # Errors
+///
+/// Returns an error if browser setup, layout computation, comparison fails, or test times out.
+pub async fn run_single_layout_test(input_path: &Path) -> Result<()> {
+    use tokio::time::{timeout, Duration};
+
     init_test_logger();
-    let harness_src = concat!(
-        include_str!("layout_tests.rs"),
-        include_str!("common.rs"),
-        include_str!("json_compare.rs"),
-        include_str!("browser.rs"),
-    );
-    clear_valor_layout_cache_if_harness_changed(harness_src)?;
+    let test_start = Instant::now();
 
-    // Single runtime for all async operations
-    let runtime = Runtime::new()?;
+    // Overall timeout for entire test (allows time for Chrome startup + operations)
+    let result = timeout(Duration::from_secs(15), async {
+        let harness_src = concat!(
+            include_str!("layout_tests.rs"),
+            include_str!("common.rs"),
+            include_str!("json_compare.rs"),
+            include_str!("browser.rs"),
+        );
+        clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
-    // Create browser for this test
-    use chromiumoxide::browser::{Browser, BrowserConfig};
-    use futures::StreamExt;
+        // Get or create the shared browser instance
+        let browser = get_or_create_shared_browser().await?;
 
-    let chrome_path = std::path::PathBuf::from(
-        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
-    );
-    let config = BrowserConfig::builder()
-        .chrome_executable(chrome_path)
-        .no_sandbox()
-        .window_size(800, 600)
-        .arg("--force-device-scale-factor=1")
-        .arg("--hide-scrollbars")
-        .arg("--blink-settings=imagesEnabled=false")
-        .arg("--disable-gpu")
-        .arg("--disable-features=OverlayScrollbar")
-        .arg("--allow-file-access-from-files")
-        .arg("--disable-dev-shm-usage")
-        .arg("--disable-extensions")
-        .arg("--disable-background-networking")
-        .arg("--disable-sync")
-        .build()
-        .map_err(|e| anyhow!("Browser config error: {}", e))?;
-
-    let (browser, mut handler) = runtime.block_on(Browser::launch(config))?;
-    let browser = Arc::new(browser);
-
-    // Spawn handler task
-    let _handler_task = runtime.spawn(async move {
-        while let Some(_event) = handler.next().await {
-            // Silently consume events
-        }
-    });
-
-    // Run in a single block_on - all operations are async and await naturally
-    let failed = runtime.block_on(async {
+        // Execute test logic
+        let test_logic_start = Instant::now();
         let mut failed: Vec<(String, String)> = Vec::new();
         let mut timing = FixtureTiming::default();
-        process_layout_fixture(input_path, &runtime, &browser, harness_src, &mut failed, &mut timing).await?;
-        info!("Timing: setup={:?}, geom={:?}, chrome={:?}, cmp={:?}, total={:?}",
-              timing.setup_layouter, timing.compute_geometry, timing.chromium_fetch,
-              timing.json_comparison, timing.total);
-        Ok::<_, anyhow::Error>(failed)
-    })?;
+        let handle = tokio::runtime::Handle::current();
+        process_layout_fixture(
+            input_path,
+            &handle,
+            &browser,
+            harness_src,
+            &mut failed,
+            &mut timing,
+        )
+        .await?;
+        info!(
+            "[TIMING] Fixture internals: setup={:?}, geom={:?}, chrome={:?}, cmp={:?}, total={:?}",
+            timing.setup_layouter,
+            timing.compute_geometry,
+            timing.chromium_fetch,
+            timing.json_comparison,
+            timing.total
+        );
+        info!(
+            "[TIMING] Test logic execution: {:?}",
+            test_logic_start.elapsed()
+        );
 
-    // Let browser drop naturally to clean up resources
-    drop(browser);
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            let (name, msg) = &failed[0];
+            Err(anyhow!("{name}: {msg}"))
+        }
+    })
+    .await;
 
-    if failed.is_empty() {
-        Ok(())
-    } else {
-        let (name, msg) = &failed[0];
-        Err(anyhow!("{name}: {msg}"))
+    let elapsed = test_start.elapsed();
+    info!("[TIMING] TOTAL TEST TIME: {:?}", elapsed);
+
+    match result {
+        Ok(inner_result) => inner_result,
+        Err(_) => {
+            error!("TEST TIMEOUT after {:?} for: {}", elapsed, input_path.display());
+            Err(anyhow!("Test timeout after 15 seconds: {}", input_path.display()))
+        }
     }
 }
 
@@ -441,7 +554,7 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error if browser setup fails or any layout comparisons fail.
-pub fn run_chromium_layouts() -> Result<()> {
+pub async fn run_chromium_layouts() -> Result<()> {
     init_test_logger();
     let harness_src = concat!(
         include_str!("layout_tests.rs"),
@@ -451,111 +564,83 @@ pub fn run_chromium_layouts() -> Result<()> {
     );
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
-    // Single runtime for all async operations
-    let runtime = Runtime::new()?;
+    // Get or create shared browser instance (now async!)
+    let browser = get_or_create_shared_browser().await?;
 
-    // Run everything in a single block_on to avoid interfering with the handler task
+    // Execute test logic directly with async/await (no block_on!)
     let overall_start = Instant::now();
-    let (ran, failed, timing_stats) = runtime.block_on(async {
-        use chromiumoxide::browser::{Browser, BrowserConfig};
-        use futures::StreamExt;
 
-        let chrome_path = std::path::PathBuf::from(
-            "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
-        );
-        let config = BrowserConfig::builder()
-            .chrome_executable(chrome_path)
-            .no_sandbox()
-            .window_size(800, 600)
-            .arg("--force-device-scale-factor=1")
-            .arg("--hide-scrollbars")
-            .arg("--blink-settings=imagesEnabled=false")
-            .arg("--disable-gpu")
-            .arg("--disable-features=OverlayScrollbar")
-            .arg("--allow-file-access-from-files")
-            .arg("--disable-dev-shm-usage")
-            .arg("--disable-extensions")
-            .arg("--disable-background-networking")
-            .arg("--disable-sync")
-            .build()
-            .map_err(|e| anyhow!("Browser config error: {}", e))?;
+    let fixtures = get_filtered_fixtures("LAYOUT")?;
+    let fixture_count = fixtures.len();
 
-        let (browser, mut handler) = Browser::launch(config).await?;
-        let browser = Arc::new(browser); // Wrap in Arc for sharing across tasks
+    // Use fresh pages (page pooling doesn't work due to chromiumoxide limitations)
+    // Testing shows concurrency=1 is fastest (6.4s) vs concurrency=16 (41s)
+    // Creating/closing pages has significant overhead, so serial is better
+    const CONCURRENCY: usize = 1;
+    info!(
+        "[LAYOUT] Running {} fixtures with concurrency {}",
+        fixture_count, CONCURRENCY
+    );
 
-        // Spawn handler task using tokio::spawn
-        let _handler_task = tokio::spawn(async move {
-            while let Some(_event) = handler.next().await {
-                // Silently consume events
-            }
-        });
+    let mut failed_vec: Vec<(String, String)> = Vec::new();
+    let mut timing_vec: Vec<(String, FixtureTiming)> = Vec::new();
+    let mut ran = 0;
 
-        let fixtures = get_filtered_fixtures("LAYOUT")?;
-        let fixture_count = fixtures.len();
+    // Process fixtures concurrently using buffer_unordered
+    let mut fixture_stream = stream::iter(fixtures.into_iter().map(|input_path| {
+        let browser = Arc::clone(&browser);
+        let harness_src_owned = harness_src.to_string();
 
-        // Use fresh pages (page pooling doesn't work due to chromiumoxide limitations)
-        // Testing shows concurrency=1 is fastest (6.4s) vs concurrency=16 (41s)
-        // Creating/closing pages has significant overhead, so serial is better
-        const CONCURRENCY: usize = 1;
-        info!("[LAYOUT] Running {} fixtures with concurrency {}", fixture_count, CONCURRENCY);
+        async move {
+            let display_name = input_path.display().to_string();
+            let mut timing = FixtureTiming::default();
+            let mut local_failed: Vec<(String, String)> = Vec::new();
 
-        let mut failed_vec: Vec<(String, String)> = Vec::new();
-        let mut timing_vec: Vec<(String, FixtureTiming)> = Vec::new();
-        let mut ran = 0;
-
-        // Process fixtures concurrently using buffer_unordered
-        let mut fixture_stream = stream::iter(fixtures.into_iter().map(|input_path| {
-            let browser = Arc::clone(&browser);
-            let harness_src_owned = harness_src.to_string();
-
-            async move {
-                let display_name = input_path.display().to_string();
-                let mut timing = FixtureTiming::default();
-                let mut local_failed: Vec<(String, String)> = Vec::new();
-
-                // Create a fresh page for each fixture
-                log::info!("Creating fresh page for: {}", display_name);
-                let page = match browser.new_page("about:blank").await {
-                    Ok(p) => p,
-                    Err(e) => return (display_name, timing, local_failed, Err(e.into())),
-                };
-
-                let result = process_layout_fixture_parallel_with_page(
-                    &input_path,
-                    &browser,
-                    &page,
-                    &harness_src_owned,
-                    &mut local_failed,
-                    &mut timing,
-                ).await;
-
-                // Close the page
-                let _ = page.close().await;
-
-                (display_name, timing, local_failed, result)
-            }
-        }))
-        .buffer_unordered(CONCURRENCY);
-
-        // Collect results as they complete
-        while let Some((display_name, timing, local_failed, result)) = fixture_stream.next().await {
-            timing_vec.push((display_name.clone(), timing));
-            failed_vec.extend(local_failed);
-
-            match result {
-                Ok(true) => ran += 1,
-                Ok(false) => {}, // Already added to failed_vec
+            // Create a fresh page for each fixture
+            log::info!("Creating fresh page for: {}", display_name);
+            let page = match browser.new_page("about:blank").await {
+                Ok(p) => p,
                 Err(e) => {
-                    error!("[LAYOUT] {} ... ERROR: {}", display_name, e);
+                    return (display_name, timing, local_failed, Err(e.into()));
                 }
+            };
+
+            let result = process_layout_fixture_parallel_with_page(
+                &input_path,
+                &browser,
+                &page,
+                &harness_src_owned,
+                &mut local_failed,
+                &mut timing,
+            )
+            .await;
+
+            // Close the page
+            let _ = page.close().await;
+
+            (display_name, timing, local_failed, result)
+        }
+    }))
+    .buffer_unordered(CONCURRENCY);
+
+    // Collect results as they complete
+    while let Some((display_name, timing, local_failed, result)) = fixture_stream.next().await {
+        timing_vec.push((display_name.clone(), timing));
+        failed_vec.extend(local_failed);
+
+        match result {
+            Ok(true) => ran += 1,
+            Ok(false) => {} // Already added to failed_vec
+            Err(e) => {
+                error!("[LAYOUT] {} ... ERROR: {}", display_name, e);
             }
         }
+    }
 
-        // Drop the stream to release Arc references
-        drop(fixture_stream);
+    // Drop the stream to release Arc references
+    drop(fixture_stream);
 
-        Ok::<_, anyhow::Error>((ran, failed_vec, timing_vec))
-    })?;
+    let (ran, failed, timing_stats) = (ran, failed_vec, timing_vec);
 
     let overall_elapsed = overall_start.elapsed();
 
@@ -652,6 +737,7 @@ const FLEX_BASIS: &str = "auto";
 const fn effective_display(display: Display) -> &'static str {
     match display {
         Display::Inline => "inline",
+        Display::InlineBlock => "inline-block",
         Display::Block | Display::Contents => "block",
         Display::Flex => "flex",
         Display::InlineFlex => "inline-flex",
@@ -672,7 +758,13 @@ fn build_style_json(computed: &ComputedStyle) -> JsonValue {
             AlignItems::FlexEnd => "flex-end",
             AlignItems::Stretch => "normal",
         },
-        "overflow": match computed.overflow { Overflow::Visible => "visible", _ => "hidden" },
+        "overflow": match computed.overflow {
+            Overflow::Visible => "visible",
+            Overflow::Hidden => "hidden",
+            Overflow::Auto => "auto",
+            Overflow::Scroll => "scroll",
+            Overflow::Clip => "clip",
+        },
         "margin": {
             "top": format!("{}px", computed.margin.top),
             "right": format!("{}px", computed.margin.right),
@@ -890,26 +982,23 @@ fn chromium_layout_extraction_script() -> &'static str {
     })()"
 }
 
-/// Extracts layout JSON from Chromium by evaluating JavaScript in a page.
+/// Extracts layout JSON from Chromium by evaluating JavaScript (page already navigated).
 ///
 /// # Errors
 ///
-/// Returns an error if navigation, script evaluation, or JSON parsing fails.
-async fn chromium_layout_json_in_page(page: &Page, path: &Path) -> Result<JsonValue> {
-    use tokio::time::{timeout, Duration};
-
-    log::info!("Starting chromium layout extraction for: {}", path.display());
-    navigate_and_prepare_page(page, path).await?;
+/// Returns an error if script evaluation or JSON parsing fails.
+async fn chromium_layout_json_in_page_no_nav(page: &Page, path: &Path) -> Result<JsonValue> {
+    use tokio::time::{Duration, timeout};
 
     log::info!("Evaluating extraction script for: {}", path.display());
     let script = chromium_layout_extraction_script();
 
-    // Add 10 second timeout to script evaluation
-    let result = timeout(Duration::from_secs(10), page.evaluate(script))
+    // REDUCED: 2 second timeout to fail fast
+    let eval_start = Instant::now();
+    let result = timeout(Duration::from_secs(2), page.evaluate(script))
         .await
-        .map_err(|_| anyhow!("Script evaluation timeout after 10s for {}", path.display()))??;
-
-    log::info!("Script evaluation completed for: {}", path.display());
+        .map_err(|_| anyhow!("Chrome script evaluation timeout after 2s for {}", path.display()))??;
+    log::info!("[TIMING] Script evaluation: {:?}", eval_start.elapsed());
 
     let json_string = result
         .value()
@@ -917,4 +1006,26 @@ async fn chromium_layout_json_in_page(page: &Page, path: &Path) -> Result<JsonVa
         .ok_or_else(|| anyhow!("Chromium returned non-string JSON for layout"))?;
     let parsed: JsonValue = from_str(json_string)?;
     Ok(parsed)
+}
+
+/// Extracts layout JSON from Chromium by evaluating JavaScript in a page.
+///
+/// # Errors
+///
+/// Returns an error if navigation, script evaluation, or JSON parsing fails.
+async fn chromium_layout_json_in_page(page: &Page, path: &Path) -> Result<JsonValue> {
+    use tokio::time::{Duration, timeout};
+
+    log::info!(
+        "[TIMING] Starting chromium layout extraction for: {}",
+        path.display()
+    );
+    let nav_start = Instant::now();
+    navigate_and_prepare_page(page, path).await?;
+    log::info!(
+        "[TIMING] navigate_and_prepare_page total: {:?}",
+        nav_start.elapsed()
+    );
+
+    chromium_layout_json_in_page_no_nav(page, path).await
 }

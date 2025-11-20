@@ -11,10 +11,10 @@ use anyhow::Result;
 /// # Errors
 ///
 /// Returns an error if layout tests fail or if graphics tests fail (when layout passes).
-pub fn run_chromium_tests() -> Result<()> {
-    // Run layout tests first
-    layout_tests::run_chromium_layouts()?;
+pub async fn run_chromium_tests() -> Result<()> {
+    // Run layout tests first (now async!)
+    layout_tests::run_chromium_layouts().await?;
 
-    // Only run graphics tests if layout passed
-    graphics_tests::chromium_graphics_smoke_compare_png()
+    // Only run graphics tests if layout passed (now async!)
+    graphics_tests::chromium_graphics_smoke_compare_png().await
 }

@@ -3,7 +3,7 @@
 mod html5ever_engine;
 
 use crate::parser::html5ever_engine::Html5everEngine;
-use anyhow::{Error, anyhow};
+use anyhow::Error;
 use bytes::Bytes;
 use core::mem;
 use indextree::{Arena, Node, NodeId};
@@ -14,16 +14,14 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 use tokio::runtime::Handle;
 use tokio::sync::{broadcast, mpsc};
-use tokio::task;
-use tokio::task::JoinHandle;
 use tokio_stream::{Stream, StreamExt as _};
 use url::Url;
 
 /// This is the parser itself, the DOM has refs here, and is
 /// responsible for sending DOM updates to the tree
 pub struct HTMLParser {
-    /// Handle to the async parsing process.
-    process_handle: JoinHandle<Result<(), Error>>,
+    /// Handle to the parser task running on LocalSet.
+    process_handle: tokio::task::JoinHandle<Result<(), Error>>,
 }
 
 /// Inputs required to start the HTML parser.
@@ -367,7 +365,7 @@ impl DOMSubscriber for ParserDOMMirror {
 
 impl HTMLParser {
     #[inline]
-    pub fn parse<S>(handle: &Handle, mut inputs: ParseInputs<S>) -> Self
+    pub fn parse<S>(_handle: &Handle, mut inputs: ParseInputs<S>) -> Self
     where
         S: Stream<Item = Result<Bytes, Error>> + Send + Unpin + 'static,
     {
@@ -390,73 +388,93 @@ impl HTMLParser {
 
         // Wrap the parser mirror with DOMMirror so it can receive runtime DOM updates
         let dom_mirror = DOMMirror::new(mirror_out, inputs.dom_updates, mirror);
-        let process_handle = handle.spawn(Self::process(
-            dom_mirror,
-            inputs.byte_stream,
-            inputs.script_tx,
-            inputs.base_url,
-        ));
+
+        // First spawn an async task to collect bytes, then spawn_blocking for html5ever
+        // This separates async I/O from !Send synchronous parsing
+        let process_handle = tokio::task::spawn(async move {
+            Self::process_async_then_blocking(
+                dom_mirror,
+                inputs.byte_stream,
+                inputs.script_tx,
+                inputs.base_url,
+            )
+            .await
+        });
+
         Self { process_handle }
     }
 
-    /// Process the HTML byte stream and parse it into DOM updates.
+    /// Collect bytes asynchronously, then parse synchronously with html5ever.
+    ///
+    /// This separates async I/O (byte collection) from synchronous parsing (!Send html5ever).
     ///
     /// # Errors
-    /// Returns an error if parsing or DOM updates fail.
-    #[inline]
-    pub async fn process<S: Stream<Item = Result<Bytes, Error>> + Send + Unpin + 'static>(
+    /// Returns an error if byte collection, parsing, or DOM updates fail.
+    async fn process_async_then_blocking<
+        S: Stream<Item = Result<Bytes, Error>> + Unpin + 'static,
+    >(
         dom: DOMMirror<ParserDOMMirror>,
         mut byte_stream: S,
         script_tx: mpsc::UnboundedSender<ScriptJob>,
         base_url: Url,
     ) -> Result<(), Error> {
-        trace!("Started processing!");
-        // This function is a bit complicated due to html5ever not being Send
-        let parser_worker = {
-            let (sender, mut receiver) = mpsc::channel::<Result<Bytes, Error>>(128);
+        trace!("Collecting HTML bytes asynchronously");
 
-            // Blocking parser worker: owns the non-Send html5ever engine
-            let base_for_worker = base_url.clone();
-            let parser_worker = task::spawn_blocking(move || {
-                let mut engine = Html5everEngine::new(dom, script_tx, base_for_worker);
-                while let Some(item) = receiver.blocking_recv() {
-                    engine.try_update_sync()?;
-                    let chunk = item?;
-                    let text = String::from_utf8_lossy(&chunk);
-                    engine.push(text.as_ref());
-                }
-                trace!("Finalizing parser");
-                engine.finalize();
-                Ok::<(), Error>(())
-            });
+        // Collect all chunks asynchronously (HTML files are typically small < 100KB)
+        let mut chunks = Vec::new();
+        while let Some(item) = byte_stream.next().await {
+            chunks.push(item?);
+        }
 
-            let tx_stream = sender.clone();
-            while let Some(item) = byte_stream.next().await {
-                if tx_stream.send(item).await.is_err() {
-                    break;
-                }
+        // Now run html5ever synchronously in spawn_blocking (it's !Send)
+        tokio::task::spawn_blocking(move || {
+            trace!("Parsing HTML synchronously with html5ever");
+
+            // Create and run html5ever engine synchronously
+            let mut engine = Html5everEngine::new(dom, script_tx, base_url);
+
+            for chunk in chunks {
+                engine.try_update_sync()?;
+                let text = String::from_utf8_lossy(&chunk);
+                engine.push(text.as_ref());
             }
-            parser_worker
-        };
-        trace!("Done reading content in parser");
-        parser_worker.await??;
-        Ok(())
+
+            trace!("Finalizing parser");
+            engine.finalize();
+            Ok(())
+        })
+        .await
+        .map_err(|err| anyhow::anyhow!("Parser blocking task panicked: {err}"))?
     }
 
+    /// Check if parsing has completed (non-blocking check).
     #[inline]
     pub fn is_finished(&self) -> bool {
         self.process_handle.is_finished()
     }
 
-    /// Finish the parser and wait for completion.
+    /// Wait for parser to complete.
     ///
     /// # Errors
-    /// Returns an error if the process is not finished or if joining fails.
+    /// Returns an error if parsing fails or task panicked.
     #[inline]
-    pub async fn finish(self) -> Result<(), Error> {
-        if !self.process_handle.is_finished() {
-            return Err(anyhow!("Expected process to be finished, but it wasn't!"));
-        }
-        self.process_handle.await?
+    pub async fn await_completion(self) -> Result<(), Error> {
+        self.process_handle
+            .await
+            .map_err(|err| anyhow::anyhow!("Parser task panicked: {err}"))?
+    }
+
+    /// Poll the parser with a timeout, returning whether parsing completed.
+    /// If parsing is already done, returns immediately without waiting.
+    ///
+    /// This method only checks if the parser is finished without consuming it.
+    /// Use await_completion() to actually await and consume the parser.
+    ///
+    /// # Errors
+    /// Returns an error if parsing fails.
+    #[inline]
+    pub fn poll_with_timeout(&self, _timeout: tokio::time::Duration) -> Result<bool, Error> {
+        // Simply check if finished
+        Ok(self.process_handle.is_finished())
     }
 }

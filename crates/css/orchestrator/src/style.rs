@@ -786,6 +786,84 @@ fn create_block_display_rules(source_order_start: u32) -> (Vec<types::Rule>, u32
     (rules, source_order)
 }
 
+/// Add form control UA styles (button, input, textarea) per HTML5 spec.
+fn add_form_control_ua_rules(rules: &mut Vec<types::Rule>, mut source_order: u32) -> u32 {
+    // textarea { overflow: auto }
+    rules.push(types::Rule {
+        origin: types::Origin::UserAgent,
+        source_order,
+        prelude: "textarea".to_string(),
+        declarations: vec![types::Declaration {
+            name: "overflow".to_string(),
+            value: "auto".to_string(),
+            important: false,
+        }],
+    });
+    source_order += 1;
+
+    // button { padding: 1px 6px; box-sizing: border-box }
+    rules.push(types::Rule {
+        origin: types::Origin::UserAgent,
+        source_order,
+        prelude: "button".to_string(),
+        declarations: vec![
+            types::Declaration {
+                name: "padding".to_string(),
+                value: "1px 6px".to_string(),
+                important: false,
+            },
+            types::Declaration {
+                name: "box-sizing".to_string(),
+                value: "border-box".to_string(),
+                important: false,
+            },
+        ],
+    });
+    source_order += 1;
+
+    // input { padding: 1px 2px; box-sizing: border-box }
+    rules.push(types::Rule {
+        origin: types::Origin::UserAgent,
+        source_order,
+        prelude: "input".to_string(),
+        declarations: vec![
+            types::Declaration {
+                name: "padding".to_string(),
+                value: "1px 2px".to_string(),
+                important: false,
+            },
+            types::Declaration {
+                name: "box-sizing".to_string(),
+                value: "border-box".to_string(),
+                important: false,
+            },
+        ],
+    });
+    source_order += 1;
+
+    // textarea { padding: 2px; box-sizing: border-box }
+    rules.push(types::Rule {
+        origin: types::Origin::UserAgent,
+        source_order,
+        prelude: "textarea".to_string(),
+        declarations: vec![
+            types::Declaration {
+                name: "padding".to_string(),
+                value: "2px".to_string(),
+                important: false,
+            },
+            types::Declaration {
+                name: "box-sizing".to_string(),
+                value: "border-box".to_string(),
+                important: false,
+            },
+        ],
+    });
+    source_order += 1;
+
+    source_order
+}
+
 /// Create a minimal user-agent stylesheet with default display values for block-level HTML elements.
 fn create_ua_stylesheet() -> types::Stylesheet {
     let mut rules = Vec::new();
@@ -798,14 +876,13 @@ fn create_ua_stylesheet() -> types::Stylesheet {
         prelude: "html".to_string(),
         declarations: vec![types::Declaration {
             name: "color".to_string(),
-            value: "#000".to_string(), // Black text by default
+            value: "#000".to_string(),
             important: false,
         }],
     });
     source_order += 1;
 
     // Add standard browser default margin for body element
-    // Per HTML5 spec: browsers apply 8px margin to body by default
     rules.push(types::Rule {
         origin: types::Origin::UserAgent,
         source_order,
@@ -818,7 +895,7 @@ fn create_ua_stylesheet() -> types::Stylesheet {
     });
     source_order += 1;
 
-    // Add paragraph margin per browser UA stylesheets (Chromium uses margin-block: 1em = 16px at default font size)
+    // Add paragraph margin per browser UA stylesheets
     rules.push(types::Rule {
         origin: types::Origin::UserAgent,
         source_order,
@@ -835,58 +912,7 @@ fn create_ua_stylesheet() -> types::Stylesheet {
     rules.extend(block_rules);
     source_order = next_order;
 
-    // Add form control user-agent styles per HTML5 spec and browser defaults
-
-    // textarea { overflow: auto }
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "textarea".to_string(),
-        declarations: vec![types::Declaration {
-            name: "overflow".to_string(),
-            value: "auto".to_string(),
-            important: false,
-        }],
-    });
-    source_order += 1;
-
-    // button { padding: 1px 6px } - browser default padding for buttons
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "button".to_string(),
-        declarations: vec![types::Declaration {
-            name: "padding".to_string(),
-            value: "1px 6px".to_string(),
-            important: false,
-        }],
-    });
-    source_order += 1;
-
-    // input { padding: 1px 2px } - browser default padding for inputs
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "input".to_string(),
-        declarations: vec![types::Declaration {
-            name: "padding".to_string(),
-            value: "1px 2px".to_string(),
-            important: false,
-        }],
-    });
-    source_order += 1;
-
-    // textarea { padding: 2px } - browser default padding for textarea
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "textarea".to_string(),
-        declarations: vec![types::Declaration {
-            name: "padding".to_string(),
-            value: "2px".to_string(),
-            important: false,
-        }],
-    });
+    add_form_control_ua_rules(&mut rules, source_order);
 
     types::Stylesheet {
         rules,
@@ -1248,8 +1274,12 @@ fn apply_layout_keywords(
     if let Some(value) = decls.get("display") {
         computed.display = if value.eq_ignore_ascii_case("block") {
             style_model::Display::Block
+        } else if value.eq_ignore_ascii_case("inline-block") {
+            style_model::Display::InlineBlock
         } else if value.eq_ignore_ascii_case("flex") {
             style_model::Display::Flex
+        } else if value.eq_ignore_ascii_case("inline-flex") {
+            style_model::Display::InlineFlex
         } else if value.eq_ignore_ascii_case("none") {
             style_model::Display::None
         } else if value.eq_ignore_ascii_case("contents") {

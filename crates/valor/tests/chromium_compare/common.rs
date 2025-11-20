@@ -10,7 +10,6 @@ use std::fs::{create_dir_all, read, read_dir, read_to_string, remove_dir_all, wr
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::Instant;
-use tokio::runtime::Runtime;
 use url::Url;
 
 // ===== CLI argument parsing =====
@@ -354,16 +353,22 @@ pub fn to_file_url(path: &Path) -> Result<Url> {
 
 /// Creates a new HTML page for the given URL.
 ///
+/// The parser runs in the background. Call page.update() repeatedly to check
+/// for parsing progress - it will naturally yield via timeout-based polling.
+///
 /// # Errors
 ///
 /// Returns an error if page creation fails.
-pub async fn create_page(runtime: &Runtime, url: Url) -> Result<HtmlPage> {
+pub async fn create_page(handle: &tokio::runtime::Handle, url: Url) -> Result<HtmlPage> {
     let config = ValorConfig::from_env();
-    let page = HtmlPage::new(runtime.handle(), url, config).await?;
+    let page = HtmlPage::new(handle, url, config).await?;
     Ok(page)
 }
 
 /// Creates a new HTML page using the current tokio handle.
+///
+/// The parser runs in the background. Call page.update() repeatedly to check
+/// for parsing progress - it will naturally yield via timeout-based polling.
 ///
 /// # Errors
 ///
@@ -380,9 +385,12 @@ pub async fn create_page_from_current(url: Url) -> Result<HtmlPage> {
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or script evaluation fails.
-pub async fn setup_page_for_fixture(runtime: &Runtime, path: &Path) -> Result<HtmlPage> {
+pub async fn setup_page_for_fixture(
+    handle: &tokio::runtime::Handle,
+    path: &Path,
+) -> Result<HtmlPage> {
     let url = to_file_url(path)?;
-    let mut page = create_page(runtime, url).await?;
+    let mut page = create_page(handle, url).await?;
     page.eval_js(css_reset_injection_script())?;
 
     let finished = update_until_finished_simple(&mut page).await?;
@@ -399,32 +407,50 @@ pub async fn setup_page_for_fixture(runtime: &Runtime, path: &Path) -> Result<Ht
 
 /// Updates the page until parsing finishes, calling a callback per tick.
 ///
+/// Each update naturally yields to the parser task via timeout-based polling,
+/// so no manual yielding is needed. The parser runs in the background and
+/// page.update() checks for completion with a 1ms timeout on each call.
+///
 /// # Errors
 ///
 /// Returns an error if page update or callback execution fails.
-pub async fn update_until_finished<F>(
-    page: &mut HtmlPage,
-    mut per_tick: F,
-) -> Result<bool>
+pub async fn update_until_finished<F>(page: &mut HtmlPage, mut per_tick: F) -> Result<bool>
 where
     F: FnMut(&mut HtmlPage) -> Result<()>,
 {
-    let mut finished = page.parsing_finished();
     let start_time = Instant::now();
-    let max_total_time = Duration::from_secs(15);
-    for _iter in 0i32..10_000i32 {
+    let max_total_time = Duration::from_secs(3);
+
+    let mut iterations = 0;
+    // Loop until parsing completes or timeout
+    while !page.parsing_finished() {
         if start_time.elapsed() > max_total_time {
-            warn!("update_until_finished: exceeded total time budget");
-            break;
+            warn!("update_until_finished: exceeded total time budget of 3s after {} iterations", iterations);
+            warn!("parsing_finished status: {}", page.parsing_finished());
+            return Ok(false);
         }
+
+        // Update and yield to allow parser task to run
         page.update().await?;
         per_tick(page)?;
-        finished = page.parsing_finished();
-        if finished {
-            break;
+
+        iterations += 1;
+        if iterations % 100 == 0 {
+            warn!("update_until_finished: {} iterations, elapsed: {:?}, parsing_finished: {}",
+                iterations, start_time.elapsed(), page.parsing_finished());
         }
+
+        // Small sleep to yield to other tasks (parser running in background)
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    Ok(finished)
+
+    warn!("update_until_finished: finished after {} iterations in {:?}", iterations, start_time.elapsed());
+
+    // Final update after parsing completes
+    page.update().await?;
+    per_tick(page)?;
+
+    Ok(true)
 }
 
 /// Updates the page until parsing finishes without a per-tick callback.

@@ -5,12 +5,15 @@ use log::debug;
 type BaselineMetrics = Option<(f32, f32)>;
 /// Slice alias for baseline metrics across items.
 type BaselineSlice<'slice> = &'slice [BaselineMetrics];
+/// Cross size input tuple: `(cross_size, min_cross, max_cross, is_auto)`.
+/// `is_auto` indicates whether the cross-size was originally auto (for stretch alignment).
+type CrossInput = (f32, f32, f32, bool);
 
 /// Read-only inputs to pack lines along the cross axis.
 #[derive(Copy, Clone)]
 struct PackInputs<'inputs> {
-    /// Per-item cross inputs `(cross_size, min_cross, max_cross)`
-    cross_inputs: &'inputs [(f32, f32, f32)],
+    /// Per-item cross inputs `(cross_size, min_cross, max_cross, is_auto)`
+    cross_inputs: &'inputs [CrossInput],
     /// Per-item baseline metrics if available
     baseline_inputs: BaselineSlice<'inputs>,
     /// Ranges of items per line
@@ -25,10 +28,12 @@ struct PackInputs<'inputs> {
 fn compute_line_baseline_ref(
     align: AlignItems,
     baselines: BaselineSlice<'_>,
-    cross_inputs: &[(f32, f32, f32)],
+    cross_inputs: &[CrossInput],
 ) -> f32 {
     let mut reference = 0.0f32;
-    for (metrics_opt, &(item_cross, _min_c, _max_c)) in baselines.iter().zip(cross_inputs.iter()) {
+    for (metrics_opt, &(item_cross, _min_c, _max_c, _is_auto)) in
+        baselines.iter().zip(cross_inputs.iter())
+    {
         if let Some((first, last)) = *metrics_opt {
             let candidate = match align {
                 AlignItems::Baseline => first,
@@ -88,8 +93,9 @@ fn quantize_layout(value: f32) -> f32 {
 /// Bundle of cross and baseline inputs required by the combined layout APIs.
 #[derive(Copy, Clone)]
 pub struct CrossAndBaseline<'cb> {
-    /// Per-item cross inputs `(cross_size, min_cross, max_cross)`
-    pub cross_inputs: &'cb [(f32, f32, f32)],
+    /// Per-item cross inputs `(cross_size, min_cross, max_cross, is_auto)`
+    /// `is_auto` indicates if the cross-size was auto (for stretch alignment)
+    pub cross_inputs: &'cb [CrossInput],
     /// Per-item baseline metrics if available
     pub baseline_inputs: BaselineSlice<'cb>,
 }
@@ -211,17 +217,15 @@ fn clamp_first_offset_if_needed(
 }
 
 /// Compute cross-axis placement for multiple items using `align-items`.
-/// Each tuple is `(item_cross_size, min_cross, max_cross)`.
+/// Each tuple is `(item_cross_size, min_cross, max_cross, is_auto)`.
 pub fn align_cross_for_items(
     align: AlignItems,
     container_cross_size: f32,
-    items: &[(f32, f32, f32)],
+    items: &[CrossInput],
 ) -> Vec<CrossPlacement> {
     items
         .iter()
-        .map(|&(item_size, min_c, max_c)| {
-            align_single_line_cross(align, container_cross_size, item_size, min_c, max_c)
-        })
+        .map(|&item| align_single_line_cross(align, container_cross_size, item))
         .collect()
 }
 
@@ -407,7 +411,7 @@ fn per_line_main_and_cross(
     container: FlexContainerInputs,
     justify_content: JustifyContent,
     items: &[FlexChild],
-    cross_inputs: &[(f32, f32, f32)],
+    cross_inputs: &[CrossInput],
     line_ranges: &[LineRange],
 ) -> (PerLineMainVec, Vec<f32>) {
     let mut per_line_main: PerLineMainVec = Vec::with_capacity(line_ranges.len());
@@ -421,7 +425,7 @@ fn per_line_main_and_cross(
         };
         let line_main = layout_single_line(container, justify_content, line_items);
         let mut line_cross_max = 0.0f32;
-        for &(item_cross, min_c, max_c) in line_cross_inputs {
+        for &(item_cross, min_c, max_c, _is_auto) in line_cross_inputs {
             let clamped = clamp(item_cross, min_c, max_c);
             if clamped > line_cross_max {
                 line_cross_max = clamped;
@@ -538,7 +542,7 @@ struct LineBuildCtx<'ctx> {
     /// Main placements for items in the line.
     line_main: &'ctx PerLineMain,
     /// Cross inputs for items in the line.
-    line_cross_inputs: &'ctx [(f32, f32, f32)],
+    line_cross_inputs: &'ctx [CrossInput],
     /// Baseline metrics for items in the line.
     line_baselines: BaselineSlice<'ctx>,
     /// Max cross-size for the line.
@@ -555,31 +559,24 @@ fn build_line_pairs(ctx: &LineBuildCtx<'_>) -> Vec<(FlexPlacement, CrossPlacemen
         .iter()
         .zip(ctx.line_cross_inputs.iter())
         .enumerate()
-        .map(
-            |(index_in_line, (main_place, &(item_cross, min_c, max_c)))| {
-                let within_line = align_single_line_cross(
-                    ctx.cross_ctx.align_items,
-                    ctx.line_cross_max,
-                    item_cross,
-                    min_c,
-                    max_c,
-                );
-                let mut lifted = CrossPlacement {
-                    cross_size: within_line.cross_size,
-                    cross_offset: ctx.cross_accum_offset + within_line.cross_offset,
-                };
-                let bctx = BaselineAdjustCtx {
-                    align: ctx.cross_ctx.align_items,
-                    baselines: ctx.line_baselines,
-                    index_in_line,
-                    line_ref: ctx.line_ref,
-                    line_cross_max: ctx.line_cross_max,
-                    cross_accum_offset: ctx.cross_accum_offset,
-                };
-                adjust_cross_for_baseline(&bctx, &mut lifted);
-                (*main_place, lifted)
-            },
-        )
+        .map(|(index_in_line, (main_place, &item))| {
+            let within_line =
+                align_single_line_cross(ctx.cross_ctx.align_items, ctx.line_cross_max, item);
+            let mut lifted = CrossPlacement {
+                cross_size: within_line.cross_size,
+                cross_offset: ctx.cross_accum_offset + within_line.cross_offset,
+            };
+            let bctx = BaselineAdjustCtx {
+                align: ctx.cross_ctx.align_items,
+                baselines: ctx.line_baselines,
+                index_in_line,
+                line_ref: ctx.line_ref,
+                line_cross_max: ctx.line_cross_max,
+                cross_accum_offset: ctx.cross_accum_offset,
+            };
+            adjust_cross_for_baseline(&bctx, &mut lifted);
+            (*main_place, lifted)
+        })
         .collect()
 }
 
@@ -952,19 +949,23 @@ pub struct CrossPlacement {
 /// Behavior:
 /// - Stretch: cross-size becomes container cross-size clamped by min/max; offset 0.
 /// - Center: cross-size remains the item cross-size (clamped) and offset centers it in the container.
+///
+/// # Parameters
+///
+/// * `item` - Cross input tuple `(size, min, max, is_auto)` where `is_auto` indicates
+///   the cross-size was originally auto (CSS property), enabling stretch per CSS Flexbox §9.2.
 pub fn align_single_line_cross(
     align: AlignItems,
     container_cross_size: f32,
-    item_cross_size: f32,
-    min_cross: f32,
-    max_cross: f32,
+    item: CrossInput,
 ) -> CrossPlacement {
+    let (item_cross_size, min_cross, max_cross, is_auto) = item;
     let clamped_item = clamp(item_cross_size, min_cross, max_cross);
     match align {
         AlignItems::Stretch => {
-            // Stretch applies when the item cross-size is auto/unspecified.
-            // Heuristic: treat non-positive sizes as auto for MVP.
-            if item_cross_size <= 0.0 {
+            // Per CSS Flexbox §9.2: Stretch applies when the cross-size is auto.
+            // If the cross-size was auto, stretch to fill the container.
+            if is_auto {
                 CrossPlacement {
                     cross_size: clamp(container_cross_size, min_cross, max_cross),
                     cross_offset: 0.0,
@@ -1323,7 +1324,8 @@ mod tests {
     /// # Panics
     /// Panics if center alignment does not center the item within the container cross-size.
     fn align_items_center_cross_axis() {
-        let placement = align_single_line_cross(AlignItems::Center, 200.0, 100.0, 0.0, 1e9);
+        let placement =
+            align_single_line_cross(AlignItems::Center, 200.0, (100.0, 0.0, 1e9, false));
         assert!(
             (placement.cross_size - 100.0).abs() < 0.001,
             "size remains item size"
@@ -1338,8 +1340,8 @@ mod tests {
     /// # Panics
     /// Panics if stretch alignment does not expand to container cross-size respecting constraints.
     fn align_items_stretch_cross_axis() {
-        // When item cross-size is auto/unspecified (here modeled as 0), Stretch expands to container size.
-        let placement = align_single_line_cross(AlignItems::Stretch, 120.0, 0.0, 0.0, 1e9);
+        // When item cross-size is auto, Stretch expands to container size.
+        let placement = align_single_line_cross(AlignItems::Stretch, 120.0, (50.0, 0.0, 1e9, true));
         assert!(
             (placement.cross_size - 120.0).abs() < 0.001,
             "stretched to container size"
@@ -1354,17 +1356,15 @@ mod tests {
     /// # Panics
     /// Panics if bulk cross-axis alignment does not mirror per-item alignment.
     fn align_cross_for_items_bulk_matches_scalar() {
-        let items: Vec<(f32, f32, f32)> = vec![
-            (10.0, 0.0, 1000.0),
-            (20.0, 0.0, 1000.0),
-            (30.0, 0.0, 1000.0),
+        let items: Vec<(f32, f32, f32, bool)> = vec![
+            (10.0, 0.0, 1000.0, false),
+            (20.0, 0.0, 1000.0, false),
+            (30.0, 0.0, 1000.0, false),
         ];
         let bulk = align_cross_for_items(AlignItems::Center, 100.0, &items);
         let scalar: Vec<CrossPlacement> = items
             .iter()
-            .map(|&(size, min_c, max_c)| {
-                align_single_line_cross(AlignItems::Center, 100.0, size, min_c, max_c)
-            })
+            .map(|&item| align_single_line_cross(AlignItems::Center, 100.0, item))
             .collect();
         assert_eq!(bulk.len(), scalar.len(), "bulk and scalar lengths differ");
         for (bulk_cp, scalar_cp) in bulk.iter().zip(scalar.iter()) {

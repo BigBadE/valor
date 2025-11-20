@@ -467,7 +467,11 @@ pub fn place_child_public(
     // "If 'width' has a computed value of 'auto', and the element has an intrinsic width,
     // then that intrinsic width is the used value of 'width'."
     if style.width.is_none() {
-        if let Some(intrinsic_w) = part_10_6_3_height_of_blocks::intrinsic_width_for_form_control_public(layouter, child_key, &style) {
+        if let Some(intrinsic_w) =
+            part_10_6_3_height_of_blocks::intrinsic_width_for_form_control_public(
+                layouter, child_key, &style, false, // Not a flex item in normal flow
+            )
+        {
             used_bb_w = intrinsic_w;
         }
     }

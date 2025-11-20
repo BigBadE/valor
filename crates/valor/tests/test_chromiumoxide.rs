@@ -7,7 +7,7 @@ async fn test_chromiumoxide_file_url() -> anyhow::Result<()> {
 
     eprintln!("Creating browser config...");
     let chrome_path = std::path::PathBuf::from(
-        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
+        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
     );
 
     let (mut browser, mut handler) = Browser::launch(
@@ -16,7 +16,7 @@ async fn test_chromiumoxide_file_url() -> anyhow::Result<()> {
             .no_sandbox()
             .window_size(800, 600)
             .build()
-            .map_err(|e| anyhow::anyhow!("Browser config error: {}", e))?
+            .map_err(|e| anyhow::anyhow!("Browser config error: {}", e))?,
     )
     .await?;
 
@@ -48,7 +48,9 @@ async fn test_chromiumoxide_file_url() -> anyhow::Result<()> {
     eprintln!("file:// result: {:?}", result.value());
 
     eprintln!("Evaluating DOM query...");
-    let result = page.evaluate("document.querySelectorAll('div').length").await?;
+    let result = page
+        .evaluate("document.querySelectorAll('div').length")
+        .await?;
     eprintln!("Number of divs: {:?}", result.value());
 
     eprintln!("SUCCESS!");
