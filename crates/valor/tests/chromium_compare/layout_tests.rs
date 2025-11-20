@@ -60,7 +60,7 @@ async fn get_or_create_shared_browser() -> Result<Arc<chromiumoxide::Browser>> {
     use chromiumoxide::browser::{Browser, BrowserConfig};
 
     let chrome_path = std::path::PathBuf::from(
-        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
+        "/root/.local/share/headless-chrome/linux-1217362/chrome",
     );
     let config = BrowserConfig::builder()
         .chrome_executable(chrome_path)

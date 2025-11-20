@@ -7,7 +7,7 @@ async fn test_chromiumoxide_file_url() -> anyhow::Result<()> {
 
     eprintln!("Creating browser config...");
     let chrome_path = std::path::PathBuf::from(
-        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
+        "/root/.local/share/headless-chrome/linux-1217362/chrome",
     );
 
     let (mut browser, mut handler) = Browser::launch(
