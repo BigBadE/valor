@@ -84,12 +84,34 @@ async fn get_or_create_shared_browser() -> Result<Arc<chromiumoxide::Browser>> {
     let (browser, mut handler) = Browser::launch(config).await?;
     let browser = Arc::new(browser);
 
-    // CRITICAL: Spawn handler task on GLOBAL_RUNTIME (not the test's runtime!)
-    // This keeps the handler alive across all test runtimes
-    GLOBAL_RUNTIME.spawn(async move {
-        while let Some(_event) = handler.next().await {
-            // Process Chrome DevTools Protocol events
+    // Spawn handler on current runtime context (inside GLOBAL_RUNTIME.block_on)
+    // This matches the pattern from working chromiumoxide examples
+    tokio::task::spawn(async move {
+        eprintln!("[HANDLER] Chrome event handler started");
+        let mut event_count = 0;
+        let mut error_count = 0;
+
+        // Use a loop like chromiumoxide examples to keep handler alive
+        loop {
+            match handler.next().await {
+                Some(Ok(_)) => {
+                    event_count += 1;
+                    if event_count <= 10 || event_count % 50 == 0 {
+                        eprintln!("[HANDLER] Event #{}: OK", event_count);
+                    }
+                }
+                Some(Err(e)) => {
+                    error_count += 1;
+                    eprintln!("[HANDLER] Event #{}: ERROR - {:?}", event_count, e);
+                    // Don't break on errors - keep handler alive
+                }
+                None => {
+                    eprintln!("[HANDLER] Stream ended after {} events, {} errors", event_count, error_count);
+                    break;
+                }
+            }
         }
+        eprintln!("[HANDLER] Handler task exiting");
     });
 
     // Yield to let the handler task start processing events
