@@ -1,9 +1,8 @@
 use anyhow::Result;
-use chromiumoxide::browser::{Browser, BrowserConfig};
-use chromiumoxide::page::Page;
-use futures::StreamExt;
+use headless_chrome::{Browser, LaunchOptionsBuilder, Tab};
+use std::ffi::OsStr;
 use std::path::Path;
-use tokio::task::JoinHandle;
+use std::time::Duration;
 
 use super::common::to_file_url;
 
@@ -16,110 +15,68 @@ pub enum TestType {
     Graphics,
 }
 
-/// Browser instance with background event handler.
-pub struct ChromeBrowser {
-    pub browser: Browser,
-    _handler: JoinHandle<()>,
-}
-
-impl ChromeBrowser {
-    /// Create a new tab/page.
-    pub async fn new_page(&self) -> Result<Page> {
-        Ok(self.browser.new_page("about:blank").await?)
-    }
-}
-
 /// Sets up a headless Chrome browser for comparison testing.
 ///
 /// # Errors
 ///
 /// Returns an error if browser launch fails.
-pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser> {
+pub fn setup_chrome_browser(test_type: TestType) -> Result<Browser> {
+    let (timeout, extra_args): (Duration, Vec<&OsStr>) = match test_type {
+        TestType::Layout => (
+            Duration::from_secs(300),
+            vec![
+                OsStr::new("--disable-features=OverlayScrollbar"),
+                OsStr::new("--allow-file-access-from-files"),
+                OsStr::new("--disable-web-security"),  // CRITICAL: Allow JavaScript execution on file:// URLs
+                OsStr::new("--disable-dev-shm-usage"),
+                OsStr::new("--no-sandbox"),
+                OsStr::new("--disable-extensions"),
+                OsStr::new("--disable-background-networking"),
+                OsStr::new("--disable-sync"),
+            ],
+        ),
+        TestType::Graphics => (
+            Duration::from_secs(120),
+            vec![OsStr::new("--force-color-profile=sRGB")],
+        ),
+    };
+
+    let mut args = vec![
+        OsStr::new("--force-device-scale-factor=1"),
+        OsStr::new("--hide-scrollbars"),
+        OsStr::new("--blink-settings=imagesEnabled=false"),
+        OsStr::new("--disable-gpu"),
+    ];
+    args.extend(extra_args);
+
     let chrome_path = std::path::PathBuf::from(
-        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
+        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
     );
 
-    let config_builder = BrowserConfig::builder()
-        .chrome_executable(chrome_path)
-        .no_sandbox()
-        .window_size(800, 600)
-        .arg("--force-device-scale-factor=1")
-        .arg("--hide-scrollbars")
-        .arg("--blink-settings=imagesEnabled=false")
-        .arg("--disable-gpu")
-        .arg("--disable-features=OverlayScrollbar")
-        .arg("--allow-file-access-from-files")
-        .arg("--disable-dev-shm-usage")
-        .arg("--disable-extensions")
-        .arg("--disable-background-networking")
-        .arg("--disable-sync");
-
-    let (browser, mut handler) = Browser::launch(
-        config_builder
-            .build()
-            .map_err(|e| anyhow::anyhow!("Browser config error: {}", e))?,
-    )
-    .await?;
-
-    // Spawn background handler for Chrome events
-    let handler_task = tokio::task::spawn(async move {
-        while let Some(event) = handler.next().await {
-            if let Err(e) = event {
-                eprintln!("Browser event error: {:?}", e);
-            }
-        }
-    });
-
-    Ok(ChromeBrowser {
-        browser,
-        _handler: handler_task,
-    })
+    let launch_opts = LaunchOptionsBuilder::default()
+        .headless(true)
+        .path(Some(chrome_path))
+        .sandbox(false)  // Required when running as root
+        .window_size(Some((800, 600)))
+        .idle_browser_timeout(timeout)
+        .args(args)
+        .build()?;
+    Browser::new(launch_opts)
 }
 
-/// Navigates a Chrome page to a fixture and prepares it for testing.
+/// Navigates a Chrome tab to a fixture and prepares it for testing.
 ///
 /// # Errors
 ///
-/// Returns an error if navigation fails.
-pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
-    use std::time::Instant;
-    use tokio::time::{Duration, timeout};
-
+/// Returns an error if navigation or script evaluation fails.
+pub fn navigate_and_prepare_tab(tab: &Tab, path: &Path) -> Result<()> {
     let url = to_file_url(path)?;
-    log::info!("[TIMING] Starting navigation to: {}", url.as_str());
+    tab.navigate_to(url.as_str())?;
 
-    // Navigate with timeout
-    let nav_start = Instant::now();
-    timeout(Duration::from_secs(10), page.goto(url.as_str()))
-        .await
-        .map_err(|_| anyhow::anyhow!("Navigation timeout after 10s for {}", url.as_str()))??;
-    log::info!("[TIMING] Navigation (goto): {:?}", nav_start.elapsed());
+    // For file:// URLs with --disable-web-security, we still need to wait
+    // for the page to fully load before executing JavaScript.
+    // A simple sleep is reliable here since the page is local.
+    std::thread::sleep(Duration::from_secs(2));
 
-    log::info!("Navigation completed, checking page ready state");
-
-    // Poll for document.readyState === 'complete'
-    let ready_start = Instant::now();
-    let ready_check = async {
-        for _ in 0..50 {
-            // Try up to 50 times (5 seconds with 100ms delay)
-            let result = page.evaluate("document.readyState").await?;
-            if let Some(state) = result.value().and_then(|v| v.as_str()) {
-                if state == "complete" {
-                    // Wait a bit more for layout to settle
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    return Ok(());
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        Err(anyhow::anyhow!("Page never reached readyState=complete"))
-    };
-
-    timeout(Duration::from_secs(10), ready_check)
-        .await
-        .map_err(|_| anyhow::anyhow!("Page ready timeout after 10s for {}", url.as_str()))??;
-    log::info!("[TIMING] Page ready wait: {:?}", ready_start.elapsed());
-
-    log::info!("Page fully loaded for: {}", url.as_str());
     Ok(())
 }
