@@ -73,10 +73,35 @@ pub fn navigate_and_prepare_tab(tab: &Tab, path: &Path) -> Result<()> {
     let url = to_file_url(path)?;
     tab.navigate_to(url.as_str())?;
 
-    // For file:// URLs with --disable-web-security, we still need to wait
-    // for the page to fully load before executing JavaScript.
-    // A simple sleep is reliable here since the page is local.
-    std::thread::sleep(Duration::from_secs(2));
+    // For file:// URLs, wait_until_navigated() doesn't work reliably
+    // Instead, poll for document.readyState directly
+    let timeout_ms: u128 = 10_000;
+    let start = std::time::Instant::now();
+    let mut last_error: Option<String> = None;
 
-    Ok(())
+    loop {
+        if start.elapsed().as_millis() > timeout_ms {
+            let err_msg = last_error.unwrap_or_else(|| "Unknown error".to_owned());
+            return Err(anyhow::anyhow!(
+                "Timeout waiting for document ready after {}ms. Last error: {}",
+                timeout_ms,
+                err_msg
+            ));
+        }
+
+        match tab.evaluate("document.readyState === 'complete'", false) {
+            Ok(eval_result) => {
+                if let Some(value) = eval_result.value {
+                    if value.as_bool() == Some(true) {
+                        return Ok(());
+                    }
+                }
+            }
+            Err(e) => {
+                last_error = Some(format!("{e:?}"));
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
