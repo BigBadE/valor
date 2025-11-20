@@ -714,7 +714,7 @@ async fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
 /// # Errors
 ///
 /// Returns an error if test setup fails or any graphics comparisons fail.
-pub async fn chromium_graphics_smoke_compare_png() -> Result<()> {
+pub fn chromium_graphics_smoke_compare_png() -> Result<()> {
     init_test_logger();
     let (out_dir, failing_dir) = setup_test_dirs()?;
     let fixtures = get_filtered_fixtures("GRAPHICS")?;
@@ -725,25 +725,32 @@ pub async fn chromium_graphics_smoke_compare_png() -> Result<()> {
         return Ok(());
     }
 
-    let mut browser: Option<Browser> = None;
-    let mut tab: Option<Arc<Tab>> = None;
-    let mut any_failed = false;
-    let mut ran = 0;
-    let mut timings = Timings::new();
+    // Single runtime for all operations - do everything in ONE block_on
+    let runtime = tokio::runtime::Runtime::new()?;
 
-    for fixture in fixtures {
-        if process_single_fixture(&mut FixtureContext {
-            fixture: &fixture,
-            out_dir: &out_dir,
-            failing_dir: &failing_dir,
-            browser: &mut browser,
-            tab: &mut tab,
-            timings: &mut timings,
-        }).await? {
-            any_failed = true;
+    let (ran, any_failed, timings) = runtime.block_on(async {
+        let mut browser: Option<Browser> = None;
+        let mut tab: Option<Arc<Tab>> = None;
+        let mut any_failed = false;
+        let mut ran = 0;
+        let mut timings = Timings::new();
+
+        for fixture in fixtures {
+            if process_single_fixture(&mut FixtureContext {
+                fixture: &fixture,
+                out_dir: &out_dir,
+                failing_dir: &failing_dir,
+                browser: &mut browser,
+                tab: &mut tab,
+                timings: &mut timings,
+            }).await? {
+                any_failed = true;
+            }
+            ran += 1;
         }
-        ran += 1;
-    }
+
+        Ok::<_, anyhow::Error>((ran, any_failed, timings))
+    })?;
 
     info!(
         "[GRAPHICS][TIMING][TOTALS] cache_io={:?} chrome_capture={:?} build_dl={:?} batch_dbg={:?} raster={:?} png_decode={:?} equal_check={:?} masked_diff={:?} fail_write={:?}",
