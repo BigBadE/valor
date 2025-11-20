@@ -467,6 +467,16 @@ async fn process_layout_fixture(
     result
 }
 
+/// Synchronous wrapper that runs tests on the global runtime.
+/// This allows regular #[test] functions to share a single runtime and browser.
+///
+/// # Errors
+///
+/// Returns an error if the test fails or times out.
+pub fn run_single_layout_test_sync(input_path: &Path) -> Result<()> {
+    GLOBAL_RUNTIME.block_on(run_single_layout_test(input_path))
+}
+
 /// Runs a single layout test for a given fixture path with a 15-second timeout.
 ///
 /// # Errors
