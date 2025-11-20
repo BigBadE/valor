@@ -60,7 +60,7 @@ async fn get_or_create_shared_browser() -> Result<Arc<chromiumoxide::Browser>> {
     use chromiumoxide::browser::{Browser, BrowserConfig};
 
     let chrome_path = std::path::PathBuf::from(
-        "/root/.local/share/headless-chrome/linux-1217362/chrome",
+        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
     );
     let config = BrowserConfig::builder()
         .chrome_executable(chrome_path)
@@ -88,25 +88,30 @@ async fn get_or_create_shared_browser() -> Result<Arc<chromiumoxide::Browser>> {
     // This matches the pattern from working chromiumoxide examples
     tokio::task::spawn(async move {
         eprintln!("[HANDLER] Chrome event handler started");
-        let mut event_count = 0;
+        let mut total_count = 0;
+        let mut success_count = 0;
         let mut error_count = 0;
 
         // Use a loop like chromiumoxide examples to keep handler alive
         loop {
             match handler.next().await {
                 Some(Ok(_)) => {
-                    event_count += 1;
-                    if event_count <= 10 || event_count % 50 == 0 {
-                        eprintln!("[HANDLER] Event #{}: OK", event_count);
+                    total_count += 1;
+                    success_count += 1;
+                    if success_count <= 20 || success_count % 50 == 0 {
+                        eprintln!("[HANDLER] Event {}/{}: SUCCESS", total_count, success_count);
                     }
                 }
                 Some(Err(e)) => {
+                    total_count += 1;
                     error_count += 1;
-                    eprintln!("[HANDLER] Event #{}: ERROR - {:?}", event_count, e);
+                    // Log all errors to see the pattern
+                    eprintln!("[HANDLER] Event {}: ERROR - {:?}", total_count, e);
                     // Don't break on errors - keep handler alive
                 }
                 None => {
-                    eprintln!("[HANDLER] Stream ended after {} events, {} errors", event_count, error_count);
+                    eprintln!("[HANDLER] Stream ended - {} total events, {} success, {} errors",
+                             total_count, success_count, error_count);
                     break;
                 }
             }
