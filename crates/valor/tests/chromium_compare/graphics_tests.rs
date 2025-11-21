@@ -18,7 +18,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 use zstd::bulk::{compress as zstd_compress, decompress as zstd_decompress};
 
-use super::browser::{TestType, navigate_and_prepare_tab, setup_chrome_browser};
+use super::browser::navigate_and_prepare_tab;
 use super::common::{
     artifacts_subdir, get_filtered_fixtures, init_test_logger, setup_page_for_fixture,
     write_png_rgba_if_changed,
@@ -442,7 +442,7 @@ type BrowserWithTab = (Browser, Arc<Tab>);
 ///
 /// Returns an error if browser launch or tab creation fails.
 fn init_browser() -> Result<BrowserWithTab> {
-    let chrome_browser = setup_chrome_browser(TestType::Graphics)?;
+    let chrome_browser = Browser::default()?;
     let chrome_tab = chrome_browser.new_tab()?;
     Ok((chrome_browser, chrome_tab))
 }

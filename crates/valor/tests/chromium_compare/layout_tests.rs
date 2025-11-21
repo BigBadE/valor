@@ -9,7 +9,7 @@ use anyhow::{Result, anyhow};
 use chromiumoxide::page::Page;
 use css::style_types::{AlignItems, BoxSizing, ComputedStyle, Display, Overflow};
 use css_core::{LayoutNodeKind, LayoutRect, Layouter};
-use futures::stream::{self, StreamExt};
+use futures::stream;
 use js::DOMSubscriber as _;
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
 use js::NodeKey;
@@ -82,7 +82,7 @@ async fn setup_layouter_for_fixture(
     input_path: &Path,
 ) -> Result<LayouterWithStyles> {
     let url = to_file_url(input_path)?;
-    let mut page = create_page(runtime, url).await?;
+    let mut page = create_page(runtime.handle(), url).await?;
     page.eval_js(css_reset_injection_script())?;
     let mut layouter_mirror = page.create_mirror(Layouter::new());
 

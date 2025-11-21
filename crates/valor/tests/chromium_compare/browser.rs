@@ -95,3 +95,24 @@ pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
     log::info!("Navigation completed for: {}", url.as_str());
     Ok(())
 }
+
+/// Navigates a headless_chrome Tab to a fixture and prepares it for testing.
+///
+/// # Errors
+///
+/// Returns an error if navigation fails.
+pub fn navigate_and_prepare_tab(tab: &headless_chrome::Tab, path: &Path) -> Result<()> {
+    use std::time::Duration;
+
+    let url = to_file_url(path)?;
+    log::info!("Navigating tab to: {}", url.as_str());
+
+    tab.navigate_to(url.as_str())?;
+    tab.wait_until_navigated()?;
+
+    // Small delay to ensure page is ready
+    std::thread::sleep(Duration::from_millis(100));
+
+    log::info!("Tab navigation completed for: {}", url.as_str());
+    Ok(())
+}
