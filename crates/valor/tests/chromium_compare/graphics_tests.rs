@@ -249,13 +249,13 @@ fn capture_chrome_png(tab: &Tab, path: &Path) -> Result<Vec<u8>> {
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or display list generation fails.
-async fn build_valor_display_list_for(
+fn build_valor_display_list_for(
+    runtime: &tokio::runtime::Runtime,
     path: &Path,
     viewport_w: u32,
     viewport_h: u32,
 ) -> Result<DisplayList> {
-    let handle = tokio::runtime::Handle::current();
-    let mut page = setup_page_for_fixture(&handle, path).await?;
+    let mut page = runtime.block_on(setup_page_for_fixture(runtime.handle(), path))?;
     let display_list = page.display_list_retained_snapshot()?;
     let clear_color = page.background_rgba();
     let mut items = Vec::with_capacity(display_list.items.len() + 1);
@@ -637,7 +637,7 @@ struct FixtureContext<'ctx> {
 /// # Errors
 ///
 /// Returns an error if fixture processing, rendering, or comparison fails.
-async fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
+fn process_single_fixture(runtime: &tokio::runtime::Runtime, ctx: &mut FixtureContext<'_>) -> Result<bool> {
     let name = safe_stem(ctx.fixture);
     let canon = ctx
         .fixture
@@ -668,7 +668,7 @@ async fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
 
     let (width, height) = (784u32, 453u32);
     let t_build = Instant::now();
-    let display_list = build_valor_display_list_for(ctx.fixture, width, height).await?;
+    let display_list = build_valor_display_list_for(runtime, ctx.fixture, width, height)?;
     ctx.timings.build_dl += t_build.elapsed();
     debug!(
         "[GRAPHICS][DEBUG] {}: DL items={} (first 5: {:?})",
@@ -725,32 +725,27 @@ pub fn chromium_graphics_smoke_compare_png() -> Result<()> {
         return Ok(());
     }
 
-    // Single runtime for all operations - do everything in ONE block_on
+    // Create runtime in sync code - headless_chrome should NOT run in async context
     let runtime = tokio::runtime::Runtime::new()?;
+    let mut browser: Option<Browser> = None;
+    let mut tab: Option<Arc<Tab>> = None;
+    let mut any_failed = false;
+    let mut ran = 0;
+    let mut timings = Timings::new();
 
-    let (ran, any_failed, timings) = runtime.block_on(async {
-        let mut browser: Option<Browser> = None;
-        let mut tab: Option<Arc<Tab>> = None;
-        let mut any_failed = false;
-        let mut ran = 0;
-        let mut timings = Timings::new();
-
-        for fixture in fixtures {
-            if process_single_fixture(&mut FixtureContext {
-                fixture: &fixture,
-                out_dir: &out_dir,
-                failing_dir: &failing_dir,
-                browser: &mut browser,
-                tab: &mut tab,
-                timings: &mut timings,
-            }).await? {
-                any_failed = true;
-            }
-            ran += 1;
+    for fixture in fixtures {
+        if process_single_fixture(&runtime, &mut FixtureContext {
+            fixture: &fixture,
+            out_dir: &out_dir,
+            failing_dir: &failing_dir,
+            browser: &mut browser,
+            tab: &mut tab,
+            timings: &mut timings,
+        })? {
+            any_failed = true;
         }
-
-        Ok::<_, anyhow::Error>((ran, any_failed, timings))
-    })?;
+        ran += 1;
+    }
 
     info!(
         "[GRAPHICS][TIMING][TOTALS] cache_io={:?} chrome_capture={:?} build_dl={:?} batch_dbg={:?} raster={:?} png_decode={:?} equal_check={:?} masked_diff={:?} fail_write={:?}",

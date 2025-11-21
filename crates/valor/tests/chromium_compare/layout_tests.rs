@@ -99,22 +99,22 @@ fn apply_element_attrs(layouter: &mut Layouter, node: NodeKey, attrs: &HashMap<S
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or layout computation fails.
-async fn setup_layouter_for_fixture(handle: &Handle, input_path: &Path) -> Result<LayouterWithStyles> {
+fn setup_layouter_for_fixture(runtime: &tokio::runtime::Runtime, input_path: &Path) -> Result<LayouterWithStyles> {
     let url = to_file_url(input_path)?;
-    let mut page = create_page(handle, url).await?;
+    let mut page = runtime.block_on(create_page(runtime.handle(), url))?;
     page.eval_js(css_reset_injection_script())?;
     let mut layouter_mirror = page.create_mirror(Layouter::new());
 
-    let finished = update_until_finished(&mut page, |_page| {
+    let finished = runtime.block_on(update_until_finished(&mut page, |_page| {
         layouter_mirror.try_update_sync()?;
         Ok(())
-    }).await?;
+    }))?;
 
     if !finished {
         return Err(anyhow!("Parsing did not finish"));
     }
 
-    page.update().await?;
+    runtime.block_on(page.update())?;
     layouter_mirror.try_update_sync()?;
 
     let (tags_by_key, element_children) = page.layout_structure_snapshot();
@@ -196,24 +196,21 @@ pub fn run_single_layout_test_sync(input_path: &Path) -> Result<()> {
     );
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
-    // Single runtime for all operations - do everything in ONE block_on
+    // Create runtime and browser in sync code
+    let browser = get_or_create_shared_browser()?;
+    let tab = browser.new_tab()?;
+    let tab = Arc::new(tab);
     let runtime = tokio::runtime::Runtime::new()?;
+    let mut failed = Vec::new();
 
-    runtime.block_on(async {
-        let browser = get_or_create_shared_browser()?;
-        let tab = browser.new_tab()?;
-        let tab = Arc::new(tab);
-        let handle = tokio::runtime::Handle::current();
+    process_layout_fixture(input_path, &runtime, &tab, harness_src, &mut failed)?;
 
-        let (_, failed) = process_layout_fixture_sync(input_path, &handle, &tab, harness_src).await?;
-
-        if failed.is_empty() {
-            Ok(())
-        } else {
-            let (name, msg) = &failed[0];
-            Err(anyhow!("{name}: {msg}"))
-        }
-    })
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        let (name, msg) = &failed[0];
+        Err(anyhow!("{name}: {msg}"))
+    }
 }
 
 /// Tests layout computation by comparing Valor layout with Chromium layout.
@@ -233,34 +230,23 @@ pub fn run_chromium_layouts() -> Result<()> {
 
     let overall_start = Instant::now();
 
-    // Single runtime for all operations - do everything in ONE block_on
+    // Create browser and runtime in sync code - headless_chrome should NOT run in async context
+    let browser = get_or_create_shared_browser()?;
+    let tab = browser.new_tab()?;
+    let tab = Arc::new(tab);
     let runtime = tokio::runtime::Runtime::new()?;
 
-    let (ran, failed) = runtime.block_on(async {
-        // Create browser inside async context
-        let browser = get_or_create_shared_browser()?;
-        let tab = browser.new_tab()?;
-        let tab = Arc::new(tab);
+    let mut failed: Vec<(String, String)> = Vec::new();
+    let fixtures = get_filtered_fixtures("LAYOUT")?;
+    let mut ran = 0;
 
-        let handle = tokio::runtime::Handle::current();
-        let mut failed: Vec<(String, String)> = Vec::new();
-        let fixtures = get_filtered_fixtures("LAYOUT")?;
-        let mut ran = 0;
+    info!("[LAYOUT] Running {} fixtures sequentially", fixtures.len());
 
-        info!("[LAYOUT] Running {} fixtures sequentially", fixtures.len());
-
-        for input_path in fixtures {
-            let (success, mut local_failed) =
-                process_layout_fixture_sync(&input_path, &handle, &tab, harness_src).await?;
-
-            if success {
-                ran += 1;
-            }
-            failed.append(&mut local_failed);
+    for input_path in fixtures {
+        if process_layout_fixture(&input_path, &runtime, &tab, harness_src, &mut failed)? {
+            ran += 1;
         }
-
-        Ok::<_, anyhow::Error>((ran, failed))
-    })?;
+    }
 
     let overall_elapsed = overall_start.elapsed();
     info!("[TIMING] Total wall time: {:?}", overall_elapsed);
@@ -280,28 +266,28 @@ pub fn run_chromium_layouts() -> Result<()> {
     }
 }
 
-/// Process a single layout fixture - synchronous version that doesn't use spawn_blocking
+/// Process a single layout fixture
 ///
 /// # Errors
 ///
 /// Returns an error if fixture processing fails.
-async fn process_layout_fixture_sync(
+fn process_layout_fixture(
     input_path: &Path,
-    handle: &Handle,
+    runtime: &tokio::runtime::Runtime,
     tab: &Arc<Tab>,
     harness_src: &str,
-) -> Result<(bool, Vec<(String, String)>)> {
-    let mut failed = Vec::new();
+    failed: &mut Vec<(String, String)>,
+) -> Result<bool> {
     let display_name = input_path.display().to_string();
 
     let (mut layouter, computed_for_serialization) =
-        match setup_layouter_for_fixture(handle, input_path).await {
+        match setup_layouter_for_fixture(runtime, input_path) {
             Ok(result) => result,
             Err(err) => {
                 let msg = format!("Setup failed: {err}");
                 error!("[LAYOUT] {display_name} ... FAILED: {msg}");
                 failed.push((display_name.clone(), msg));
-                return Ok((false, failed));
+                return Ok(false);
             }
         };
 
@@ -312,7 +298,7 @@ async fn process_layout_fixture_sync(
     {
         cached_value
     } else {
-        // Call Chrome directly (NOT in spawn_blocking) - headless_chrome needs its threads to work
+        // Call Chrome directly in sync code - headless_chrome is synchronous
         let chromium_value = chromium_layout_json_in_tab(tab, input_path)?;
         write_cached_json_for_fixture(input_path, harness_src, &chromium_value)?;
         chromium_value
@@ -320,7 +306,7 @@ async fn process_layout_fixture_sync(
 
     write_named_json_for_fixture(input_path, harness_src, "chromium", &ch_json)?;
     write_named_json_for_fixture(input_path, harness_src, "valor", &our_json)?;
-    check_js_assertions(&ch_json, &display_name, &mut failed);
+    check_js_assertions(&ch_json, &display_name, failed);
 
     let ch_layout_json = if ch_json.get("layout").is_some() || ch_json.get("asserts").is_some() {
         ch_json.get("layout").cloned().unwrap_or_else(|| json!({}))
@@ -332,11 +318,11 @@ async fn process_layout_fixture_sync(
     match compare_json_with_epsilon(&our_json, &ch_layout_json, eps) {
         Ok(()) => {
             info!("[LAYOUT] {display_name} ... ok");
-            Ok((true, failed))
+            Ok(true)
         }
         Err(msg) => {
             failed.push((display_name.clone(), msg));
-            Ok((false, failed))
+            Ok(false)
         }
     }
 }
