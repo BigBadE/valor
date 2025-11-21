@@ -10,7 +10,6 @@ use anyhow::{Result, anyhow};
 use chromiumoxide::page::Page;
 use css::style_types::{AlignItems, BoxSizing, ComputedStyle, Display, Overflow};
 use css_core::{LayoutNodeKind, LayoutRect, Layouter};
-use futures::stream;
 use js::DOMSubscriber as _;
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
 use js::NodeKey;
@@ -582,86 +581,91 @@ pub fn run_chromium_layouts() -> Result<()> {
             .build()
             .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
-        let (browser, mut handler) = Browser::launch(config).await?;
-        let browser = Arc::new(browser); // Wrap in Arc for sharing across tasks
-
-        // Spawn handler task using tokio::spawn
-        let _handler_task = tokio::spawn(async move {
-            while let Some(_event) = handler.next().await {
-                // Silently consume events
-            }
-        });
-
         let fixtures = get_filtered_fixtures("LAYOUT")?;
         let fixture_count = fixtures.len();
 
-        // Use concurrency based on CPU count - reusing pages with goto() is much faster
-        // than creating fresh pages per fixture
-        let concurrency = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
+        // Browser restart strategy: Restart every N fixtures to prevent resource exhaustion
+        // Testing shows this prevents catastrophic failure cascades
+        const RESTART_INTERVAL: usize = 30;
         info!(
-            "[LAYOUT] Running {} fixtures with concurrency {}",
-            fixture_count, concurrency
+            "[LAYOUT] Running {} fixtures with browser restart every {} fixtures",
+            fixture_count, RESTART_INTERVAL
         );
-
-        // Create a pool of reusable pages upfront
-        let mut pages = Vec::new();
-        for _ in 0..concurrency {
-            let page = browser.new_page("about:blank").await?;
-            pages.push(page);
-        }
-        let pages = Arc::new(tokio::sync::Mutex::new(pages));
 
         let mut failed_vec: Vec<(String, String)> = Vec::new();
         let mut timing_vec: Vec<(String, FixtureTiming)> = Vec::new();
         let mut ran = 0;
 
-        // Process fixtures concurrently using buffer_unordered
-        let mut fixture_stream = stream::iter(fixtures.into_iter().map(|input_path| {
-            let browser = Arc::clone(&browser);
-            let pages = Arc::clone(&pages);
-            let harness_src_owned = harness_src.to_string();
+        let mut browser_opt: Option<(Arc<Browser>, tokio::task::JoinHandle<()>)> = None;
 
-            async move {
-                let display_name = input_path.display().to_string();
-                let mut timing = FixtureTiming::default();
-                let mut local_failed: Vec<(String, String)> = Vec::new();
+        for (i, input_path) in fixtures.into_iter().enumerate() {
+            // Launch or restart browser as needed
+            if i % RESTART_INTERVAL == 0 {
+                // Drop old browser if it exists
+                if let Some((old_browser, old_handler)) = browser_opt.take() {
+                    info!(
+                        "[LAYOUT] Restarting browser after {} fixtures (processed {}/{})",
+                        RESTART_INTERVAL,
+                        i,
+                        fixture_count
+                    );
+                    drop(old_browser);
+                    old_handler.abort();
+                    // Give Chrome time to fully shutdown
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
 
-                // Borrow a page from the pool
-                let page = {
-                    let mut pool = pages.lock().await;
-                    pool.pop()
-                };
+                // Launch fresh browser
+                info!(
+                    "[LAYOUT] Launching browser for fixtures {}-{}",
+                    i,
+                    (i + RESTART_INTERVAL).min(fixture_count) - 1
+                );
+                let (browser, mut handler) = Browser::launch(config.clone()).await?;
+                let browser = Arc::new(browser);
 
-                let result = if let Some(page) = page {
-                    log::info!("Processing fixture with reused page: {}", display_name);
-                    let res = process_layout_fixture_parallel_with_page(
-                        &input_path,
-                        &browser,
-                        &page,
-                        &harness_src_owned,
-                        &mut local_failed,
-                        &mut timing,
-                    )
-                    .await;
+                // Spawn handler task
+                let handler_task = tokio::spawn(async move {
+                    while let Some(_event) = handler.next().await {
+                        // Silently consume events
+                    }
+                });
 
-                    // Return page to pool
-                    let mut pool = pages.lock().await;
-                    pool.push(page);
-
-                    res
-                } else {
-                    Err(anyhow!("Failed to acquire page from pool"))
-                };
-
-                (display_name, timing, local_failed, result)
+                browser_opt = Some((browser, handler_task));
             }
-        }))
-        .buffer_unordered(concurrency);
 
-        // Collect results as they complete
-        while let Some((display_name, timing, local_failed, result)) = fixture_stream.next().await {
+            let browser = browser_opt.as_ref().unwrap().0.clone();
+
+            let display_name = input_path.display().to_string();
+            let mut timing = FixtureTiming::default();
+            let mut local_failed: Vec<(String, String)> = Vec::new();
+
+            // Create a fresh page for each fixture
+            let page = match browser.new_page("about:blank").await {
+                Ok(p) => p,
+                Err(e) => {
+                    error!(
+                        "[LAYOUT] {} ... ERROR: Failed to create page: {}",
+                        display_name, e
+                    );
+                    continue;
+                }
+            };
+
+            let result = process_layout_fixture_parallel_with_page(
+                &input_path,
+                &browser,
+                &page,
+                harness_src,
+                &mut local_failed,
+                &mut timing,
+            )
+            .await;
+
+            // Close the page
+            let _ = page.close().await;
+
+            // Record results
             timing_vec.push((display_name.clone(), timing));
             failed_vec.extend(local_failed);
 
@@ -674,8 +678,12 @@ pub fn run_chromium_layouts() -> Result<()> {
             }
         }
 
-        // Drop the stream to release Arc references
-        drop(fixture_stream);
+        // Clean up final browser
+        if let Some((browser, handler)) = browser_opt.take() {
+            info!("[LAYOUT] Shutting down final browser instance");
+            drop(browser);
+            handler.abort();
+        }
 
         Ok::<_, anyhow::Error>((ran, failed_vec, timing_vec))
     })?;
