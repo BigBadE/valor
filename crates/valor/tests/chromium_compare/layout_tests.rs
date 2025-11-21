@@ -624,11 +624,20 @@ pub fn run_chromium_layouts() -> Result<()> {
                 let (browser, mut handler) = Browser::launch(config.clone()).await?;
                 let browser = Arc::new(browser);
 
-                // Spawn handler task
+                // Spawn handler task with logging
                 let handler_task = tokio::spawn(async move {
-                    while let Some(_event) = handler.next().await {
-                        // Silently consume events
+                    let mut event_count = 0;
+                    while let Some(event) = handler.next().await {
+                        event_count += 1;
+                        if event_count % 100 == 0 {
+                            log::warn!("[HANDLER] Processed {} events", event_count);
+                        }
+                        // Check for specific error events that might indicate issues
+                        if let Err(e) = &event {
+                            log::error!("[HANDLER] Event error: {:?}", e);
+                        }
                     }
+                    log::warn!("[HANDLER] Handler exited after {} events", event_count);
                 });
 
                 browser_opt = Some((browser, handler_task));
@@ -673,7 +682,9 @@ pub fn run_chromium_layouts() -> Result<()> {
                 Ok(true) => ran += 1,
                 Ok(false) => {} // Already added to failed_vec
                 Err(e) => {
-                    error!("[LAYOUT] {} ... ERROR: {}", display_name, e);
+                    let msg = format!("ERROR: {}", e);
+                    error!("[LAYOUT] {} ... {}", display_name, msg);
+                    failed_vec.push((display_name.clone(), msg));
                 }
             }
         }
@@ -1028,28 +1039,41 @@ fn chromium_layout_extraction_script() -> &'static str {
 ///
 /// Returns an error if navigation, script evaluation, or JSON parsing fails.
 async fn chromium_layout_json_in_page(page: &Page, path: &Path) -> Result<JsonValue> {
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{Duration, timeout, Instant};
 
-    log::info!(
-        "Starting chromium layout extraction for: {}",
+    log::warn!(
+        "[EXTRACT] Starting chromium layout extraction for: {}",
         path.display()
     );
+    let nav_start = Instant::now();
     navigate_and_prepare_page(page, path).await?;
+    log::warn!("[EXTRACT] Navigation took {:?} for: {}", nav_start.elapsed(), path.display());
 
-    log::info!("Evaluating extraction script for: {}", path.display());
+    log::warn!("[EXTRACT] Evaluating extraction script for: {}", path.display());
     let script = chromium_layout_extraction_script();
+    let eval_start = Instant::now();
 
     // Add 10 second timeout to script evaluation
-    let result = timeout(Duration::from_secs(10), page.evaluate(script))
-        .await
-        .map_err(|_| anyhow!("Script evaluation timeout after 10s for {}", path.display()))??;
-
-    log::info!("Script evaluation completed for: {}", path.display());
+    let result = match timeout(Duration::from_secs(10), page.evaluate(script)).await {
+        Ok(Ok(r)) => {
+            log::warn!("[EXTRACT] Script evaluation completed in {:?} for: {}", eval_start.elapsed(), path.display());
+            r
+        }
+        Ok(Err(e)) => {
+            log::error!("[EXTRACT] Script evaluation failed after {:?} for {}: {}", eval_start.elapsed(), path.display(), e);
+            return Err(anyhow!("Script evaluation failed for {}: {}", path.display(), e));
+        }
+        Err(_) => {
+            log::error!("[EXTRACT] Script evaluation timeout after 10s for {}", path.display());
+            return Err(anyhow!("Script evaluation timeout after 10s for {}", path.display()));
+        }
+    };
 
     let json_string = result
         .value()
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Chromium returned non-string JSON for layout"))?;
     let parsed: JsonValue = from_str(json_string)?;
+    log::warn!("[EXTRACT] JSON parsing completed for: {}", path.display());
     Ok(parsed)
 }

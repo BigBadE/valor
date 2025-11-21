@@ -82,18 +82,27 @@ pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser>
 ///
 /// Returns an error if navigation fails.
 pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{Duration, timeout, Instant};
 
     let url = to_file_url(path)?;
-    log::info!("Navigating to: {}", url.as_str());
+    log::warn!("[NAV] Starting navigation to: {}", url.as_str());
+    let start = Instant::now();
 
     // Add 10 second timeout to navigation
-    timeout(Duration::from_secs(10), page.goto(url.as_str()))
-        .await
-        .map_err(|_| anyhow::anyhow!("Navigation timeout after 10s for {}", url.as_str()))??;
-
-    log::info!("Navigation completed for: {}", url.as_str());
-    Ok(())
+    match timeout(Duration::from_secs(10), page.goto(url.as_str())).await {
+        Ok(Ok(_)) => {
+            log::warn!("[NAV] Navigation completed in {:?} for: {}", start.elapsed(), url.as_str());
+            Ok(())
+        }
+        Ok(Err(e)) => {
+            log::error!("[NAV] Navigation failed after {:?} for {}: {}", start.elapsed(), url.as_str(), e);
+            Err(anyhow::anyhow!("Navigation failed for {}: {}", url.as_str(), e))
+        }
+        Err(_) => {
+            log::error!("[NAV] Navigation timeout after 10s for {}", url.as_str());
+            Err(anyhow::anyhow!("Navigation timeout after 10s for {}", url.as_str()))
+        }
+    }
 }
 
 /// Navigates a headless_chrome Tab to a fixture and prepares it for testing.
