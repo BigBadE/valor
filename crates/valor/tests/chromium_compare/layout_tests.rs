@@ -624,20 +624,28 @@ pub fn run_chromium_layouts() -> Result<()> {
                 let (browser, mut handler) = Browser::launch(config.clone()).await?;
                 let browser = Arc::new(browser);
 
-                // Spawn handler task with logging
+                // Spawn handler task - CRITICAL: must poll handler or CDP commands timeout
                 let handler_task = tokio::spawn(async move {
+                    use futures::StreamExt;
+
+                    log::error!("[HANDLER] Handler task started - polling chromiumoxide CDP events");
                     let mut event_count = 0;
-                    while let Some(event) = handler.next().await {
+
+                    // Simple loop matching chromiumoxide examples - process events as fast as possible
+                    while let Some(event_result) = handler.next().await {
                         event_count += 1;
-                        if event_count % 100 == 0 {
-                            log::warn!("[HANDLER] Processed {} events", event_count);
-                        }
-                        // Check for specific error events that might indicate issues
-                        if let Err(e) = &event {
-                            log::error!("[HANDLER] Event error: {:?}", e);
+                        match event_result {
+                            Ok(_) => {
+                                if event_count <= 10 || event_count % 50 == 0 {
+                                    log::error!("[HANDLER] Event #{}: Ok", event_count);
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("[HANDLER] Event #{} error: {:?}", event_count, e);
+                            }
                         }
                     }
-                    log::warn!("[HANDLER] Handler exited after {} events", event_count);
+                    log::error!("[HANDLER] Stream ended after {} events", event_count);
                 });
 
                 browser_opt = Some((browser, handler_task));

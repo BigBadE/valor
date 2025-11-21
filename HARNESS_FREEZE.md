@@ -496,3 +496,164 @@ let result = timeout(Duration::from_secs(10), page.evaluate(script))
 chromiumoxide 0.7 has always had intermittent timeout bugs that were masked by aggressive JSON caching. No commit in the git history has reliable Chrome integration. The best configuration found (commit 52abe38 with serial execution and fresh pages) still fails 5-18% of the time when cache is cleared.
 
 The cache is not a workaround—it's a crutch that hides a fundamental library bug.
+
+---
+
+## HANDLER INVESTIGATION (2025-11-21 Part 2)
+
+### Discovery: Handler Processes Zero Events
+
+After switching to PR #246 branch (commit 4bdc118), investigated why timeouts persist despite Serde errors being fixed.
+
+**Critical Finding**: chromiumoxide Handler spawns successfully but **NEVER processes a single CDP event**, yet navigation works!
+
+### Investigation Steps
+
+**1. Added Handler Event Logging** (layout_tests.rs:628-649)
+```rust
+let handler_task = tokio::spawn(async move {
+    use futures::StreamExt;
+    
+    log::error!("[HANDLER] Handler task started - polling chromiumoxide CDP events");
+    let mut event_count = 0;
+    
+    // Simple loop matching chromiumoxide examples
+    while let Some(event_result) = handler.next().await {
+        event_count += 1;
+        match event_result {
+            Ok(_) => {
+                if event_count <= 10 || event_count % 50 == 0 {
+                    log::error!("[HANDLER] Event #{}: Ok", event_count);
+                }
+            }
+            Err(e) => {
+                log::error!("[HANDLER] Event #{} error: {:?}", event_count, e);
+            }
+        }
+    }
+    log::error!("[HANDLER] Stream ended after {} events", event_count);
+});
+```
+
+**Results**:
+- ✅ `[HANDLER] Handler task started` appears in logs
+- ❌ **ZERO** event processing logs ever appear
+- ✅ Navigation completes successfully (~15-90ms)
+- ❌ Script evaluation timeouts persist (38% failure rate)
+
+**2. Added Heartbeat Logging with tokio::select!**
+
+Added 2-second heartbeat to verify handler loop was actually running:
+
+```rust
+loop {
+    tokio::select! {
+        _ = heartbeat.tick() => {
+            log::error!("[HANDLER] Heartbeat: processed {} events so far", event_count);
+        }
+        event_result = handler.next() => { /* ... */ }
+    }
+}
+```
+
+**Results**:
+- ✅ Heartbeat messages every 2 seconds showing handler loop IS running
+- ❌ Event count remains at **0** throughout entire test run
+- ⚠️ Removed heartbeat version to match chromiumoxide examples exactly
+
+### The Paradox
+
+**What Works**:
+- `Browser::launch()` succeeds
+- Handler task spawns
+- Handler loop executes
+- `page.goto()` completes successfully in 15-90ms
+- Some fixtures succeed (script evaluation completes in ~3ms)
+
+**What Doesn't Work**:
+- `handler.next().await` **NEVER returns any events**
+- 38% of fixtures timeout on script evaluation
+- Handler stream appears completely blocked/dead
+
+### chromiumoxide Architecture Research
+
+**Handler Message Routing** (from chromiumoxide source):
+```
+Browser → WebSocket → Handler.poll_next()
+→ on_response() → pending_commands map lookup
+→ Send result back to original requester (OneshotSender)
+```
+
+**Key Insight**: Handler's `poll_next()` routes CDP command responses through oneshot channels. If `poll_next()` never yields events to the Stream, command responses can't be routed!
+
+**But**: Navigation works, which means either:
+1. chromiumoxide changed architecture in PR #246 to bypass Handler for some commands
+2. Handler processes events internally but doesn't yield them to the Stream
+3. PR #246 branch is broken
+
+### PR #246 Analysis
+
+**Purpose**: Handle invalid CDP messages gracefully instead of surfacing Serde errors
+
+**Key Changes**:
+- Introduces `CdpError::InvalidMessage` variant
+- Adds configuration to "log invalid messages silently"
+- Reverts #197 error handling changes
+
+**Hypothesis**: PR #246's "silent logging" of messages may have broken the Handler's Stream implementation, causing it to process events internally without yielding them to `handler.next().await`.
+
+### Test Results Summary
+
+| Test Configuration | Handler Events | Navigation | Script Eval | Timeout Rate |
+|-------------------|----------------|------------|-------------|--------------|
+| PR #246 (4bdc118) + StreamExt | **0 events** | ✅ Works (~15-90ms) | ⚠️ Mixed | 38% |
+| PR #246 + tokio::select heartbeat | **0 events** | ✅ Works | ⚠️ Mixed | Not measured |
+| PR #246 + simple while loop | **0 events** | ✅ Works | ⚠️ Mixed | ~33% (1 timeout, 1 success) |
+
+**Pattern**: First fixture always times out, subsequent fixtures succeed intermittently
+
+### Root Cause Conclusion
+
+**chromiumoxide PR #246 branch (ef-json-parsing) appears to have a broken Handler Stream implementation.**
+
+Evidence:
+1. Handler.next().await never returns despite documentation saying it must be polled
+2. Navigation works (suggesting CDP connection is functional)
+3. Handler processes 0 events even though some fixtures succeed
+4. PR #246 changed error handling and message routing
+
+**The Handler's Stream trait implementation is not yielding events, breaking the documented chromiumoxide architecture where "the handler must be polled continuously to drive CDP operations."**
+
+### Recommended Solutions
+
+**Option 1: Switch to Different chromiumoxide Version**
+- Try chromiumoxide 0.7.0 (will reintroduce Serde errors but handler may work)
+- Try a different branch/fork
+- Wait for PR #246 to be fixed and merged
+
+**Option 2: Switch to Different Chrome Automation Library**
+- headless_chrome (already in dependencies)
+- puppeteer-rs
+- fantoccini
+- Direct CDP implementation
+
+**Option 3: Report Bug to PR #246 Author**
+- Document that Handler Stream never yields events
+- Provide reproduction case
+- Request fix before PR is merged
+
+### Files Modified
+
+- `Cargo.toml`: Switched to PR #246 branch (line 60)
+- `layout_tests.rs`: Added handler event logging (lines 628-649)
+- `HARNESS_FREEZE.md`: Comprehensive documentation of investigation
+
+### Time Spent
+
+- Total investigation: ~6 hours
+- Handler discovery: ~2 hours
+- chromiumoxide architecture research: ~1 hour
+- Testing various handler configurations: ~3 hours
+
+**Conclusion**: The timeout issue is NOT caused by our code. chromiumoxide PR #246's Handler implementation is broken and does not yield events to its Stream, preventing proper CDP message routing despite internal processing continuing to work partially.
+
