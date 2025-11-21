@@ -34,9 +34,9 @@ js_engine_v8 = { workspace = true, default-features = false }
 image.workspace = true
 
 [dev-dependencies]
+chromiumoxide.workspace = true
 js.workspace = true
 zstd.workspace = true
-chromiumoxide.workspace = true
 futures.workspace = true
 tokio = { workspace = true, features = ["test-util", "macros"] }
 

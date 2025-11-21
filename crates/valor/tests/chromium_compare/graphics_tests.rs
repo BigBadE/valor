@@ -1,15 +1,15 @@
 use anyhow::{Result, anyhow};
-use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
-use chromiumoxide::page::{Page, ScreenshotParams};
+use headless_chrome::{Browser, Tab, protocol::cdp::Page::CaptureScreenshotFormatOption};
 use image::{RgbaImage, load_from_memory};
 use log::{debug, error, info};
 use renderer::{DisplayItem, DisplayList, batch_display_list};
 use std::fs::{create_dir_all, read, read_dir, remove_dir_all, remove_file, write};
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::runtime::Runtime;
 use wgpu_backend::RenderState;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
@@ -18,7 +18,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 use zstd::bulk::{compress as zstd_compress, decompress as zstd_decompress};
 
-use super::browser::{ChromeBrowser, TestType, navigate_and_prepare_page, setup_chrome_browser};
+use super::browser::{TestType, navigate_and_prepare_tab, setup_chrome_browser};
 use super::common::{
     artifacts_subdir, get_filtered_fixtures, init_test_logger, setup_page_for_fixture,
     write_png_rgba_if_changed,
@@ -238,14 +238,10 @@ fn extract_text_masks(display_list: &DisplayList, width: u32, height: u32) -> Ve
 /// # Errors
 ///
 /// Returns an error if navigation or screenshot capture fails.
-async fn capture_chrome_png(page: &Page, path: &Path) -> Result<Vec<u8>> {
-    navigate_and_prepare_page(page, path).await?;
-    let params = ScreenshotParams::builder()
-        .format(CaptureScreenshotFormat::Png)
-        .full_page(true)
-        .build();
-    let screenshot = page.screenshot(params).await?;
-    Ok(screenshot)
+fn capture_chrome_png(tab: &Tab, path: &Path) -> Result<Vec<u8>> {
+    navigate_and_prepare_tab(tab, path)?;
+    let png = tab.capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)?;
+    Ok(png)
 }
 
 /// Builds a Valor display list for a given fixture.
@@ -253,13 +249,13 @@ async fn capture_chrome_png(page: &Page, path: &Path) -> Result<Vec<u8>> {
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or display list generation fails.
-async fn build_valor_display_list_for(
-    handle: &tokio::runtime::Handle,
+fn build_valor_display_list_for(
+    runtime: &tokio::runtime::Runtime,
     path: &Path,
     viewport_w: u32,
     viewport_h: u32,
 ) -> Result<DisplayList> {
-    let mut page = setup_page_for_fixture(handle, path).await?;
+    let mut page = runtime.block_on(setup_page_for_fixture(runtime.handle(), path))?;
     let display_list = page.display_list_retained_snapshot()?;
     let clear_color = page.background_rgba();
     let mut items = Vec::with_capacity(display_list.items.len() + 1);
@@ -275,6 +271,9 @@ async fn build_valor_display_list_for(
 }
 
 static RENDER_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+static RENDER_STATE: OnceLock<Mutex<RenderState>> = OnceLock::new();
+static WINDOW: OnceLock<Arc<Window>> = OnceLock::new();
 
 struct WindowCreator {
     window: Option<Window>,
@@ -337,39 +336,51 @@ impl ApplicationHandler for WindowCreator {
     }
 }
 
-/// Creates a test window for offscreen rendering.
-///
-/// # Errors
-/// Returns an error if window creation fails.
-fn create_test_window(width: u32, height: u32) -> Result<Arc<Window>> {
+fn initialize_render_state(width: u32, height: u32) -> &'static Mutex<RenderState> {
     use winit::event_loop::EventLoop;
-    #[cfg(target_os = "macos")]
-    use winit::platform::macos::EventLoopBuilderExtMacOS as _;
     #[cfg(target_os = "windows")]
     use winit::platform::windows::EventLoopBuilderExtWindows as _;
     #[cfg(target_os = "linux")]
     use winit::platform::x11::EventLoopBuilderExtX11 as _;
+    #[cfg(target_os = "macos")]
+    use winit::platform::macos::EventLoopBuilderExtMacOS as _;
 
-    let event_loop = EventLoop::builder().with_any_thread(true).build()?;
+    RENDER_STATE.get_or_init(|| {
+        let runtime = Runtime::new().unwrap_or_else(|err| {
+            log::error!("Failed to create tokio runtime: {err}");
+            process::abort();
+        });
 
-    let mut app = WindowCreator::new(width, height);
-    event_loop.run_app(&mut app)?;
-    let window = app.into_window()?;
+        let event_loop = EventLoop::builder()
+            .with_any_thread(true)
+            .build()
+            .unwrap_or_else(|err| {
+                log::error!("Failed to create event loop: {err}");
+                process::abort();
+            });
 
-    Ok(Arc::new(window))
-}
+        let window = {
+            let mut app = WindowCreator::new(width, height);
+            event_loop.run_app(&mut app).unwrap_or_else(|err| {
+                log::error!("Failed to run event loop: {err}");
+                process::abort();
+            });
+            app.into_window().unwrap_or_else(|err| {
+                log::error!("{err}");
+                process::abort();
+            })
+        };
 
-/// Initializes render state asynchronously for tests.
-///
-/// # Errors
-/// Returns an error if window or render state creation fails.
-async fn initialize_render_state_async(width: u32, height: u32) -> Result<RenderState> {
-    let window = create_test_window(width, height)?;
-
-    // Initialize WGPU asynchronously - no block_on!
-    let render_state = RenderState::new(window).await?;
-
-    Ok(render_state)
+        let window = Arc::new(window);
+        let _ignore_result = WINDOW.set(Arc::clone(&window));
+        let state = runtime
+            .block_on(RenderState::new(window))
+            .unwrap_or_else(|err| {
+                log::error!("Failed to create render state: {err}");
+                process::abort();
+            });
+        Mutex::new(state)
+    })
 }
 
 /// Rasterizes a display list to RGBA bytes using the GPU backend.
@@ -378,11 +389,15 @@ async fn initialize_render_state_async(width: u32, height: u32) -> Result<Render
 ///
 /// Returns an error if render state locking or rendering fails.
 fn rasterize_display_list_to_rgba(
-    render_state: &mut RenderState,
     display_list: &DisplayList,
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>> {
+    let state_mutex = initialize_render_state(width, height);
+
+    let mut state = state_mutex
+        .lock()
+        .map_err(|err| anyhow!("Failed to lock render state: {err}"))?;
     let render_num = RENDER_COUNTER.fetch_add(1, Ordering::SeqCst);
 
     info!(
@@ -398,11 +413,11 @@ fn rasterize_display_list_to_rgba(
         }
     }
 
-    render_state.reset_for_next_frame();
-    render_state.resize(PhysicalSize::new(width, height));
-    render_state.set_retained_display_list(display_list.clone());
+    state.reset_for_next_frame();
+    state.resize(PhysicalSize::new(width, height));
+    state.set_retained_display_list(display_list.clone());
 
-    let result = render_state.render_to_rgba();
+    let result = state.render_to_rgba();
 
     if let Err(render_err) = &result {
         error!("=== RENDER FAILED for fixture #{} ===", render_num + 1);
@@ -419,15 +434,17 @@ fn rasterize_display_list_to_rgba(
     result
 }
 
-/// Initializes a headless Chrome browser with a page for graphics testing.
+type BrowserWithTab = (Browser, Arc<Tab>);
+
+/// Initializes a headless Chrome browser with a tab for graphics testing.
 ///
 /// # Errors
 ///
-/// Returns an error if browser launch or page creation fails.
-async fn init_browser() -> Result<(ChromeBrowser, Page)> {
-    let chrome_browser = setup_chrome_browser(TestType::Graphics).await?;
-    let chrome_page = chrome_browser.new_page().await?;
-    Ok((chrome_browser, chrome_page))
+/// Returns an error if browser launch or tab creation fails.
+fn init_browser() -> Result<BrowserWithTab> {
+    let chrome_browser = setup_chrome_browser(TestType::Graphics)?;
+    let chrome_tab = chrome_browser.new_tab()?;
+    Ok((chrome_browser, chrome_tab))
 }
 
 /// Loads Chrome RGBA image data from cache or by capturing a screenshot.
@@ -435,11 +452,11 @@ async fn init_browser() -> Result<(ChromeBrowser, Page)> {
 /// # Errors
 ///
 /// Returns an error if file reading, browser initialization, screenshot capture, or image decoding fails.
-async fn load_chrome_rgba(
+fn load_chrome_rgba(
     stable_path: &Path,
     fixture: &Path,
-    browser: &mut Option<ChromeBrowser>,
-    page: &mut Option<Page>,
+    browser: &mut Option<Browser>,
+    tab: &mut Option<Arc<Tab>>,
     timings: &mut Timings,
 ) -> Result<RgbaImage> {
     let t_start = Instant::now();
@@ -453,15 +470,13 @@ async fn load_chrome_rgba(
         }
     }
     if browser.is_none() {
-        let (chrome_browser, chrome_page) = init_browser().await?;
-        *page = Some(chrome_page);
+        let (chrome_browser, chrome_tab) = init_browser()?;
+        *tab = Some(chrome_tab);
         *browser = Some(chrome_browser);
     }
-    let page_ref = page
-        .as_ref()
-        .ok_or_else(|| anyhow!("page not initialized"))?;
+    let tab_ref = tab.as_ref().ok_or_else(|| anyhow!("tab not initialized"))?;
     let t_cap = Instant::now();
-    let png_bytes = capture_chrome_png(page_ref, fixture).await?;
+    let png_bytes = capture_chrome_png(tab_ref, fixture)?;
     timings.chrome_capture += t_cap.elapsed();
     let t_decode = Instant::now();
     let img = load_from_memory(&png_bytes)?.to_rgba8();
@@ -612,11 +627,9 @@ struct FixtureContext<'ctx> {
     fixture: &'ctx Path,
     out_dir: &'ctx Path,
     failing_dir: &'ctx Path,
-    browser: &'ctx mut Option<ChromeBrowser>,
-    page: &'ctx mut Option<Page>,
+    browser: &'ctx mut Option<Browser>,
+    tab: &'ctx mut Option<Arc<Tab>>,
     timings: &'ctx mut Timings,
-    handle: &'ctx tokio::runtime::Handle,
-    render_state: &'ctx mut RenderState,
 }
 
 /// Processes a single graphics fixture by comparing Chrome and Valor renders.
@@ -624,7 +637,7 @@ struct FixtureContext<'ctx> {
 /// # Errors
 ///
 /// Returns an error if fixture processing, rendering, or comparison fails.
-async fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
+fn process_single_fixture(runtime: &tokio::runtime::Runtime, ctx: &mut FixtureContext<'_>) -> Result<bool> {
     let name = safe_stem(ctx.fixture);
     let canon = ctx
         .fixture
@@ -649,14 +662,13 @@ async fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
         &stable_chrome_rgba_zst,
         ctx.fixture,
         ctx.browser,
-        ctx.page,
+        ctx.tab,
         ctx.timings,
-    )
-    .await?;
+    )?;
 
     let (width, height) = (784u32, 453u32);
     let t_build = Instant::now();
-    let display_list = build_valor_display_list_for(ctx.handle, ctx.fixture, width, height).await?;
+    let display_list = build_valor_display_list_for(runtime, ctx.fixture, width, height)?;
     ctx.timings.build_dl += t_build.elapsed();
     debug!(
         "[GRAPHICS][DEBUG] {}: DL items={} (first 5: {:?})",
@@ -677,7 +689,7 @@ async fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
     );
 
     let t_rast = Instant::now();
-    let valor_img = rasterize_display_list_to_rgba(ctx.render_state, &display_list, width, height)?;
+    let valor_img = rasterize_display_list_to_rgba(&display_list, width, height)?;
     ctx.timings.raster += t_rast.elapsed();
 
     let info = CompareInfo {
@@ -702,7 +714,7 @@ async fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
 /// # Errors
 ///
 /// Returns an error if test setup fails or any graphics comparisons fail.
-pub async fn chromium_graphics_smoke_compare_png() -> Result<()> {
+pub fn chromium_graphics_smoke_compare_png() -> Result<()> {
     init_test_logger();
     let (out_dir, failing_dir) = setup_test_dirs()?;
     let fixtures = get_filtered_fixtures("GRAPHICS")?;
@@ -713,33 +725,23 @@ pub async fn chromium_graphics_smoke_compare_png() -> Result<()> {
         return Ok(());
     }
 
-    // No longer need to create runtime - we're already in async context
-    let handle = tokio::runtime::Handle::current();
-
-    // Initialize WGPU render state once for all tests (async, no block_on!)
-    let (width, height) = (784u32, 453u32);
-    let mut render_state = initialize_render_state_async(width, height).await?;
-
-    let mut browser: Option<ChromeBrowser> = None;
-    let mut page: Option<Page> = None;
+    // Create runtime in sync code - headless_chrome should NOT run in async context
+    let runtime = tokio::runtime::Runtime::new()?;
+    let mut browser: Option<Browser> = None;
+    let mut tab: Option<Arc<Tab>> = None;
     let mut any_failed = false;
     let mut ran = 0;
     let mut timings = Timings::new();
 
     for fixture in fixtures {
-        // Direct async/await instead of block_on
-        if process_single_fixture(&mut FixtureContext {
+        if process_single_fixture(&runtime, &mut FixtureContext {
             fixture: &fixture,
             out_dir: &out_dir,
             failing_dir: &failing_dir,
             browser: &mut browser,
-            page: &mut page,
+            tab: &mut tab,
             timings: &mut timings,
-            handle: &handle,
-            render_state: &mut render_state,
-        })
-        .await?
-        {
+        })? {
             any_failed = true;
         }
         ran += 1;
