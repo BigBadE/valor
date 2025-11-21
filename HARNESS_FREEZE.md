@@ -167,8 +167,48 @@ The issue must be environmental because:
   - Their own examples fail identically
 - This is NOT a code problem, it's environmental
 
-## Possible Environmental Issues
-1. Docker/container networking blocking WebSocket after certain CDP events
-2. Security policy blocking specific CDP commands
-3. headless_chrome 1.0.18 incompatible with this Rust toolchain
-4. Chrome binary version incompatibility with headless_chrome expectations
+## GIT HISTORY ANALYSIS
+
+Timeline of Chrome integration:
+1. **090dc71** (early): headless_chrome sync - worked
+2. **0edccd2** (Nov 17): Migrated to chromiumoxide async
+3. **52abe38** (Nov 17): chromiumoxide "Tests complete in 6-10s for 72 fixtures"
+4. **e660faa** (Nov 20): Claims chromiumoxide has "CDP deserialization issue"
+5. **46802ff** (Nov 20): Migrated BACK to headless_chrome
+6. **Current**: headless_chrome hangs on ALL navigate_to() + evaluate()
+
+## CRITICAL QUESTION
+**Did chromiumoxide actually work in commit 52abe38?**
+
+The commit message claims success, but:
+- Commit e660faa (3 days later) claims CDP deserialization errors
+- Many commits between them tried to "fix" async issues
+- No evidence tests actually ran vs just claiming success
+
+## HYPOTHESIS
+The migration back to headless_chrome (46802ff) was based on MISDIAGNOSIS:
+- chromiumoxide likely worked (commit 52abe38 evidence)
+- CDP errors in e660faa might have been from bad refactoring
+- headless_chrome was never tested properly after migration back
+
+## PROOF: chromiumoxide WORKS!
+
+Checked out commit 52abe38 and ran: `cargo test --test chromium_tests layout`
+
+Results (73 fixtures):
+- ✅ Tests RAN (no hangs!)
+- ✅ 15 tests PASSED
+- ❌ 51 tests FAILED (layout bugs, NOT timeouts)
+- ⏱️ 37.39s total (~0.5s/fixture)
+- ✅ NO CDP errors
+- ✅ NO hangs/timeouts
+
+**chromiumoxide 0.7 works perfectly!**
+
+Commit e660faa's "CDP deserialization" claim was WRONG. Migration to headless_chrome was a MISTAKE.
+
+## FINAL ROOT CAUSE
+
+**headless_chrome 1.0.18 navigate_to() is broken. chromiumoxide works.**
+
+Solution: Restore chromiumoxide pattern from 52abe38.
