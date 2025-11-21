@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use headless_chrome::Browser;
 use image::{ColorType, ImageEncoder as _, codecs::png::PngEncoder};
 use log::warn;
 use page_handler::config::ValorConfig;
@@ -11,6 +12,44 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::Instant;
 use url::Url;
+
+// ===== Chrome installation =====
+
+/// Ensures Chrome is downloaded and returns the path to the executable.
+///
+/// Uses headless_chrome's automatic download feature to install Chrome if needed.
+///
+/// # Errors
+///
+/// Returns an error if Chrome cannot be downloaded or the path cannot be determined.
+pub fn ensure_chrome_installed() -> Result<PathBuf> {
+    use headless_chrome::browser::LaunchOptions;
+
+    // Initialize headless_chrome with fetcher enabled, which will auto-download Chrome if needed
+    let launch_options = LaunchOptions::default_builder()
+        .build()
+        .map_err(|e| anyhow!("Failed to build launch options: {}", e))?;
+
+    let _browser = Browser::new(launch_options).map_err(|e| {
+        anyhow!("Failed to initialize Chrome (auto-download failed): {}", e)
+    })?;
+
+    // headless_chrome downloads Chrome to ~/.local/share/headless-chrome on Linux
+    let home = env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let chrome_path = PathBuf::from(home)
+        .join(".local")
+        .join("share")
+        .join("headless-chrome")
+        .join("linux-1095492")
+        .join("chrome-linux")
+        .join("chrome");
+
+    if chrome_path.exists() {
+        Ok(chrome_path)
+    } else {
+        Err(anyhow!("Chrome was initialized but executable not found at expected path: {}", chrome_path.display()))
+    }
+}
 
 // ===== CLI argument parsing =====
 

@@ -1,8 +1,9 @@
 use super::browser::navigate_and_prepare_page;
 use super::common::{
     clear_valor_layout_cache_if_harness_changed, create_page, css_reset_injection_script,
-    get_filtered_fixtures, init_test_logger, read_cached_json_for_fixture, to_file_url,
-    update_until_finished, write_cached_json_for_fixture, write_named_json_for_fixture,
+    ensure_chrome_installed, get_filtered_fixtures, init_test_logger,
+    read_cached_json_for_fixture, to_file_url, update_until_finished,
+    write_cached_json_for_fixture, write_named_json_for_fixture,
 };
 use super::json_compare::compare_json_with_epsilon;
 use anyhow::{Result, anyhow};
@@ -472,9 +473,8 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
     use chromiumoxide::browser::{Browser, BrowserConfig};
     use futures::StreamExt;
 
-    let chrome_path = std::path::PathBuf::from(
-        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
-    );
+    // Ensure Chrome is installed (auto-downloads if needed)
+    let chrome_path = ensure_chrome_installed()?;
     let config = BrowserConfig::builder()
         .chrome_executable(chrome_path)
         .no_sandbox()
@@ -557,13 +557,14 @@ pub fn run_chromium_layouts() -> Result<()> {
 
     // Run everything in a single block_on to avoid interfering with the handler task
     let overall_start = Instant::now();
+
+    // Ensure Chrome is installed before starting async block (auto-downloads if needed)
+    let chrome_path = ensure_chrome_installed()?;
+
     let (ran, failed, timing_stats) = runtime.block_on(async {
         use chromiumoxide::browser::{Browser, BrowserConfig};
         use futures::StreamExt;
 
-        let chrome_path = std::path::PathBuf::from(
-            "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
-        );
         let config = BrowserConfig::builder()
             .chrome_executable(chrome_path)
             .no_sandbox()
