@@ -136,3 +136,19 @@ Affects ALL URLs (file://, data:, http://), both Chrome versions (111, 120).
 1. Use chromiumoxide async library (needs async context)
 2. Set up local HTTP server for fixtures
 3. Investigate Docker/container security restrictions
+
+### 10. Official headless_chrome examples (FAILED)
+- Cloned official rust-headless-chrome repository
+- Tried running examples/query_wikipedia.rs
+- **Official examples also hang** - same timeout
+- This confirms it's not our code, it's environmental
+
+### 11. Manual Chrome launch verification (SUCCESS!)
+- Launched Chrome manually with --remote-debugging-port=9222
+- Chrome process starts and stays running
+- Debugging port is accessible (curl http://localhost:9222/json works)
+- **Chrome itself works fine**, problem is with headless_chrome library interaction
+
+## KEY FINDING
+Chrome launches OK, debugging port works, but headless_chrome library cannot
+interact with pages after navigate_to(). Even official headless_chrome examples fail.
