@@ -26,7 +26,9 @@ pub fn ensure_chrome_installed() -> Result<PathBuf> {
     use headless_chrome::browser::LaunchOptions;
 
     // Initialize headless_chrome with fetcher enabled, which will auto-download Chrome if needed
+    // Use sandbox(false) since we might be running as root in test environment
     let launch_options = LaunchOptions::default_builder()
+        .sandbox(false)
         .build()
         .map_err(|e| anyhow!("Failed to build launch options: {}", e))?;
 
