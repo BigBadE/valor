@@ -114,3 +114,25 @@ Then maybe **the layout tests never actually ran successfully**. Possible explan
 1. Look for cached Chrome layout JSON files
 2. Verify if chromiumoxide tests actually passed
 3. Check if headless_chrome examples even work in this environment
+
+### 9. wait_for_element instead of evaluate (FAILED)
+- Tried tab.wait_for_element("#test") after navigate_to()
+- Also hangs indefinitely
+- **ANY post-navigation interaction hangs, not just evaluate()**
+
+## FINAL CONCLUSION
+headless_chrome 1.0.18 is FUNDAMENTALLY BROKEN in this environment:
+- ✅ Browser launch works
+- ✅ Tab creation works  
+- ✅ navigate_to() completes without error
+- ❌ ANY interaction after navigate_to() hangs:
+  - evaluate() - hangs
+  - wait_for_element() - hangs
+  - wait_until_navigated() - "event never came"
+
+Affects ALL URLs (file://, data:, http://), both Chrome versions (111, 120).
+
+## RECOMMENDED SOLUTIONS
+1. Use chromiumoxide async library (needs async context)
+2. Set up local HTTP server for fixtures
+3. Investigate Docker/container security restrictions
