@@ -173,6 +173,70 @@ Tests are **not reliably reproducible** without cache:
 
 ---
 
+## Browser Restart Strategy Test (REFUTES Resource Exhaustion Hypothesis)
+
+### Implementation (Commit bffec53+)
+Implemented browser restart every 30 fixtures to test if Chrome resource exhaustion causes timeouts:
+- Launch fresh Chrome instance at fixtures 0, 30, 60
+- Each browser processes max 30 fixtures before shutdown
+- 500ms delay between shutdown and relaunch
+- Serial execution (one fixture at a time)
+
+### Results (293.85s runtime, cache cleared)
+**Browser lifecycle events (verified via ERROR-level logging):**
+```
+20:59:51Z - Launching browser for fixtures 0-29
+21:01:26Z - Restarting browser after 30 fixtures (processed 30/72)
+21:01:26Z - Launching browser for fixtures 30-59
+21:03:40Z - Restarting browser after 30 fixtures (processed 60/72)
+21:03:40Z - Launching browser for fixtures 60-71
+21:04:42Z - Shutting down final browser instance
+```
+
+**Timeout pattern:**
+- **28 total timeouts** (39% failure rate vs. 36% baseline)
+- Browser restarts did NOT prevent cascades
+- **Browser 1** (fixtures 0-29): First timeout 11s after launch, then cascade (9 consecutive timeouts)
+- **Browser 2** (fixtures 30-59): First timeout 10s after fresh launch, then cascade (10 consecutive timeouts)
+- **Browser 3** (fixtures 60-71): First timeout 11s after fresh launch, then cascade (9 consecutive timeouts)
+
+### Critical Finding: Fresh Browsers Fail Immediately
+
+**Each new browser instance enters cascade after 1-2 successful fixtures.**
+
+This is IMPOSSIBLE if the issue were Chrome resource exhaustion because:
+- ✗ **NOT file descriptor exhaustion**: Fresh Chrome has all FDs available
+- ✗ **NOT memory leaks**: Fresh Chrome process has minimal memory footprint
+- ✗ **NOT thread exhaustion**: Fresh Chrome has thread pool available
+- ✗ **NOT accumulated state**: Fresh Chrome has no prior page history
+
+### Conclusion: chromiumoxide Configuration/Initialization Issue
+
+Since **brand new Chrome instances fail immediately**, the issue must be:
+1. **chromiumoxide launch configuration**: Wrong Chrome flags or CDP setup
+2. **Environment incompatibility**: Container/headless environment issue
+3. **chromiumoxide event handler bug**: Handler gets stuck from the start
+4. **Race condition at initialization**: CDP connection corruption during startup
+
+The resource exhaustion hypothesis is **definitively refuted**.
+
+### Timeout Error Handling Discovery
+
+**Timeouts are logged but NOT counted as test failures** (layout_tests.rs:672-678):
+```rust
+match result {
+    Ok(true) => ran += 1,  // Success
+    Ok(false) => {}        // Layout mismatch (added to failed_vec)
+    Err(e) => {            // Timeout or error (logged but NOT in failed_vec)
+        error!("[LAYOUT] {} ... ERROR: {}", display_name, e);
+    }
+}
+```
+
+This explains why test shows "1 total failure" despite 28 timeouts.
+
+---
+
 ## Recommended Next Steps
 
 ### Short Term: Accept Intermittency

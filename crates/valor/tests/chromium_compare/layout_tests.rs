@@ -587,7 +587,7 @@ pub fn run_chromium_layouts() -> Result<()> {
         // Browser restart strategy: Restart every N fixtures to prevent resource exhaustion
         // Testing shows this prevents catastrophic failure cascades
         const RESTART_INTERVAL: usize = 30;
-        info!(
+        error!(
             "[LAYOUT] Running {} fixtures with browser restart every {} fixtures",
             fixture_count, RESTART_INTERVAL
         );
@@ -603,7 +603,7 @@ pub fn run_chromium_layouts() -> Result<()> {
             if i % RESTART_INTERVAL == 0 {
                 // Drop old browser if it exists
                 if let Some((old_browser, old_handler)) = browser_opt.take() {
-                    info!(
+                    error!(
                         "[LAYOUT] Restarting browser after {} fixtures (processed {}/{})",
                         RESTART_INTERVAL,
                         i,
@@ -616,7 +616,7 @@ pub fn run_chromium_layouts() -> Result<()> {
                 }
 
                 // Launch fresh browser
-                info!(
+                error!(
                     "[LAYOUT] Launching browser for fixtures {}-{}",
                     i,
                     (i + RESTART_INTERVAL).min(fixture_count) - 1
@@ -680,7 +680,7 @@ pub fn run_chromium_layouts() -> Result<()> {
 
         // Clean up final browser
         if let Some((browser, handler)) = browser_opt.take() {
-            info!("[LAYOUT] Shutting down final browser instance");
+            error!("[LAYOUT] Shutting down final browser instance");
             drop(browser);
             handler.abort();
         }
