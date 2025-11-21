@@ -4,7 +4,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::time::Duration;
 
-use super::common::{css_reset_injection_script, to_file_url};
+use super::common::to_file_url;
 
 /// Type of chromium comparison test being run.
 #[derive(Debug, Clone, Copy)]
@@ -72,8 +72,10 @@ pub fn setup_chrome_browser(test_type: TestType) -> Result<Browser> {
 pub fn navigate_and_prepare_tab(tab: &Tab, path: &Path) -> Result<()> {
     let url = to_file_url(path)?;
     tab.navigate_to(url.as_str())?;
-    // Don't wait - navigate_to blocks until basic navigation completes
-    // Just evaluate immediately
-    let _result = tab.evaluate(css_reset_injection_script(), false)?;
+
+    // For file:// URLs, both wait_until_navigated() and tab.evaluate() are unreliable.
+    // Use a longer sleep to ensure page is fully loaded before JavaScript execution.
+    std::thread::sleep(Duration::from_secs(2));
+
     Ok(())
 }
