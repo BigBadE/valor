@@ -97,23 +97,11 @@ fn test_chrome_navigate_to_file() -> Result<()> {
     tab.navigate_to(&url)?;
     println!("✓ Navigation complete (took {:?})", start.elapsed());
 
-    // Wait for page to be ready
-    println!("Waiting for document.readyState === 'complete'");
+    // Use wait_until_navigated like the original working version
+    println!("Waiting with wait_until_navigated()...");
     let start = Instant::now();
-    for attempt in 1..=10 {
-        match tab.evaluate("document.readyState === 'complete'", false) {
-            Ok(result) => {
-                if result.value.as_ref().and_then(|v| v.as_bool()) == Some(true) {
-                    println!("✓ Document ready (attempt {}, took {:?})", attempt, start.elapsed());
-                    break;
-                }
-            }
-            Err(e) => {
-                println!("  Attempt {}: Error: {:?}", attempt, e);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    tab.wait_until_navigated()?;
+    println!("✓ wait_until_navigated complete (took {:?})", start.elapsed());
 
     // Test simple evaluation after navigation
     println!("Evaluating: 1+1");
