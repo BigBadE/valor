@@ -56,9 +56,12 @@ Hypothesis: First evaluate() works, second evaluate() causes CDP connection to c
 - Confirms: Chrome and headless_chrome library work fine
 - **Problem is SPECIFICALLY with file:// URLs**
 
-## CONFIRMED: file:// navigation breaks evaluate()
-- about:blank: ✅ Works perfectly
-- After navigate_to("file://"): ❌ evaluate() hangs
+## CONFIRMED: ANY navigation breaks evaluate()
+- about:blank (no navigation): ✅ Works perfectly
+- After navigate_to("file://..."): ❌ evaluate() hangs
+- After navigate_to("data:..."): ❌ evaluate() hangs
+
+**Problem: navigate_to() itself seems to break CDP connection for evaluate()**
 
 ## Critical Question
 If the old code with 2s sleep also had this problem, how did tests ever pass?
@@ -68,8 +71,21 @@ Possible answers:
 3. Different Chrome version was used
 4. Something about tab reuse is broken
 
-## Next Steps
-1. Check if creating NEW tab for each test helps (vs reusing shared browser/tab)
-2. Test on about:blank instead of file:// to confirm Chrome works at all
-3. Check Chrome version and process arguments when running
-4. Look for environment differences (Docker, permissions, security policies)
+### 6. Minimal test with DEFAULT LaunchOptions (FAILED)
+- Tested with LaunchOptions::default() (no custom flags)
+- Still hangs on evaluate() after navigate_to("file://")
+- **Problem exists even with default configuration**
+
+## CRITICAL FINDING
+**headless_chrome navigate_to() + evaluate() is BROKEN in this environment**
+- Works: about:blank (no navigation) - multiple evaluate() succeed
+- Breaks: ANY navigate_to() call (file://, data:// tested)
+- Even with DEFAULT LaunchOptions
+- Even with fresh browser per test
+- Broken in standalone minimal test project
+
+## Must Investigate
+1. Is Chrome binary itself broken?
+2. Environment restriction blocking CDP after navigation?
+3. Check Chrome process logs/output
+4. Try different Chrome version/revision
