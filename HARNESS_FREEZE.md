@@ -1,214 +1,253 @@
-# Chrome Test Harness Freeze Investigation
+# Chrome Test Harness Investigation - Intermittent Timeout Issue
 
-## Problem
-Chrome layout comparison tests hang/timeout when evaluating JavaScript after navigating to file:// URLs.
+## Executive Summary
 
-## What Works
-- Chrome launches successfully
-- Tab/Page creation works
-- Navigation to file:// URLs completes
-- about:blank evaluation works
+chromiumoxide 0.7 has an **intermittent state corruption bug** where `page.evaluate()` randomly hangs after 10 seconds. The bug has existed throughout the entire git history but was masked by JSON caching. No commit has ever had 100% reliable Chrome integration.
 
-## What Fails
-- JavaScript evaluation after file:// navigation (hangs or CDP connection closes)
+---
 
-## Attempted Solutions
+## The Intermittent Pattern
 
-### 1. Using chromiumoxide from GitHub (FAILED)
-- Hypothesis: crates.io version has CDP bugs, GitHub has fixes
-- Result: Did not fix the issue
-- Status: REJECTED
+### Observed Behavior
 
-### 2. Using headless_chrome with 2 second sleep (FAILED)
-- Found in old commit fbf9c59
-- Result: Still times out after sleep
-- Status: REJECTED
+Tests exhibit **catastrophic failure cascades**:
+- Test run starts successfully, fixtures complete normally
+- At some unpredictable point (fixture N), `page.evaluate()` starts timing out
+- **ALL subsequent fixtures timeout** in sequence
+- Failure point varies between runs (sometimes fixture 1, sometimes fixture 50)
 
-### 3. Using wait_until_navigated() (FAILED)
-- Error: "The event waited for never came"
-- CDP navigation events don't fire for file:// URLs
-- Status: REJECTED
+### Evidence Across Commits
 
-## Current Investigation
-- Need to find what actually worked before
-- Check if environment changed
-- Verify Chrome binary version
-- Test if security restrictions changed
+**Commit 52abe38** ("working" baseline):
+- **With cache**: 50.05s, 3/66 fixtures timeout (~5% failure rate)
+- **Cache cleared**: 8-12 fixtures timeout (~12-18% failure rate)
+- Per-fixture average: ~0.76s (not 0.5s as claimed)
 
-## Key Observation
-navigate_and_prepare_tab() does TWO evaluations:
-1. evaluate(css_reset_injection_script()) - This might work
-2. Caller then does evaluate(layout_extraction_script()) - This hangs
+**Commit 7d97b2a** (earlier commit):
+- **Cache cleared**: 50/~70 fixtures timeout (~75% failure rate)
+- Timeouts start at fixture #1 and continue sequentially
+- Every fixture hits 10s timeout
 
-Hypothesis: First evaluate() works, second evaluate() causes CDP connection to close
+**My optimizations (bffec53)**:
+- Implemented page pooling + parallelism
+- **Result**: 72/72 fixtures timeout (100% failure rate)
+- Page reuse exacerbates the bug
 
-## Test Results
+### Timeout Details
 
-### 4. navigate + 2s sleep + single evaluate() (FAILED)
-- Removed css_reset evaluation from navigate_and_prepare_tab
-- Used exact pattern from old commit: navigate_to() + sleep(2s) + return
-- Test still hangs on the single evaluate() call after sleep
-- Status: REJECTED
+**Location**: chromiumoxide's `page.evaluate()` call (NOT navigation, NOT Valor parser)
+**Threshold**: 10 seconds
+**Error Message**: "Script evaluation timeout after 10s for {path}"
+**Accompanying Error**:
+```
+Browser event error: Serde(Error("data did not match any variant of untagged enum Message", line: 0, column: 0))
+```
 
-### 5. about:blank without navigation (SUCCESS!)
-- Multiple evaluate() calls work perfectly on about:blank
-- No navigation to file:// URLs
-- Confirms: Chrome and headless_chrome library work fine
-- **Problem is SPECIFICALLY with file:// URLs**
+---
 
-## CONFIRMED: ANY navigation breaks evaluate()
-- about:blank (no navigation): ✅ Works perfectly
-- After navigate_to("file://..."): ❌ evaluate() hangs
-- After navigate_to("data:..."): ❌ evaluate() hangs
+## Root Cause Analysis
 
-**Problem: navigate_to() itself seems to break CDP connection for evaluate()**
+### What Causes the Intermittency?
 
-## Critical Question
-If the old code with 2s sleep also had this problem, how did tests ever pass?
-Possible answers:
-1. Environment changed (Chrome security policy, permissions, etc.)
-2. Tests never actually passed with file:// URLs
-3. Different Chrome version was used
-4. Something about tab reuse is broken
+**State Corruption Hypothesis:**
 
-### 6. Minimal test with DEFAULT LaunchOptions (FAILED)
-- Tested with LaunchOptions::default() (no custom flags)
-- Still hangs on evaluate() after navigate_to("file://")
-- **Problem exists even with default configuration**
+chromiumoxide 0.7 or Chrome DevTools Protocol enters a corrupted state after processing N fixtures:
 
-### 7. HTTP URL navigation (FAILED)
-- Tested navigate_to("http://example.com")
-- Still hangs on evaluate() after navigation
-- **Problem is not specific to file:// or data: URLs**
+1. **Initial State**: Browser and CDP connection are healthy
+2. **Trigger Event**: After N page create/destroy cycles, something corrupts the state:
+   - Chrome process resource exhaustion (file descriptors, memory, threads)
+   - CDP websocket connection gets stuck
+   - chromiumoxide event handler backlog accumulates
+   - Race condition in page lifecycle management
+3. **Cascade Failure**: Once corrupted, ALL subsequent `page.evaluate()` calls timeout
+4. **Serde Error**: Chrome sends timeout/error CDP messages that chromiumoxide can't deserialize
 
-## CRITICAL FINDING
-**headless_chrome navigate_to() + evaluate() is COMPLETELY BROKEN**
-- Works: about:blank (no navigation) - multiple evaluate() succeed
-- Breaks: ALL navigate_to() calls tested:
-  - file:// URLs → hangs
-  - data: URLs → hangs
-  - http:// URLs → hangs
-- Even with DEFAULT LaunchOptions
-- Even with fresh browser per test
-- Broken in standalone minimal test project
+### Why Timeouts Vary Between Runs?
 
-### 8. Different Chrome version - Chrome 120 (FAILED)
-- Tested with /root/.local/share/headless-chrome/linux-1217362/chrome
-- Chrome 120 from October 2023
-- Still hangs on evaluate() after navigate_to()
-- **Problem is not Chrome version specific**
+The corruption trigger point is **non-deterministic**:
+- Environmental factors (system load, resource availability)
+- Timing-dependent race conditions in chromiumoxide
+- Chrome internal state (varies by startup conditions)
+- Possible specific fixture content triggering the issue
 
-## HYPOTHESIS: Tests Never Actually Ran
-If BOTH Chrome 111 and Chrome 120 fail the same way, and this is reproducible across:
-- file://, data:, http:// URLs
-- DEFAULT and custom LaunchOptions
-- Fresh browsers and reused browsers
-- Standalone minimal test projects
+### Evidence It's NOT Content-Related
 
-Then maybe **the layout tests never actually ran successfully**. Possible explanations:
-1. Tests were using cached Chrome JSON (never calling navigate/evaluate)
-2. chromiumoxide WAS the solution that worked (not headless_chrome)
-3. There's a fundamental bug we're missing in how we call the API
+Tested multiple hypotheses:
+- ❌ **NOT `<input>` elements**: Removed all inputs, still times out
+- ❌ **NOT pseudo-selectors**: Simple CSS still times out
+- ❌ **NOT file size**: 12-line minimal HTML times out
+- ❌ **NOT directory location**: Same file times out in `/forms/`, works in `/display/`
+- ✅ **IS random/state-based**: Different fixtures timeout on different runs
 
-## Must Check
-1. Look for cached Chrome layout JSON files
-2. Verify if chromiumoxide tests actually passed
-3. Check if headless_chrome examples even work in this environment
+---
 
-### 9. wait_for_element instead of evaluate (FAILED)
-- Tried tab.wait_for_element("#test") after navigate_to()
-- Also hangs indefinitely
-- **ANY post-navigation interaction hangs, not just evaluate()**
+## Why JSON Caching Masks the Bug
 
-## FINAL CONCLUSION
-headless_chrome 1.0.18 is FUNDAMENTALLY BROKEN in this environment:
-- ✅ Browser launch works
-- ✅ Tab creation works  
-- ✅ navigate_to() completes without error
-- ❌ ANY interaction after navigate_to() hangs:
-  - evaluate() - hangs
-  - wait_for_element() - hangs
-  - wait_until_navigated() - "event never came"
+### The Cache Strategy
 
-Affects ALL URLs (file://, data:, http://), both Chrome versions (111, 120).
+`/home/user/valor/target/valor_layout_cache/` contains cached Chrome layout JSON:
+- Key: `{canonical_path}|{harness_hash}`
+- 222 cached fixtures in "working" baseline
+- Cache persists across test runs
 
-## RECOMMENDED SOLUTIONS
-1. Use chromiumoxide async library (needs async context)
-2. Set up local HTTP server for fixtures
-3. Investigate Docker/container security restrictions
+### How It Masks Failures
 
-### 10. Official headless_chrome examples (FAILED)
-- Cloned official rust-headless-chrome repository
-- Tried running examples/query_wikipedia.rs
-- **Official examples also hang** - same timeout
-- This confirms it's not our code, it's environmental
+1. **First run** (no cache): Fixture hits chromiumoxide → may timeout
+2. If successful: Layout JSON cached to disk
+3. **Subsequent runs**: Read from cache, never calls chromiumoxide
+4. Only uncached fixtures expose the bug
 
-### 11. Manual Chrome launch verification (SUCCESS!)
-- Launched Chrome manually with --remote-debugging-port=9222
-- Chrome process starts and stays running
-- Debugging port is accessible (curl http://localhost:9222/json works)
-- **Chrome itself works fine**, problem is with headless_chrome library interaction
+**Result**: Appears to work reliably with cache, fails intermittently without cache
 
-## KEY FINDING
-Chrome launches OK, debugging port works, but headless_chrome library cannot
-interact with pages after navigate_to(). Even official headless_chrome examples fail.
+### Proof
 
-### 12. Raw CDP commands (TESTING)
-- Trying to use CDP Page.navigate directly instead of Tab.navigate_to()
-- To see if the problem is in the navigate_to() wrapper
+**Commit 52abe38 with cache**: 3 timeouts (cached fixtures never hit Chrome)
+**Commit 52abe38 cache cleared**: 8-12 timeouts (all fixtures hit Chrome)
+**Commit 7d97b2a cache cleared**: 50 timeouts (catastrophic cascade early in run)
 
-## CRITICAL REALIZATION
-The issue must be environmental because:
-- Chrome binary works (manual launch succeeds, debugging port accessible)
-- headless_chrome can launch Chrome and connect via WebSocket
-- evaluate() works perfectly on about:blank
-- **But official headless_chrome examples also hang/timeout**
-  - Cloned rust-headless-chrome repo
-  - Their own examples fail identically
-- This is NOT a code problem, it's environmental
+---
 
-## GIT HISTORY ANALYSIS
+## Attempts to Fix
 
-Timeline of Chrome integration:
-1. **090dc71** (early): headless_chrome sync - worked
-2. **0edccd2** (Nov 17): Migrated to chromiumoxide async
-3. **52abe38** (Nov 17): chromiumoxide "Tests complete in 6-10s for 72 fixtures"
-4. **e660faa** (Nov 20): Claims chromiumoxide has "CDP deserialization issue"
-5. **46802ff** (Nov 20): Migrated BACK to headless_chrome
-6. **Current**: headless_chrome hangs on ALL navigate_to() + evaluate()
+### 1. Page Pooling (FAILED - Made It Worse)
+- **Hypothesis**: Creating/destroying pages is expensive
+- **Implementation**: Reuse pages with `page.goto()` instead of creating fresh pages
+- **Result**: 100% timeout rate (72/72 fixtures)
+- **Conclusion**: Page reuse accelerates state corruption
 
-## CRITICAL QUESTION
-**Did chromiumoxide actually work in commit 52abe38?**
+### 2. Parallel Execution (FAILED - Made It Worse)
+- **Hypothesis**: Parallelism will speed up tests
+- **Implementation**: Changed from `CONCURRENCY=1` to `available_parallelism()`
+- **Result**: 100% timeout rate
+- **Conclusion**: Commit 52abe38 notes already tested this: serial (6.4s) beats parallel (41s)
 
-The commit message claims success, but:
-- Commit e660faa (3 days later) claims CDP deserialization errors
-- Many commits between them tried to "fix" async issues
-- No evidence tests actually ran vs just claiming success
+### 3. Reduced Sleep Time (FAILED - No Impact)
+- **Hypothesis**: 10ms sleep in parse loop wastes time
+- **Implementation**: Reduced to 2ms
+- **Result**: No measurable improvement, still timeouts
+- **Conclusion**: Sleep time not the bottleneck
 
-## HYPOTHESIS
-The migration back to headless_chrome (46802ff) was based on MISDIAGNOSIS:
-- chromiumoxide likely worked (commit 52abe38 evidence)
-- CDP errors in e660faa might have been from bad refactoring
-- headless_chrome was never tested properly after migration back
+---
 
-## PROOF: chromiumoxide WORKS!
+## What Actually Works (Sort Of)
 
-Checked out commit 52abe38 and ran: `cargo test --test chromium_tests layout`
+**Commit 52abe38 configuration:**
+- Serial execution (`CONCURRENCY=1`)
+- Fresh page per fixture (create → navigate → evaluate → close)
+- 10-second timeout on both navigation and evaluation
+- **Result**: ~5-18% failure rate (best found so far)
 
-Results (73 fixtures):
-- ✅ Tests RAN (no hangs!)
-- ✅ 15 tests PASSED
-- ❌ 51 tests FAILED (layout bugs, NOT timeouts)
-- ⏱️ 37.39s total (~0.5s/fixture)
-- ✅ NO CDP errors
-- ✅ NO hangs/timeouts
+**Why This is "Best":**
+- Minimizes page reuse (reduces state corruption risk)
+- Serial execution avoids race conditions
+- Fresh pages give Chrome a "reset" opportunity
+- Still not 100% reliable, but better than alternatives
 
-**chromiumoxide 0.7 works perfectly!**
+---
 
-Commit e660faa's "CDP deserialization" claim was WRONG. Migration to headless_chrome was a MISTAKE.
+## Implications
 
-## FINAL ROOT CAUSE
+### Performance Claims Are False
 
-**headless_chrome 1.0.18 navigate_to() is broken. chromiumoxide works.**
+Commit messages claiming:
+- "Tests complete in 6-10s for 72 fixtures" ✗
+- "37.39s total (~0.5s/fixture)" ✗ (Actually 50s, ~0.76s/fixture)
+- "chromiumoxide 0.7 works perfectly" ✗
+- "NO hangs/timeouts" ✗
 
-Solution: Restore chromiumoxide pattern from 52abe38.
+All based on **cached runs**, not actual Chrome fetches.
+
+### No Known Working State
+
+Every commit tested has intermittent failures:
+- **52abe38**: 5-18% failure rate (best)
+- **7d97b2a**: 75% failure rate
+- **bffec53**: 100% failure rate
+
+### Cache Dependency
+
+Tests are **not reliably reproducible** without cache:
+- CI/fresh environments will see high failure rates
+- Local development with cache appears to work
+- False sense of stability
+
+---
+
+## Recommended Next Steps
+
+### Short Term: Accept Intermittency
+1. Keep commit 52abe38 configuration (serial, fresh pages)
+2. Accept 5-18% random failure rate
+3. Rely on cache for development workflow
+4. Rerun failed fixtures individually to populate cache
+
+### Medium Term: Investigate chromiumoxide Bug
+1. Add extensive logging to page lifecycle
+2. Monitor Chrome process resources (memory, file descriptors)
+3. Instrument CDP message flow
+4. Identify exact trigger for state corruption
+5. Consider filing chromiumoxide issue with reproduction
+
+### Long Term: Alternative Solutions
+1. **Upgrade chromiumoxide**: Check if newer versions fix this
+2. **Switch to puppeteer**: Use Node.js + puppeteer via subprocess
+3. **HTTP server**: Serve fixtures over HTTP instead of file://
+4. **Playwright**: Consider rust-playwright if available
+5. **Manual CDP**: Implement direct CDP protocol handling
+
+---
+
+## Technical Details
+
+### Test Infrastructure
+
+**Files:**
+- `crates/valor/tests/chromium_compare/layout_tests.rs` - Main test runner
+- `crates/valor/tests/chromium_compare/browser.rs` - Chrome management
+- `crates/valor/tests/chromium_compare/common.rs` - Caching, utilities
+
+**Configuration (52abe38):**
+```rust
+const CONCURRENCY: usize = 1;  // Serial execution
+
+// Per fixture:
+let page = browser.new_page("about:blank").await?;  // Fresh page
+navigate_and_prepare_page(&page, path).await?;       // Navigate
+let json = chromium_layout_json_in_page(&page, path).await?;  // Evaluate
+let _ = page.close().await;  // Close
+```
+
+### Timeout Implementation
+
+**Two 10-second timeouts:**
+
+1. **Navigation** (`browser.rs:84-96`):
+```rust
+timeout(Duration::from_secs(10), page.goto(url.as_str()))
+    .await
+    .map_err(|_| anyhow!("Navigation timeout after 10s for {}", url))??;
+```
+
+2. **Script Evaluation** (`layout_tests.rs:1022-1029`):
+```rust
+let result = timeout(Duration::from_secs(10), page.evaluate(script))
+    .await
+    .map_err(|_| anyhow!("Script evaluation timeout after 10s for {}", path))??;
+```
+
+**Observed**: Only script evaluation timeouts occur, navigation always succeeds
+
+### Cache Format
+
+**Location**: `/home/user/valor/target/valor_layout_cache/{hash}.json`
+**Key**: `{canonical_path}|{checksum_u64(harness_src)}`
+**Invalidation**: Harness source code changes clear cache
+**Size**: 222 files in baseline (~500KB total)
+
+---
+
+## Conclusion
+
+chromiumoxide 0.7 has always had intermittent timeout bugs that were masked by aggressive JSON caching. No commit in the git history has reliable Chrome integration. The best configuration found (commit 52abe38 with serial execution and fresh pages) still fails 5-18% of the time when cache is cleared.
+
+The cache is not a workaround—it's a crutch that hides a fundamental library bug.
