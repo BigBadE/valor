@@ -36,7 +36,7 @@ impl ChromeBrowser {
 /// Returns an error if browser launch fails.
 pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser> {
     let chrome_path = std::path::PathBuf::from(
-        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
+        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
     );
 
     let config_builder = BrowserConfig::builder()
@@ -57,7 +57,7 @@ pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser>
     let (browser, mut handler) = Browser::launch(
         config_builder
             .build()
-            .map_err(|e| anyhow::anyhow!("Browser config error: {}", e))?
+            .map_err(|e| anyhow::anyhow!("Browser config error: {}", e))?,
     )
     .await?;
 
@@ -82,7 +82,7 @@ pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser>
 ///
 /// Returns an error if navigation fails.
 pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     let url = to_file_url(path)?;
     log::info!("Navigating to: {}", url.as_str());

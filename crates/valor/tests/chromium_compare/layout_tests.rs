@@ -9,6 +9,7 @@ use anyhow::{Result, anyhow};
 use chromiumoxide::page::Page;
 use css::style_types::{AlignItems, BoxSizing, ComputedStyle, Display, Overflow};
 use css_core::{LayoutNodeKind, LayoutRect, Layouter};
+use futures::stream::{self, StreamExt};
 use js::DOMSubscriber as _;
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
 use js::NodeKey;
@@ -19,7 +20,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
-use futures::stream::{self, StreamExt};
 
 type LayouterWithStyles = (Layouter, HashMap<NodeKey, ComputedStyle>);
 
@@ -77,7 +77,10 @@ fn apply_element_attrs(layouter: &mut Layouter, node: NodeKey, attrs: &HashMap<S
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or layout computation fails.
-async fn setup_layouter_for_fixture(runtime: &Runtime, input_path: &Path) -> Result<LayouterWithStyles> {
+async fn setup_layouter_for_fixture(
+    runtime: &Runtime,
+    input_path: &Path,
+) -> Result<LayouterWithStyles> {
     let url = to_file_url(input_path)?;
     let mut page = create_page(runtime, url).await?;
     page.eval_js(css_reset_injection_script())?;
@@ -86,7 +89,8 @@ async fn setup_layouter_for_fixture(runtime: &Runtime, input_path: &Path) -> Res
     let finished = update_until_finished(&mut page, |_page| {
         layouter_mirror.try_update_sync()?;
         Ok(())
-    }).await?;
+    })
+    .await?;
 
     if !finished {
         return Err(anyhow!("Parsing did not finish"));
@@ -136,7 +140,8 @@ async fn setup_layouter_for_fixture_current(input_path: &Path) -> Result<Layoute
     let finished = update_until_finished(&mut page, |_page| {
         layouter_mirror.try_update_sync()?;
         Ok(())
-    }).await?;
+    })
+    .await?;
 
     if !finished {
         return Err(anyhow!("Parsing did not finish"));
@@ -226,15 +231,16 @@ async fn process_layout_fixture_parallel_with_page(
 
     // Setup layouter
     let setup_start = Instant::now();
-    let (mut layouter, computed_for_serialization) = match setup_layouter_for_fixture_current(input_path).await {
-        Ok(result) => result,
-        Err(err) => {
-            let msg = format!("Setup failed: {err}");
-            error!("[LAYOUT] {display_name} ... FAILED: {msg}");
-            failed.push((display_name.clone(), msg));
-            return Ok(false);
-        }
-    };
+    let (mut layouter, computed_for_serialization) =
+        match setup_layouter_for_fixture_current(input_path).await {
+            Ok(result) => result,
+            Err(err) => {
+                let msg = format!("Setup failed: {err}");
+                error!("[LAYOUT] {display_name} ... FAILED: {msg}");
+                failed.push((display_name.clone(), msg));
+                return Ok(false);
+            }
+        };
     timing.setup_layouter = setup_start.elapsed();
 
     // Compute geometry
@@ -302,15 +308,16 @@ async fn process_layout_fixture_parallel(
 
     // Setup layouter
     let setup_start = Instant::now();
-    let (mut layouter, computed_for_serialization) = match setup_layouter_for_fixture_current(input_path).await {
-        Ok(result) => result,
-        Err(err) => {
-            let msg = format!("Setup failed: {err}");
-            error!("[LAYOUT] {display_name} ... FAILED: {msg}");
-            failed.push((display_name.clone(), msg));
-            return Ok(false);
-        }
-    };
+    let (mut layouter, computed_for_serialization) =
+        match setup_layouter_for_fixture_current(input_path).await {
+            Ok(result) => result,
+            Err(err) => {
+                let msg = format!("Setup failed: {err}");
+                error!("[LAYOUT] {display_name} ... FAILED: {msg}");
+                failed.push((display_name.clone(), msg));
+                return Ok(false);
+            }
+        };
     timing.setup_layouter = setup_start.elapsed();
 
     // Compute geometry
@@ -381,15 +388,16 @@ async fn process_layout_fixture(
 
     // Setup layouter
     let setup_start = Instant::now();
-    let (mut layouter, computed_for_serialization) = match setup_layouter_for_fixture(runtime, input_path).await {
-        Ok(result) => result,
-        Err(err) => {
-            let msg = format!("Setup failed: {err}");
-            error!("[LAYOUT] {display_name} ... FAILED: {msg}");
-            failed.push((display_name.clone(), msg));
-            return Ok(false);
-        }
-    };
+    let (mut layouter, computed_for_serialization) =
+        match setup_layouter_for_fixture(runtime, input_path).await {
+            Ok(result) => result,
+            Err(err) => {
+                let msg = format!("Setup failed: {err}");
+                error!("[LAYOUT] {display_name} ... FAILED: {msg}");
+                failed.push((display_name.clone(), msg));
+                return Ok(false);
+            }
+        };
     timing.setup_layouter = setup_start.elapsed();
 
     // Compute geometry
@@ -465,7 +473,7 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
     use futures::StreamExt;
 
     let chrome_path = std::path::PathBuf::from(
-        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
+        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
     );
     let config = BrowserConfig::builder()
         .chrome_executable(chrome_path)
@@ -498,10 +506,23 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
     let failed = runtime.block_on(async {
         let mut failed: Vec<(String, String)> = Vec::new();
         let mut timing = FixtureTiming::default();
-        process_layout_fixture(input_path, &runtime, &browser, harness_src, &mut failed, &mut timing).await?;
-        info!("Timing: setup={:?}, geom={:?}, chrome={:?}, cmp={:?}, total={:?}",
-              timing.setup_layouter, timing.compute_geometry, timing.chromium_fetch,
-              timing.json_comparison, timing.total);
+        process_layout_fixture(
+            input_path,
+            &runtime,
+            &browser,
+            harness_src,
+            &mut failed,
+            &mut timing,
+        )
+        .await?;
+        info!(
+            "Timing: setup={:?}, geom={:?}, chrome={:?}, cmp={:?}, total={:?}",
+            timing.setup_layouter,
+            timing.compute_geometry,
+            timing.chromium_fetch,
+            timing.json_comparison,
+            timing.total
+        );
         Ok::<_, anyhow::Error>(failed)
     })?;
 
@@ -541,7 +562,7 @@ pub fn run_chromium_layouts() -> Result<()> {
         use futures::StreamExt;
 
         let chrome_path = std::path::PathBuf::from(
-            "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
+            "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
         );
         let config = BrowserConfig::builder()
             .chrome_executable(chrome_path)
@@ -573,11 +594,23 @@ pub fn run_chromium_layouts() -> Result<()> {
         let fixtures = get_filtered_fixtures("LAYOUT")?;
         let fixture_count = fixtures.len();
 
-        // Use fresh pages (page pooling doesn't work due to chromiumoxide limitations)
-        // Testing shows concurrency=1 is fastest (6.4s) vs concurrency=16 (41s)
-        // Creating/closing pages has significant overhead, so serial is better
-        const CONCURRENCY: usize = 1;
-        info!("[LAYOUT] Running {} fixtures with concurrency {}", fixture_count, CONCURRENCY);
+        // Use concurrency based on CPU count - reusing pages with goto() is much faster
+        // than creating fresh pages per fixture
+        let concurrency = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        info!(
+            "[LAYOUT] Running {} fixtures with concurrency {}",
+            fixture_count, concurrency
+        );
+
+        // Create a pool of reusable pages upfront
+        let mut pages = Vec::new();
+        for _ in 0..concurrency {
+            let page = browser.new_page("about:blank").await?;
+            pages.push(page);
+        }
+        let pages = Arc::new(tokio::sync::Mutex::new(pages));
 
         let mut failed_vec: Vec<(String, String)> = Vec::new();
         let mut timing_vec: Vec<(String, FixtureTiming)> = Vec::new();
@@ -586,6 +619,7 @@ pub fn run_chromium_layouts() -> Result<()> {
         // Process fixtures concurrently using buffer_unordered
         let mut fixture_stream = stream::iter(fixtures.into_iter().map(|input_path| {
             let browser = Arc::clone(&browser);
+            let pages = Arc::clone(&pages);
             let harness_src_owned = harness_src.to_string();
 
             async move {
@@ -593,29 +627,37 @@ pub fn run_chromium_layouts() -> Result<()> {
                 let mut timing = FixtureTiming::default();
                 let mut local_failed: Vec<(String, String)> = Vec::new();
 
-                // Create a fresh page for each fixture
-                log::info!("Creating fresh page for: {}", display_name);
-                let page = match browser.new_page("about:blank").await {
-                    Ok(p) => p,
-                    Err(e) => return (display_name, timing, local_failed, Err(e.into())),
+                // Borrow a page from the pool
+                let page = {
+                    let mut pool = pages.lock().await;
+                    pool.pop()
                 };
 
-                let result = process_layout_fixture_parallel_with_page(
-                    &input_path,
-                    &browser,
-                    &page,
-                    &harness_src_owned,
-                    &mut local_failed,
-                    &mut timing,
-                ).await;
+                let result = if let Some(page) = page {
+                    log::info!("Processing fixture with reused page: {}", display_name);
+                    let res = process_layout_fixture_parallel_with_page(
+                        &input_path,
+                        &browser,
+                        &page,
+                        &harness_src_owned,
+                        &mut local_failed,
+                        &mut timing,
+                    )
+                    .await;
 
-                // Close the page
-                let _ = page.close().await;
+                    // Return page to pool
+                    let mut pool = pages.lock().await;
+                    pool.push(page);
+
+                    res
+                } else {
+                    Err(anyhow!("Failed to acquire page from pool"))
+                };
 
                 (display_name, timing, local_failed, result)
             }
         }))
-        .buffer_unordered(CONCURRENCY);
+        .buffer_unordered(concurrency);
 
         // Collect results as they complete
         while let Some((display_name, timing, local_failed, result)) = fixture_stream.next().await {
@@ -624,7 +666,7 @@ pub fn run_chromium_layouts() -> Result<()> {
 
             match result {
                 Ok(true) => ran += 1,
-                Ok(false) => {}, // Already added to failed_vec
+                Ok(false) => {} // Already added to failed_vec
                 Err(e) => {
                     error!("[LAYOUT] {} ... ERROR: {}", display_name, e);
                 }
@@ -735,6 +777,7 @@ const fn effective_display(display: Display) -> &'static str {
         Display::Block | Display::Contents => "block",
         Display::Flex => "flex",
         Display::InlineFlex => "inline-flex",
+        Display::InlineBlock => "inline-block",
         Display::None => "none",
     }
 }
@@ -976,9 +1019,12 @@ fn chromium_layout_extraction_script() -> &'static str {
 ///
 /// Returns an error if navigation, script evaluation, or JSON parsing fails.
 async fn chromium_layout_json_in_page(page: &Page, path: &Path) -> Result<JsonValue> {
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
-    log::info!("Starting chromium layout extraction for: {}", path.display());
+    log::info!(
+        "Starting chromium layout extraction for: {}",
+        path.display()
+    );
     navigate_and_prepare_page(page, path).await?;
 
     log::info!("Evaluating extraction script for: {}", path.display());

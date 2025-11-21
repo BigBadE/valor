@@ -425,7 +425,10 @@ where
     // Loop until parsing completes or timeout
     while !page.parsing_finished() {
         if start_time.elapsed() > max_total_time {
-            warn!("update_until_finished: exceeded total time budget of 3s after {} iterations", iterations);
+            warn!(
+                "update_until_finished: exceeded total time budget of 3s after {} iterations",
+                iterations
+            );
             warn!("parsing_finished status: {}", page.parsing_finished());
             return Ok(false);
         }
@@ -436,15 +439,23 @@ where
 
         iterations += 1;
         if iterations % 100 == 0 {
-            warn!("update_until_finished: {} iterations, elapsed: {:?}, parsing_finished: {}",
-                iterations, start_time.elapsed(), page.parsing_finished());
+            warn!(
+                "update_until_finished: {} iterations, elapsed: {:?}, parsing_finished: {}",
+                iterations,
+                start_time.elapsed(),
+                page.parsing_finished()
+            );
         }
 
         // Small sleep to yield to other tasks (parser running in background)
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
 
-    warn!("update_until_finished: finished after {} iterations in {:?}", iterations, start_time.elapsed());
+    warn!(
+        "update_until_finished: finished after {} iterations in {:?}",
+        iterations,
+        start_time.elapsed()
+    );
 
     // Final update after parsing completes
     page.update().await?;
