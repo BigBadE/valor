@@ -76,16 +76,41 @@ Possible answers:
 - Still hangs on evaluate() after navigate_to("file://")
 - **Problem exists even with default configuration**
 
+### 7. HTTP URL navigation (FAILED)
+- Tested navigate_to("http://example.com")
+- Still hangs on evaluate() after navigation
+- **Problem is not specific to file:// or data: URLs**
+
 ## CRITICAL FINDING
-**headless_chrome navigate_to() + evaluate() is BROKEN in this environment**
+**headless_chrome navigate_to() + evaluate() is COMPLETELY BROKEN**
 - Works: about:blank (no navigation) - multiple evaluate() succeed
-- Breaks: ANY navigate_to() call (file://, data:// tested)
+- Breaks: ALL navigate_to() calls tested:
+  - file:// URLs → hangs
+  - data: URLs → hangs
+  - http:// URLs → hangs
 - Even with DEFAULT LaunchOptions
 - Even with fresh browser per test
 - Broken in standalone minimal test project
 
-## Must Investigate
-1. Is Chrome binary itself broken?
-2. Environment restriction blocking CDP after navigation?
-3. Check Chrome process logs/output
-4. Try different Chrome version/revision
+### 8. Different Chrome version - Chrome 120 (FAILED)
+- Tested with /root/.local/share/headless-chrome/linux-1217362/chrome
+- Chrome 120 from October 2023
+- Still hangs on evaluate() after navigate_to()
+- **Problem is not Chrome version specific**
+
+## HYPOTHESIS: Tests Never Actually Ran
+If BOTH Chrome 111 and Chrome 120 fail the same way, and this is reproducible across:
+- file://, data:, http:// URLs
+- DEFAULT and custom LaunchOptions
+- Fresh browsers and reused browsers
+- Standalone minimal test projects
+
+Then maybe **the layout tests never actually ran successfully**. Possible explanations:
+1. Tests were using cached Chrome JSON (never calling navigate/evaluate)
+2. chromiumoxide WAS the solution that worked (not headless_chrome)
+3. There's a fundamental bug we're missing in how we call the API
+
+## Must Check
+1. Look for cached Chrome layout JSON files
+2. Verify if chromiumoxide tests actually passed
+3. Check if headless_chrome examples even work in this environment
