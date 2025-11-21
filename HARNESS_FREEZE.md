@@ -152,3 +152,23 @@ Affects ALL URLs (file://, data:, http://), both Chrome versions (111, 120).
 ## KEY FINDING
 Chrome launches OK, debugging port works, but headless_chrome library cannot
 interact with pages after navigate_to(). Even official headless_chrome examples fail.
+
+### 12. Raw CDP commands (TESTING)
+- Trying to use CDP Page.navigate directly instead of Tab.navigate_to()
+- To see if the problem is in the navigate_to() wrapper
+
+## CRITICAL REALIZATION
+The issue must be environmental because:
+- Chrome binary works (manual launch succeeds, debugging port accessible)
+- headless_chrome can launch Chrome and connect via WebSocket
+- evaluate() works perfectly on about:blank
+- **But official headless_chrome examples also hang/timeout**
+  - Cloned rust-headless-chrome repo
+  - Their own examples fail identically
+- This is NOT a code problem, it's environmental
+
+## Possible Environmental Issues
+1. Docker/container networking blocking WebSocket after certain CDP events
+2. Security policy blocking specific CDP commands
+3. headless_chrome 1.0.18 incompatible with this Rust toolchain
+4. Chrome binary version incompatibility with headless_chrome expectations
