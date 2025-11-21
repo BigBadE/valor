@@ -317,6 +317,44 @@ The Serde error is **NOT caused by accumulated state**. It's triggered by specif
 3. ✓ Tested browser restart: No improvement (refuted resource exhaustion)
 4. ✓ Added event handler logging: Discovered Serde errors on every navigation
 5. ✓ Correlated Serde errors with timeouts: Confirmed causation
+6. ✓ **Tested PR #246 fix**: Eliminates Serde errors, timeouts persist
+
+---
+
+## PR #246 Test Results (chromiumoxide fix/serde-untagged branch)
+
+### Implementation
+Switched to caido/dependency-chromiumoxide fork, branch `ef-json-parsing` which fixes CDP message deserialization by:
+- Adding `CdpError::InvalidMessage` variant for unparseable messages
+- Properly handling messages that don't match the Message enum
+- Preventing handler crashes when Chrome sends unknown CDP formats
+
+### Results (273.91s runtime, cache cleared)
+
+**Serde Deserialization:**
+- ✅ **ZERO Serde errors** (vs constant errors with 0.7)
+- ✅ Handler processes all CDP messages without dropping them
+- ✅ No more "data did not match any variant of untagged enum Message" errors
+
+**Timeout Pattern:**
+- ⚠️ **27 timeouts** (38% failure rate, vs 28/39% baseline)
+- ⚠️ Timeouts still occur but NOT due to Serde errors
+- ✅ **7% faster runtime** (273.91s vs 293.85s)
+
+### Key Finding: Serde Errors Were Symptom, Not Root Cause
+
+The PR #246 fix proves that:
+1. **Serde errors are completely eliminated** - The deserialization bug is fixed
+2. **Timeouts persist at similar rate** - Different root cause than Serde errors
+3. **Slight performance improvement** - No dropped messages means cleaner CDP communication
+
+**Conclusion:** The intermittent timeouts have a **different root cause** unrelated to chromiumoxide's Serde deserialization. The timeouts are likely due to:
+- Chrome/CDP protocol issues
+- Network/IPC communication delays
+- Chrome process instability
+- Race conditions in CDP request/response timing
+
+**Recommendation:** Use PR #246 branch for cleaner CDP handling, but timeouts require further investigation beyond chromiumoxide.
 
 ---
 
@@ -352,11 +390,18 @@ The Serde error is **NOT caused by accumulated state**. It's triggered by specif
 - Trade test duration for stability
 - May not fully solve intermittency
 
-### Medium Term: Alternative CDP Libraries
+### Medium Term: Use PR #246 Branch + Additional Fixes
 
-**Option 1: Upgrade chromiumoxide**
-- Check if newer versions (0.8.x or later) fix CDP deserialization
-- Test if upstream has addressed the Message enum completeness
+**Option 1: Adopt PR #246 branch (RECOMMENDED)**
+- ✅ Use caido/dependency-chromiumoxide fork with ef-json-parsing branch
+- ✅ Eliminates all Serde deserialization errors
+- ✅ 7% performance improvement
+- ⚠️ Timeouts still need addressing (different root cause)
+- Next: Add retry logic or investigate Chrome/CDP timing issues
+
+**Option 2: Upgrade to chromiumoxide 0.8+ when available**
+- Wait for PR #246 to be merged upstream
+- Check if newer versions have additional fixes
 - Risk: May have breaking API changes
 
 **Option 2: Switch to fantoccini**
