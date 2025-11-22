@@ -678,21 +678,12 @@ pub fn run_chromium_layouts() -> Result<()> {
                 }
             };
 
-            // Inject HTML using JavaScript (avoids wait_for_navigation() which hangs)
-            // set_content() internally calls wait_for_navigation() which is broken
-            let escaped_html = html_content.replace('\\', "\\\\").replace('`', "\\`").replace("${", "\\${");
-            let inject_script = format!(
-                r#"
-                document.open();
-                document.write(`{}`);
-                document.close();
-                "#,
-                escaped_html
-            );
-
-            if let Err(e) = page.evaluate(inject_script).await {
-                error!("[LAYOUT] {} ... ERROR: Failed to inject HTML: {}", display_name, e);
-                failed_vec.push((display_name.clone(), format!("Failed to inject HTML: {}", e)));
+            // FIX: Use set_content() instead of manual document.open()/write()/close()
+            // Now that Handler is fixed (pinned + yields), wait_for_navigation() should work
+            // set_content() properly waits for the document to be ready before returning
+            if let Err(e) = page.set_content(&html_content).await {
+                error!("[LAYOUT] {} ... ERROR: Failed to set content: {}", display_name, e);
+                failed_vec.push((display_name.clone(), format!("Failed to set content: {}", e)));
                 let _ = page.close().await;
                 continue;
             }
@@ -1021,6 +1012,7 @@ fn our_layout_json(
 }
 
 fn chromium_layout_extraction_script() -> &'static str {
+    // RESTORED: Original complex script should now work with set_content() fix
     "(function() {
         function shouldSkip(el) {
             if (!el || !el.tagName) return false;
