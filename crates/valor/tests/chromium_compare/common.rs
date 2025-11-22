@@ -23,6 +23,21 @@ use url::Url;
 ///
 /// Returns an error if Chrome cannot be downloaded or the path cannot be determined.
 pub fn ensure_chrome_installed() -> Result<PathBuf> {
+    // First check for system-installed Chrome
+    let system_chrome_paths = [
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+    ];
+
+    for path in &system_chrome_paths {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+
     use headless_chrome::browser::LaunchOptions;
 
     // Initialize headless_chrome with fetcher enabled, which will auto-download Chrome if needed
