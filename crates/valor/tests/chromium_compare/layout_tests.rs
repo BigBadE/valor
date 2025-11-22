@@ -633,7 +633,6 @@ pub fn run_chromium_layouts() -> Result<()> {
         // Spawn handler task - CRITICAL: must poll handler or CDP commands timeout
         error!("[LAYOUT] Spawning handler task on tokio runtime");
         let handler_task = tokio::spawn(async move {
-            use futures::StreamExt;
             use std::time::Instant;
 
             log::error!("[HANDLER] Handler task started - polling chromiumoxide CDP events");
@@ -641,18 +640,17 @@ pub fn run_chromium_layouts() -> Result<()> {
             let start_time = Instant::now();
             let mut last_event_time = start_time;
 
-            // WORKAROUND: StreamExt::next() doesn't call Handler.poll_next()!
-            // Use poll_fn with direct Stream::poll_next() instead
+            // TEST: Try calling .next() on PINNED handler (chromiumoxide examples use unpinned!)
             use std::pin::pin;
-            use futures::Stream;
+            use futures::StreamExt;
 
             let mut handler_pinned = pin!(handler);
-            log::error!("[HANDLER] Starting handler loop with poll_fn workaround");
+            log::error!("[HANDLER] Handler pinned, calling .next() on PINNED handler");
 
+            // This should work if pinning is the issue
             loop {
-                let poll_result = futures::future::poll_fn(|cx| {
-                    Stream::poll_next(handler_pinned.as_mut(), cx)
-                }).await;
+                log::error!("[HANDLER] About to call handler_pinned.next().await");
+                let poll_result = handler_pinned.next().await;
 
                 let event_result = match poll_result {
                     Some(result) => result,
