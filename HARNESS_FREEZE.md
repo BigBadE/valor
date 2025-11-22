@@ -1,69 +1,65 @@
-# chromiumoxide Handler Bug - Complete Investigation
+# chromiumoxide Investigation - THIRD BUG FOUND
 
-## Two Bugs Required BOTH Fixes
+## All Three Bugs Identified
 
-1. **Handler is !Unpin** - Must pin before calling .next()
-2. **Handler must yield** - Must return Poll::Ready when work is done
+### Bug #1: Handler is !Unpin (FIXED)
+- **Problem**: `StreamExt::next()` on unpinned `!Unpin` types doesn't call `poll_next()`
+- **Fix**: `let mut handler = pin!(handler);` before calling `.next()`
+- **Status**: ✅ FIXED - Handler.poll_next() now being called
 
-## Bug #1: Handler is !Unpin
+### Bug #2: Handler Never Yields (FIXED)
+- **Problem**: Handler.poll_next() loops forever without returning to executor
+- **Fix**: `return Poll::Ready(Some(Ok(())));` when work is done
+- **Status**: ✅ FIXED - Handler now yields properly
 
-**Problem**: `StreamExt::next()` on unpinned `!Unpin` types doesn't call `poll_next()`
-
-**Why Handler is !Unpin:**
-- Contains `Connection<CdpEventMessage>` (WebSocket - !Unpin)
-- Contains `Receiver<HandlerMessage>` (async channel - !Unpin)
-- No explicit `impl Unpin for Handler`
-
-**Fix #1** (layout_tests.rs:630):
-```rust
-let mut handler = pin!(handler);  // Pin before calling .next()
-while let Some(result) = handler.next().await { ... }
-```
-
-## Bug #2: Handler Never Yields
-
-**Problem**: Handler.poll_next() loops forever without yielding to executor
-
-Original code (handler/mod.rs:666-672):
-```rust
-if done {
-    return Poll::Pending;
-}
-// Falls through to loop again - NEVER yields!
-```
-
-**Fix #2** (handler/mod.rs:666-674):
-```rust
-if done {
-    return Poll::Pending;
-} else {
-    return Poll::Ready(Some(Ok(())));  // Yield when work done
-}
-```
+### Bug #3: Chrome Crashes During evaluate() (NEW - ROOT CAUSE OF TIMEOUTS!)
+- **Problem**: Chrome process crashes when executing evaluation script
+- **Evidence**:
+  ```
+  CallId(17) received
+  → Inspector.targetCrashed event
+  → Target.targetCrashed event
+  CallId(19) received
+  CallId(18) MISSING ← This was page.evaluate()!
+  ```
+- **Impact**: evaluate() times out because Chrome crashed before sending response
+- **Status**: ❌ NEEDS FIX
 
 ## Test Results
 
-**With only Fix #1 (pin)**: Handler.poll_next() called, but hangs forever (never yields)
+With Bug #1 and #2 fixed:
+- ✅ Handler.poll_next() is called
+- ✅ Responses CallId(0) through CallId(17) received successfully
+- ✅ Events processed correctly
+- ❌ **Chrome crashes on CallId(18)** which is `page.evaluate()`
+- ❌ evaluate() times out waiting for crashed Chrome
 
-**With only Fix #2 (yield)**: Handler.poll_next() NEVER called (no pinning)
+## Chrome Crash Details
 
-**With BOTH fixes applied**:
-- 73 total fixtures
-- 30 fixtures processed in ~5 minutes
-- 1 success, 32 timeouts
-- **MAJOR IMPROVEMENT**: No cascade failures! Test continues after timeouts
+Sequence:
+1. Browser launches successfully
+2. Page navigates successfully
+3. CallId(0-17): Setup commands work fine
+4. **CallId(18): page.evaluate() sent**
+5. **Chrome crashes** - `Inspector.targetCrashed` + `Target.targetCrashed` events
+6. CallId(18) response NEVER arrives
+7. evaluate() times out after 10s
 
-## Current Status
+## Possible Causes of Chrome Crash
 
-Handler IS working (poll_next() called, test progresses), but Chrome responses still timing out at high rate (96% timeout rate). This suggests a THIRD issue beyond pinning and yielding.
+1. **Poll::Ready yield timing** - The yield fix might cause Chrome commands to be sent too fast
+2. **Script complexity** - The layout extraction script might trigger Chrome bug
+3. **Memory/resource issue** - `--no-sandbox` + `--disable-dev-shm-usage` suggest low-memory environment
+4. **Chrome version incompatibility** - Script might not work with this Chrome version
 
-Possible remaining issues:
-- Chrome responses not being routed correctly through Handler
-- evaluate() command/response matching problem
-- WebSocket message processing bug in chromiumoxide
+## Next Steps
+
+1. Test without Poll::Ready yield fix to see if Chrome still crashes
+2. Try simpler evaluation script (e.g., `"1+1"`)
+3. Check Chrome version and known crash bugs
+4. Add delay between commands to prevent overwhelming Chrome
 
 ## Files Modified
 
-- `testing/chromiumoxide/src/handler/mod.rs` - Added Poll::Ready yield fix
-- `crates/valor/tests/chromium_compare/layout_tests.rs` - Added pin!(handler) fix
-- Timeouts reverted to 10s (from 60s debugging values)
+- `testing/chromiumoxide/src/handler/mod.rs` - Both fixes applied + debug logging
+- `crates/valor/tests/chromium_compare/layout_tests.rs` - Pin fix applied
