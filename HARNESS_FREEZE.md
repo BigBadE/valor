@@ -1,81 +1,69 @@
-# chromiumoxide Handler Hang - EXACT ROOT CAUSE
+# chromiumoxide Handler Bug - Complete Investigation
 
-## The Exact Issue
+## Two Bugs Required BOTH Fixes
 
-**Handler is `!Unpin`, and `StreamExt::next()` on unpinned `!Unpin` types doesn't call `poll_next()`!**
+1. **Handler is !Unpin** - Must pin before calling .next()
+2. **Handler must yield** - Must return Poll::Ready when work is done
 
-### Line-by-Line Breakdown
+## Bug #1: Handler is !Unpin
 
-**BROKEN CODE** (layout_tests.rs:635-637):
+**Problem**: `StreamExt::next()` on unpinned `!Unpin` types doesn't call `poll_next()`
+
+**Why Handler is !Unpin:**
+- Contains `Connection<CdpEventMessage>` (WebSocket - !Unpin)
+- Contains `Receiver<HandlerMessage>` (async channel - !Unpin)
+- No explicit `impl Unpin for Handler`
+
+**Fix #1** (layout_tests.rs:630):
 ```rust
-let (browser, mut handler) = Browser::launch(config).await?;  // handler is !Unpin
-let handler_task = tokio::spawn(async move {
-    while let Some(result) = handler.next().await {  // ❌ Unpinned !Unpin type
-        result?;
-    }
-});
+let mut handler = pin!(handler);  // Pin before calling .next()
+while let Some(result) = handler.next().await { ... }
 ```
 
-**Why it fails:**
-1. `Handler` struct contains `Connection<CdpEventMessage>` (WebSocket) and `Receiver<HandlerMessage>` (channel)
-2. Both of these types are `!Unpin` (contain async state)
-3. Therefore `Handler` is `!Unpin` (no explicit `impl Unpin for Handler`)
-4. `StreamExt::next()` on an **unpinned** `!Unpin` type creates a future that never polls the underlying stream
-5. The future hangs waiting for something that will never happen
+## Bug #2: Handler Never Yields
 
-**WORKING CODE**:
+**Problem**: Handler.poll_next() loops forever without yielding to executor
+
+Original code (handler/mod.rs:666-672):
 ```rust
-let (browser, handler) = Browser::launch(config).await?;  // Remove mut
-let handler_task = tokio::spawn(async move {
-    use std::pin::pin;  // ← KEY: Must pin !Unpin types
-    use futures::StreamExt;
-
-    let mut handler = pin!(handler);  // ← Pin the handler first!
-    while let Some(result) = handler.next().await {  // ✅ Pinned !Unpin type works
-        result?;
-    }
-});
+if done {
+    return Poll::Pending;
+}
+// Falls through to loop again - NEVER yields!
 ```
 
-## Test Proof
-
-**Unpinned `handler.next().await`:**
-- ❌ `Handler.poll_next()` NEVER called
-- ❌ Test hangs for 60+ seconds
-- ❌ No events processed
-
-**Pinned `pin!(handler); handler.next().await`:**
-- ✅ `Handler.poll_next()` called continuously
-- ✅ Test completes in 1.89 seconds
-- ✅ Events processed correctly
-
-## Why chromiumoxide Examples Work
-
-chromiumoxide examples likely use a different tokio version or runtime configuration where this isn't an issue,
-OR they're using `Box::pin()` or another pinning mechanism we didn't notice.
-
-## The Fix
-
-Change ALL handler spawns from:
+**Fix #2** (handler/mod.rs:666-674):
 ```rust
-let (browser, mut handler) = Browser::launch(config).await?;
-tokio::spawn(async move { while let Some(h) = handler.next().await { ... } });
+if done {
+    return Poll::Pending;
+} else {
+    return Poll::Ready(Some(Ok(())));  // Yield when work done
+}
 ```
 
-To:
-```rust
-let (browser, handler) = Browser::launch(config).await?;
-tokio::spawn(async move {
-    use std::pin::pin;
-    use futures::StreamExt;
-    let mut handler = pin!(handler);
-    while let Some(h) = handler.next().await { ... }
-});
-```
+## Test Results
 
-## Root Cause Summary
+**With only Fix #1 (pin)**: Handler.poll_next() called, but hangs forever (never yields)
 
-- **Specific line:** `handler.next().await` on unpinned Handler (layout_tests.rs:640)
-- **Why:** `StreamExt::next()` requires `Unpin` or explicit pinning for `!Unpin` types
-- **Handler is !Unpin because:** Contains `Connection` (WebSocket) and `Receiver` (channel), both `!Unpin`
-- **Solution:** `use std::pin::pin; let mut handler = pin!(handler);` before calling `.next()`
+**With only Fix #2 (yield)**: Handler.poll_next() NEVER called (no pinning)
+
+**With BOTH fixes applied**:
+- 73 total fixtures
+- 30 fixtures processed in ~5 minutes
+- 1 success, 32 timeouts
+- **MAJOR IMPROVEMENT**: No cascade failures! Test continues after timeouts
+
+## Current Status
+
+Handler IS working (poll_next() called, test progresses), but Chrome responses still timing out at high rate (96% timeout rate). This suggests a THIRD issue beyond pinning and yielding.
+
+Possible remaining issues:
+- Chrome responses not being routed correctly through Handler
+- evaluate() command/response matching problem
+- WebSocket message processing bug in chromiumoxide
+
+## Files Modified
+
+- `testing/chromiumoxide/src/handler/mod.rs` - Added Poll::Ready yield fix
+- `crates/valor/tests/chromium_compare/layout_tests.rs` - Added pin!(handler) fix
+- Timeouts reverted to 10s (from 60s debugging values)
