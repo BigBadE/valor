@@ -563,7 +563,13 @@ pub fn run_chromium_layouts() -> Result<()> {
     clear_valor_layout_cache_if_harness_changed(harness_src)?;
 
     // Single runtime for all async operations
-    let runtime = Runtime::new()?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_name("chromium-test-worker")
+        .enable_all()
+        .build()?;
+
+    log::error!("[RUNTIME] Created tokio runtime with 4 worker threads");
 
     // Run everything in a single block_on to avoid interfering with the handler task
     let overall_start = Instant::now();
@@ -621,9 +627,11 @@ pub fn run_chromium_layouts() -> Result<()> {
         // Launch single browser instance for all fixtures (major performance improvement)
         error!("[LAYOUT] Launching shared browser instance");
         let (browser, mut handler) = Browser::launch(config.clone()).await?;
+        error!("[LAYOUT] Browser launched, about to spawn handler task");
         let browser = Arc::new(browser);
 
         // Spawn handler task - CRITICAL: must poll handler or CDP commands timeout
+        error!("[LAYOUT] Spawning handler task on tokio runtime");
         let handler_task = tokio::spawn(async move {
             use futures::StreamExt;
             use std::time::Instant;
@@ -633,12 +641,27 @@ pub fn run_chromium_layouts() -> Result<()> {
             let start_time = Instant::now();
             let mut last_event_time = start_time;
 
-            // Simple loop matching chromiumoxide examples - process events as fast as possible
-            log::error!("[HANDLER] About to call handler.next().await for the first time");
-            tokio::task::yield_now().await;  // Force context switch
-            log::error!("[HANDLER] After yield_now, about to call handler.next().await");
-            while let Some(event_result) = handler.next().await {
-                log::error!("[HANDLER] handler.next().await returned!");
+            // WORKAROUND: StreamExt::next() doesn't call Handler.poll_next()!
+            // Use poll_fn with direct Stream::poll_next() instead
+            use std::pin::pin;
+            use futures::Stream;
+
+            let mut handler_pinned = pin!(handler);
+            log::error!("[HANDLER] Starting handler loop with poll_fn workaround");
+
+            loop {
+                let poll_result = futures::future::poll_fn(|cx| {
+                    Stream::poll_next(handler_pinned.as_mut(), cx)
+                }).await;
+
+                let event_result = match poll_result {
+                    Some(result) => result,
+                    None => {
+                        log::error!("[HANDLER] Handler stream ended");
+                        break;
+                    }
+                };
+
                 event_count += 1;
                 let now = Instant::now();
                 let elapsed = now.duration_since(start_time);
@@ -647,7 +670,6 @@ pub fn run_chromium_layouts() -> Result<()> {
 
                 match event_result {
                     Ok(_) => {
-                        // Log ALL events to see exactly when they stop
                         log::error!(
                             "[HANDLER] Event #{} at {:?} (gap: {:?})",
                             event_count, elapsed, since_last
@@ -666,6 +688,10 @@ pub fn run_chromium_layouts() -> Result<()> {
                 event_count, start_time.elapsed()
             );
         });
+
+        error!("[LAYOUT] Handler task spawned, yielding to let it start");
+        tokio::task::yield_now().await;
+        error!("[LAYOUT] After yield, starting fixture processing");
 
         for (i, input_path) in fixtures.into_iter().enumerate() {
             let display_name = input_path.display().to_string();
