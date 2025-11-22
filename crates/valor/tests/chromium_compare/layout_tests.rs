@@ -25,11 +25,24 @@ type LayouterWithStyles = (Layouter, HashMap<NodeKey, ComputedStyle>);
 
 #[derive(Default, Clone, Debug)]
 struct FixtureTiming {
+    page_creation: Duration,
+    navigation: Duration,
+    script_evaluation: Duration,
+    json_parsing: Duration,
     setup_layouter: Duration,
     compute_geometry: Duration,
-    chromium_fetch: Duration,
     json_comparison: Duration,
     total: Duration,
+}
+
+impl FixtureTiming {
+    fn chromium_total(&self) -> Duration {
+        self.page_creation + self.navigation + self.script_evaluation + self.json_parsing
+    }
+
+    fn valor_total(&self) -> Duration {
+        self.setup_layouter + self.compute_geometry
+    }
 }
 
 fn replay_into_layouter(
@@ -250,17 +263,19 @@ async fn process_layout_fixture_parallel_with_page(
     timing.compute_geometry = geometry_start.elapsed();
 
     // Fetch or retrieve Chromium JSON
-    let chromium_start = Instant::now();
     let ch_json = if let Some(cached_value) = read_cached_json_for_fixture(input_path, harness_src)
     {
+        // Cache hit - no chromium timings to record
         cached_value
     } else {
-        // Reuse the provided page instead of creating a new one
-        let chromium_value = chromium_layout_json_in_page(page, input_path).await?;
+        // Extract with detailed timing
+        let (chromium_value, chrome_timing) = chromium_layout_json_in_page_with_timing(page, input_path).await?;
+        timing.navigation = chrome_timing.navigation;
+        timing.script_evaluation = chrome_timing.script_evaluation;
+        timing.json_parsing = chrome_timing.json_parsing;
         write_cached_json_for_fixture(input_path, harness_src, &chromium_value)?;
         chromium_value
     };
-    timing.chromium_fetch = chromium_start.elapsed();
 
     // Write JSON files and compare
     let comparison_start = Instant::now();
@@ -326,8 +341,7 @@ async fn process_layout_fixture_parallel(
     let our_json = our_layout_json(&layouter, &rects_external, &computed_for_serialization);
     timing.compute_geometry = geometry_start.elapsed();
 
-    // Fetch or retrieve Chromium JSON
-    let chromium_start = Instant::now();
+    // Fetch or retrieve Chromium JSON (timing not tracked in detail for this function)
     let ch_json = if let Some(cached_value) = read_cached_json_for_fixture(input_path, harness_src)
     {
         cached_value
@@ -339,7 +353,6 @@ async fn process_layout_fixture_parallel(
         write_cached_json_for_fixture(input_path, harness_src, &chromium_value)?;
         chromium_value
     };
-    timing.chromium_fetch = chromium_start.elapsed();
 
     // Write JSON files and compare
     let comparison_start = Instant::now();
@@ -406,8 +419,7 @@ async fn process_layout_fixture(
     let our_json = our_layout_json(&layouter, &rects_external, &computed_for_serialization);
     timing.compute_geometry = geometry_start.elapsed();
 
-    // Fetch or retrieve Chromium JSON
-    let chromium_start = Instant::now();
+    // Fetch or retrieve Chromium JSON (timing not tracked in detail for this function)
     let ch_json = if let Some(cached_value) = read_cached_json_for_fixture(input_path, harness_src)
     {
         cached_value
@@ -419,7 +431,6 @@ async fn process_layout_fixture(
         write_cached_json_for_fixture(input_path, harness_src, &chromium_value)?;
         chromium_value
     };
-    timing.chromium_fetch = chromium_start.elapsed();
 
     // Write JSON files and compare
     let comparison_start = Instant::now();
@@ -518,7 +529,7 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
             "Timing: setup={:?}, geom={:?}, chrome={:?}, cmp={:?}, total={:?}",
             timing.setup_layouter,
             timing.compute_geometry,
-            timing.chromium_fetch,
+            timing.chromium_total(),
             timing.json_comparison,
             timing.total
         );
@@ -635,6 +646,7 @@ pub fn run_chromium_layouts() -> Result<()> {
 
             // Create fresh page for each fixture to avoid page state issues
             // Still much faster than restarting entire browser every 30 fixtures
+            let page_start = Instant::now();
             let page = match browser.new_page("about:blank").await {
                 Ok(p) => p,
                 Err(e) => {
@@ -646,6 +658,7 @@ pub fn run_chromium_layouts() -> Result<()> {
                     continue;
                 }
             };
+            timing.page_creation = page_start.elapsed();
 
             let result = process_layout_fixture_parallel_with_page(
                 &input_path,
@@ -685,62 +698,83 @@ pub fn run_chromium_layouts() -> Result<()> {
 
     let overall_elapsed = overall_start.elapsed();
 
-    // Print timing statistics
-    info!("\n╔══════════════════════════════════════════════════════════════");
-    info!("║ TIMING BREAKDOWN");
-    info!("╠══════════════════════════════════════════════════════════════");
-    info!("║ Total wall time: {:?}", overall_elapsed);
-    info!("║ Fixtures processed: {}", timing_stats.len());
-    info!("╠══════════════════════════════════════════════════════════════");
+    // Print timing statistics (using eprintln to ensure visibility)
+    eprintln!("\n╔══════════════════════════════════════════════════════════════");
+    eprintln!("║ TIMING BREAKDOWN");
+    eprintln!("╠══════════════════════════════════════════════════════════════");
+    eprintln!("║ Total wall time: {:?}", overall_elapsed);
+    eprintln!("║ Fixtures processed: {}", timing_stats.len());
+    eprintln!("╠══════════════════════════════════════════════════════════════");
 
     // Calculate aggregates
+    let mut total_page_creation = Duration::ZERO;
+    let mut total_navigation = Duration::ZERO;
+    let mut total_script_eval = Duration::ZERO;
+    let mut total_json_parse = Duration::ZERO;
     let mut total_setup = Duration::ZERO;
     let mut total_geometry = Duration::ZERO;
-    let mut total_chromium = Duration::ZERO;
     let mut total_comparison = Duration::ZERO;
     let mut total_fixture_time = Duration::ZERO;
 
     for (_, timing) in &timing_stats {
+        total_page_creation += timing.page_creation;
+        total_navigation += timing.navigation;
+        total_script_eval += timing.script_evaluation;
+        total_json_parse += timing.json_parsing;
         total_setup += timing.setup_layouter;
         total_geometry += timing.compute_geometry;
-        total_chromium += timing.chromium_fetch;
         total_comparison += timing.json_comparison;
         total_fixture_time += timing.total;
     }
 
-    info!("║ Total time in phases:");
-    info!("║   Setup layouter:    {:?}", total_setup);
-    info!("║   Compute geometry:  {:?}", total_geometry);
-    info!("║   Chromium fetch:    {:?}", total_chromium);
-    info!("║   JSON comparison:   {:?}", total_comparison);
-    info!("║   ─────────────────────────────");
-    info!("║   Sum of fixtures:   {:?}", total_fixture_time);
-    info!("║");
-    info!("║ Average per fixture:");
+    let total_chromium = total_page_creation + total_navigation + total_script_eval + total_json_parse;
+    let total_valor = total_setup + total_geometry;
+
+    eprintln!("║ Total time in phases:");
+    eprintln!("║   CHROMIUM EXTRACTION:");
+    eprintln!("║     Page creation:       {:?}", total_page_creation);
+    eprintln!("║     Navigation:          {:?}", total_navigation);
+    eprintln!("║     Script evaluation:   {:?}", total_script_eval);
+    eprintln!("║     JSON parsing:        {:?}", total_json_parse);
+    eprintln!("║     ─── Chromium total:  {:?}", total_chromium);
+    eprintln!("║");
+    eprintln!("║   VALOR COMPUTATION:");
+    eprintln!("║     Setup layouter:      {:?}", total_setup);
+    eprintln!("║     Compute geometry:    {:?}", total_geometry);
+    eprintln!("║     ─── Valor total:     {:?}", total_valor);
+    eprintln!("║");
+    eprintln!("║   JSON comparison:       {:?}", total_comparison);
+    eprintln!("║   ═══════════════════════════════");
+    eprintln!("║   Sum of fixtures:       {:?}", total_fixture_time);
+    eprintln!("║");
+    eprintln!("║ Average per fixture:");
     let n = timing_stats.len() as u32;
     if n > 0 {
-        info!("║   Setup layouter:    {:?}", total_setup / n);
-        info!("║   Compute geometry:  {:?}", total_geometry / n);
-        info!("║   Chromium fetch:    {:?}", total_chromium / n);
-        info!("║   JSON comparison:   {:?}", total_comparison / n);
-        info!("║   Total:             {:?}", total_fixture_time / n);
+        eprintln!("║   Page creation:         {:?}", total_page_creation / n);
+        eprintln!("║   Navigation:            {:?}", total_navigation / n);
+        eprintln!("║   Script evaluation:     {:?}", total_script_eval / n);
+        eprintln!("║   JSON parsing:          {:?}", total_json_parse / n);
+        eprintln!("║   Setup layouter:        {:?}", total_setup / n);
+        eprintln!("║   Compute geometry:      {:?}", total_geometry / n);
+        eprintln!("║   JSON comparison:       {:?}", total_comparison / n);
+        eprintln!("║   Total:                 {:?}", total_fixture_time / n);
     }
-    info!("║");
-    info!("║ Parallelization efficiency:");
-    info!("║   Serial time (estimated): {:?}", total_fixture_time);
-    info!("║   Actual time:             {:?}", overall_elapsed);
+    eprintln!("║");
+    eprintln!("║ Parallelization efficiency:");
+    eprintln!("║   Serial time (estimated): {:?}", total_fixture_time);
+    eprintln!("║   Actual time:             {:?}", overall_elapsed);
     if !total_fixture_time.is_zero() {
         let speedup = total_fixture_time.as_secs_f64() / overall_elapsed.as_secs_f64();
-        info!("║   Speedup:                 {:.2}x", speedup);
+        eprintln!("║   Speedup:                 {:.2}x", speedup);
     }
-    info!("╚══════════════════════════════════════════════════════════════\n");
+    eprintln!("╚══════════════════════════════════════════════════════════════\n");
 
     // Print slowest fixtures
     let mut sorted_timing = timing_stats.clone();
     sorted_timing.sort_by_key(|(_, t)| std::cmp::Reverse(t.total));
-    info!("Top 10 slowest fixtures:");
+    eprintln!("Top 10 slowest fixtures:");
     for (name, timing) in sorted_timing.iter().take(10) {
-        info!("  {:?} - {}", timing.total, name);
+        eprintln!("  {:?} - {}", timing.total, name);
     }
 
     if failed.is_empty() {
@@ -1022,42 +1056,56 @@ fn chromium_layout_extraction_script() -> &'static str {
 /// # Errors
 ///
 /// Returns an error if navigation, script evaluation, or JSON parsing fails.
-async fn chromium_layout_json_in_page(page: &Page, path: &Path) -> Result<JsonValue> {
+struct ChromiumExtractTiming {
+    navigation: Duration,
+    script_evaluation: Duration,
+    json_parsing: Duration,
+}
+
+async fn chromium_layout_json_in_page_with_timing(
+    page: &Page,
+    path: &Path,
+) -> Result<(JsonValue, ChromiumExtractTiming)> {
     use tokio::time::{Duration, timeout, Instant};
 
-    log::warn!(
-        "[EXTRACT] Starting chromium layout extraction for: {}",
-        path.display()
-    );
     let nav_start = Instant::now();
     navigate_and_prepare_page(page, path).await?;
-    log::warn!("[EXTRACT] Navigation took {:?} for: {}", nav_start.elapsed(), path.display());
+    let navigation_time = nav_start.elapsed();
 
-    log::warn!("[EXTRACT] Evaluating extraction script for: {}", path.display());
     let script = chromium_layout_extraction_script();
     let eval_start = Instant::now();
 
     // Add 10 second timeout to script evaluation
     let result = match timeout(Duration::from_secs(10), page.evaluate(script)).await {
-        Ok(Ok(r)) => {
-            log::warn!("[EXTRACT] Script evaluation completed in {:?} for: {}", eval_start.elapsed(), path.display());
-            r
-        }
+        Ok(Ok(r)) => r,
         Ok(Err(e)) => {
-            log::error!("[EXTRACT] Script evaluation failed after {:?} for {}: {}", eval_start.elapsed(), path.display(), e);
             return Err(anyhow!("Script evaluation failed for {}: {}", path.display(), e));
         }
         Err(_) => {
-            log::error!("[EXTRACT] Script evaluation timeout after 10s for {}", path.display());
             return Err(anyhow!("Script evaluation timeout after 10s for {}", path.display()));
         }
     };
+    let script_eval_time = eval_start.elapsed();
 
+    let parse_start = Instant::now();
     let json_string = result
         .value()
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("Chromium returned non-string JSON for layout"))?;
     let parsed: JsonValue = from_str(json_string)?;
-    log::warn!("[EXTRACT] JSON parsing completed for: {}", path.display());
-    Ok(parsed)
+    let json_parse_time = parse_start.elapsed();
+
+    Ok((
+        parsed,
+        ChromiumExtractTiming {
+            navigation: navigation_time,
+            script_evaluation: script_eval_time,
+            json_parsing: json_parse_time,
+        },
+    ))
+}
+
+async fn chromium_layout_json_in_page(page: &Page, path: &Path) -> Result<JsonValue> {
+    let (json, _timing) = chromium_layout_json_in_page_with_timing(page, path).await?;
+    Ok(json)
 }
