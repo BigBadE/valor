@@ -657,3 +657,230 @@ Evidence:
 
 **Conclusion**: The timeout issue is NOT caused by our code. chromiumoxide PR #246's Handler implementation is broken and does not yield events to its Stream, preventing proper CDP message routing despite internal processing continuing to work partially.
 
+---
+
+## ROOT CAUSE IDENTIFIED: chromiumoxide conn.rs Message Dropping Bug (2025-11-22)
+
+### The Exact Bug Location
+
+**File**: `testing/chromiumoxide/src/conn.rs`
+**Lines**: 149-155
+**Introduced by**: Commit c955148 "Allow parsing failures (#197)" on 2024-10-24
+
+### The Bug
+
+When Chrome sends a CDP response via WebSocket, chromiumoxide attempts to deserialize it into the `Message<T>` enum:
+
+```rust
+#[serde(untagged)]
+pub enum Message<T = CdpJsonEventMessage> {
+    Response(Response),  // Command responses
+    Event(T),            // Events from Chrome
+}
+```
+
+**The problematic code** (conn.rs:142-157):
+
+```rust
+match ready!(pin.ws.poll_next_unpin(cx)) {
+    Some(Ok(WsMessage::Text(text))) => {
+        let ready = match serde_json::from_str::<Message<T>>(&text) {
+            Ok(msg) => {
+                tracing::trace!("Received {:?}", msg);
+                Ok(msg)
+            }
+            Err(err) => {
+                tracing::debug!(target: "chromiumoxide::conn::raw_ws::parse_errors", msg = text, "Failed to parse raw WS message");
+                tracing::error!("Failed to deserialize WS response {}", err);
+                // Go to the next iteration and try reading the next message
+                // in the hopes we can reconver and continue working.
+                continue;  // ← THE BUG: Silently drops the message!
+            }
+        };
+        return Poll::Ready(Some(ready));
+    }
+```
+
+**Before PR #197** (the correct behavior):
+```rust
+Err(err) => {
+    tracing::debug!(...);
+    tracing::error!("Failed to deserialize WS response {}", err);
+    Err(err.into())  // ← Returned error to caller
+}
+```
+
+**After PR #197** (the bug):
+```rust
+Err(err) => {
+    tracing::debug!(...);
+    tracing::error!("Failed to deserialize WS response {}", err);
+    // Go to the next iteration and try reading the next message
+    // in the hopes we can reconver and continue working.
+    continue;  // ← Silently drops message and tries next one
+}
+```
+
+### Why This Breaks evaluate()
+
+1. **First `page.evaluate()` call**:
+   - Sends `Runtime.evaluate` CDP command with CallId 1
+   - Chrome sends response with CallId 1
+   - chromiumoxide successfully deserializes it as `Message::Response`
+   - Response flows through: Connection → Handler.poll_next() → Handler.on_response() → CommandFuture
+   - ✅ Returns result successfully
+
+2. **Second `page.evaluate()` call**:
+   - Sends `Runtime.evaluate` CDP command with CallId 2
+   - Chrome sends response with CallId 2
+   - **chromiumoxide FAILS to deserialize** (serde error)
+   - **Response is SILENTLY DROPPED** (`continue;` on line 154)
+   - Connection.poll_next() **never yields this message**
+   - Handler.poll_next() **never receives the response**
+   - Handler.on_response() **is never called**
+   - CommandFuture **waits forever** on the oneshot channel
+   - After 30 seconds: CommandFuture times out (REQUEST_TIMEOUT = 30_000ms)
+
+### The Request/Response Flow
+
+**Normal flow** (when deserialization succeeds):
+```
+Chrome → WebSocket → Connection.poll_next() → Message::Response
+         ↓
+Handler.poll_next() → reads Message::Response
+         ↓
+Handler.on_response(resp) → looks up pending_commands by CallId
+         ↓
+OneshotSender.send(resp) → sends to CommandFuture
+         ↓
+CommandFuture.poll() → receives response from oneshot channel
+         ↓
+page.evaluate() → returns result
+```
+
+**Broken flow** (when deserialization fails):
+```
+Chrome → WebSocket → Connection.poll_next() → Serde error
+         ↓
+Message DROPPED (continue;) → Connection.poll_next() reads next message
+         ↓
+Handler.poll_next() → NEVER RECEIVES THIS RESPONSE
+         ↓
+Handler.pending_commands → CallId 2 remains in map forever
+         ↓
+CommandFuture.poll() → waits on oneshot channel forever
+         ↓
+After 30s: CommandFuture times out
+```
+
+### Why Deserialization Fails
+
+The `Message<T>` enum is **untagged**, so serde tries each variant in order:
+
+1. First tries to deserialize as `Response(Response)`:
+   ```rust
+   pub struct Response {
+       pub id: CallId,
+       pub result: Option<serde_json::Value>,
+       pub error: Option<Error>,
+   }
+   ```
+
+2. If that fails, tries to deserialize as `Event(T)` (CdpJsonEventMessage):
+   ```rust
+   pub struct CdpJsonEventMessage {
+       pub method: MethodId,
+       pub session_id: Option<String>,
+       pub params: serde_json::Value,
+   }
+   ```
+
+3. If **both** fail, serde returns an error
+
+**Hypothesis**: Chrome sends CDP messages with fields that don't match either struct. Common causes:
+- Extra unexpected fields in the response
+- Missing required fields
+- Wrong field types
+- Chrome using newer CDP protocol version than chromiumoxide expects
+
+### Evidence Trail
+
+From HARNESS_FREEZE.md earlier investigation:
+- Every navigation triggered: `[HANDLER] Event error: Serde(Error("data did not match any variant of untagged enum Message", line: 0, column: 0))`
+- 30-40% of fixtures timeout (those where the evaluate response gets dropped)
+- 60-70% succeed (those where only non-critical event messages get dropped)
+
+### Why This Is Intermittent
+
+The bug is **deterministic at the message level** but **appears intermittent at the test level** because:
+
+1. Chrome sends many CDP messages during each page operation
+2. Most are events (Runtime.consoleAPICalled, Page.frameNavigated, etc.)
+3. Dropping event messages doesn't break functionality
+4. Only when a **Response message** (to Runtime.evaluate) gets dropped does the hang occur
+5. Whether a specific Response gets dropped depends on:
+   - Which CDP messages Chrome sends (varies by page content)
+   - Chrome version differences
+   - Timing of when messages arrive
+   - Exact format of Chrome's responses
+
+### The Fix
+
+Three approaches:
+
+**Option 1: Revert PR #197** (safest)
+```rust
+Err(err) => {
+    tracing::debug!(...);
+    tracing::error!("Failed to deserialize WS response {}", err);
+    Err(err.into())  // Return error instead of continuing
+}
+```
+
+**Option 2: Only drop Event messages, surface Response errors**
+```rust
+Err(err) => {
+    // Try to extract CallId to determine if this was a Response
+    if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&text) {
+        if raw.get("id").is_some() {
+            // This was a Response - must not drop it
+            return Poll::Ready(Some(Err(err.into())));
+        }
+    }
+    // Was an Event - safe to drop
+    tracing::debug!(...);
+    continue;
+}
+```
+
+**Option 3: Fix the Message enum** (proper but more work)
+- Update chromiumoxide_types to handle all CDP message formats
+- Use tagged enum or more flexible deserialization
+- This is what PR #246 attempted but with different bugs
+
+### Impact
+
+**Why only the SECOND evaluate() hangs:**
+- First evaluate() on a fresh page usually succeeds (Chrome sends standard response format)
+- Subsequent evaluates trigger more complex CDP state that Chrome represents differently
+- The "broken" response format likely appears after first page interaction
+
+**Tests affected:**
+- All layout comparison tests using chromiumoxide
+- Any code path doing multiple evaluate() calls on same page
+- Approximately 30-40% of test fixtures (those where response gets dropped)
+
+### Recommended Action
+
+**Immediate**: Revert the PR #197 change in our fork:
+```bash
+cd testing/chromiumoxide
+git revert c955148 --no-commit
+# Test if this fixes the issue
+```
+
+**Long-term**: Switch to a different Chrome automation library:
+- headless_chrome (already in dependencies, synchronous API)
+- puppeteer-rs
+- Direct CDP implementation with more flexible message handling
+
