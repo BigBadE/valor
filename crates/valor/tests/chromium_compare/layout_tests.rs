@@ -599,19 +599,8 @@ pub fn run_chromium_layouts() -> Result<()> {
             .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
         let fixtures = get_filtered_fixtures("LAYOUT")?;
-
-        // TEMPORARY: Only test the single button fixture
-        let fixtures: Vec<PathBuf> = fixtures
-            .into_iter()
-            .filter(|p| p.to_string_lossy().contains("test_single_button"))
-            .collect();
-
-        if fixtures.is_empty() {
-            return Err(anyhow!("Test fixture test_single_button.html not found!"));
-        }
-
         let fixture_count = fixtures.len();
-        error!("[LAYOUT] TESTING SINGLE FIXTURE: {:?}", fixtures[0]);
+        error!("[LAYOUT] Running {} layout fixtures", fixture_count);
 
         // Now that Handler bug is fixed, use a single browser instance for all fixtures
         // Create fresh pages for each fixture to avoid page state issues from timeouts
@@ -639,13 +628,11 @@ pub fn run_chromium_layouts() -> Result<()> {
             use futures::StreamExt;
 
             let mut handler = pin!(handler);
-            log::error!("[HANDLER] Handler pinned, entering event loop");
             while let Some(event_result) = handler.next().await {
                 if let Err(e) = event_result {
                     log::error!("[HANDLER] Handler error: {:?}", e);
                 }
             }
-            log::error!("[HANDLER] Handler stream ended");
         });
 
         error!("[LAYOUT] Handler task spawned, yielding to let it start");
@@ -1124,8 +1111,8 @@ async fn chromium_layout_json_in_page_with_timing(
 
     log::error!("[EVALUATE] Starting page.evaluate() for: {}", path.display());
 
-    // Add 60 second timeout to script evaluation
-    let result = match timeout(Duration::from_secs(60), page.evaluate(script)).await {
+    // Add 10 second timeout to script evaluation
+    let result = match timeout(Duration::from_secs(10), page.evaluate(script)).await {
         Ok(Ok(r)) => {
             log::error!("[EVALUATE] page.evaluate() SUCCESS after {:?}", eval_start.elapsed());
             r
