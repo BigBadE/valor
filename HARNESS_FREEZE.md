@@ -165,13 +165,55 @@ if let Err(e) = page.set_content(&html_content).await {
 4. **Headless != No GPU**: Chrome can use GPU acceleration in headless mode
 5. **Simple tests isolate issues**: Testing with `1+1` vs DOM access isolated the GPU issue
 
+## Secondary Issue Discovered: Multi-Page Instability ⚠️
+
+After fixing all three primary bugs, testing revealed a secondary issue with multi-page execution:
+
+**Problem**: When running all 73 fixtures in sequence with shared browser instance, Chrome becomes unstable.
+
+**Test Results**:
+- Single fixture: ✅ 100% success rate (~3ms evaluation time)
+- Multi-fixture (73 total): ⚠️ 5% success rate (3/62 succeeded before timeout)
+
+**Pattern Observed**:
+- First fixture typically succeeds
+- Subsequent fixtures mostly timeout after 10 seconds
+- Successes are sporadic, not clustered at beginning
+
+**Successful Fixtures Identified**:
+1. `06_padding_and_border.html`
+2. `05_display_none.html`
+3. `02_fixed_basic.html`
+
+**Possible Root Causes**:
+1. Chrome process degradation after processing multiple pages
+2. Resource leak in test harness (memory, file handles, event handlers)
+3. Page lifecycle issue (pages not properly closed/cleaned up)
+4. Handler event processing degrades with shared browser instance over time
+5. CDP message queue backup or handler stalling after multiple page loads
+
+**Potential Solutions** (not yet implemented):
+1. Use separate browser instance per fixture (isolate tests completely)
+2. Add explicit page cleanup/disposal between fixtures
+3. Implement browser reset/restart after N fixtures
+4. Add resource monitoring to identify specific leak
+5. Investigate if handler needs periodic reset
+
+**Impact**:
+- Primary bugs are completely fixed for single-page scenarios ✅
+- Multi-page test suite requires architectural changes to achieve reliable execution
+- Current workaround: Test fixtures individually or in small batches
+
 ## Next Steps
 
-1. Remove debug logging from handler (lines 638-665)
-2. Remove single-fixture debug filter (lines 608-610)
-3. Test with all 73 fixtures to confirm consistent success
-4. Measure full test suite performance
-5. Consider if --disable-dev-shm-usage is still needed
+1. ✅ Remove debug logging from handler (completed)
+2. ✅ Remove single-fixture debug filter (completed)
+3. ✅ Test with all 73 fixtures (completed - revealed secondary issue)
+4. ⚠️ **Address multi-page instability** (requires further investigation):
+   - Option A: Separate browser per fixture
+   - Option B: Investigate resource cleanup
+   - Option C: Add browser restart logic
+5. Measure full test suite performance once multi-page issue resolved
 
 ## Verification
 
