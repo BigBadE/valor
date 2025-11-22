@@ -16,7 +16,7 @@ use js::NodeKey;
 use log::{error, info};
 use serde_json::{Map as JsonMap, Value as JsonValue, from_str, json};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
@@ -593,7 +593,19 @@ pub fn run_chromium_layouts() -> Result<()> {
             .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
         let fixtures = get_filtered_fixtures("LAYOUT")?;
+
+        // TEMPORARY: Only test the single button fixture
+        let fixtures: Vec<PathBuf> = fixtures
+            .into_iter()
+            .filter(|p| p.to_string_lossy().contains("test_single_button"))
+            .collect();
+
+        if fixtures.is_empty() {
+            return Err(anyhow!("Test fixture test_single_button.html not found!"));
+        }
+
         let fixture_count = fixtures.len();
+        error!("[LAYOUT] TESTING SINGLE FIXTURE: {:?}", fixtures[0]);
 
         // Now that Handler bug is fixed, use a single browser instance for all fixtures
         // Create fresh pages for each fixture to avoid page state issues from timeouts
@@ -614,25 +626,41 @@ pub fn run_chromium_layouts() -> Result<()> {
         // Spawn handler task - CRITICAL: must poll handler or CDP commands timeout
         let handler_task = tokio::spawn(async move {
             use futures::StreamExt;
+            use std::time::Instant;
 
             log::error!("[HANDLER] Handler task started - polling chromiumoxide CDP events");
             let mut event_count = 0;
+            let start_time = Instant::now();
+            let mut last_event_time = start_time;
 
             // Simple loop matching chromiumoxide examples - process events as fast as possible
             while let Some(event_result) = handler.next().await {
                 event_count += 1;
+                let now = Instant::now();
+                let elapsed = now.duration_since(start_time);
+                let since_last = now.duration_since(last_event_time);
+                last_event_time = now;
+
                 match event_result {
                     Ok(_) => {
-                        if event_count <= 10 || event_count % 100 == 0 {
-                            log::error!("[HANDLER] Event #{}: Ok", event_count);
-                        }
+                        // Log ALL events to see exactly when they stop
+                        log::error!(
+                            "[HANDLER] Event #{} at {:?} (gap: {:?})",
+                            event_count, elapsed, since_last
+                        );
                     }
                     Err(e) => {
-                        log::error!("[HANDLER] Event #{} error: {:?}", event_count, e);
+                        log::error!(
+                            "[HANDLER] Event #{} ERROR at {:?}: {:?}",
+                            event_count, elapsed, e
+                        );
                     }
                 }
             }
-            log::error!("[HANDLER] Stream ended after {} events", event_count);
+            log::error!(
+                "[HANDLER] Stream ended after {} events at {:?}",
+                event_count, start_time.elapsed()
+            );
         });
 
         for (i, input_path) in fixtures.into_iter().enumerate() {
@@ -1075,17 +1103,29 @@ async fn chromium_layout_json_in_page_with_timing(
     let script = chromium_layout_extraction_script();
     let eval_start = Instant::now();
 
+    log::error!("[EVALUATE] ========================================");
+    log::error!("[EVALUATE] Starting page.evaluate() for: {}", path.display());
+    log::error!("[EVALUATE] About to call page.evaluate() at {:?}", eval_start.elapsed());
+
     // Add 10 second timeout to script evaluation
     let result = match timeout(Duration::from_secs(10), page.evaluate(script)).await {
-        Ok(Ok(r)) => r,
+        Ok(Ok(r)) => {
+            log::error!("[EVALUATE] page.evaluate() SUCCESS after {:?}", eval_start.elapsed());
+            r
+        }
         Ok(Err(e)) => {
+            log::error!("[EVALUATE] page.evaluate() FAILED after {:?}: {}", eval_start.elapsed(), e);
             return Err(anyhow!("Script evaluation failed for {}: {}", path.display(), e));
         }
         Err(_) => {
+            log::error!("[EVALUATE] page.evaluate() TIMEOUT after {:?}", eval_start.elapsed());
+            log::error!("[EVALUATE] NO RESPONSE FROM CHROME - checking if Handler is still processing events...");
             return Err(anyhow!("Script evaluation timeout after 10s for {}", path.display()));
         }
     };
     let script_eval_time = eval_start.elapsed();
+    log::error!("[EVALUATE] Total script evaluation time: {:?}", script_eval_time);
+    log::error!("[EVALUATE] ========================================");
 
     let parse_start = Instant::now();
     let json_string = result
