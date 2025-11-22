@@ -599,8 +599,13 @@ pub fn run_chromium_layouts() -> Result<()> {
             .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
         let fixtures = get_filtered_fixtures("LAYOUT")?;
+
+        // DEBUG: Test single fixture
+        let fixtures: Vec<_> = fixtures.into_iter()
+            .filter(|p| p.to_string_lossy().contains("test_single_button"))
+            .collect();
         let fixture_count = fixtures.len();
-        error!("[LAYOUT] Running {} layout fixtures", fixture_count);
+        error!("[LAYOUT] Running {} layout fixtures (DEBUG: single fixture)", fixture_count);
 
         // Now that Handler bug is fixed, use a single browser instance for all fixtures
         // Create fresh pages for each fixture to avoid page state issues from timeouts
