@@ -624,19 +624,42 @@ pub fn run_chromium_layouts() -> Result<()> {
         error!("[LAYOUT] Browser launched, about to spawn handler task");
         let browser = Arc::new(browser);
 
-        // Spawn handler task - CRITICAL: must poll handler or CDP commands timeout
+        // Spawn handler task - CRITICAL: must continuously poll handler for CDP message processing
         error!("[LAYOUT] Spawning handler task on tokio runtime");
         let handler_task = tokio::spawn(async move {
-            // CRITICAL FIX: Handler is !Unpin, must pin before calling .next()
-            // Without pinning, StreamExt::next() on !Unpin types never calls poll_next()
+            use futures::future::poll_fn;
             use std::pin::pin;
-            use futures::StreamExt;
 
+            log::error!("[HANDLER-TASK] Handler task starting - will continuously drive handler");
             let mut handler = pin!(handler);
-            while let Some(event_result) = handler.next().await {
-                if let Err(e) = event_result {
-                    log::error!("[HANDLER] Handler error: {:?}", e);
-                }
+
+            // Continuously drive the handler by polling it in a loop
+            // The handler processes CDP messages and returns Poll::Pending when idle
+            loop {
+                poll_fn(|cx| {
+                    use futures::Stream;
+                    use std::task::Poll;
+
+                    match handler.as_mut().poll_next(cx) {
+                        Poll::Ready(Some(Ok(_))) => {
+                            // Handler processed some work
+                            Poll::Ready(())
+                        }
+                        Poll::Ready(Some(Err(e))) => {
+                            log::error!("[HANDLER-TASK] Handler error: {:?}", e);
+                            Poll::Ready(())
+                        }
+                        Poll::Ready(None) => {
+                            log::error!("[HANDLER-TASK] Handler stream ended");
+                            Poll::Ready(())
+                        }
+                        Poll::Pending => {
+                            // Handler is idle, waiting for work
+                            Poll::Pending
+                        }
+                    }
+                }).await;
+                // Don't yield - keep handler responsive to immediately process new messages
             }
         });
 
@@ -655,8 +678,12 @@ pub fn run_chromium_layouts() -> Result<()> {
 
             // Create fresh page for each fixture
             let page_start = Instant::now();
+            error!("[PAGE-LIFECYCLE] [{}] Creating new page (fixture {}/{})", display_name, i + 1, fixture_count);
             let page = match browser.new_page("about:blank").await {
-                Ok(p) => p,
+                Ok(p) => {
+                    error!("[PAGE-LIFECYCLE] [{}] Page created successfully", display_name);
+                    p
+                }
                 Err(e) => {
                     error!(
                         "[LAYOUT] {} ... ERROR: Failed to create page: {}",
@@ -679,12 +706,16 @@ pub fn run_chromium_layouts() -> Result<()> {
             };
 
             // Use set_content() to inject HTML content
+            error!("[PAGE-LIFECYCLE] [{}] Calling set_content()", display_name);
             if let Err(e) = page.set_content(&html_content).await {
                 error!("[LAYOUT] {} ... ERROR: Failed to set content: {}", display_name, e);
                 failed_vec.push((display_name.clone(), format!("Failed to set content: {}", e)));
+                error!("[PAGE-LIFECYCLE] [{}] Closing page after set_content error", display_name);
                 let _ = page.close().await;
+                error!("[PAGE-LIFECYCLE] [{}] Page closed", display_name);
                 continue;
             }
+            error!("[PAGE-LIFECYCLE] [{}] set_content() completed successfully", display_name);
 
             timing.page_creation = page_start.elapsed();
 
@@ -699,7 +730,11 @@ pub fn run_chromium_layouts() -> Result<()> {
             .await;
 
             // Close page immediately after use to free resources
-            let _ = page.close().await;
+            error!("[PAGE-LIFECYCLE] [{}] Closing page after fixture processing", display_name);
+            match page.close().await {
+                Ok(_) => error!("[PAGE-LIFECYCLE] [{}] Page closed successfully", display_name),
+                Err(e) => error!("[PAGE-LIFECYCLE] [{}] Page close error: {}", display_name, e),
+            }
 
             // Record results
             timing_vec.push((display_name.clone(), timing));
@@ -1098,33 +1133,34 @@ async fn chromium_layout_json_in_page_with_timing(
     use tokio::time::{Duration, timeout, Instant};
 
     // Content loaded via goto(data URL), proceeding to evaluate
-    log::error!("[EVALUATE] Page content ready, proceeding to evaluate: {}", path.display());
+    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+    log::error!("[EVALUATE] [{}] Page content ready, proceeding to evaluate", file_name);
     let navigation_time = Duration::from_secs(0);
 
     let script = chromium_layout_extraction_script();
     let eval_start = Instant::now();
 
-    log::error!("[EVALUATE] Starting page.evaluate() for: {}", path.display());
+    log::error!("[EVALUATE] [{}] Starting page.evaluate() at {:?}", file_name, Instant::now());
 
     // Add 10 second timeout to script evaluation
     let result = match timeout(Duration::from_secs(10), page.evaluate(script)).await {
         Ok(Ok(r)) => {
-            log::error!("[EVALUATE] page.evaluate() SUCCESS after {:?}", eval_start.elapsed());
+            log::error!("[EVALUATE] [{}] page.evaluate() SUCCESS after {:?}", file_name, eval_start.elapsed());
             r
         }
         Ok(Err(e)) => {
-            log::error!("[EVALUATE] page.evaluate() FAILED after {:?}: {}", eval_start.elapsed(), e);
+            log::error!("[EVALUATE] [{}] page.evaluate() FAILED after {:?}: {}", file_name, eval_start.elapsed(), e);
             return Err(anyhow!("Script evaluation failed for {}: {}", path.display(), e));
         }
         Err(_) => {
-            log::error!("[EVALUATE] page.evaluate() TIMEOUT after {:?}", eval_start.elapsed());
-            log::error!("[EVALUATE] NO RESPONSE FROM CHROME - checking if Handler is still processing events...");
+            log::error!("[EVALUATE] [{}] page.evaluate() TIMEOUT after {:?}", file_name, eval_start.elapsed());
+            log::error!("[EVALUATE] [{}] NO RESPONSE FROM CHROME - handler may be stalled", file_name);
             return Err(anyhow!("Script evaluation timeout after 10s for {}", path.display()));
         }
     };
     let script_eval_time = eval_start.elapsed();
-    log::error!("[EVALUATE] Total script evaluation time: {:?}", script_eval_time);
-    log::error!("[EVALUATE] ========================================");
+    log::error!("[EVALUATE] [{}] Total script evaluation time: {:?}", file_name, script_eval_time);
+    log::error!("[EVALUATE] [{}] ========================================", file_name);
 
     let parse_start = Instant::now();
     let json_string = result
