@@ -581,17 +581,22 @@ pub fn run_chromium_layouts() -> Result<()> {
         use chromiumoxide::browser::{Browser, BrowserConfig};
         use futures::StreamExt;
 
+        // FINAL FIX: Remove --disable-gpu flag which causes Chrome crashes on layout/rendering APIs
+        // ROOT CAUSE: --disable-gpu makes Chrome crash when calling:
+        //   - document.body / documentElement access
+        //   - window.getComputedStyle()
+        //   - element.getBoundingClientRect()
         let config = BrowserConfig::builder()
             .chrome_executable(chrome_path)
-            .no_sandbox()
+            .no_sandbox()  // Required when running as root
             .window_size(800, 600)
             .arg("--force-device-scale-factor=1")
             .arg("--hide-scrollbars")
             .arg("--blink-settings=imagesEnabled=false")
-            .arg("--disable-gpu")
+            // .arg("--disable-gpu")  // REMOVED: This flag causes Chrome to crash!
             .arg("--disable-features=OverlayScrollbar")
             .arg("--allow-file-access-from-files")
-            .arg("--disable-dev-shm-usage")
+            // .arg("--disable-dev-shm-usage")  // REMOVED: May also contribute to instability
             .arg("--disable-extensions")
             .arg("--disable-background-networking")
             .arg("--disable-sync")
@@ -678,9 +683,7 @@ pub fn run_chromium_layouts() -> Result<()> {
                 }
             };
 
-            // FIX: Use set_content() instead of manual document.open()/write()/close()
-            // Now that Handler is fixed (pinned + yields), wait_for_navigation() should work
-            // set_content() properly waits for the document to be ready before returning
+            // Use set_content() to inject HTML content
             if let Err(e) = page.set_content(&html_content).await {
                 error!("[LAYOUT] {} ... ERROR: Failed to set content: {}", display_name, e);
                 failed_vec.push((display_name.clone(), format!("Failed to set content: {}", e)));
@@ -1099,7 +1102,7 @@ async fn chromium_layout_json_in_page_with_timing(
 ) -> Result<(JsonValue, ChromiumExtractTiming)> {
     use tokio::time::{Duration, timeout, Instant};
 
-    // Content is already set via set_content(), no need to wait for navigation
+    // Content loaded via goto(data URL), proceeding to evaluate
     log::error!("[EVALUATE] Page content ready, proceeding to evaluate: {}", path.display());
     let navigation_time = Duration::from_secs(0);
 
