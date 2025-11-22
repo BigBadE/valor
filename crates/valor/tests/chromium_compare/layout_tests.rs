@@ -659,7 +659,10 @@ pub fn run_chromium_layouts() -> Result<()> {
                         }
                     }
                 }).await;
-                // Don't yield - keep handler responsive to immediately process new messages
+                // CRITICAL: Yield to allow other tasks to run, especially network I/O!
+                // Without this yield, we create a tight loop that prevents Chrome responses
+                // from being received over the network.
+                tokio::task::yield_now().await;
             }
         });
 
