@@ -88,19 +88,34 @@ pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
     log::warn!("[NAV] Starting navigation to: {}", url.as_str());
     let start = Instant::now();
 
-    // Add 10 second timeout to navigation
+    // Navigate to the URL
     match timeout(Duration::from_secs(10), page.goto(url.as_str())).await {
+        Ok(Ok(_)) => {},
+        Ok(Err(e)) => {
+            log::error!("[NAV] Navigation goto failed: {}", e);
+            return Err(anyhow::anyhow!("Navigation goto failed for {}: {}", url.as_str(), e));
+        }
+        Err(_) => {
+            log::error!("[NAV] Navigation goto timeout");
+            return Err(anyhow::anyhow!("Navigation goto timeout for {}", url.as_str()));
+        }
+    }
+
+    // CRITICAL: Wait for the page to finish loading before evaluating JavaScript!
+    // Without this, JavaScript execution hangs because the page isn't ready yet.
+    log::warn!("[NAV] Waiting for page load to complete...");
+    match timeout(Duration::from_secs(10), page.wait_for_navigation()).await {
         Ok(Ok(_)) => {
             log::warn!("[NAV] Navigation completed in {:?} for: {}", start.elapsed(), url.as_str());
             Ok(())
         }
         Ok(Err(e)) => {
-            log::error!("[NAV] Navigation failed after {:?} for {}: {}", start.elapsed(), url.as_str(), e);
-            Err(anyhow::anyhow!("Navigation failed for {}: {}", url.as_str(), e))
+            log::error!("[NAV] Wait for navigation failed after {:?}: {}", start.elapsed(), e);
+            Err(anyhow::anyhow!("Wait for navigation failed for {}: {}", url.as_str(), e))
         }
         Err(_) => {
-            log::error!("[NAV] Navigation timeout after 10s for {}", url.as_str());
-            Err(anyhow::anyhow!("Navigation timeout after 10s for {}", url.as_str()))
+            log::error!("[NAV] Wait for navigation timeout after {:?}", start.elapsed());
+            Err(anyhow::anyhow!("Wait for navigation timeout for {}", url.as_str()))
         }
     }
 }

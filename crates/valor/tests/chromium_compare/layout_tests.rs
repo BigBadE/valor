@@ -672,8 +672,7 @@ pub fn run_chromium_layouts() -> Result<()> {
                 error!("[LAYOUT] Progress: {}/{} fixtures completed", i + 1, fixture_count);
             }
 
-            // Create fresh page for each fixture to avoid page state issues
-            // Still much faster than restarting entire browser every 30 fixtures
+            // Create fresh page for each fixture
             let page_start = Instant::now();
             let page = match browser.new_page("about:blank").await {
                 Ok(p) => p,
@@ -686,6 +685,37 @@ pub fn run_chromium_layouts() -> Result<()> {
                     continue;
                 }
             };
+
+            // Read HTML file
+            let html_content = match std::fs::read_to_string(&input_path) {
+                Ok(content) => content,
+                Err(e) => {
+                    error!("[LAYOUT] {} ... ERROR: Failed to read HTML file: {}", display_name, e);
+                    failed_vec.push((display_name.clone(), format!("Failed to read HTML file: {}", e)));
+                    let _ = page.close().await;
+                    continue;
+                }
+            };
+
+            // Inject HTML using JavaScript (avoids wait_for_navigation() which hangs)
+            // set_content() internally calls wait_for_navigation() which is broken
+            let escaped_html = html_content.replace('\\', "\\\\").replace('`', "\\`").replace("${", "\\${");
+            let inject_script = format!(
+                r#"
+                document.open();
+                document.write(`{}`);
+                document.close();
+                "#,
+                escaped_html
+            );
+
+            if let Err(e) = page.evaluate(inject_script).await {
+                error!("[LAYOUT] {} ... ERROR: Failed to inject HTML: {}", display_name, e);
+                failed_vec.push((display_name.clone(), format!("Failed to inject HTML: {}", e)));
+                let _ = page.close().await;
+                continue;
+            }
+
             timing.page_creation = page_start.elapsed();
 
             let result = process_layout_fixture_parallel_with_page(
@@ -1096,16 +1126,14 @@ async fn chromium_layout_json_in_page_with_timing(
 ) -> Result<(JsonValue, ChromiumExtractTiming)> {
     use tokio::time::{Duration, timeout, Instant};
 
-    let nav_start = Instant::now();
-    navigate_and_prepare_page(page, path).await?;
-    let navigation_time = nav_start.elapsed();
+    // Content is already set via set_content(), no need to wait for navigation
+    log::error!("[EVALUATE] Page content ready, proceeding to evaluate: {}", path.display());
+    let navigation_time = Duration::from_secs(0);
 
     let script = chromium_layout_extraction_script();
     let eval_start = Instant::now();
 
-    log::error!("[EVALUATE] ========================================");
     log::error!("[EVALUATE] Starting page.evaluate() for: {}", path.display());
-    log::error!("[EVALUATE] About to call page.evaluate() at {:?}", eval_start.elapsed());
 
     // Add 10 second timeout to script evaluation
     let result = match timeout(Duration::from_secs(10), page.evaluate(script)).await {
