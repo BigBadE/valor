@@ -492,10 +492,10 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
         .arg("--force-device-scale-factor=1")
         .arg("--hide-scrollbars")
         .arg("--blink-settings=imagesEnabled=false")
-        .arg("--disable-gpu")
+        // .arg("--disable-gpu")  // REMOVED: Causes Chrome crashes on layout/rendering APIs
         .arg("--disable-features=OverlayScrollbar")
         .arg("--allow-file-access-from-files")
-        .arg("--disable-dev-shm-usage")
+        // .arg("--disable-dev-shm-usage")  // REMOVED: May contribute to instability
         .arg("--disable-extensions")
         .arg("--disable-background-networking")
         .arg("--disable-sync")
@@ -604,13 +604,8 @@ pub fn run_chromium_layouts() -> Result<()> {
             .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
         let fixtures = get_filtered_fixtures("LAYOUT")?;
-
-        // DEBUG: Test single fixture
-        let fixtures: Vec<_> = fixtures.into_iter()
-            .filter(|p| p.to_string_lossy().contains("test_single_button"))
-            .collect();
         let fixture_count = fixtures.len();
-        error!("[LAYOUT] Running {} layout fixtures (DEBUG: single fixture)", fixture_count);
+        error!("[LAYOUT] Running {} layout fixtures", fixture_count);
 
         // Now that Handler bug is fixed, use a single browser instance for all fixtures
         // Create fresh pages for each fixture to avoid page state issues from timeouts

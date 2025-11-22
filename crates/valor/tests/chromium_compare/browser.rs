@@ -46,10 +46,10 @@ pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser>
         .arg("--force-device-scale-factor=1")
         .arg("--hide-scrollbars")
         .arg("--blink-settings=imagesEnabled=false")
-        .arg("--disable-gpu")
+        // .arg("--disable-gpu")  // REMOVED: Causes Chrome crashes on layout/rendering APIs
         .arg("--disable-features=OverlayScrollbar")
         .arg("--allow-file-access-from-files")
-        .arg("--disable-dev-shm-usage")
+        // .arg("--disable-dev-shm-usage")  // REMOVED: May contribute to instability
         .arg("--disable-extensions")
         .arg("--disable-background-networking")
         .arg("--disable-sync");
