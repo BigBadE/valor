@@ -584,80 +584,57 @@ pub fn run_chromium_layouts() -> Result<()> {
         let fixtures = get_filtered_fixtures("LAYOUT")?;
         let fixture_count = fixtures.len();
 
-        // Browser restart strategy: Restart every N fixtures to prevent resource exhaustion
-        // Testing shows this prevents catastrophic failure cascades
-        const RESTART_INTERVAL: usize = 30;
+        // Now that Handler bug is fixed, use a single browser instance for all fixtures
+        // Create fresh pages for each fixture to avoid page state issues from timeouts
         error!(
-            "[LAYOUT] Running {} fixtures with browser restart every {} fixtures",
-            fixture_count, RESTART_INTERVAL
+            "[LAYOUT] Running {} fixtures with shared browser instance",
+            fixture_count
         );
 
         let mut failed_vec: Vec<(String, String)> = Vec::new();
         let mut timing_vec: Vec<(String, FixtureTiming)> = Vec::new();
         let mut ran = 0;
 
-        let mut browser_opt: Option<(Arc<Browser>, tokio::task::JoinHandle<()>)> = None;
+        // Launch single browser instance for all fixtures (major performance improvement)
+        error!("[LAYOUT] Launching shared browser instance");
+        let (browser, mut handler) = Browser::launch(config.clone()).await?;
+        let browser = Arc::new(browser);
 
-        for (i, input_path) in fixtures.into_iter().enumerate() {
-            // Launch or restart browser as needed
-            if i % RESTART_INTERVAL == 0 {
-                // Drop old browser if it exists
-                if let Some((old_browser, old_handler)) = browser_opt.take() {
-                    error!(
-                        "[LAYOUT] Restarting browser after {} fixtures (processed {}/{})",
-                        RESTART_INTERVAL,
-                        i,
-                        fixture_count
-                    );
-                    drop(old_browser);
-                    old_handler.abort();
-                    // Give Chrome time to fully shutdown
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
+        // Spawn handler task - CRITICAL: must poll handler or CDP commands timeout
+        let handler_task = tokio::spawn(async move {
+            use futures::StreamExt;
 
-                // Launch fresh browser
-                error!(
-                    "[LAYOUT] Launching browser for fixtures {}-{}",
-                    i,
-                    (i + RESTART_INTERVAL).min(fixture_count) - 1
-                );
-                let (browser, mut handler) = Browser::launch(config.clone()).await?;
-                let browser = Arc::new(browser);
+            log::error!("[HANDLER] Handler task started - polling chromiumoxide CDP events");
+            let mut event_count = 0;
 
-                // Spawn handler task - CRITICAL: must poll handler or CDP commands timeout
-                let handler_task = tokio::spawn(async move {
-                    use futures::StreamExt;
-
-                    log::error!("[HANDLER] Handler task started - polling chromiumoxide CDP events");
-                    let mut event_count = 0;
-
-                    // Simple loop matching chromiumoxide examples - process events as fast as possible
-                    while let Some(event_result) = handler.next().await {
-                        event_count += 1;
-                        match event_result {
-                            Ok(_) => {
-                                if event_count <= 10 || event_count % 50 == 0 {
-                                    log::error!("[HANDLER] Event #{}: Ok", event_count);
-                                }
-                            }
-                            Err(e) => {
-                                log::error!("[HANDLER] Event #{} error: {:?}", event_count, e);
-                            }
+            // Simple loop matching chromiumoxide examples - process events as fast as possible
+            while let Some(event_result) = handler.next().await {
+                event_count += 1;
+                match event_result {
+                    Ok(_) => {
+                        if event_count <= 10 || event_count % 100 == 0 {
+                            log::error!("[HANDLER] Event #{}: Ok", event_count);
                         }
                     }
-                    log::error!("[HANDLER] Stream ended after {} events", event_count);
-                });
-
-                browser_opt = Some((browser, handler_task));
+                    Err(e) => {
+                        log::error!("[HANDLER] Event #{} error: {:?}", event_count, e);
+                    }
+                }
             }
+            log::error!("[HANDLER] Stream ended after {} events", event_count);
+        });
 
-            let browser = browser_opt.as_ref().unwrap().0.clone();
-
+        for (i, input_path) in fixtures.into_iter().enumerate() {
             let display_name = input_path.display().to_string();
             let mut timing = FixtureTiming::default();
             let mut local_failed: Vec<(String, String)> = Vec::new();
 
-            // Create a fresh page for each fixture
+            if (i + 1) % 10 == 0 {
+                error!("[LAYOUT] Progress: {}/{} fixtures completed", i + 1, fixture_count);
+            }
+
+            // Create fresh page for each fixture to avoid page state issues
+            // Still much faster than restarting entire browser every 30 fixtures
             let page = match browser.new_page("about:blank").await {
                 Ok(p) => p,
                 Err(e) => {
@@ -665,6 +642,7 @@ pub fn run_chromium_layouts() -> Result<()> {
                         "[LAYOUT] {} ... ERROR: Failed to create page: {}",
                         display_name, e
                     );
+                    failed_vec.push((display_name.clone(), format!("Failed to create page: {}", e)));
                     continue;
                 }
             };
@@ -679,7 +657,7 @@ pub fn run_chromium_layouts() -> Result<()> {
             )
             .await;
 
-            // Close the page
+            // Close page immediately after use to free resources
             let _ = page.close().await;
 
             // Record results
@@ -697,12 +675,10 @@ pub fn run_chromium_layouts() -> Result<()> {
             }
         }
 
-        // Clean up final browser
-        if let Some((browser, handler)) = browser_opt.take() {
-            error!("[LAYOUT] Shutting down final browser instance");
-            drop(browser);
-            handler.abort();
-        }
+        // Clean up shared browser
+        error!("[LAYOUT] Shutting down browser instance");
+        drop(browser);
+        handler_task.abort();
 
         Ok::<_, anyhow::Error>((ran, failed_vec, timing_vec))
     })?;
