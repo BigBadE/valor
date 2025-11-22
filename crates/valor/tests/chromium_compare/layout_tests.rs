@@ -634,7 +634,11 @@ pub fn run_chromium_layouts() -> Result<()> {
             let mut last_event_time = start_time;
 
             // Simple loop matching chromiumoxide examples - process events as fast as possible
+            log::error!("[HANDLER] About to call handler.next().await for the first time");
+            tokio::task::yield_now().await;  // Force context switch
+            log::error!("[HANDLER] After yield_now, about to call handler.next().await");
             while let Some(event_result) = handler.next().await {
+                log::error!("[HANDLER] handler.next().await returned!");
                 event_count += 1;
                 let now = Instant::now();
                 let elapsed = now.duration_since(start_time);
