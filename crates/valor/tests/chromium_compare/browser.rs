@@ -36,7 +36,7 @@ impl ChromeBrowser {
 /// Returns an error if browser launch fails.
 pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser> {
     let chrome_path = std::path::PathBuf::from(
-        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome"
+        "/root/.local/share/headless-chrome/linux-1095492/chrome-linux/chrome",
     );
 
     let config_builder = BrowserConfig::builder()
@@ -46,10 +46,10 @@ pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser>
         .arg("--force-device-scale-factor=1")
         .arg("--hide-scrollbars")
         .arg("--blink-settings=imagesEnabled=false")
-        .arg("--disable-gpu")
+        // .arg("--disable-gpu")  // REMOVED: Causes Chrome crashes on layout/rendering APIs
         .arg("--disable-features=OverlayScrollbar")
         .arg("--allow-file-access-from-files")
-        .arg("--disable-dev-shm-usage")
+        // .arg("--disable-dev-shm-usage")  // REMOVED: May contribute to instability
         .arg("--disable-extensions")
         .arg("--disable-background-networking")
         .arg("--disable-sync");
@@ -57,7 +57,7 @@ pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser>
     let (browser, mut handler) = Browser::launch(
         config_builder
             .build()
-            .map_err(|e| anyhow::anyhow!("Browser config error: {}", e))?
+            .map_err(|e| anyhow::anyhow!("Browser config error: {}", e))?,
     )
     .await?;
 
@@ -82,16 +82,61 @@ pub async fn setup_chrome_browser(_test_type: TestType) -> Result<ChromeBrowser>
 ///
 /// Returns an error if navigation fails.
 pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout, Instant};
 
     let url = to_file_url(path)?;
-    log::info!("Navigating to: {}", url.as_str());
+    log::warn!("[NAV] Starting navigation to: {}", url.as_str());
+    let start = Instant::now();
 
-    // Add 10 second timeout to navigation
-    timeout(Duration::from_secs(10), page.goto(url.as_str()))
-        .await
-        .map_err(|_| anyhow::anyhow!("Navigation timeout after 10s for {}", url.as_str()))??;
+    // Navigate to the URL
+    match timeout(Duration::from_secs(10), page.goto(url.as_str())).await {
+        Ok(Ok(_)) => {},
+        Ok(Err(e)) => {
+            log::error!("[NAV] Navigation goto failed: {}", e);
+            return Err(anyhow::anyhow!("Navigation goto failed for {}: {}", url.as_str(), e));
+        }
+        Err(_) => {
+            log::error!("[NAV] Navigation goto timeout");
+            return Err(anyhow::anyhow!("Navigation goto timeout for {}", url.as_str()));
+        }
+    }
 
-    log::info!("Navigation completed for: {}", url.as_str());
+    // CRITICAL: Wait for the page to finish loading before evaluating JavaScript!
+    // Without this, JavaScript execution hangs because the page isn't ready yet.
+    log::warn!("[NAV] Waiting for page load to complete...");
+    match timeout(Duration::from_secs(10), page.wait_for_navigation()).await {
+        Ok(Ok(_)) => {
+            log::warn!("[NAV] Navigation completed in {:?} for: {}", start.elapsed(), url.as_str());
+            Ok(())
+        }
+        Ok(Err(e)) => {
+            log::error!("[NAV] Wait for navigation failed after {:?}: {}", start.elapsed(), e);
+            Err(anyhow::anyhow!("Wait for navigation failed for {}: {}", url.as_str(), e))
+        }
+        Err(_) => {
+            log::error!("[NAV] Wait for navigation timeout after {:?}", start.elapsed());
+            Err(anyhow::anyhow!("Wait for navigation timeout for {}", url.as_str()))
+        }
+    }
+}
+
+/// Navigates a headless_chrome Tab to a fixture and prepares it for testing.
+///
+/// # Errors
+///
+/// Returns an error if navigation fails.
+pub fn navigate_and_prepare_tab(tab: &headless_chrome::Tab, path: &Path) -> Result<()> {
+    use std::time::Duration;
+
+    let url = to_file_url(path)?;
+    log::info!("Navigating tab to: {}", url.as_str());
+
+    tab.navigate_to(url.as_str())?;
+    tab.wait_until_navigated()?;
+
+    // Small delay to ensure page is ready
+    std::thread::sleep(Duration::from_millis(100));
+
+    log::info!("Tab navigation completed for: {}", url.as_str());
     Ok(())
 }

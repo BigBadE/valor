@@ -18,7 +18,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 use zstd::bulk::{compress as zstd_compress, decompress as zstd_decompress};
 
-use super::browser::{TestType, navigate_and_prepare_tab, setup_chrome_browser};
+use super::browser::navigate_and_prepare_tab;
 use super::common::{
     artifacts_subdir, get_filtered_fixtures, init_test_logger, setup_page_for_fixture,
     write_png_rgba_if_changed,
@@ -338,12 +338,12 @@ impl ApplicationHandler for WindowCreator {
 
 fn initialize_render_state(width: u32, height: u32) -> &'static Mutex<RenderState> {
     use winit::event_loop::EventLoop;
+    #[cfg(target_os = "macos")]
+    use winit::platform::macos::EventLoopBuilderExtMacOS as _;
     #[cfg(target_os = "windows")]
     use winit::platform::windows::EventLoopBuilderExtWindows as _;
     #[cfg(target_os = "linux")]
     use winit::platform::x11::EventLoopBuilderExtX11 as _;
-    #[cfg(target_os = "macos")]
-    use winit::platform::macos::EventLoopBuilderExtMacOS as _;
 
     RENDER_STATE.get_or_init(|| {
         let runtime = Runtime::new().unwrap_or_else(|err| {
@@ -442,7 +442,7 @@ type BrowserWithTab = (Browser, Arc<Tab>);
 ///
 /// Returns an error if browser launch or tab creation fails.
 fn init_browser() -> Result<BrowserWithTab> {
-    let chrome_browser = setup_chrome_browser(TestType::Graphics)?;
+    let chrome_browser = Browser::default()?;
     let chrome_tab = chrome_browser.new_tab()?;
     Ok((chrome_browser, chrome_tab))
 }
@@ -637,7 +637,10 @@ struct FixtureContext<'ctx> {
 /// # Errors
 ///
 /// Returns an error if fixture processing, rendering, or comparison fails.
-fn process_single_fixture(runtime: &tokio::runtime::Runtime, ctx: &mut FixtureContext<'_>) -> Result<bool> {
+fn process_single_fixture(
+    runtime: &tokio::runtime::Runtime,
+    ctx: &mut FixtureContext<'_>,
+) -> Result<bool> {
     let name = safe_stem(ctx.fixture);
     let canon = ctx
         .fixture
@@ -734,14 +737,17 @@ pub fn chromium_graphics_smoke_compare_png() -> Result<()> {
     let mut timings = Timings::new();
 
     for fixture in fixtures {
-        if process_single_fixture(&runtime, &mut FixtureContext {
-            fixture: &fixture,
-            out_dir: &out_dir,
-            failing_dir: &failing_dir,
-            browser: &mut browser,
-            tab: &mut tab,
-            timings: &mut timings,
-        })? {
+        if process_single_fixture(
+            &runtime,
+            &mut FixtureContext {
+                fixture: &fixture,
+                out_dir: &out_dir,
+                failing_dir: &failing_dir,
+                browser: &mut browser,
+                tab: &mut tab,
+                timings: &mut timings,
+            },
+        )? {
             any_failed = true;
         }
         ran += 1;

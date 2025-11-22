@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use headless_chrome::Browser;
 use image::{ColorType, ImageEncoder as _, codecs::png::PngEncoder};
 use log::warn;
 use page_handler::config::ValorConfig;
@@ -11,6 +12,46 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::Instant;
 use url::Url;
+
+// ===== Chrome installation =====
+
+/// Ensures Chrome is downloaded and returns the path to the executable.
+///
+/// Uses headless_chrome's automatic download feature to install Chrome if needed.
+///
+/// # Errors
+///
+/// Returns an error if Chrome cannot be downloaded or the path cannot be determined.
+pub fn ensure_chrome_installed() -> Result<PathBuf> {
+    use headless_chrome::browser::LaunchOptions;
+
+    // Initialize headless_chrome with fetcher enabled, which will auto-download Chrome if needed
+    // Use sandbox(false) since we might be running as root in test environment
+    let launch_options = LaunchOptions::default_builder()
+        .sandbox(false)
+        .build()
+        .map_err(|e| anyhow!("Failed to build launch options: {}", e))?;
+
+    let _browser = Browser::new(launch_options).map_err(|e| {
+        anyhow!("Failed to initialize Chrome (auto-download failed): {}", e)
+    })?;
+
+    // headless_chrome downloads Chrome to ~/.local/share/headless-chrome on Linux
+    let home = env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let chrome_path = PathBuf::from(home)
+        .join(".local")
+        .join("share")
+        .join("headless-chrome")
+        .join("linux-1095492")
+        .join("chrome-linux")
+        .join("chrome");
+
+    if chrome_path.exists() {
+        Ok(chrome_path)
+    } else {
+        Err(anyhow!("Chrome was initialized but executable not found at expected path: {}", chrome_path.display()))
+    }
+}
 
 // ===== CLI argument parsing =====
 
@@ -425,7 +466,10 @@ where
     // Loop until parsing completes or timeout
     while !page.parsing_finished() {
         if start_time.elapsed() > max_total_time {
-            warn!("update_until_finished: exceeded total time budget of 3s after {} iterations", iterations);
+            warn!(
+                "update_until_finished: exceeded total time budget of 3s after {} iterations",
+                iterations
+            );
             warn!("parsing_finished status: {}", page.parsing_finished());
             return Ok(false);
         }
@@ -436,15 +480,23 @@ where
 
         iterations += 1;
         if iterations % 100 == 0 {
-            warn!("update_until_finished: {} iterations, elapsed: {:?}, parsing_finished: {}",
-                iterations, start_time.elapsed(), page.parsing_finished());
+            warn!(
+                "update_until_finished: {} iterations, elapsed: {:?}, parsing_finished: {}",
+                iterations,
+                start_time.elapsed(),
+                page.parsing_finished()
+            );
         }
 
         // Small sleep to yield to other tasks (parser running in background)
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
 
-    warn!("update_until_finished: finished after {} iterations in {:?}", iterations, start_time.elapsed());
+    warn!(
+        "update_until_finished: finished after {} iterations in {:?}",
+        iterations,
+        start_time.elapsed()
+    );
 
     // Final update after parsing completes
     page.update().await?;

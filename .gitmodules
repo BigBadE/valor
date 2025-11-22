@@ -1,0 +1,3 @@
+[submodule "testing/chromiumoxide"]
+	path = testing/chromiumoxide
+	url = https://github.com/BigBadE/chromiumoxide.git

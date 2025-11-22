@@ -16,6 +16,7 @@ mod test {
     }
 }
 
-// Include generated fixture tests
-#[cfg(test)]
-include!(concat!(env!("OUT_DIR"), "/generated_fixture_tests.rs"));
+// Generated individual fixture tests disabled - use run_chromium_tests() instead
+// which runs all fixtures in a single optimized batch with page pooling
+// #[cfg(test)]
+// include!(concat!(env!("OUT_DIR"), "/generated_fixture_tests.rs"));
