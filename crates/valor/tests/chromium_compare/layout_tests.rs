@@ -633,58 +633,19 @@ pub fn run_chromium_layouts() -> Result<()> {
         // Spawn handler task - CRITICAL: must poll handler or CDP commands timeout
         error!("[LAYOUT] Spawning handler task on tokio runtime");
         let handler_task = tokio::spawn(async move {
-            use std::time::Instant;
-
-            log::error!("[HANDLER] Handler task started - polling chromiumoxide CDP events");
-            let mut event_count = 0;
-            let start_time = Instant::now();
-            let mut last_event_time = start_time;
-
-            // TEST: Try calling .next() on PINNED handler (chromiumoxide examples use unpinned!)
+            // CRITICAL FIX: Handler is !Unpin, must pin before calling .next()
+            // Without pinning, StreamExt::next() on !Unpin types never calls poll_next()
             use std::pin::pin;
             use futures::StreamExt;
 
-            let mut handler_pinned = pin!(handler);
-            log::error!("[HANDLER] Handler pinned, calling .next() on PINNED handler");
-
-            // This should work if pinning is the issue
-            loop {
-                log::error!("[HANDLER] About to call handler_pinned.next().await");
-                let poll_result = handler_pinned.next().await;
-
-                let event_result = match poll_result {
-                    Some(result) => result,
-                    None => {
-                        log::error!("[HANDLER] Handler stream ended");
-                        break;
-                    }
-                };
-
-                event_count += 1;
-                let now = Instant::now();
-                let elapsed = now.duration_since(start_time);
-                let since_last = now.duration_since(last_event_time);
-                last_event_time = now;
-
-                match event_result {
-                    Ok(_) => {
-                        log::error!(
-                            "[HANDLER] Event #{} at {:?} (gap: {:?})",
-                            event_count, elapsed, since_last
-                        );
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "[HANDLER] Event #{} ERROR at {:?}: {:?}",
-                            event_count, elapsed, e
-                        );
-                    }
+            let mut handler = pin!(handler);
+            log::error!("[HANDLER] Handler pinned, entering event loop");
+            while let Some(event_result) = handler.next().await {
+                if let Err(e) = event_result {
+                    log::error!("[HANDLER] Handler error: {:?}", e);
                 }
             }
-            log::error!(
-                "[HANDLER] Stream ended after {} events at {:?}",
-                event_count, start_time.elapsed()
-            );
+            log::error!("[HANDLER] Handler stream ended");
         });
 
         error!("[LAYOUT] Handler task spawned, yielding to let it start");
