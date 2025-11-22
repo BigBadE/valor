@@ -1135,8 +1135,8 @@ async fn chromium_layout_json_in_page_with_timing(
 
     log::error!("[EVALUATE] Starting page.evaluate() for: {}", path.display());
 
-    // Add 10 second timeout to script evaluation
-    let result = match timeout(Duration::from_secs(10), page.evaluate(script)).await {
+    // Add 60 second timeout to script evaluation
+    let result = match timeout(Duration::from_secs(60), page.evaluate(script)).await {
         Ok(Ok(r)) => {
             log::error!("[EVALUATE] page.evaluate() SUCCESS after {:?}", eval_start.elapsed());
             r

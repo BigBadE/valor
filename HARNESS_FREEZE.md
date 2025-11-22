@@ -884,3 +884,96 @@ git revert c955148 --no-commit
 - puppeteer-rs
 - Direct CDP implementation with more flexible message handling
 
+---
+
+## TEST RESULTS: PR #197 Revert Does NOT Fix The Issue (2025-11-22)
+
+### What Was Tested
+
+Reverted commit c955148 "Allow parsing failures (#197)" in chromiumoxide fork and ran layout tests with cache cleared.
+
+### Results
+
+**TIMEOUT STILL OCCURS** - Even the FIRST `page.evaluate()` times out after 10 seconds.
+
+### Key Observations
+
+1. **No Deserialization Errors**: Unlike before PR #197 revert, there are ZERO "Failed to deserialize" or Serde error messages
+   - Before revert (with PR #197): Constant serde errors logged
+   - After revert: NO error messages at all
+
+2. **Handler Processes Events Successfully**:
+   - Events #1-#27 processed normally (0-132ms)
+   - 10-second gap with no events
+   - Event #28 arrives at 10.126s (right after timeout)
+
+3. **This is the FIRST evaluate(), not the second**:
+   - Previous theory: "first works, second hangs"
+   - Reality: Even the FIRST evaluate() times out
+   - No successful evaluations occurred
+
+### Conclusion
+
+**The conn.rs message-dropping bug (PR #197) is NOT the root cause of the timeout issue.**
+
+The revert successfully fixed the message-dropping behavior (no more errors), but the 10-second timeout persists. This indicates a different underlying issue:
+
+**Possibilities**:
+1. Chrome itself is slow to respond (10+ seconds to execute the script)
+2. The evaluate() script has an infinite loop or blocking operation
+3. There's a different chromiumoxide bug causing the delay
+4. The Handler Stream fix (ac5259f) has unintended side effects
+
+### Evidence
+
+```
+[2025-11-22T04:16:54Z] [HANDLER] Event #27 at 132.038694ms
+[2025-11-22T04:17:04Z] [EVALUATE] page.evaluate() TIMEOUT after 10.000991006s
+[2025-11-22T04:17:04Z] [HANDLER] Event #28 at 10.126840553s (gap: 9.994801859s)
+```
+
+The 10-second gap suggests Chrome took exactly 10 seconds to respond, or Event #28 is the timeout notification itself.
+
+### 60-Second Timeout Test Results
+
+Increased all timeouts from 10s to 60s and re-ran the test:
+
+```
+[2025-11-22T04:22:50Z] [HANDLER] Event #29 at 146.125604ms  ← evaluate() called
+[2025-11-22T04:23:50Z] [HANDLER] Event #30 at 60.143505736s ← 60s gap!
+[2025-11-22T04:23:50Z] [HANDLER] Event #31 at 60.143615811s (gap: 110.075µs)
+[2025-11-22T04:23:50Z] [HANDLER] Event #32 at 60.143989806s (gap: 373.995µs)
+[2025-11-22T04:23:50Z] [EVALUATE] page.evaluate() TIMEOUT after 60.001693188s
+```
+
+**CRITICAL FINDING**: The response events arrive EXACTLY when the timeout expires!
+
+- 10s timeout → Event at 10.126s
+- 60s timeout → Event at 60.143s
+
+**This proves the real bug:**
+
+1. Chrome IS sending responses (not hanging)
+2. Messages are NOT being dropped (no serde errors)
+3. **Responses are BLOCKED until the timeout fires**
+
+This is a **timing/synchronization bug** where:
+- The CommandFuture waits for a response on a oneshot channel
+- The response exists but doesn't get delivered
+- When the timeout fires, something wakes up and the response suddenly appears
+- Events #30-#32 arrive within 400µs of each other (the backlog is flushed)
+
+### Root Cause: Async Executor/Waker Issue
+
+The symptoms point to a missing `cx.waker().wake_by_ref()` call or similar async executor issue where:
+1. Chrome sends response via WebSocket
+2. Connection receives it and deserializes successfully
+3. Handler.on_response() should send it via oneshot channel
+4. CommandFuture should wake up and receive it
+5. **BUT**: Something in this chain fails to wake the executor
+6. The CommandFuture timeout (futures_timer::Delay) eventually fires
+7. This wakes the executor, which then processes all pending work
+8. Events #30-#32 all arrive at once (backlog flush)
+
+###
+

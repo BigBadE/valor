@@ -89,7 +89,7 @@ pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
     let start = Instant::now();
 
     // Navigate to the URL
-    match timeout(Duration::from_secs(10), page.goto(url.as_str())).await {
+    match timeout(Duration::from_secs(60), page.goto(url.as_str())).await {
         Ok(Ok(_)) => {},
         Ok(Err(e)) => {
             log::error!("[NAV] Navigation goto failed: {}", e);
@@ -104,7 +104,7 @@ pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
     // CRITICAL: Wait for the page to finish loading before evaluating JavaScript!
     // Without this, JavaScript execution hangs because the page isn't ready yet.
     log::warn!("[NAV] Waiting for page load to complete...");
-    match timeout(Duration::from_secs(10), page.wait_for_navigation()).await {
+    match timeout(Duration::from_secs(60), page.wait_for_navigation()).await {
         Ok(Ok(_)) => {
             log::warn!("[NAV] Navigation completed in {:?} for: {}", start.elapsed(), url.as_str());
             Ok(())
