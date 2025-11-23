@@ -589,6 +589,7 @@ pub fn run_chromium_layouts() -> Result<()> {
         let config = BrowserConfig::builder()
             .chrome_executable(chrome_path)
             .no_sandbox()  // Required when running as root
+            .new_headless_mode()  // CRITICAL: Use new headless mode to fix getComputedStyle() crashes!
             .window_size(800, 600)
             .arg("--force-device-scale-factor=1")
             .arg("--hide-scrollbars")
