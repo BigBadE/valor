@@ -586,21 +586,14 @@ pub fn run_chromium_layouts() -> Result<()> {
         //   - document.body / documentElement access
         //   - window.getComputedStyle()
         //   - element.getBoundingClientRect()
+        // TESTING: Minimal config to isolate crash cause
         let config = BrowserConfig::builder()
             .chrome_executable(chrome_path)
             .no_sandbox()  // Required when running as root
-            .new_headless_mode()  // Use new headless mode (still investigating crashes)
+            .new_headless_mode()  // Use new headless mode
             .window_size(800, 600)
-            .arg("--force-device-scale-factor=1")
-            .arg("--hide-scrollbars")
-            .arg("--blink-settings=imagesEnabled=false")
-            // .arg("--disable-gpu")  // REMOVED: This flag causes Chrome to crash!
-            .arg("--disable-features=OverlayScrollbar")
-            .arg("--allow-file-access-from-files")
-            // .arg("--disable-dev-shm-usage")  // REMOVED: May also contribute to instability
-            .arg("--disable-extensions")
-            .arg("--disable-background-networking")
-            .arg("--disable-sync")
+            .arg("--disable-dev-shm-usage")  // Prevent /dev/shm issues
+            .arg("--disable-software-rasterizer")  // Force GPU usage even in headless
             .build()
             .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
