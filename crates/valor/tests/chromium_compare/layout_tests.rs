@@ -586,14 +586,12 @@ pub fn run_chromium_layouts() -> Result<()> {
         //   - document.body / documentElement access
         //   - window.getComputedStyle()
         //   - element.getBoundingClientRect()
-        // TESTING: Minimal config to isolate crash cause
         let config = BrowserConfig::builder()
             .chrome_executable(chrome_path)
             .no_sandbox()  // Required when running as root
-            .new_headless_mode()  // Use new headless mode
+            .new_headless_mode()  // --headless=new
             .window_size(800, 600)
-            .arg("--disable-dev-shm-usage")  // Prevent /dev/shm issues
-            .arg("--disable-software-rasterizer")  // Force GPU usage even in headless
+            .arg("--disable-dev-shm-usage")
             .build()
             .map_err(|e| anyhow!("Browser config error: {}", e))?;
 
@@ -663,6 +661,38 @@ pub fn run_chromium_layouts() -> Result<()> {
         error!("[LAYOUT] Handler task spawned, yielding to let it start");
         tokio::task::yield_now().await;
         error!("[LAYOUT] After yield, starting fixture processing");
+
+        // TESTING: Try progressively complex HTML to find crash trigger
+        error!("[CRASH-TEST] Testing minimal HTML to identify crash trigger...");
+        let test_cases = vec![
+            ("Empty", ""),
+            ("Minimal", "<!DOCTYPE html><html><body></body></html>"),
+            ("With div", "<!DOCTYPE html><html><body><div></div></body></html>"),
+            ("With style", "<!DOCTYPE html><html><head><style>div { display: block; }</style></head><body><div></div></body></html>"),
+            ("Complex", "<!DOCTYPE html><html><head><style>body { margin: 0; padding: 10px; } div { display: block; width: 100px; }</style></head><body><div id=\"test\">Hello</div></body></html>"),
+        ];
+
+        for (name, html) in test_cases {
+            error!("[CRASH-TEST] Testing: {}", name);
+            let test_page = match browser.new_page("about:blank").await {
+                Ok(p) => p,
+                Err(e) => {
+                    error!("[CRASH-TEST] {} - Failed to create page: {}", name, e);
+                    continue;
+                }
+            };
+
+            if let Err(e) = test_page.set_content(html).await {
+                error!("[CRASH-TEST] {} - set_content FAILED: {}", name, e);
+            } else {
+                error!("[CRASH-TEST] {} - set_content SUCCESS", name);
+                tokio::time::sleep(Duration::from_millis(500)).await;  // Wait for potential crash
+                error!("[CRASH-TEST] {} - No crash after 500ms", name);
+            }
+
+            let _ = test_page.close().await;
+        }
+        error!("[CRASH-TEST] All minimal tests completed!");
 
         for (i, input_path) in fixtures.into_iter().enumerate() {
             let display_name = input_path.display().to_string();
