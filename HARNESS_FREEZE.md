@@ -12,11 +12,17 @@ All three bugs have been identified and fixed. Tests now run successfully with e
 - **Status**: ✅ FIXED - Handler.poll_next() now being called
 - **Location**: `crates/valor/tests/chromium_compare/layout_tests.rs:632-634`
 
-### Bug #2: Handler Never Yields (FIXED ✅)
+### Bug #2: Handler Never Yields (INCORRECT FIX - DO NOT USE ❌)
 - **Problem**: Handler.poll_next() loops forever without returning to executor
-- **Fix**: `return Poll::Ready(Some(Ok(())));` when work is done
-- **Status**: ✅ FIXED - Handler now yields properly
-- **Location**: `testing/chromiumoxide/src/handler/mod.rs:675-679`
+- **INCORRECT Fix Attempted**: `return Poll::Ready(Some(Ok(())));` when work is done
+- **Status**: ⚠️ **THIS FIX IS WRONG - IT CAUSES HANGING!**
+- **Correct Behavior**: Handler should ALWAYS return `Poll::Pending` after draining websocket
+- **Reason**: The websocket will wake the handler via Waker when more data arrives
+- **Location**: `testing/chromiumoxide/src/handler/mod.rs:640-643`
+
+**IMPORTANT**: Returning `Poll::Ready(Some(Ok(())))` when messages are processed creates a tight loop
+that prevents the executor from properly scheduling other tasks, causing evaluate() calls to hang
+indefinitely. The handler MUST return `Poll::Pending` and rely on the websocket's Waker mechanism.
 
 ### Bug #3: Chrome Crashes on DOM Access (FIXED ✅)
 **ROOT CAUSE IDENTIFIED**: The `--disable-gpu` Chrome launch flag causes Chrome to crash when JavaScript code tries to access DOM/layout/rendering APIs.
