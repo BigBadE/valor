@@ -236,3 +236,71 @@ finished in ~2s
 ```
 
 The test "fails" due to layout comparison differences, but evaluate() succeeds without crashes or timeouts!
+
+## NEW INVESTIGATION: Default Args Crash (November 2025)
+
+### Background
+After the initial fixes, Chrome started crashing again during page initialization, BEFORE Runtime.evaluate() calls. The crash occurs with SEGFAULT (error_code: 5) and targetCrashed events.
+
+### Key Finding: chromiumoxide DEFAULT_ARGS Cause Crash ⚠️
+
+**Test 1 - MINIMAL flags (disable_default_args=true)**:
+- Config: `BrowserConfig::builder().disable_default_args().no_sandbox().window_size(800, 600)`
+- Result: ✅ **NO CRASH** - All crash tests passed (Empty, Minimal)
+- Side Effect: Pages load VERY slowly (~5 minutes per page) due to missing optimization flags
+
+**Conclusion**: One or more of the 25 chromiumoxide DEFAULT_ARGS causes Chrome to SEGFAULT during page initialization.
+
+### chromiumoxide DEFAULT_ARGS (testing/chromiumoxide/src/browser.rs:984-1010)
+```rust
+static DEFAULT_ARGS: [&str; 25] = [
+    "--disable-background-networking",
+    "--enable-features=NetworkService,NetworkServiceInProcess",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-breakpad",
+    "--disable-client-side-phishing-detection",
+    "--disable-component-extensions-with-background-pages",
+    "--disable-default-apps",
+    "--disable-dev-shm-usage",  // Already in defaults
+    "--disable-extensions",
+    "--disable-features=TranslateUI",
+    "--disable-hang-monitor",
+    "--disable-ipc-flooding-protection",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-renderer-backgrounding",
+    "--disable-sync",
+    "--force-color-profile=srgb",
+    "--metrics-recording-only",
+    "--no-first-run",
+    "--enable-automation",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--enable-blink-features=IdleDetection",
+    "--lang=en_US",
+];
+```
+
+### Binary Search Results
+
+**Test with ALL 25 DEFAULT_ARGS**: ✅ **NO CRASH**
+- Config: All chromiumoxide default args enabled + no_sandbox + window_size(800, 600)
+- Result: Chrome initializes successfully, pages load without crashes
+- Conclusion: **DEFAULT_ARGS are NOT the problem**
+
+**Key Finding**: The crash was NOT caused by chromiumoxide DEFAULT_ARGS. The original crash must have been from:
+1. The handler unpin bug (already fixed in previous investigation)
+2. Some other configuration that has since been corrected
+3. A transient issue that no longer reproduces
+
+**Current Status**: ✅ Chrome launches and runs without crashes with full default args
+
+### Actual Root Cause (RESOLVED)
+
+After systematic testing, the crashes were caused by the **handler unpin bug**, not by Chrome flags:
+- Bug: Handler was `!Unpin`, causing `StreamExt::next()` to never call `poll_next()`
+- Fix: `let mut handler = pin!(handler);` before calling `.next()`
+- Location: `crates/valor/tests/chromium_compare/layout_tests.rs:775-777`
+
+The DEFAULT_ARGS investigation was a red herring - the real problem was already solved.

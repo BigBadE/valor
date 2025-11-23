@@ -581,19 +581,170 @@ pub fn run_chromium_layouts() -> Result<()> {
         use chromiumoxide::browser::{Browser, BrowserConfig};
         use futures::StreamExt;
 
-        // FINAL FIX: Remove --disable-gpu flag which causes Chrome crashes on layout/rendering APIs
-        // ROOT CAUSE: --disable-gpu makes Chrome crash when calling:
-        //   - document.body / documentElement access
-        //   - window.getComputedStyle()
-        //   - element.getBoundingClientRect()
-        let config = BrowserConfig::builder()
+        // BINARY SEARCH: Find exact DEFAULT_ARG causing crash
+        // chromiumoxide DEFAULT_ARGS from testing/chromiumoxide/src/browser.rs:984-1010
+        let default_args: Vec<&str> = vec![
+            "--disable-background-networking",
+            "--enable-features=NetworkService,NetworkServiceInProcess",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-breakpad",
+            "--disable-client-side-phishing-detection",
+            "--disable-component-extensions-with-background-pages",
+            "--disable-default-apps",
+            "--disable-dev-shm-usage",
+            "--disable-extensions",
+            "--disable-features=TranslateUI",
+            "--disable-hang-monitor",
+            "--disable-ipc-flooding-protection",
+            "--disable-popup-blocking",
+            "--disable-prompt-on-repost",
+            "--disable-renderer-backgrounding",
+            "--disable-sync",
+            "--force-color-profile=srgb",
+            "--metrics-recording-only",
+            "--no-first-run",
+            "--enable-automation",
+            "--password-store=basic",
+            "--use-mock-keychain",
+            "--enable-blink-features=IdleDetection",
+            "--lang=en_US",
+        ];
+
+        error!("[FLAG-SEARCH] Starting binary search through {} DEFAULT_ARGS", default_args.len());
+        error!("[FLAG-SEARCH] Testing if ANY default args cause crash...");
+
+        // Helper function to test if a set of args causes crash
+        async fn test_args_for_crash(
+            chrome_path: &Path,
+            args: &[&str],
+        ) -> Result<bool> {
+            use chromiumoxide::browser::{Browser, BrowserConfig};
+            use futures::{Stream, StreamExt};
+            use std::pin::pin;
+
+            let mut builder = BrowserConfig::builder()
+                .chrome_executable(chrome_path)
+                .disable_default_args()  // Start clean
+                .no_sandbox()  // Required when running as root
+                .window_size(800, 600);
+
+            // Add each arg
+            for arg in args {
+                builder = builder.arg(*arg);
+            }
+
+            let config = builder.build().map_err(|e| anyhow!("Browser config error: {}", e))?;
+
+            let (browser, mut handler) = Browser::launch(config).await?;
+            let browser = Arc::new(browser);
+
+            // Spawn handler task
+            let handler_task = tokio::spawn(async move {
+                let mut handler = pin!(handler);
+                loop {
+                    futures::future::poll_fn(|cx| handler.as_mut().poll_next(cx)).await;
+                }
+            });
+
+            tokio::task::yield_now().await;
+
+            // Quick crash test
+            let test_html = "<!DOCTYPE html><html><body><div>Test</div></body></html>";
+            let crash_detected = match browser.new_page("about:blank").await {
+                Ok(page) => {
+                    match page.set_content(test_html).await {
+                        Ok(_) => {
+                            // Wait for potential crash
+                            tokio::time::sleep(Duration::from_millis(1000)).await;
+                            false  // No crash
+                        }
+                        Err(_) => true  // set_content failed = crash
+                    }
+                }
+                Err(_) => true  // new_page failed = crash
+            };
+
+            // Cleanup
+            drop(browser);
+            handler_task.abort();
+            let _ = handler_task.await;
+
+            Ok(crash_detected)
+        }
+
+        // Binary search through default args
+        let mut low = 0;
+        let mut high = default_args.len();
+        let mut problematic_flags: Vec<&str> = Vec::new();
+
+        // First, test if ALL default args cause crash
+        error!("[FLAG-SEARCH] Test 1: ALL {} default args", default_args.len());
+        let all_crash = test_args_for_crash(&chrome_path, &default_args).await?;
+        error!("[FLAG-SEARCH] Test 1 result: {}", if all_crash { "CRASH ⚠️" } else { "NO CRASH ✓" });
+
+        if !all_crash {
+            error!("[FLAG-SEARCH] SUCCESS! All default args work fine - crash must be from other source");
+        } else {
+            // Binary search to find problematic flag(s)
+            error!("[FLAG-SEARCH] Starting binary search to isolate problematic flag(s)...");
+
+            while low < high {
+                let mid = (low + high) / 2;
+                let test_slice = &default_args[low..mid];
+
+                if test_slice.is_empty() {
+                    break;
+                }
+
+                error!("[FLAG-SEARCH] Testing args[{}..{}] ({} flags)", low, mid, test_slice.len());
+                error!("[FLAG-SEARCH] Flags: {:?}", test_slice);
+
+                let crash = test_args_for_crash(&chrome_path, test_slice).await?;
+                error!("[FLAG-SEARCH] Result: {}", if crash { "CRASH ⚠️" } else { "NO CRASH ✓" });
+
+                if crash {
+                    // Problem is in first half
+                    high = mid;
+                    if high - low == 1 {
+                        // Found it!
+                        error!("[FLAG-SEARCH] 🎯 FOUND PROBLEMATIC FLAG: {}", default_args[low]);
+                        problematic_flags.push(default_args[low]);
+                        break;
+                    }
+                } else {
+                    // Problem is in second half
+                    low = mid;
+                }
+            }
+        }
+
+        if !problematic_flags.is_empty() {
+            error!("[FLAG-SEARCH] ========================================");
+            error!("[FLAG-SEARCH] PROBLEMATIC FLAGS IDENTIFIED:");
+            for flag in &problematic_flags {
+                error!("[FLAG-SEARCH]   ⚠️  {}", flag);
+            }
+            error!("[FLAG-SEARCH] ========================================");
+        }
+
+        // Now run tests with ALL defaults EXCEPT the problematic ones
+        let mut safe_args = default_args.clone();
+        safe_args.retain(|arg| !problematic_flags.contains(arg));
+
+        error!("[FLAG-TEST] Running tests with {} safe default args (excluding problematic flags)", safe_args.len());
+
+        let mut builder = BrowserConfig::builder()
             .chrome_executable(chrome_path)
-            .no_sandbox()  // Required when running as root
-            .new_headless_mode()  // --headless=new
-            .window_size(800, 600)
-            .arg("--disable-dev-shm-usage")
-            .build()
-            .map_err(|e| anyhow!("Browser config error: {}", e))?;
+            .disable_default_args()
+            .no_sandbox()
+            .window_size(800, 600);
+
+        for arg in &safe_args {
+            builder = builder.arg(*arg);
+        }
+
+        let config = builder.build().map_err(|e| anyhow!("Browser config error: {}", e))?;
 
         let fixtures = get_filtered_fixtures("LAYOUT")?;
         let fixture_count = fixtures.len();
