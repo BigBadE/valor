@@ -305,19 +305,31 @@ After systematic testing, the crashes were caused by the **handler unpin bug**, 
 
 The DEFAULT_ARGS investigation was a red herring - the real problem was already solved.
 
-### Final Investigation Summary
+### Final Investigation Summary - REAL ROOT CAUSE IDENTIFIED
 
-**Comprehensive testing confirmed: NO CRASHES**
-- Tested with minimal flags → NO CRASH (pages load very slowly)
-- Tested with all 25 DEFAULT_ARGS → NO CRASH (pages load normally)
-- No targetCrashed events detected
-- No SEGFAULT errors
-- Chrome initializes and runs successfully
+**CRITICAL DISCOVERY**: Chrome crashes with SEGFAULT when processing complex HTML/CSS from fixtures!
 
-**Conclusion**: The handler unpin fix resolved all crash issues. The original "crash" investigation was pursued based on incorrect assumptions. Current status:
-- ✅ Handler properly pinned
-- ✅ No Chrome crashes
-- ✅ Browser launches and runs successfully
-- ⚠️ Page loading performance needs optimization (separate issue from crashes)
+**Timeline of Events**:
+1. ✅ set_content() completes successfully
+2. ⚠️ **Chrome SEGFAULT crash** (error_code: 5, targetCrashed events)
+3. ✅ Page content marked as ready
+4. ❌ Runtime.evaluate submitted but gets NO RESPONSE (Chrome already crashed)
+5. ⏱️ 10 second timeout
 
-Removed all investigation code (binary search, crash tests) as they were not needed and slowed down testing.
+**Why Earlier Tests Missed This**:
+- Binary search test used simple HTML: `<div>Test</div>` → NO CRASH
+- Actual fixtures have complex HTML/CSS with layout calculations → CRASH
+
+**Real Problem**: Chrome's renderer crashes during layout/rendering of complex webpage content from fixtures. The crash happens AFTER HTML is loaded but BEFORE JavaScript evaluation.
+
+**Handler Status**:
+- ✅ Handler properly pinned (line 777)
+- ✅ Handler yields correctly after processing messages (handler/mod.rs:654-660)
+- ✅ Handler processes all CDP messages including crash events
+- ❌ But Chrome crashes before it can respond to Runtime.evaluate
+
+**Next Steps Required**:
+1. Identify what specific HTML/CSS patterns trigger Chrome SEGFAULT
+2. Investigate Chrome launch flags that might prevent renderer crashes
+3. Test with different Chrome versions
+4. Enable Chrome debug logging to see crash details
