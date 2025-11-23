@@ -365,11 +365,60 @@ The SEGFAULT IS caused by:
 - Likely: Chrome version incompatibility with headless text rendering
 - Likely: Environment-specific issue (fontconfig, freetype, etc.)
 
+#### Deep Investigation #2 - Manual Chrome Testing
+
+**Attempted to reproduce crash manually with identical configuration:**
+
+| Test Configuration | Result |
+|-------------------|--------|
+| Chrome `--headless=new` (new mode) | ✅ NO CRASH |
+| Chrome `--headless` (old mode, chromiumoxide default) | ✅ NO CRASH |
+| With ALL chromiumoxide DEFAULT_ARGS (25 flags) | ✅ NO CRASH |
+| Using `Page.navigate` with data URL | ✅ NO CRASH |
+| Using `document.write()` like chromiumoxide | ✅ NO CRASH |
+
+**System Resource Findings:**
+- `/dev/shm`: 252GB available (not the issue)
+- System memory: 12GB available
+- Fonts installed: 59 fonts (DejaVu, FreeFonts, Liberation)
+- Text libraries present: freetype, fontconfig, cairo, pango
+
+**Shared Memory Errors Observed:**
+When launching with chromiumoxide DEFAULT_ARGS, Chrome logs:
+```
+ERROR:base/memory/platform_shared_memory_region_posix.cc:214] Creating shared memory in /tmp/.com.google.Chrome.* failed: Permission denied (13)
+ERROR:base/memory/platform_shared_memory_region_posix.cc:217] Unable to access(W_OK|X_OK) /tmp: Permission denied (13)
+```
+
+However, Chrome continues running and does NOT crash.
+
+#### ROOT CAUSE - CRITICAL FINDING ⚠️
+
+**The SEGFAULT is NOT reproducible when Chrome is launched manually** with identical flags and content.
+
+**This means:**
+- ❌ NOT a Chrome bug
+- ❌ NOT missing system libraries
+- ❌ NOT Chrome version issue
+- ❌ NOT Chrome flags issue
+- ✅ **SPECIFIC TO CHROMIUMOXIDE PROCESS SPAWNING**
+
+**Hypothesis**: chromiumoxide's process spawning, IPC setup, or connection timing triggers a race condition or environment state that causes Chrome's text renderer to crash. Manual Chrome launch works fine.
+
+#### Recommended Solutions
+
+1. **Switch to new headless mode**: Modify chromiumoxide tests to use `--headless=new`
+2. **Test without DEFAULT_ARGS**: Try `disable_default_args()` in chromiumoxide config
+3. **Use alternative content method**: Navigate instead of document.write()
+4. **Different chromiumoxide version**: Check if newer/older version works
+5. **Debug process spawn**: Investigate how chromiumoxide spawns Chrome vs manual launch
+
 #### Next Steps Required
 
 1. ✅ Isolate exact crash trigger → **COMPLETE**: Text content in elements
 2. ✅ Test Chrome flags workaround → **COMPLETE**: No flags prevent crash
-3. ⏳ **NEW**: Investigate system dependencies (fonts, rendering libraries)
-4. ⏳ **NEW**: Test with different Chrome versions
-5. ⏳ **NEW**: Enable Chrome verbose logging to see SEGFAULT details
-6. ⏳ **NEW**: Check for missing font libraries in environment
+3. ✅ Test manual Chrome launch → **COMPLETE**: Cannot reproduce crash manually
+4. ✅ Check system resources → **COMPLETE**: All adequate
+5. ⏳ **Test chromiumoxide with new headless mode**
+6. ⏳ **Try disabling chromiumoxide DEFAULT_ARGS**
+7. ⏳ **Alternative: Skip layout comparison tests entirely**
