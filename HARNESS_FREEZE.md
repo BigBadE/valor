@@ -305,22 +305,25 @@ After systematic testing, the crashes were caused by the **handler unpin bug**, 
 
 The DEFAULT_ARGS investigation was a red herring - the real problem was already solved.
 
-### Final Investigation Summary - REAL ROOT CAUSE IDENTIFIED
+### Final Investigation Summary - REAL ROOT CAUSE IDENTIFIED ✅
 
-**CRITICAL DISCOVERY**: Chrome crashes with SEGFAULT when processing complex HTML/CSS from fixtures!
+**CRITICAL DISCOVERY**: Chrome crashes with SEGFAULT (error_code: 5) when rendering ANY TEXT CONTENT in HTML elements!
+
+#### Exact Crash Trigger Identified:
+- ✅ **Minimal crashing HTML**: `<!DOCTYPE html><html><body><div>Hello</div></body></html>`
+- ✅ **Empty divs work**: `<div></div>` → NO CRASH
+- ❌ **Text in divs crashes**: `<div>Hello</div>` → SEGFAULT (error_code: 5)
 
 **Timeline of Events**:
 1. ✅ set_content() completes successfully
-2. ⚠️ **Chrome SEGFAULT crash** (error_code: 5, targetCrashed events)
+2. ⚠️ **Chrome SEGFAULT crash** (error_code: 5, targetCrashed events) during text rendering
 3. ✅ Page content marked as ready
 4. ❌ Runtime.evaluate submitted but gets NO RESPONSE (Chrome already crashed)
 5. ⏱️ 10 second timeout
 
 **Why Earlier Tests Missed This**:
-- Binary search test used simple HTML: `<div>Test</div>` → NO CRASH
-- Actual fixtures have complex HTML/CSS with layout calculations → CRASH
-
-**Real Problem**: Chrome's renderer crashes during layout/rendering of complex webpage content from fixtures. The crash happens AFTER HTML is loaded but BEFORE JavaScript evaluation.
+- Binary search test used simple HTML: `<div>Test</div>` → Actually DID crash, but we weren't testing systematically
+- Actual fixtures have text content everywhere → ALL CRASH
 
 **Handler Status**:
 - ✅ Handler properly pinned (line 777)
@@ -328,8 +331,45 @@ The DEFAULT_ARGS investigation was a red herring - the real problem was already 
 - ✅ Handler processes all CDP messages including crash events
 - ❌ But Chrome crashes before it can respond to Runtime.evaluate
 
-**Next Steps Required**:
-1. Identify what specific HTML/CSS patterns trigger Chrome SEGFAULT
-2. Investigate Chrome launch flags that might prevent renderer crashes
-3. Test with different Chrome versions
-4. Enable Chrome debug logging to see crash details
+#### Chrome Flags Investigation - ALL FLAGS FAILED ❌
+
+Tested 10 different flag combinations to find workaround for text rendering crash:
+
+| Test | Flags | Result |
+|------|-------|--------|
+| Baseline | (no special flags) | ⏱️ TIMEOUT - crashed |
+| Disable GPU | `--disable-gpu` | ⏱️ TIMEOUT - crashed |
+| Disable software rasterizer | `--disable-software-rasterizer` | ⏱️ TIMEOUT - crashed |
+| Disable font subpixel | `--disable-font-subpixel-positioning` | ⏱️ TIMEOUT - crashed |
+| Disable LCD text | `--disable-lcd-text` | ⏱️ TIMEOUT - crashed |
+| Use SwiftShader | `--use-gl=swiftshader` | ⏱️ TIMEOUT - crashed |
+| Disable accelerated 2D canvas | `--disable-accelerated-2d-canvas` | ⏱️ TIMEOUT - crashed |
+| Disable GPU compositing | `--disable-gpu-compositing` | ⏱️ TIMEOUT - crashed |
+| Combined text flags | `--disable-font-subpixel-positioning`, `--disable-lcd-text` | ⏱️ TIMEOUT - crashed |
+| All rendering flags | `--disable-gpu`, `--disable-software-rasterizer`, `--disable-accelerated-2d-canvas` | ⏱️ TIMEOUT - crashed |
+
+**Conclusion**: Chrome launch flags CANNOT prevent the text rendering SEGFAULT. All tested combinations result in error_code: 5.
+
+#### Root Cause Analysis
+
+The SEGFAULT is NOT caused by:
+- ❌ Handler unpin bug (already fixed with `pin!(handler)`)
+- ❌ Handler not yielding (already fixed with Poll::Ready)
+- ❌ Complex HTML/CSS (crashes even with `<div>Hello</div>`)
+- ❌ Chrome launch flags (tested 10 combinations, all failed)
+- ❌ chromiumoxide DEFAULT_ARGS (already tested, not the cause)
+
+The SEGFAULT IS caused by:
+- ✅ **Text rendering in Chrome's renderer process**
+- Likely: Missing font libraries or text rendering dependencies in CI environment
+- Likely: Chrome version incompatibility with headless text rendering
+- Likely: Environment-specific issue (fontconfig, freetype, etc.)
+
+#### Next Steps Required
+
+1. ✅ Isolate exact crash trigger → **COMPLETE**: Text content in elements
+2. ✅ Test Chrome flags workaround → **COMPLETE**: No flags prevent crash
+3. ⏳ **NEW**: Investigate system dependencies (fonts, rendering libraries)
+4. ⏳ **NEW**: Test with different Chrome versions
+5. ⏳ **NEW**: Enable Chrome verbose logging to see SEGFAULT details
+6. ⏳ **NEW**: Check for missing font libraries in environment
