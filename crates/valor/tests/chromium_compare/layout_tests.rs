@@ -581,11 +581,11 @@ pub fn run_chromium_layouts() -> Result<()> {
         use chromiumoxide::browser::{Browser, BrowserConfig};
         use futures::StreamExt;
 
-        // Browser configuration - disable DEFAULT_ARGS to test if they cause crash
+        // Browser configuration - SOLUTION: disable DEFAULT_ARGS to prevent crash
         let config = BrowserConfig::builder()
             .chrome_executable(chrome_path)
             .no_sandbox()  // Required when running as root
-            .disable_default_args()  // Disable chromiumoxide's 25 DEFAULT_ARGS
+            .disable_default_args()  // Fixes SEGFAULT crash - one of chromiumoxide's DEFAULT_ARGS causes Chrome text rendering to crash
             .window_size(800, 600)
             .build()
             .map_err(|e| anyhow!("Browser config error: {}", e))?;
