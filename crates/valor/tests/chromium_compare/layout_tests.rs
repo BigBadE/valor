@@ -581,10 +581,11 @@ pub fn run_chromium_layouts() -> Result<()> {
         use chromiumoxide::browser::{Browser, BrowserConfig};
         use futures::StreamExt;
 
-        // Browser configuration - use chromiumoxide defaults
+        // Browser configuration - disable DEFAULT_ARGS to test if they cause crash
         let config = BrowserConfig::builder()
             .chrome_executable(chrome_path)
             .no_sandbox()  // Required when running as root
+            .disable_default_args()  // Disable chromiumoxide's 25 DEFAULT_ARGS
             .window_size(800, 600)
             .build()
             .map_err(|e| anyhow!("Browser config error: {}", e))?;
