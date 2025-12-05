@@ -1,3 +1,9 @@
 [submodule "testing/chromiumoxide"]
 	path = testing/chromiumoxide
 	url = https://github.com/BigBadE/chromiumoxide.git
+[submodule "deps/cosmic-text"]
+	path = deps/cosmic-text
+	url = https://github.com/BigBadE/cosmic-text.git
+[submodule "deps/glyphon"]
+	path = deps/glyphon
+	url = https://github.com/BigBadE/glyphon.git

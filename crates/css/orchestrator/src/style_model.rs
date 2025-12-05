@@ -71,7 +71,6 @@ pub enum Display {
     Inline,
     InlineBlock,
     Block,
-    InlineBlock,
     Flex,
     InlineFlex,
     None,

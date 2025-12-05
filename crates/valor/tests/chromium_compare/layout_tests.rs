@@ -7,17 +7,11 @@ use super::common::{
 };
 use super::json_compare::compare_json_with_epsilon;
 use anyhow::{Result, anyhow};
-<<<<<<< HEAD
-use css::style_types::{AlignItems, BoxSizing, ComputedStyle, Display, Overflow, Position};
-use css_core::LayoutRect;
-use headless_chrome::Tab;
-=======
 use chromiumoxide::page::Page;
 use css::style_types::{AlignItems, BoxSizing, ComputedStyle, Display, Overflow};
 use css_core::{LayoutNodeKind, LayoutRect, Layouter};
 use js::DOMSubscriber as _;
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
 use js::NodeKey;
 use log::{error, info};
 use page_handler::layout_manager::LayoutManager;
@@ -29,9 +23,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 
-<<<<<<< HEAD
-type LayoutEngineWithStyles = (LayoutManager, HashMap<NodeKey, ComputedStyle>);
-=======
 type LayouterWithStyles = (Layouter, HashMap<NodeKey, ComputedStyle>);
 
 #[derive(Default, Clone, Debug)]
@@ -95,24 +86,16 @@ fn apply_element_attrs(layouter: &mut Layouter, node: NodeKey, attrs: &HashMap<S
         }
     }
 }
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
 
 /// Sets up a layouter for a fixture by creating a page and processing it.
 ///
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or layout computation fails.
-<<<<<<< HEAD
-fn setup_layouter_for_fixture(
-    runtime: &Runtime,
-    input_path: &Path,
-) -> Result<LayoutEngineWithStyles> {
-=======
 async fn setup_layouter_for_fixture(
     runtime: &Runtime,
     input_path: &Path,
 ) -> Result<LayouterWithStyles> {
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
     let url = to_file_url(input_path)?;
     let mut page = create_page(runtime.handle(), url).await?;
     page.eval_js(css_reset_injection_script())?;
@@ -263,11 +246,6 @@ async fn process_layout_fixture_parallel_with_page(
         };
     timing.setup_layouter = setup_start.elapsed();
 
-<<<<<<< HEAD
-    layouter.compute_layout();
-    let rects_external = layouter.rects();
-    let our_json = our_layout_json(&layouter, rects_external, &computed_for_serialization);
-=======
     // Compute geometry
     let geometry_start = Instant::now();
     let rects_external = layouter.compute_layout_geometry();
@@ -275,7 +253,6 @@ async fn process_layout_fixture_parallel_with_page(
     timing.compute_geometry = geometry_start.elapsed();
 
     // Fetch or retrieve Chromium JSON
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
     let ch_json = if let Some(cached_value) = read_cached_json_for_fixture(input_path, harness_src)
     {
         // Cache hit - no chromium timings to record
@@ -302,14 +279,8 @@ async fn process_layout_fixture_parallel_with_page(
         ch_json.clone()
     };
 
-<<<<<<< HEAD
-    // Use 3.0px tolerance for sub-pixel rendering, line-height, and margin collapse differences
-    let eps = 3.0;
-    match compare_json_with_epsilon(&our_json, &ch_layout_json, eps) {
-=======
     let eps = f64::from(f32::EPSILON) * 3.0;
     let result = match compare_json_with_epsilon(&our_json, &ch_layout_json, eps) {
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
         Ok(()) => {
             info!("[LAYOUT] {display_name} ... ok");
             Ok(true)
@@ -813,11 +784,6 @@ pub fn run_chromium_layouts() -> Result<()> {
         total_fixture_time += timing.total;
     }
 
-<<<<<<< HEAD
-    // Explicitly close tab and browser to ensure clean shutdown
-    drop(tab);
-    drop(browser);
-=======
     let total_chromium = total_page_creation + total_navigation + total_script_eval + total_json_parse;
     let total_valor = total_setup + total_geometry;
 
@@ -867,7 +833,6 @@ pub fn run_chromium_layouts() -> Result<()> {
     for (name, timing) in sorted_timing.iter().take(10) {
         eprintln!("  {:?} - {}", timing.total, name);
     }
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
 
     if failed.is_empty() {
         info!("[LAYOUT] {ran} fixtures passed");
@@ -1192,71 +1157,6 @@ fn our_layout_json(
     serialize_element_subtree(&ctx, root_key)
 }
 
-<<<<<<< HEAD
-const CHROMIUM_SCRIPT_HELPERS: &str = "function shouldSkip(el) {
-    if (!el || !el.tagName) return false;
-    var tag = String(el.tagName).toLowerCase();
-    if (tag === 'style' && el.getAttribute('data-valor-test-reset') === '1') return true;
-    try {
-        var cs = window.getComputedStyle(el);
-        if (cs && String(cs.display||'').toLowerCase() === 'none') return true;
-    } catch (e) { /* ignore */ }
-    return false;
-}
-function pickStyle(el, cs) {
-    var d = String(cs.display || '').toLowerCase();
-    function pickEdges(prefix) {
-        return {
-            top: cs[prefix + 'Top'] || '',
-            right: cs[prefix + 'Right'] || '',
-            bottom: cs[prefix + 'Bottom'] || '',
-            left: cs[prefix + 'Left'] || ''
-        };
-    }
-    return {
-        display: d,
-        boxSizing: (cs.boxSizing || '').toLowerCase(),
-        flexBasis: cs.flexBasis || '',
-        flexGrow: Number(cs.flexGrow || 0),
-        flexShrink: Number(cs.flexShrink || 0),
-        margin: pickEdges('margin'),
-        padding: pickEdges('padding'),
-        borderWidth: {
-            top: cs.borderTopWidth || '',
-            right: cs.borderRightWidth || '',
-            bottom: cs.borderBottomWidth || '',
-            left: cs.borderLeftWidth || '',
-        },
-        alignItems: (cs.alignItems || '').toLowerCase(),
-        overflow: (cs.overflow || '').toLowerCase(),
-        position: (cs.position || '').toLowerCase(),
-        fontSize: cs.fontSize || '',
-        fontWeight: cs.fontWeight || '',
-        fontFamily: cs.fontFamily || '',
-        color: cs.color || '',
-        lineHeight: cs.lineHeight || '',
-        zIndex: cs.zIndex || 'auto',
-        opacity: cs.opacity || '1'
-    };
-}";
-
-const CHROMIUM_SCRIPT_SERIALIZERS: &str = "function serText(textNode, parentEl) {
-    var text = textNode.textContent || '';
-    if (!text || /^\\s*$/.test(text)) return null;
-    var range = document.createRange();
-    range.selectNodeContents(textNode);
-    var r = range.getBoundingClientRect();
-    var cs = window.getComputedStyle(parentEl);
-    return {
-        type: 'text',
-        text: text,
-        rect: { x: r.x, y: r.y, width: r.width, height: r.height },
-        style: {
-            fontSize: cs.fontSize || '',
-            fontWeight: cs.fontWeight || '',
-            color: cs.color || '',
-            lineHeight: cs.lineHeight || ''
-=======
 fn chromium_layout_extraction_script() -> &'static str {
     // RESTORED: Original complex script should now work with set_content() fix
     "(function() {
@@ -1269,7 +1169,6 @@ fn chromium_layout_extraction_script() -> &'static str {
                 if (cs && String(cs.display||'').toLowerCase() === 'none') return true;
             } catch (e) { /* ignore */ }
             return false;
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
         }
     };
 }
@@ -1355,14 +1254,6 @@ async fn chromium_layout_json_in_page_with_timing(
     let navigation_time = Duration::from_secs(0);
 
     let script = chromium_layout_extraction_script();
-<<<<<<< HEAD
-    let result = tab.evaluate(&script, true)?;
-    let value = result
-        .value
-        .ok_or_else(|| anyhow!("No value returned from Chromium evaluate"))?;
-    let json_string = value
-        .as_str()
-=======
     let eval_start = Instant::now();
 
     log::error!("[EVALUATE] [{}] Starting page.evaluate() at {:?}", file_name, Instant::now());
@@ -1391,7 +1282,6 @@ async fn chromium_layout_json_in_page_with_timing(
     let json_string = result
         .value()
         .and_then(|v| v.as_str())
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
         .ok_or_else(|| anyhow!("Chromium returned non-string JSON for layout"))?;
     let parsed: JsonValue = from_str(json_string)?;
     let json_parse_time = parse_start.elapsed();

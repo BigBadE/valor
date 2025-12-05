@@ -11,24 +11,7 @@ anyhow.workspace = true
 log.workspace = true
 tokio = { workspace = true, optional = true }
 js.workspace = true
-<<<<<<< HEAD
 v8.workspace = true
-=======
-
-# Make v8 optional and enable it via the "v8" feature.
-# Temporarily disabled for layout tests
-# v8 = { workspace = true, optional = true }
-
-[features]
-# By default we build with stub enabled (temporarily for layout tests).
-default = ["stub"]
-# Enable the real V8 engine implementation.
-# Temporarily disabled for layout tests
-# v8 = ["dep:v8"]
-# Lightweight stub implementation that avoids pulling in rusty_v8.
-# Useful for building and running tests in environments without V8.
-stub = []
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync"] }

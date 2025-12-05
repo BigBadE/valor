@@ -32,16 +32,4 @@ anyhow.workspace = true
 # Text shaping and single-assignment helpers
 glyphon.workspace = true
 once_cell.workspace = true
-<<<<<<< HEAD
 unicode-linebreak.workspace = true
-=======
-unicode-linebreak.workspace = true
-
-[features]
-# Stub is temporarily the default for layout testing
-default = ["js_stub"]
-# Use V8-backed engine (pulls in rusty_v8) - temporarily disabled
-# js_v8 = ["js_engine_v8/v8"]
-# Use stub (no rusty_v8); useful for building/running tests without V8
-js_stub = ["js_engine_v8/stub"]
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76

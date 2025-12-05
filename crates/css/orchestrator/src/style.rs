@@ -864,7 +864,6 @@ fn create_block_display_rules(source_order_start: u32) -> (Vec<types::Rule>, u32
     (rules, source_order)
 }
 
-<<<<<<< HEAD
 /// Helper to create a UA rule with given selector and declarations.
 fn make_ua_rule(selector: &str, order: u32, props: &[(&str, &str)]) -> types::Rule {
     types::Rule {
@@ -962,84 +961,6 @@ fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
     source_order += 1;
 
     (rules, source_order)
-=======
-/// Add form control UA styles (button, input, textarea) per HTML5 spec.
-fn add_form_control_ua_rules(rules: &mut Vec<types::Rule>, mut source_order: u32) -> u32 {
-    // textarea { overflow: auto }
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "textarea".to_string(),
-        declarations: vec![types::Declaration {
-            name: "overflow".to_string(),
-            value: "auto".to_string(),
-            important: false,
-        }],
-    });
-    source_order += 1;
-
-    // button { padding: 1px 6px; box-sizing: border-box }
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "button".to_string(),
-        declarations: vec![
-            types::Declaration {
-                name: "padding".to_string(),
-                value: "1px 6px".to_string(),
-                important: false,
-            },
-            types::Declaration {
-                name: "box-sizing".to_string(),
-                value: "border-box".to_string(),
-                important: false,
-            },
-        ],
-    });
-    source_order += 1;
-
-    // input { padding: 1px 2px; box-sizing: border-box }
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "input".to_string(),
-        declarations: vec![
-            types::Declaration {
-                name: "padding".to_string(),
-                value: "1px 2px".to_string(),
-                important: false,
-            },
-            types::Declaration {
-                name: "box-sizing".to_string(),
-                value: "border-box".to_string(),
-                important: false,
-            },
-        ],
-    });
-    source_order += 1;
-
-    // textarea { padding: 2px; box-sizing: border-box }
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "textarea".to_string(),
-        declarations: vec![
-            types::Declaration {
-                name: "padding".to_string(),
-                value: "2px".to_string(),
-                important: false,
-            },
-            types::Declaration {
-                name: "box-sizing".to_string(),
-                value: "border-box".to_string(),
-                important: false,
-            },
-        ],
-    });
-    source_order += 1;
-
-    source_order
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
 }
 
 /// Create a minimal user-agent stylesheet with default display values for block-level HTML elements.
@@ -1048,7 +969,6 @@ fn create_ua_stylesheet() -> types::Stylesheet {
     let mut source_order = 0u32;
 
     // Add default color rule for the root element
-<<<<<<< HEAD
     rules.push(make_ua_rule("html", source_order, &[("color", "#000")]));
     source_order += 1;
 
@@ -1062,56 +982,21 @@ fn create_ua_stylesheet() -> types::Stylesheet {
         rules.push(make_ua_rule(tag, source_order, &[("display", "none")]));
         source_order += 1;
     }
-=======
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "html".to_string(),
-        declarations: vec![types::Declaration {
-            name: "color".to_string(),
-            value: "#000".to_string(),
-            important: false,
-        }],
-    });
-    source_order += 1;
 
     // Add standard browser default margin for body element
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "body".to_string(),
-        declarations: vec![types::Declaration {
-            name: "margin".to_string(),
-            value: "8px".to_string(),
-            important: false,
-        }],
-    });
+    rules.push(make_ua_rule("body", source_order, &[("margin", "8px")]));
     source_order += 1;
 
     // Add paragraph margin per browser UA stylesheets
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "p".to_string(),
-        declarations: vec![types::Declaration {
-            name: "margin".to_string(),
-            value: "16px 0".to_string(),
-            important: false,
-        }],
-    });
+    rules.push(make_ua_rule("p", source_order, &[("margin", "16px 0")]));
     source_order += 1;
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
 
     let (block_rules, next_order) = create_block_display_rules(source_order);
     rules.extend(block_rules);
     source_order = next_order;
 
-<<<<<<< HEAD
     let (form_rules, _final_order) = create_form_control_rules(source_order);
     rules.extend(form_rules);
-=======
-    add_form_control_ua_rules(&mut rules, source_order);
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
 
     types::Stylesheet {
         rules,

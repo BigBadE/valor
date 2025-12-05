@@ -449,11 +449,7 @@ fn per_line_main_and_cross(
                 .collect::<Vec<_>>()
         );
         let mut line_cross_max = 0.0f32;
-<<<<<<< HEAD
-        for (idx, &(item_cross, min_c, max_c)) in line_cross_inputs.iter().enumerate() {
-=======
-        for &(item_cross, min_c, max_c, _is_auto) in line_cross_inputs {
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
+        for (idx, &(item_cross, min_c, max_c, _is_auto)) in line_cross_inputs.iter().enumerate() {
             let clamped = clamp(item_cross, min_c, max_c);
             // Include cross-axis margins per CSS Flexbox spec
             // For row direction, this is margin-top + margin-bottom

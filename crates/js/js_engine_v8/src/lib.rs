@@ -19,14 +19,8 @@ mod real {
     use std::sync::Once;
     use v8::{
         Boolean, Context, ContextScope, CreateParams, External, Function,
-<<<<<<< HEAD
         FunctionCallbackArguments, Global, Isolate, Local, Module, Number, Object, OwnedIsolate,
         ReturnValue, Script, ScriptOrigin, String as V8String, V8, Value, new_default_platform,
-=======
-        FunctionCallbackArguments, Global, HandleScope, Isolate, Local, Module, Number, Object,
-        OwnedIsolate, Platform, ReturnValue, Script, ScriptOrigin, SharedRef, String as V8String,
-        TryCatch, V8, Value, new_default_platform, null, undefined,
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
     };
 
     /// Escape a string so it can safely be embedded as a JavaScript literal.

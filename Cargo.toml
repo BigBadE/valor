@@ -10,11 +10,7 @@ members = [
     "crates/renderer/wgpu_backend",
     "crates/valor_dsl"
 ]
-<<<<<<< HEAD
-exclude = ["deps/*"]
-=======
-exclude = ["testing"]
->>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
+exclude = ["deps/*", "testing"]
 
 [workspace.package]
 version = "0.1.0"
