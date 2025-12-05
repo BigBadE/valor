@@ -34,8 +34,13 @@ pub const fn default_font_size_px() -> i32 {
 
 /// Compute a default line-height in pixels for a given style.
 ///
+<<<<<<< HEAD
 /// CSS initial `line-height` is `normal`, commonly ~1.2× font-size.
 /// If the style has an explicit line-height value, uses that; otherwise uses approximation.
+=======
+/// CSS initial `line-height` is `normal`. Chrome uses ~1.125× font-size for body text.
+/// Chrome rounds up (ceiling) for line-height calculations to ensure sufficient space.
+>>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
 pub fn default_line_height_px(style: &ComputedStyle) -> i32 {
     // Check for explicit line-height first
     if let Some(line_height_px) = style.line_height {
@@ -70,5 +75,9 @@ pub fn form_element_line_height_px(style: &ComputedStyle) -> i32 {
     } else {
         16.0
     };
+<<<<<<< HEAD
     (font_size * 1.2).round() as i32
+=======
+    (font_size_px * 1.125).ceil() as i32
+>>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
 }

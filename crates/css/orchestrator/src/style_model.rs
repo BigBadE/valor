@@ -69,6 +69,7 @@ pub enum Clear {
 pub enum Display {
     #[default]
     Inline,
+    InlineBlock,
     Block,
     InlineBlock,
     Flex,

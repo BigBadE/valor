@@ -18,7 +18,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 use zstd::bulk::{compress as zstd_compress, decompress as zstd_decompress};
 
-use super::browser::{TestType, navigate_and_prepare_tab, setup_chrome_browser};
+use super::browser::navigate_and_prepare_tab;
 use super::common::{
     artifacts_subdir, get_filtered_fixtures, init_test_logger, setup_page_for_fixture,
     write_png_rgba_if_changed,
@@ -231,12 +231,12 @@ fn capture_chrome_png(tab: &Tab, path: &Path) -> Result<Vec<u8>> {
 ///
 /// Returns an error if page creation, parsing, or display list generation fails.
 fn build_valor_display_list_for(
+    runtime: &tokio::runtime::Runtime,
     path: &Path,
     viewport_w: u32,
     viewport_h: u32,
 ) -> Result<DisplayList> {
-    let runtime = Runtime::new()?;
-    let mut page = setup_page_for_fixture(&runtime, path)?;
+    let mut page = runtime.block_on(setup_page_for_fixture(runtime.handle(), path))?;
     let display_list = page.display_list_retained_snapshot()?;
     let clear_color = page.background_rgba();
     let mut items = Vec::with_capacity(display_list.items.len() + 1);
@@ -318,7 +318,13 @@ impl ApplicationHandler for WindowCreator {
 }
 
 fn initialize_render_state(width: u32, height: u32) -> &'static Mutex<RenderState> {
-    use winit::{event_loop::EventLoop, platform::windows::EventLoopBuilderExtWindows as _};
+    use winit::event_loop::EventLoop;
+    #[cfg(target_os = "macos")]
+    use winit::platform::macos::EventLoopBuilderExtMacOS as _;
+    #[cfg(target_os = "windows")]
+    use winit::platform::windows::EventLoopBuilderExtWindows as _;
+    #[cfg(target_os = "linux")]
+    use winit::platform::x11::EventLoopBuilderExtX11 as _;
 
     RENDER_STATE.get_or_init(|| {
         let runtime = Runtime::new().unwrap_or_else(|err| {
@@ -417,7 +423,7 @@ type BrowserWithTab = (Browser, Arc<Tab>);
 ///
 /// Returns an error if browser launch or tab creation fails.
 fn init_browser() -> Result<BrowserWithTab> {
-    let chrome_browser = setup_chrome_browser(TestType::Graphics)?;
+    let chrome_browser = Browser::default()?;
     let chrome_tab = chrome_browser.new_tab()?;
     Ok((chrome_browser, chrome_tab))
 }
@@ -612,7 +618,10 @@ struct FixtureContext<'ctx> {
 /// # Errors
 ///
 /// Returns an error if fixture processing, rendering, or comparison fails.
-fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
+fn process_single_fixture(
+    runtime: &tokio::runtime::Runtime,
+    ctx: &mut FixtureContext<'_>,
+) -> Result<bool> {
     let name = safe_stem(ctx.fixture);
     let canon = ctx
         .fixture
@@ -643,7 +652,7 @@ fn process_single_fixture(ctx: &mut FixtureContext<'_>) -> Result<bool> {
 
     let (width, height) = (784u32, 453u32);
     let t_build = Instant::now();
-    let display_list = build_valor_display_list_for(ctx.fixture, width, height)?;
+    let display_list = build_valor_display_list_for(runtime, ctx.fixture, width, height)?;
     ctx.timings.build_dl += t_build.elapsed();
     debug!(
         "[GRAPHICS][DEBUG] {}: DL items={} (first 5: {:?})",
@@ -700,6 +709,8 @@ pub fn chromium_graphics_smoke_compare_png() -> Result<()> {
         return Ok(());
     }
 
+    // Create runtime in sync code - headless_chrome should NOT run in async context
+    let runtime = tokio::runtime::Runtime::new()?;
     let mut browser: Option<Browser> = None;
     let mut tab: Option<Arc<Tab>> = None;
     let mut any_failed = false;
@@ -707,14 +718,17 @@ pub fn chromium_graphics_smoke_compare_png() -> Result<()> {
     let mut timings = Timings::new();
 
     for fixture in fixtures {
-        if process_single_fixture(&mut FixtureContext {
-            fixture: &fixture,
-            out_dir: &out_dir,
-            failing_dir: &failing_dir,
-            browser: &mut browser,
-            tab: &mut tab,
-            timings: &mut timings,
-        })? {
+        if process_single_fixture(
+            &runtime,
+            &mut FixtureContext {
+                fixture: &fixture,
+                out_dir: &out_dir,
+                failing_dir: &failing_dir,
+                browser: &mut browser,
+                tab: &mut tab,
+                timings: &mut timings,
+            },
+        )? {
             any_failed = true;
         }
         ran += 1;

@@ -34,5 +34,19 @@ js_engine_v8.workspace = true
 image.workspace = true
 
 [dev-dependencies]
+chromiumoxide.workspace = true
 js.workspace = true
 zstd.workspace = true
+<<<<<<< HEAD
+=======
+futures.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros"] }
+
+[features]
+# Default to stub for layout tests (temporarily)
+default = ["js_stub"]
+# Use V8-backed engine - temporarily disabled
+# js_v8 = ["js_engine_v8/v8", "page_handler/js_v8"]
+# Use stub engine (no rusty_v8)
+js_stub = ["js_engine_v8/stub", "page_handler/js_stub"]
+>>>>>>> 65f90acd6c50fe1a873b4e268d0411f5e2bd8b76
