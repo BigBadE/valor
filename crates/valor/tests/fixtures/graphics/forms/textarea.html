@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Textarea Test</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: white;
+            font-family: sans-serif;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #333;
+        }
+        textarea {
+            width: 400px;
+            height: 120px;
+            padding: 10px;
+            font-size: 14px;
+            font-family: monospace;
+            border: 2px solid #ccc;
+            border-radius: 4px;
+            resize: vertical;
+        }
+    </style>
+</head>
+<body>
+    <div class="form-group">
+        <label for="comment">Comment:</label>
+        <textarea id="comment">This is a multi-line text area.
+It can contain multiple lines of text.
+Line 3 here.</textarea>
+    </div>
+    <div class="form-group">
+        <label for="placeholder-textarea">With Placeholder:</label>
+        <textarea id="placeholder-textarea" placeholder="Enter your comments here..."></textarea>
+    </div>
+</body>
+</html>

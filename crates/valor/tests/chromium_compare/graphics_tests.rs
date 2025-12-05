@@ -209,28 +209,9 @@ fn make_diff_image_masked(pixels_a: &[u8], pixels_b: &[u8], ctx: &DiffCtx<'_>) -
     out
 }
 
-fn extract_text_masks(display_list: &DisplayList, width: u32, height: u32) -> Vec<TextMask> {
-    let mut masks = Vec::new();
-    for item in &display_list.items {
-        if let DisplayItem::Text {
-            bounds: Some((left, top, right, bottom)),
-            ..
-        } = item
-        {
-            let left = (*left).max(0) as u32;
-            let top = (*top).max(0) as u32;
-            let right = (*right).max(0) as u32;
-            let bottom = (*bottom).max(0) as u32;
-            let left = left.min(width);
-            let top = top.min(height);
-            let right = right.min(width);
-            let bottom = bottom.min(height);
-            if right > left && bottom > top {
-                masks.push((left, top, right, bottom));
-            }
-        }
-    }
-    masks
+fn extract_text_masks(_display_list: &DisplayList, _width: u32, _height: u32) -> Vec<TextMask> {
+    // Text masking disabled - compare all pixels for pixel-perfect precision
+    Vec::new()
 }
 
 /// Captures a PNG screenshot from Chromium for a given fixture.
@@ -543,7 +524,7 @@ fn compare_and_write_failures(ctx: &mut ComparisonContext<'_>) -> Result<bool> {
     if ctx.chrome_img.as_raw() == ctx.valor_img {
         return Ok(false);
     }
-    let eps: u8 = 3;
+    let eps: u8 = 0;
     let masks = extract_text_masks(ctx.display_list, width, height);
     let diff_ctx = DiffCtx {
         width,
@@ -555,7 +536,7 @@ fn compare_and_write_failures(ctx: &mut ComparisonContext<'_>) -> Result<bool> {
     let (over, total) = per_pixel_diff_masked(ctx.chrome_img.as_raw(), ctx.valor_img, &diff_ctx);
     ctx.timings.masked_diff += t_diff.elapsed();
     let diff_ratio = (over as f64) / (total as f64);
-    let allowed = 0.0125;
+    let allowed = 0.0;
     if diff_ratio > allowed {
         let stamp = now_millis();
         let base = ctx.info.failing_dir.join(format!(

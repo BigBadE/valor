@@ -1,6 +1,6 @@
+use crate::snapshots::LayoutNodeKind;
 use crate::snapshots::SnapshotSlice;
 use core::hash::BuildHasher;
-use css_core::LayoutNodeKind;
 use js::NodeKey;
 use std::collections::HashMap;
 

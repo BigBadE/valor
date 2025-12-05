@@ -74,7 +74,7 @@ impl GpuContext {
             .map_err(|err| anyhow!("Failed to find a suitable GPU adapter: {err}"))?;
         let device_descriptor = DeviceDescriptor {
             label: Some("valor-render-device"),
-            required_features: Features::empty(),
+            required_features: Features::DUAL_SOURCE_BLENDING,
             required_limits: Limits::default(),
             memory_hints: MemoryHints::default(),
             trace: Trace::default(),

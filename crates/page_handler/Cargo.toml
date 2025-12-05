@@ -10,7 +10,7 @@ html.workspace = true
 css.workspace = true
 css_core.workspace = true
 renderer.workspace = true
-js_engine_v8 = { workspace = true, default-features = false }
+js_engine_v8.workspace = true
 js.workspace = true
 
 url.workspace = true
@@ -32,11 +32,3 @@ anyhow.workspace = true
 glyphon.workspace = true
 once_cell.workspace = true
 unicode-linebreak.workspace = true
-
-[features]
-# V8 is the default JS engine; override with `--no-default-features --features js_stub` for stub.
-default = ["js_v8"]
-# Use V8-backed engine (pulls in rusty_v8)
-js_v8 = ["js_engine_v8/v8"]
-# Use stub (no rusty_v8); useful for building/running tests without V8
-js_stub = ["js_engine_v8/stub"]

@@ -4,10 +4,10 @@
 //! for testing and inspection. It maps layout nodes to ARIA roles and extracts accessible
 //! names from attributes or text content.
 
+use crate::snapshots::LayoutNodeKind;
 use crate::snapshots::Snapshot;
 use core::hash::BuildHasher;
 use css::layout_helpers::collapse_whitespace;
-use css_core::LayoutNodeKind;
 use js::NodeKey;
 use std::collections::HashMap;
 

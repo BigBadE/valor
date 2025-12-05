@@ -2,10 +2,11 @@ use crate::accessibility::ax_tree_snapshot_from;
 use crate::config::ValorConfig;
 use crate::embedded_chrome::get_embedded_chrome_asset;
 use crate::events::KeyMods;
+use crate::layout_manager::LayoutManager;
 use crate::paint;
 use crate::runtime::{DefaultJsRuntime, JsRuntime as _};
 use crate::scheduler::FrameScheduler;
-use crate::snapshots::IRect;
+use crate::snapshots::{IRect, LayoutNodeKind};
 use crate::telemetry::PerfCounters;
 use crate::url::stream_url;
 use crate::{focus as focus_mod, selection, telemetry as telemetry_mod};
@@ -15,7 +16,7 @@ use core::sync::atomic::AtomicU64;
 use css::style_types::ComputedStyle;
 use css::types::Stylesheet;
 use css::{CSSMirror, Orchestrator};
-use css_core::{LayoutNodeKind, LayoutRect, Layouter};
+use css_core::LayoutRect;
 use html::dom::DOM;
 use html::parser::{HTMLParser, ParseInputs, ScriptJob, ScriptKind};
 use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
@@ -27,7 +28,7 @@ use js::{
 };
 use js_engine_v8::V8Engine;
 use log::{info, trace};
-use renderer::{DisplayList, DrawRect, Renderer};
+use renderer::{DisplayList, Renderer};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -92,8 +93,8 @@ pub struct HtmlPage {
     css_mirror: DOMMirror<CSSMirror>,
     /// Orchestrator mirror that computes styles using the css engine.
     orchestrator_mirror: DOMMirror<Orchestrator>,
-    /// Layouter mirror that maintains a layout tree from DOM updates.
-    layouter_mirror: DOMMirror<Layouter>,
+    /// Layout manager mirror that maintains layout tree from DOM updates
+    layouter_mirror: DOMMirror<LayoutManager>,
     /// Renderer mirror that maintains a scene graph from DOM updates.
     renderer_mirror: DOMMirror<Renderer>,
     /// DOM index mirror for JS document.getElement* queries.
@@ -130,8 +131,8 @@ struct DomMirrors {
     css_mirror: DOMMirror<CSSMirror>,
     /// Orchestrator mirror for style computation.
     orchestrator_mirror: DOMMirror<Orchestrator>,
-    /// Layouter mirror for layout tree management.
-    layouter_mirror: DOMMirror<Layouter>,
+    /// Layout manager mirror for layout tree.
+    layouter_mirror: DOMMirror<LayoutManager>,
     /// Renderer mirror for scene graph management.
     renderer_mirror: DOMMirror<Renderer>,
     /// DOM index mirror for JS queries.
@@ -162,7 +163,8 @@ impl HtmlPage {
         );
         let orchestrator_mirror =
             DOMMirror::new(in_updater.clone(), dom.subscribe(), Orchestrator::new());
-        let layouter_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), Layouter::new());
+        let layouter_mirror =
+            DOMMirror::new(in_updater.clone(), dom.subscribe(), LayoutManager::new());
         let renderer_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), Renderer::new());
         let (dom_index_sub, dom_index_shared) = DomIndex::new();
         let dom_index_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), dom_index_sub);
@@ -531,7 +533,7 @@ impl HtmlPage {
         // Ensure the Orchestrator mirror has applied DOM updates prior to stylesheet processing
         self.orchestrator_mirror.try_update_sync()?;
         // Synchronize attributes for potential future needs (kept for symmetry)
-        let lay_attrs = self.layouter_mirror.mirror_mut().attrs_map();
+        let lay_attrs = self.layouter_mirror.mirror().attrs_map().clone();
         trace!(
             "process_css_and_styles: layouter_attrs_count={} nodes",
             lay_attrs.len()
@@ -550,20 +552,14 @@ impl HtmlPage {
             .replace_stylesheet(&author_styles);
         let artifacts = self.orchestrator_mirror.mirror_mut().process_once()?;
         let computed_styles = artifacts.computed_styles;
-        self.layouter_mirror
-            .mirror_mut()
-            .set_stylesheet(author_styles);
+        // Styles come from orchestrator via set_computed_styles, not set_stylesheet
         self.layouter_mirror
             .mirror_mut()
             .set_computed_styles(computed_styles);
 
         // Mark dirty nodes for reflow if styles changed
         let style_changed = artifacts.styles_changed;
-        if style_changed {
-            self.layouter_mirror
-                .mirror_mut()
-                .mark_nodes_style_dirty(&[NodeKey::ROOT]);
-        }
+        // Dirty tracking removed - layout always runs when needed
 
         self.last_style_restyled_nodes = 0;
         Ok(style_changed)
@@ -573,15 +569,10 @@ impl HtmlPage {
     /// Compute layout if needed.
     fn compute_layout(&mut self, style_changed: bool) {
         let _span = info_span!("page.compute_layout").entered();
-        // Determine if layout should run based on actual style or material layouter changes,
-        // and also ensure we run at least once if no geometry has been computed yet.
-        let has_material_dirty = self.layouter_mirror.mirror_mut().has_material_dirty();
-        let geometry_empty = self
-            .layouter_mirror
-            .mirror_mut()
-            .compute_layout_geometry()
-            .is_empty();
-        let should_layout = style_changed || has_material_dirty || geometry_empty;
+        // Determine if layout should run based on actual style changes
+        // or if no geometry has been computed yet.
+        let geometry_empty = self.layouter_mirror.mirror_mut().rects().is_empty();
+        let should_layout = style_changed || geometry_empty;
 
         let should_run_layout = should_layout;
         if !should_run_layout && !self.frame_scheduler.allow() {
@@ -592,42 +583,16 @@ impl HtmlPage {
 
         if should_run_layout && self.frame_scheduler.allow() {
             let layouter = self.layouter_mirror.mirror_mut();
-            let _unused = layouter.compute_layout();
+            layouter.compute_layout();
 
             // Log layout performance metrics
             let node_count = layouter.snapshot().len();
-            let nodes_reflowed = layouter.perf_nodes_reflowed_last();
-            let dirty_subtrees = layouter.perf_dirty_subtrees_last();
-            let layout_time_ms = layouter.perf_layout_time_last_ms();
-            let updates_applied = layouter.perf_updates_applied();
-            info!(
-                "Layout: processed={node_count}, reflowed_nodes={nodes_reflowed}, dirty_subtrees={dirty_subtrees}, time_ms={layout_time_ms}, updates_applied_total={updates_applied}"
-            );
-
-            // Forward dirty rectangles to the renderer for partial redraws
-            let dirty_rectangles = layouter.take_dirty_rects();
-            if !dirty_rectangles.is_empty() {
-                let dirty_rectangles: Vec<DrawRect> = dirty_rectangles
-                    .into_iter()
-                    .map(|rect| DrawRect {
-                        x: rect.x,
-                        y: rect.y,
-                        width: rect.width,
-                        height: rect.height,
-                        color: [0.0, 0.0, 0.0],
-                    })
-                    .collect();
-                self.renderer_mirror
-                    .mirror_mut()
-                    .set_dirty_rects(dirty_rectangles);
-            }
+            info!("Layout: processed={node_count} nodes");
             // Request a redraw after any successful layout pass so retained display lists
             // can be rebuilt and presented even if dirty regions were coalesced away.
             self.render.needs_redraw = true;
         } else {
             trace!("Layout skipped: no DOM/style changes in this tick");
-            // Reset last-tick perf counters so observability reflects the no-op
-            self.layouter_mirror.mirror_mut().mark_noop_layout_tick();
         }
     }
 
@@ -711,20 +676,22 @@ impl HtmlPage {
     // Internal accessors for sibling modules (events, etc.).
     /// Return a snapshot of the layouter's current geometry per node.
     pub fn layouter_geometry_mut(&mut self) -> HashMap<NodeKey, LayoutRect> {
-        self.layouter_mirror.mirror_mut().compute_layout_geometry()
+        let layouter = self.layouter_mirror.mirror_mut();
+        layouter.compute_layout();
+        layouter.rects().clone()
     }
     /// Clone and return the layouter's current attributes map (id/class/style) keyed by `NodeKey`.
     pub fn layouter_attrs_map(&mut self) -> HashMap<NodeKey, HashMap<String, String>> {
-        self.layouter_mirror.mirror_mut().attrs_map()
+        self.layouter_mirror.mirror().attrs_map().clone()
     }
     /// Ensure a layout pass has been run at least once or if material dirt is pending.
     /// This synchronous helper is intended for display snapshot code paths that
     /// cannot await the normal async update loop but need non-empty geometry.
     pub fn ensure_layout_now(&mut self) {
         let lay = self.layouter_mirror.mirror_mut();
-        let need = lay.compute_layout_geometry().is_empty() || lay.has_material_dirty();
+        let need = lay.rects().is_empty();
         if need {
-            let _unused = lay.compute_layout();
+            lay.compute_layout();
             // Mark that a redraw would be needed if a UI were present.
             self.render.needs_redraw = true;
         }
@@ -749,9 +716,9 @@ impl HtmlPage {
     /// # Panics
     ///
     /// Panics if a parent key is missing from the children map.
-    pub fn bootstrap_layouter_subscriber(&mut self, mirror: &mut DOMMirror<Layouter>) {
+    pub fn bootstrap_layouter_subscriber(&mut self, mirror: &mut DOMMirror<LayoutManager>) {
         fn apply_attrs(
-            lay: &mut Layouter,
+            lay: &mut LayoutManager,
             node: NodeKey,
             attrs: &HashMap<NodeKey, HashMap<String, String>>,
         ) {
@@ -770,7 +737,7 @@ impl HtmlPage {
         }
 
         fn replay(
-            lay: &mut Layouter,
+            lay: &mut LayoutManager,
             tags_by_key: &HashMap<NodeKey, String>,
             element_children: &HashMap<NodeKey, Vec<NodeKey>>,
             attrs: &HashMap<NodeKey, HashMap<String, String>>,
@@ -797,7 +764,7 @@ impl HtmlPage {
 
         // Take a structural snapshot and attrs from the internal layouter mirror
         let snapshot = self.layouter_mirror.mirror().snapshot();
-        let attrs_map = self.layouter_mirror.mirror_mut().attrs_map();
+        let attrs_map = self.layouter_mirror.mirror().attrs_map();
 
         // Build tags_by_key and element_children from the snapshot
         let mut tags_by_key: HashMap<NodeKey, String> = HashMap::new();
@@ -828,14 +795,16 @@ impl HtmlPage {
             lay,
             &tags_by_key,
             &element_children,
-            &attrs_map,
+            attrs_map,
             NodeKey::ROOT,
         );
         let _unused = lay.apply_update(EndOfDocument);
     }
     /// Perform hit testing at the given coordinates.
-    pub(crate) const fn layouter_hit_test(&mut self, x: i32, y: i32) -> Option<NodeKey> {
-        self.layouter_mirror.mirror_mut().hit_test(x, y)
+    pub(crate) fn layouter_hit_test(x: i32, y: i32) -> Option<NodeKey> {
+        // TODO: Implement hit testing in LayoutEngine
+        let _ = (x, y);
+        None
     }
 
     /// Drain mirrors and return a snapshot clone of computed styles per node.
@@ -873,18 +842,17 @@ impl HtmlPage {
     /// Return a JSON string with key performance counters from the layouter to aid diagnostics (Phase 8).
     pub fn perf_counters_snapshot_string(&mut self) -> String {
         let _unused = self.layouter_mirror.try_update_sync();
-        let lay = self.layouter_mirror.mirror_mut();
         let counters = PerfCounters {
-            nodes_reflowed_last: lay.perf_nodes_reflowed_last(),
-            nodes_reflowed_total: lay.perf_updates_applied(),
-            dirty_subtrees_last: lay.perf_dirty_subtrees_last(),
-            layout_time_last_ms: lay.perf_layout_time_last_ms(),
-            layout_time_total_ms: lay.perf_layout_time_total_ms(),
+            nodes_reflowed_last: 0,
+            nodes_reflowed_total: 0,
+            dirty_subtrees_last: 0,
+            layout_time_last_ms: 0,
+            layout_time_total_ms: 0,
             restyled_nodes_last: self.last_style_restyled_nodes,
             spillover_deferred: self.frame_scheduler.deferred(),
-            line_boxes_last: lay.perf_line_boxes_last(),
-            shaped_runs_last: lay.perf_shaped_runs_last(),
-            early_outs_last: lay.perf_early_outs_last(),
+            line_boxes_last: 0,
+            shaped_runs_last: 0,
+            early_outs_last: 0,
         };
         telemetry_mod::perf_counters_json(&counters)
     }
@@ -949,9 +917,9 @@ impl HtmlPage {
         if self.layouter_mirror.try_update_sync().is_err() {
             return None;
         }
-        let snapshot = self.layouter_mirror.mirror_mut().snapshot();
-        let attrs = self.layouter_mirror.mirror_mut().attrs_map();
-        let next = focus_mod::next(&snapshot, &attrs, self.focused_node);
+        let snapshot = self.layouter_mirror.mirror().snapshot();
+        let attrs = self.layouter_mirror.mirror().attrs_map();
+        let next = focus_mod::next(&snapshot, attrs, self.focused_node);
         self.focused_node = next;
         next
     }
@@ -962,9 +930,9 @@ impl HtmlPage {
         if self.layouter_mirror.try_update_sync().is_err() {
             return None;
         }
-        let snapshot = self.layouter_mirror.mirror_mut().snapshot();
-        let attrs = self.layouter_mirror.mirror_mut().attrs_map();
-        let prev = focus_mod::prev(&snapshot, &attrs, self.focused_node);
+        let snapshot = self.layouter_mirror.mirror().snapshot();
+        let attrs = self.layouter_mirror.mirror().attrs_map();
+        let prev = focus_mod::prev(&snapshot, attrs, self.focused_node);
         self.focused_node = prev;
         prev
     }
@@ -984,11 +952,13 @@ impl HtmlPage {
         let _unused2 = self.renderer_mirror.try_update_sync();
 
         let layouter = self.layouter_mirror.mirror_mut();
-        let rects = layouter.compute_layout_geometry();
+        layouter.compute_layout();
+        let rects = layouter.rects();
         let styles = layouter.computed_styles();
         let snapshot = layouter.snapshot();
+        let attrs = layouter.attrs_map();
 
-        let display_list = paint::build_display_list(&rects, styles, &snapshot);
+        let display_list = paint::build_display_list(rects, &styles, &snapshot, attrs);
 
         info!(
             "display_list_retained_snapshot: generated {} items from {} rects",
@@ -1042,9 +1012,11 @@ impl HtmlPage {
         if self.layouter_mirror.try_update_sync().is_err() {
             return Vec::new();
         }
-        let rects = self.layouter_mirror.mirror_mut().compute_layout_geometry();
-        let snapshot = self.layouter_mirror.mirror_mut().snapshot();
-        selection::selection_rects(&rects, &snapshot, (x0, y0, x1, y1))
+        let layouter = self.layouter_mirror.mirror_mut();
+        layouter.compute_layout();
+        let rects = layouter.rects();
+        let snapshot = layouter.snapshot();
+        selection::selection_rects(rects, &snapshot, (x0, y0, x1, y1))
     }
 
     /// Compute a caret rectangle at the given point: a thin bar within the inline text box, if any.
@@ -1053,9 +1025,11 @@ impl HtmlPage {
         if self.layouter_mirror.try_update_sync().is_err() {
             return None;
         }
-        let rects = self.layouter_mirror.mirror_mut().compute_layout_geometry();
-        let snapshot = self.layouter_mirror.mirror_mut().snapshot();
-        let hit = self.layouter_hit_test(x, y);
+        let layouter = self.layouter_mirror.mirror_mut();
+        layouter.compute_layout();
+        let rects = layouter.rects().clone();
+        let snapshot = layouter.snapshot();
+        let hit = Self::layouter_hit_test(x, y);
         selection::caret_at(&rects, &snapshot, x, y, hit)
     }
 
@@ -1065,20 +1039,20 @@ impl HtmlPage {
         if self.layouter_mirror.try_update_sync().is_err() {
             return String::from("{\"role\":\"document\"}");
         }
-        let snapshot = self.layouter_mirror.mirror_mut().snapshot();
-        let attrs_map = self.layouter_mirror.mirror_mut().attrs_map();
-        ax_tree_snapshot_from(snapshot, &attrs_map)
+        let snapshot = self.layouter_mirror.mirror().snapshot();
+        let attrs_map = self.layouter_mirror.mirror().attrs_map();
+        ax_tree_snapshot_from(snapshot, attrs_map)
     }
 
     /// Performance counters from the internal Layouter mirror: nodes reflowed in the last layout.
     #[inline]
     pub const fn layouter_perf_nodes_reflowed_last(&mut self) -> u64 {
-        self.layouter_mirror.mirror_mut().perf_nodes_reflowed_last()
+        0
     }
 
     /// Performance counters from the internal Layouter mirror: number of dirty subtrees processed last.
     #[inline]
     pub const fn layouter_perf_dirty_subtrees_last(&mut self) -> u64 {
-        self.layouter_mirror.mirror_mut().perf_dirty_subtrees_last()
+        0
     }
 }

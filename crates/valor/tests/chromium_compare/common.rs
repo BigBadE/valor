@@ -433,7 +433,7 @@ pub fn update_until_finished_simple(runtime: &Runtime, page: &mut HtmlPage) -> R
 pub const fn css_reset_injection_script() -> &'static str {
     r#"(function(){
         try {
-            var css = "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;font-family:monospace,'Courier New',Courier,Consolas,'Liberation Mono',Menlo,Monaco,'DejaVu Sans Mono',monospace;}html,body{margin:0 !important;padding:0 !important;scrollbar-gutter:stable;}body{margin:0 !important;}h1,h2,h3,h4,h5,h6,p{margin:0;padding:0;}ul,ol{margin:0;padding:0;list-style:none;}";
+            var css = "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;font-family:'Courier New',Courier,monospace;}html,body{margin:0 !important;padding:0 !important;scrollbar-gutter:stable;}body{margin:0 !important;}h1,h2,h3,h4,h5,h6,p{margin:0;padding:0;}ul,ol{margin:0;padding:0;list-style:none;}";
             var existing = (typeof document.querySelector === 'function') ? document.querySelector("style[data-valor-test-reset='1']") : null;
             if (existing) { return true; }
             if (document && typeof document.appendStyleText === 'function') {
@@ -446,8 +446,8 @@ pub const fn css_reset_injection_script() -> &'static str {
                 var head = document.head || document.getElementsByTagName('head')[0] || document.documentElement;
                 head.appendChild(style);
             }
-            var de = document.documentElement; if (de && de.style){ de.style.margin='0'; de.style.padding='0'; de.style.fontFamily='monospace'; }
-            var b = document.body; if (b && b.style){ b.style.margin='0'; b.style.padding='0'; b.style.fontFamily='monospace'; }
+            var de = document.documentElement; if (de && de.style){ de.style.margin='0'; de.style.padding='0'; de.style.fontFamily='"Courier New",Courier,monospace'; }
+            var b = document.body; if (b && b.style){ b.style.margin='0'; b.style.padding='0'; b.style.fontFamily='"Courier New",Courier,monospace'; }
             void (document.body && document.body.offsetWidth);
             return true;
         } catch (e) {

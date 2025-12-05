@@ -1,53 +1,7 @@
-//! JavaScript engine adapter with optional V8 backend and a lightweight stub.
+//! JavaScript engine adapter using V8 backend.
 //!
-//! - When feature `v8` is enabled (default), this crate links the `v8` crate and
-//!   provides a real engine implementation `V8Engine`.
-//! - When `v8` is disabled, a stub `V8Engine` is compiled that implements the
-//!   `js::JsEngine` trait but performs no execution, allowing builds/tests
-//!   without V8.
+//! This crate provides a V8-backed implementation of the `JsEngine` trait.
 
-#[cfg(not(feature = "v8"))]
-mod stub {
-    use anyhow::Result;
-    use js::{HostBindings, HostContext, JsEngine};
-    use log::warn;
-
-    #[derive(Default)]
-    pub struct V8Engine;
-
-    impl V8Engine {
-        #[inline]
-        pub fn new() -> Result<Self> {
-            Ok(Self)
-        }
-        #[inline]
-        pub fn install_bindings(&mut self, _hc: &HostContext, _b: &HostBindings) -> Result<()> {
-            Ok(())
-        }
-    }
-
-    impl JsEngine for V8Engine {
-        #[inline]
-        fn eval_script(&mut self, _source: &str, url: &str) -> Result<()> {
-            warn!("JsEngine stub: skipping script {}", url);
-            Ok(())
-        }
-        #[inline]
-        fn eval_module(&mut self, _source: &str, url: &str) -> Result<()> {
-            warn!("JsEngine stub: skipping module {}", url);
-            Ok(())
-        }
-        #[inline]
-        fn run_jobs(&mut self) -> Result<()> {
-            Ok(())
-        }
-    }
-}
-
-#[cfg(not(feature = "v8"))]
-pub use stub::V8Engine;
-
-#[cfg(feature = "v8")]
 mod real {
     //! Minimal V8-based JavaScript engine implementation for the Valor browser.
     //!
@@ -57,17 +11,17 @@ mod real {
     use anyhow::{Result, anyhow};
     use core::convert::TryFrom as _;
     use core::ffi::c_void;
+    use core::pin::Pin;
     use js::Console;
     use js::runtime::RUNTIME_PRELUDE;
     use js::{HostBindings, HostContext, HostFnKind, HostNamespace, JSValue, JsEngine};
-    use v8::{
-        Boolean, Context, ContextScope, CreateParams, External, Function,
-        FunctionCallbackArguments, Global, HandleScope, Isolate, Local, Module, Number, Object,
-        OwnedIsolate, Platform, ReturnValue, Script, ScriptOrigin, SharedRef, String as V8String,
-        TryCatch, V8, Value, new_default_platform, null, undefined,
-    };
     use std::collections::HashMap;
     use std::sync::Once;
+    use v8::{
+        Boolean, Context, ContextScope, CreateParams, External, Function,
+        FunctionCallbackArguments, Global, Isolate, Local, Module, Number, Object, OwnedIsolate,
+        ReturnValue, Script, ScriptOrigin, String as V8String, V8, Value, new_default_platform,
+    };
 
     /// Escape a string so it can safely be embedded as a JavaScript literal.
     #[inline]
@@ -96,25 +50,24 @@ mod real {
     }
 
     /// Dispatcher for host-bound functions installed through `HostBindings`.
-    fn host_fn_dispatch(
-        scope: &mut HandleScope,
+    fn host_fn_dispatch<'s, 'i>(
+        scope: &mut v8::PinScope<'s, 'i>,
         args: FunctionCallbackArguments,
         mut ret_val: ReturnValue,
     ) {
         // Read the external payload pointer first
-        let Some(data_value) = args.data() else {
-            ret_val.set(undefined(scope).into());
-            return;
-        };
+        let data_value = args.data();
         let Ok(external_value) = Local::<External>::try_from(data_value) else {
-            ret_val.set(undefined(scope).into());
+            let undef = v8::undefined(scope);
+            ret_val.set(undef.into());
             return;
         };
         // Now consume the V8 arguments into JSValue list to satisfy pedantic and avoid borrowing issues
         let collected = collect_js_args(scope, &args);
         let ptr = external_value.value();
         if ptr.is_null() {
-            ret_val.set(undefined(scope).into());
+            let undef = v8::undefined(scope);
+            ret_val.set(undef.into());
             return;
         }
         // SAFETY: pointer refers to a Box<(HostContext, HostFnKind)> leaked in make_v8_callback
@@ -129,9 +82,11 @@ mod real {
             Err(error) => {
                 let message = format!("{error}");
                 if let Some(js_message) = V8String::new(scope, &message) {
-                    scope.throw_exception(js_message.into());
+                    let exc = v8::Exception::error(scope, js_message);
+                    scope.throw_exception(exc);
                 } else {
-                    ret_val.set(undefined(scope).into());
+                    let undef = v8::undefined(scope);
+                    ret_val.set(undef.into());
                 }
             }
         }
@@ -139,7 +94,10 @@ mod real {
 
     /// Collect V8 callback arguments into engine-agnostic `JSValue`s.
     #[inline]
-    fn collect_js_args(scope: &mut HandleScope, args: &FunctionCallbackArguments) -> Vec<JSValue> {
+    fn collect_js_args<'s, 'i>(
+        scope: &mut v8::PinScope<'s, 'i>,
+        args: &FunctionCallbackArguments,
+    ) -> Vec<JSValue> {
         let mut collected: Vec<JSValue> = Vec::new();
         let length = args.length();
         let start: i32 = 0;
@@ -190,35 +148,27 @@ mod real {
     ///
     /// # Returns
     /// The converted `Local<Value>`.
-    fn jsvalue_to_local<'scope>(
-        scope: &mut HandleScope<'scope>,
+    fn jsvalue_to_local<'s, 'i>(
+        scope: &mut v8::PinScope<'s, 'i>,
         value: JSValue,
-    ) -> Local<'scope, Value> {
+    ) -> Local<'s, Value> {
         match value {
-            JSValue::Undefined => undefined(scope).into(),
-            JSValue::Null => null(scope).into(),
+            JSValue::Undefined => v8::undefined(scope).into(),
+            JSValue::Null => v8::null(scope).into(),
             JSValue::Boolean(boolean_value) => Boolean::new(scope, boolean_value).into(),
             JSValue::Number(number_value) => Number::new(scope, number_value).into(),
             JSValue::String(string_value) => V8String::new(scope, string_value.as_str())
-                .map_or_else(|| undefined(scope).into(), Into::into),
+                .map_or_else(|| v8::undefined(scope).into(), Into::into),
         }
     }
 
-    /// Holds the owned V8 isolate and the shared platform reference for the engine lifecycle.
-    struct OwnedIsolateWithHandleScope {
-        /// The owned V8 isolate for this engine instance.
-        isolate: OwnedIsolate,
-        /// The platform reference kept alive for the lifetime of the isolate.
-        _platform: SharedRef<Platform>,
-    }
-
     /// V8-backed engine, always compiled.
-    #[derive(Default)]
     pub struct V8Engine {
+        /// The owned isolate (Pin<Box> ensures it doesn't move in memory).
+        /// Must be first so it's initialized before context.
+        isolate: Pin<Box<OwnedIsolate>>,
         /// The current global V8 context.
-        inner: Option<Global<Context>>,
-        /// The owned isolate holder used to manage V8 lifetimes.
-        isolate: Option<OwnedIsolateWithHandleScope>,
+        context: Global<Context>,
         /// Whether the runtime prelude has been installed in the context.
         stubs_installed: bool,
         /// Optional base URL used for resolving relative script/module paths.
@@ -234,7 +184,7 @@ mod real {
         /// Returns an error if context initialization fails (unexpected).
         #[inline]
         pub fn new() -> Result<Self> {
-            // Initialize V8 platform (singleton acceptable per-process).
+            // Initialize V8 platform (singleton per-process).
             static START: Once = Once::new();
             START.call_once(|| {
                 let platform = new_default_platform(0, false).make_shared();
@@ -242,21 +192,20 @@ mod real {
                 V8::initialize();
             });
 
-            let platform = new_default_platform(0, false).make_shared();
-            let isolate = Isolate::new(CreateParams::default());
-            let mut owned = OwnedIsolateWithHandleScope {
-                isolate,
-                _platform: platform,
-            };
-            let global_context = {
-                let scope = &mut HandleScope::new(&mut owned.isolate);
-                let context: Local<Context> = Context::new(scope);
-                Global::new(scope, context)
+            // Create isolate using the global platform initialized above
+            // Pin<Box> ensures it doesn't move in memory (Global<Context> stores raw pointer to isolate)
+            let mut isolate = Box::pin(Isolate::new(CreateParams::default()));
+            let context = {
+                // SAFETY: We're pinning the isolate, so it's safe to create a mutable reference
+                let isolate_mut = unsafe { isolate.as_mut().get_unchecked_mut() };
+                v8::scope!(let scope, isolate_mut);
+                let ctx: Local<Context> = Context::new(scope, Default::default());
+                Global::new(scope, ctx)
             };
             Console::info("V8Engine initialized");
             Ok(Self {
-                inner: Some(global_context),
-                isolate: Some(owned),
+                isolate,
+                context,
                 stubs_installed: false,
                 _base_url: None,
                 _module_map: HashMap::new(),
@@ -273,75 +222,86 @@ mod real {
         /// # Errors
         /// Returns an error if compilation or execution fails.
         fn run_script_internal(&mut self, source: &str, url: &str) -> Result<()> {
-            let isolate_container = self
-                .isolate
-                .as_mut()
-                .ok_or_else(|| anyhow!("isolate not initialized"))?;
-            let isolate = &mut isolate_container.isolate;
-            let handle_scope = &mut HandleScope::new(isolate);
-            let global_context = self
-                .inner
-                .as_ref()
-                .ok_or_else(|| anyhow!("context not initialized"))?;
-            let local_context: Local<Context> = Local::new(handle_scope, global_context);
-            let context_scope = &mut ContextScope::new(handle_scope, local_context);
-            let try_catch = &mut TryCatch::new(context_scope);
+            // SAFETY: Isolate is pinned. We need to re-enter it because another isolate
+            // might have been entered since this engine was created (multiple V8Engine instances)
+            let isolate_mut = unsafe { self.isolate.as_mut().get_unchecked_mut() };
+            unsafe { isolate_mut.enter() };
 
-            let code =
-                V8String::new(try_catch, source).ok_or_else(|| anyhow!("alloc v8 string"))?;
-            let name = V8String::new(try_catch, url).ok_or_else(|| anyhow!("alloc v8 name"))?;
-            let undef1: Local<Value> = undefined(try_catch).into();
+            let result = Self::run_script_internal_impl(isolate_mut, &self.context, source, url);
+
+            // SAFETY: Exit the isolate after we're done using it
+            unsafe { isolate_mut.exit() };
+
+            result
+        }
+
+        fn run_script_internal_impl(
+            isolate_mut: &mut Isolate,
+            context: &Global<Context>,
+            source: &str,
+            url: &str,
+        ) -> Result<()> {
+            v8::scope!(let scope, isolate_mut);
+
+            let local_context: Local<Context> = Local::new(scope, context);
+            let scope = &mut ContextScope::new(scope, local_context);
+
+            v8::tc_scope!(let tc, scope);
+
+            let code = V8String::new(tc, source).ok_or_else(|| anyhow!("alloc v8 string"))?;
+            let name = V8String::new(tc, url).ok_or_else(|| anyhow!("alloc v8 name"))?;
             let origin = ScriptOrigin::new(
-                try_catch,
+                tc,
                 name.into(),
                 0,
                 0,
                 false,
                 0,
-                undef1,
+                None,
                 false,
                 false,
                 false,
+                None,
             );
-            let failed = Script::compile(try_catch, code, Some(&origin))
-                .is_some_and(|compiled| compiled.run(try_catch).is_none());
+            let failed = Script::compile(tc, code, Some(&origin))
+                .is_some_and(|compiled| compiled.run(tc).is_none());
             if !failed {
                 return Ok(());
             }
-            if !try_catch.has_caught() {
+            if !tc.has_caught() {
                 return Err(anyhow!("v8 failed"));
             }
-            let exc = try_catch.exception();
-            let exc_str = exc.and_then(|val| val.to_string(try_catch)).map_or_else(
+            let exc = tc.exception();
+            let exc_str = exc.and_then(|val| val.to_string(tc)).map_or_else(
                 || "Uncaught exception".to_owned(),
-                |val| val.to_rust_string_lossy(try_catch),
+                |val| val.to_rust_string_lossy(tc),
             );
-            let stack = try_catch
+            let stack = tc
                 .stack_trace()
-                .and_then(|val| val.to_string(try_catch))
-                .map(|val| val.to_rust_string_lossy(try_catch));
-            let message = try_catch.message().map_or_else(
+                .and_then(|val| val.to_string(tc))
+                .map(|val| val.to_rust_string_lossy(tc));
+            let message = tc.message().map_or_else(
                 || exc_str.clone(),
-                |msg_obj| msg_obj.get(try_catch).to_rust_string_lossy(try_catch),
+                |msg_obj| msg_obj.get(tc).to_rust_string_lossy(tc),
             );
             Console::exception(message.clone(), stack.as_deref());
             let call_onerror = build_onerror_script(&message, url);
-            if let Some(code2) = V8String::new(try_catch, &call_onerror) {
-                let undef2: Local<Value> = undefined(try_catch).into();
+            if let Some(code2) = V8String::new(tc, &call_onerror) {
                 let origin2 = ScriptOrigin::new(
-                    try_catch,
+                    tc,
                     name.into(),
                     0,
                     0,
                     false,
                     0,
-                    undef2,
+                    None,
                     false,
                     false,
                     false,
+                    None,
                 );
-                if let Some(compiled2) = Script::compile(try_catch, code2, Some(&origin2))
-                    && compiled2.run(try_catch).is_none()
+                if let Some(compiled2) = Script::compile(tc, code2, Some(&origin2))
+                    && compiled2.run(tc).is_none()
                 {
                     Console::info("window.onerror dispatch failed");
                 }
@@ -368,17 +328,17 @@ mod real {
         ///
         /// # Arguments
         ///
-        /// * `scope`: The V8 handle scope.
+        /// * `scope`: The V8 pin scope.
         /// * `host_context`: The host context.
         /// * `host_fn`: The host function kind.
         ///
         /// # Returns
         /// The wrapped `Function` or `None` if allocation fails.
-        fn make_v8_callback<'scope>(
-            scope: &mut HandleScope<'scope>,
+        fn make_v8_callback<'s, 'i>(
+            scope: &mut v8::PinScope<'s, 'i>,
             host_context: &HostContext,
             host_fn: HostFnKind,
-        ) -> Option<Local<'scope, Function>> {
+        ) -> Option<Local<'s, Function>> {
             // Allocate payload and leak it; V8 has no finalizer hook here. In practice this lives as long as the function.
             let payload = Box::new((host_context.clone(), host_fn));
             let ptr = Box::into_raw(payload).cast::<c_void>();
@@ -404,18 +364,30 @@ mod real {
             host_context: &HostContext,
             bindings: &HostBindings,
         ) -> Result<()> {
-            let isolate_container = self
-                .isolate
-                .as_mut()
-                .ok_or_else(|| anyhow!("isolate not initialized"))?;
-            let isolate = &mut isolate_container.isolate;
-            let handle_scope = &mut HandleScope::new(isolate);
-            let global_context = self
-                .inner
-                .as_ref()
-                .ok_or_else(|| anyhow!("context not initialized"))?;
-            let local_context: Local<Context> = Local::new(handle_scope, global_context);
-            let scope = &mut ContextScope::new(handle_scope, local_context);
+            // SAFETY: Isolate is pinned. We need to re-enter it because another isolate
+            // might have been entered since this engine was created (multiple V8Engine instances)
+            let isolate_mut = unsafe { self.isolate.as_mut().get_unchecked_mut() };
+            unsafe { isolate_mut.enter() };
+
+            let result =
+                Self::install_bindings_impl(isolate_mut, &self.context, host_context, bindings);
+
+            // SAFETY: Exit the isolate after we're done using it
+            unsafe { isolate_mut.exit() };
+
+            result
+        }
+
+        fn install_bindings_impl(
+            isolate_mut: &mut Isolate,
+            context: &Global<Context>,
+            host_context: &HostContext,
+            bindings: &HostBindings,
+        ) -> Result<()> {
+            v8::scope!(let scope, isolate_mut);
+
+            let local_context: Local<Context> = Local::new(scope, context);
+            let scope = &mut ContextScope::new(scope, local_context);
             let global = local_context.global(scope);
 
             for (namespace_name, namespace) in &bindings.namespaces {
@@ -445,8 +417,8 @@ mod real {
 
         /// Install constant properties for a single host namespace onto the target object.
         #[inline]
-        fn install_namespace_properties(
-            scope: &mut ContextScope<HandleScope>,
+        fn install_namespace_properties<'s, 'i>(
+            scope: &mut v8::PinScope<'s, 'i>,
             namespace: &HostNamespace,
             target_obj: Local<Object>,
         ) {
@@ -462,8 +434,8 @@ mod real {
         /// Install functions for a single host namespace onto the target object,
         /// adding `__valorHost_*` aliases for the `document` namespace.
         #[inline]
-        fn install_namespace_functions(
-            scope: &mut ContextScope<HandleScope>,
+        fn install_namespace_functions<'s, 'i>(
+            scope: &mut v8::PinScope<'s, 'i>,
             host_context: &HostContext,
             namespace_name: &str,
             namespace: &HostNamespace,
@@ -495,21 +467,34 @@ mod real {
         ///
         /// # Arguments
         ///
-        /// * `scope`: The V8 handle scope.
+        /// * `scope`: The V8 pin scope.
         /// * `value`: The `JSValue` to convert.
         ///
         /// # Returns
         /// The converted `Local<Value>`.
-        fn from_js_value<'scope>(
-            scope: &mut HandleScope<'scope>,
+        fn from_js_value<'s, 'i>(
+            scope: &mut v8::PinScope<'s, 'i>,
             value: &JSValue,
-        ) -> Local<'scope, Value> {
+        ) -> Local<'s, Value> {
             // Avoid pattern matching on a reference to satisfy clippy pedantic.
             jsvalue_to_local(scope, value.clone())
         }
 
+        fn run_jobs_impl(isolate_mut: &mut Isolate, context: &Global<Context>) -> Result<()> {
+            v8::scope!(let scope, isolate_mut);
+
+            let local_context: Local<Context> = Local::new(scope, context);
+            let scope = &mut ContextScope::new(scope, local_context);
+
+            v8::tc_scope!(let tc, scope);
+
+            tc.perform_microtask_checkpoint();
+            Ok(())
+        }
+
         // Trait impl lives below inside this module
     }
+
     impl JsEngine for V8Engine {
         #[inline]
         fn eval_script(&mut self, source: &str, url: &str) -> Result<()> {
@@ -525,22 +510,19 @@ mod real {
 
         #[inline]
         fn run_jobs(&mut self) -> Result<()> {
-            if let Some(isolate_container) = self.isolate.as_mut() {
-                let isolate = &mut isolate_container.isolate;
-                let handle_scope = &mut HandleScope::new(isolate);
-                let global_context = self
-                    .inner
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("context not initialized"))?;
-                let local_context: Local<Context> = Local::new(handle_scope, global_context);
-                let context_scope = &mut ContextScope::new(handle_scope, local_context);
-                let try_catch = &mut TryCatch::new(context_scope);
-                try_catch.perform_microtask_checkpoint();
-            }
-            Ok(())
+            // SAFETY: Isolate is pinned. We need to re-enter it because another isolate
+            // might have been entered since this engine was created (multiple V8Engine instances)
+            let isolate_mut = unsafe { self.isolate.as_mut().get_unchecked_mut() };
+            unsafe { isolate_mut.enter() };
+
+            let result = Self::run_jobs_impl(isolate_mut, &self.context);
+
+            // SAFETY: Exit the isolate after we're done using it
+            unsafe { isolate_mut.exit() };
+
+            result
         }
     }
 }
 
-#[cfg(feature = "v8")]
 pub use real::V8Engine;

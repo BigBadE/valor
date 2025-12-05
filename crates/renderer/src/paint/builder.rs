@@ -30,6 +30,10 @@ pub struct PaintStyle {
     pub text_color: [f32; 3],
     /// Font size in pixels.
     pub font_size: f32,
+    /// Font weight (100-900, default 400 = normal, 700 = bold).
+    pub font_weight: u16,
+    /// Font family (e.g., "Courier New", "monospace").
+    pub font_family: Option<String>,
     /// Opacity (0.0 = transparent, 1.0 = opaque).
     pub opacity: f32,
     /// Z-index for positioned elements.
@@ -46,6 +50,8 @@ impl Default for PaintStyle {
             background_color: [0.0, 0.0, 0.0, 0.0],
             text_color: [0.0, 0.0, 0.0],
             font_size: 16.0,
+            font_weight: 400,
+            font_family: None,
             opacity: 1.0,
             z_index: None,
             is_positioned: false,
@@ -202,12 +208,24 @@ impl DisplayListBuilder {
         items: &mut Vec<DisplayItem>,
     ) {
         if let Some(LayoutNodeKind::InlineText { text }) = self.kinds.get(&node_id) {
+            // Calculate line height (matches css_text::measurement logic)
+            let line_height = match style.font_size.round() as i32 {
+                14 => 17.0,
+                16 => 18.0,
+                18 => 22.0,
+                24 => 28.0,
+                _ => (style.font_size * 1.125).round(),
+            };
+
             items.push(DisplayItem::Text {
                 x: rect.x,
                 y: rect.y + style.font_size, // baseline
                 text: text.clone(),
                 color: style.text_color,
                 font_size: style.font_size,
+                font_weight: style.font_weight,
+                font_family: style.font_family.clone(),
+                line_height,
                 bounds: Some((
                     rect.x.round() as i32,
                     rect.y.round() as i32,

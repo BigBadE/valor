@@ -7,3 +7,4 @@ workspace = true
 
 [dependencies]
 css_orchestrator.workspace = true
+glyphon.workspace = true

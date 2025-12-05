@@ -12,10 +12,12 @@ pub(crate) enum Combinator {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-/// A simple selector consisting of a tag name, an element id, a list of classes, or the universal selector.
+/// A simple selector consisting of a tag name, an element id, a list of classes, attribute selectors, or the universal selector.
 ///
 /// Universal selector reference: Selectors Level 4 — 2.2. Universal selector ('*')
 /// <https://www.w3.org/TR/selectors-4/#universal-selector>
+/// Attribute selector reference: Selectors Level 3 — 6.3. Attribute selectors
+/// <https://www.w3.org/TR/selectors-3/#attribute-selectors>
 pub(crate) struct SimpleSelector {
     /// Optional tag name, lower-cased, for type selectors.
     tag: Option<String>,
@@ -23,6 +25,8 @@ pub(crate) struct SimpleSelector {
     element_id: Option<String>,
     /// Class list for `.class` selectors.
     classes: Vec<String>,
+    /// Attribute equality selectors: [attr="value"]
+    attr_equals: Vec<(String, String)>,
     /// Whether this selector is the universal selector ('*').
     universal: bool,
 }
@@ -42,6 +46,11 @@ impl SimpleSelector {
     /// Class list for `.class` selectors.
     pub(crate) fn classes(&self) -> &[String] {
         &self.classes
+    }
+    #[inline]
+    /// Attribute equality selectors: [attr="value"]
+    pub(crate) fn attr_equals_list(&self) -> &[(String, String)] {
+        &self.attr_equals
     }
     #[inline]
     /// True if this simple selector is the universal selector ('*').
@@ -123,6 +132,7 @@ fn commit_current_part(
             tag: current.tag.take(),
             element_id: current.element_id.take(),
             classes: take(&mut current.classes),
+            attr_equals: take(&mut current.attr_equals),
             universal: take(&mut current.universal),
         },
         combinator_to_next: Some(combinator),
@@ -130,6 +140,7 @@ fn commit_current_part(
 }
 
 /// Compute the specificity (ids, classes, tags) for a parsed selector.
+/// Per CSS Selectors Level 3 §9: Attribute selectors count as classes
 pub(crate) fn compute_specificity(selector: &Selector) -> Specificity {
     let mut ids = 0u32;
     let mut classes = 0u32;
@@ -142,6 +153,11 @@ pub(crate) fn compute_specificity(selector: &Selector) -> Specificity {
             let len_u32 = u32::try_from(part.sel.classes.len()).unwrap_or(u32::MAX);
             classes = classes.saturating_add(len_u32);
         }
+        // Attribute selectors count as classes per spec
+        if !part.sel.attr_equals.is_empty() {
+            let len_u32 = u32::try_from(part.sel.attr_equals.len()).unwrap_or(u32::MAX);
+            classes = classes.saturating_add(len_u32);
+        }
         if part.sel.tag.is_some() {
             tags = tags.saturating_add(1);
         }
@@ -151,7 +167,11 @@ pub(crate) fn compute_specificity(selector: &Selector) -> Specificity {
 
 /// Check if a `SimpleSelector` has any meaningful content.
 fn has_content(sel: &SimpleSelector) -> bool {
-    sel.universal || sel.tag.is_some() || sel.element_id.is_some() || !sel.classes.is_empty()
+    sel.universal
+        || sel.tag.is_some()
+        || sel.element_id.is_some()
+        || !sel.classes.is_empty()
+        || !sel.attr_equals.is_empty()
 }
 
 /// Skip over balanced parentheses in a character iterator.
@@ -173,6 +193,130 @@ where
             }
         }
     }
+}
+
+/// Parse an attribute value (quoted or unquoted) from a character iterator.
+fn parse_attr_value<I>(chars: &mut Peekable<I>) -> String
+where
+    I: Iterator<Item = char>,
+{
+    let Some(quote) = chars.peek().copied() else {
+        return String::new();
+    };
+
+    if quote == '"' || quote == '\'' {
+        chars.next(); // consume opening quote
+        let mut value = String::new();
+        while let Some(&character) = chars.peek() {
+            if character == quote {
+                chars.next(); // consume closing quote
+                break;
+            }
+            value.push(character);
+            chars.next();
+        }
+        value
+    } else {
+        consume_ident(chars, true)
+    }
+}
+
+/// Parse an attribute selector like `[attr="value"]` from a character iterator.
+/// Assumes the opening '[' has already been consumed.
+fn parse_attribute_selector<I>(chars: &mut Peekable<I>) -> Vec<(String, String)>
+where
+    I: Iterator<Item = char>,
+{
+    // Skip whitespace
+    while chars.peek().is_some_and(char::is_ascii_whitespace) {
+        chars.next();
+    }
+    let attr_name = consume_ident(chars, true);
+    // Skip whitespace
+    while chars.peek().is_some_and(char::is_ascii_whitespace) {
+        chars.next();
+    }
+    // Check for '='
+    let mut result = Vec::new();
+    if chars.peek().copied() == Some('=') {
+        chars.next();
+        // Skip whitespace
+        while chars.peek().is_some_and(char::is_ascii_whitespace) {
+            chars.next();
+        }
+        // Parse value (quoted or unquoted)
+        let attr_value = parse_attr_value(chars);
+        result.push((attr_name, attr_value));
+    }
+    // Skip to closing ']'
+    while chars.peek().is_some_and(|&character| character != ']') {
+        chars.next();
+    }
+    if chars.peek().copied() == Some(']') {
+        chars.next();
+    }
+    result
+}
+
+/// Process a single character in selector parsing.
+/// Returns `None` if the selector should be discarded (e.g., pseudo-classes).
+fn process_selector_char<I>(
+    character: char,
+    chars: &mut Peekable<I>,
+    current: &mut SimpleSelector,
+    parts: &mut Vec<SelectorPart>,
+    next_combinator: &mut Option<Combinator>,
+) -> Option<()>
+where
+    I: Iterator<Item = char>,
+{
+    match character {
+        '>' => {
+            chars.next();
+            if has_content(current) {
+                commit_current_part(parts, current, Combinator::Child);
+                *next_combinator = None;
+            } else {
+                *next_combinator = Some(Combinator::Child);
+            }
+        }
+        '*' => {
+            chars.next();
+            current.universal = true;
+        }
+        ':' => {
+            // Pseudo-class or pseudo-element - discard selector
+            chars.next();
+            if chars.peek().copied() == Some(':') {
+                chars.next();
+            }
+            let _pseudo_name = consume_ident(chars, true);
+            if chars.peek().copied() == Some('(') {
+                skip_balanced_parens(chars);
+            }
+            return None;
+        }
+        '#' => {
+            chars.next();
+            current.element_id = Some(consume_ident(chars, true));
+        }
+        '.' => {
+            chars.next();
+            current.classes.push(consume_ident(chars, true));
+        }
+        '[' => {
+            chars.next();
+            let attrs = parse_attribute_selector(chars);
+            current.attr_equals.extend(attrs);
+        }
+        character if character.is_alphanumeric() => {
+            current.tag = Some(consume_ident(chars, false));
+        }
+        _ => {
+            chars.next();
+        }
+    }
+    Some(())
 }
 
 /// Parse a single selector string into a `Selector`.
@@ -197,56 +341,16 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
                 next_combinator = Some(Combinator::Descendant);
             }
         }
-        match chars.peek().copied() {
-            None => break,
-            Some('>') => {
-                chars.next();
-                if has_content(&current) {
-                    commit_current_part(&mut parts, &mut current, Combinator::Child);
-                    next_combinator = None;
-                } else {
-                    next_combinator = Some(Combinator::Child);
-                }
-            }
-            Some('*') => {
-                // Universal selector — matches any element.
-                // Selectors Level 4 §2.2: https://www.w3.org/TR/selectors-4/#universal-selector
-                chars.next();
-                current.universal = true;
-            }
-            Some(':') => {
-                // Pseudo-class or pseudo-element. For now, skip entire selector.
-                // Pseudo-elements (::before, ::after) are not yet supported.
-                // When we encounter ':', we skip the rest of this selector to avoid parsing errors.
-                chars.next();
-                // Check if it's a pseudo-element (::)
-                if chars.peek().copied() == Some(':') {
-                    chars.next(); // Skip second ':'
-                }
-                // Skip the pseudo name
-                let _pseudo_name = consume_ident(&mut chars, true);
-                // Skip any function arguments like :nth-child(2n)
-                if chars.peek().copied() == Some('(') {
-                    skip_balanced_parens(&mut chars);
-                }
-                // Discard this selector part - return None from parse_single_selector
-                return None;
-            }
-            Some('#') => {
-                chars.next();
-                current.element_id = Some(consume_ident(&mut chars, true));
-            }
-            Some('.') => {
-                chars.next();
-                current.classes.push(consume_ident(&mut chars, true));
-            }
-            Some(character) if character.is_alphanumeric() => {
-                current.tag = Some(consume_ident(&mut chars, false));
-            }
-            Some(_) => {
-                chars.next();
-            }
-        }
+        let Some(character) = chars.peek().copied() else {
+            break;
+        };
+        process_selector_char(
+            character,
+            &mut chars,
+            &mut current,
+            &mut parts,
+            &mut next_combinator,
+        )?;
     }
     if has_content(&current) {
         parts.push(SelectorPart {

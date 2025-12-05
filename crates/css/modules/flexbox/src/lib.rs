@@ -20,6 +20,7 @@ mod chapter7;
 mod chapter8;
 
 // Public re-exports of minimal MVP helpers and types.
+// Note: FlexBox box type now lives in css_core::box_tree to avoid circular dependency
 pub use chapter4::{DisplayKeyword, establishes_flex_formatting_context};
 pub use chapter5::{FlexDirection, FlexWrap};
 pub use chapter6::{FlexItem, ItemRef, ItemStyle, collect_flex_items};

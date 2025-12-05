@@ -60,23 +60,11 @@ pub fn batch_texts_with_scissor(
                     opacity_depth -= 1;
                 }
             }
-            DisplayItem::Text {
-                x,
-                y,
-                text,
-                color,
-                font_size,
-                bounds,
-            } => {
-                if opacity_depth == 0 {
-                    current_texts.push(DrawText {
-                        x: *x,
-                        y: *y,
-                        text: text.clone(),
-                        color: *color,
-                        font_size: *font_size,
-                        bounds: *bounds,
-                    });
+            DisplayItem::Text { .. } => {
+                if opacity_depth == 0
+                    && let Some(text_item) = map_text_item(item)
+                {
+                    current_texts.push(text_item);
                 }
             }
             DisplayItem::Rect { .. }
@@ -139,23 +127,11 @@ fn batch_single_layer(
                     opacity_depth -= 1;
                 }
             }
-            DisplayItem::Text {
-                x,
-                y,
-                text,
-                color,
-                font_size,
-                bounds,
-            } => {
-                if opacity_depth == 0 {
-                    current_texts.push(DrawText {
-                        x: *x,
-                        y: *y,
-                        text: text.clone(),
-                        color: *color,
-                        font_size: *font_size,
-                        bounds: *bounds,
-                    });
+            DisplayItem::Text { .. } => {
+                if opacity_depth == 0
+                    && let Some(text_item) = map_text_item(item)
+                {
+                    current_texts.push(text_item);
                 }
             }
             DisplayItem::Rect { .. }
@@ -196,6 +172,9 @@ pub fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
         text,
         color,
         font_size,
+        font_weight,
+        font_family,
+        line_height,
         bounds,
     } = item
     {
@@ -205,6 +184,9 @@ pub fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
             text: text.clone(),
             color: *color,
             font_size: *font_size,
+            font_weight: *font_weight,
+            font_family: font_family.clone(),
+            line_height: *line_height,
             bounds: *bounds,
         });
     }

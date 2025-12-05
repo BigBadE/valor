@@ -59,6 +59,12 @@ pub enum DisplayItem {
         text: String,
         color: [f32; 3],
         font_size: f32,
+        /// Font weight (100-900, default 400 = normal, 700 = bold)
+        font_weight: u16,
+        /// Font family (e.g., "Courier New", "monospace")
+        font_family: Option<String>,
+        /// Line height in pixels (for vertical metrics)
+        line_height: f32,
         /// Optional bounds for wrapping/clipping in framebuffer pixels.
         bounds: Option<TextBoundsPx>,
     },
@@ -231,6 +237,9 @@ impl DisplayList {
                     text,
                     color,
                     font_size,
+                    font_weight,
+                    font_family,
+                    line_height,
                     bounds,
                 } => texts.push(DrawText {
                     x: *x,
@@ -238,6 +247,9 @@ impl DisplayList {
                     text: text.clone(),
                     color: *color,
                     font_size: *font_size,
+                    font_weight: *font_weight,
+                    font_family: font_family.clone(),
+                    line_height: *line_height,
                     bounds: *bounds,
                 }),
                 DisplayItem::BeginClip { .. }

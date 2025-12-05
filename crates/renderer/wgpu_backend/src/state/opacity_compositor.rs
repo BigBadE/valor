@@ -386,6 +386,9 @@ impl OpacityCompositor<'_> {
                     text,
                     color,
                     font_size,
+                    font_weight,
+                    font_family,
+                    line_height,
                     bounds: text_bounds,
                 } => DisplayItem::Text {
                     x: text_x - offset_x,
@@ -393,6 +396,9 @@ impl OpacityCompositor<'_> {
                     text: text.clone(),
                     color: *color,
                     font_size: *font_size,
+                    font_weight: *font_weight,
+                    font_family: font_family.clone(),
+                    line_height: *line_height,
                     bounds: text_bounds.map(|(left, top, right, bottom)| {
                         (
                             (left as f32 - offset_x) as i32,

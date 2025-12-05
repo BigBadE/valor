@@ -12,16 +12,13 @@ use crate::parser::parse_stylesheet;
 use css_orchestrator::CoreEngine;
 
 pub mod style_types;
-use crate::style_types::{ComputedStyle, LayoutNodeKind, LayoutRect};
+use crate::style_types::ComputedStyle;
 
 pub mod types;
 
 pub mod parser;
 
 pub mod layout_helpers;
-
-/// Snapshot of layout nodes and their child ordering for inspection.
-type LayoutSnapshot = Vec<(NodeKey, LayoutNodeKind, Vec<NodeKey>)>;
 
 pub struct CSSMirror {
     /// Base URL used for resolving discovered stylesheet links.
@@ -157,9 +154,6 @@ pub struct Orchestrator {
 pub struct ProcessArtifacts {
     pub styles_changed: bool,
     pub computed_styles: HashMap<NodeKey, ComputedStyle>,
-    pub layout_snapshot: LayoutSnapshot,
-    pub rects: HashMap<NodeKey, LayoutRect>,
-    pub dirty_rects: Vec<LayoutRect>,
 }
 impl Default for Orchestrator {
     #[inline]
@@ -206,25 +200,11 @@ impl Orchestrator {
     #[inline]
     pub fn process_once(&mut self) -> Result<ProcessArtifacts> {
         let styles_changed = self.core.recompute_styles();
-        let core_computed = self.core.computed_snapshot();
-        let core_rects = self.core.compute_layout();
-        let core_dirty = self.core.take_dirty_rects();
-        let core_snapshot = self.core.layout_snapshot();
+        let computed_styles = self.core.computed_snapshot();
 
-        // Map core types to public orchestrator types
-        let computed = core_computed;
-
-        let rects: HashMap<NodeKey, LayoutRect> = core_rects;
-
-        let dirty_rects: Vec<LayoutRect> = core_dirty;
-
-        let layout_snapshot: LayoutSnapshot = core_snapshot;
         Ok(ProcessArtifacts {
             styles_changed,
-            computed_styles: computed,
-            layout_snapshot,
-            rects,
-            dirty_rects,
+            computed_styles,
         })
     }
 }

@@ -6,9 +6,9 @@
 
 use super::error_scope::ErrorScopeGuard;
 use glyphon::{
-    Attrs, Buffer as GlyphonBuffer, Cache, Color as GlyphonColor, FontSystem, Metrics,
-    RenderError as GlyphonRenderError, Resolution, Shaping, SwashCache, TextArea, TextAtlas,
-    TextBounds, TextRenderer, Viewport,
+    Attrs, Buffer as GlyphonBuffer, Cache, CacheKeyFlags, Color as GlyphonColor, Family,
+    FontSystem, Metrics, RenderError as GlyphonRenderError, Resolution, Shaping, SwashCache,
+    TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
 };
 use log::{debug, error};
 use renderer::renderer::DrawText;
@@ -165,15 +165,63 @@ impl TextRendererState {
     fn create_glyphon_buffers(&mut self, items: &[DrawText], scale: f32) -> Vec<GlyphonBuffer> {
         let mut buffers = Vec::with_capacity(items.len());
         for item in items {
+            // CRITICAL: Must use same metrics as measurement (font_size, line_height)
+            // The line_height parameter controls vertical spacing and leading distribution.
+            // Using line_height in both measurement and rendering ensures glyphs are positioned
+            // at the same vertical offset within the line box.
             let mut buffer = GlyphonBuffer::new(
                 &mut self.font_system,
-                Metrics::new(item.font_size * scale, item.font_size * scale),
+                Metrics::new(item.font_size * scale, item.line_height * scale),
             );
-            let attrs = Attrs::new();
-            buffer.set_text(&mut self.font_system, &item.text, &attrs, Shaping::Advanced);
+            // Build font attributes with weight and family
+            let attrs = Self::prepare_font_attrs(item);
+            buffer.set_text(&mut self.font_system, &item.text, &attrs, Shaping::Advanced, None);
             buffers.push(buffer);
         }
         buffers
+    }
+
+    /// Prepare font attributes from `DrawText` (matches `css_text::measurement` logic).
+    fn prepare_font_attrs(item: &DrawText) -> Attrs<'_> {
+        let weight = Weight(item.font_weight);
+        let mut attrs = Attrs::new()
+            .weight(weight)
+            .cache_key_flags(CacheKeyFlags::SUBPIXEL_RENDERING);
+
+        if let Some(family_enum) = Self::parse_font_family(item.font_family.as_ref()) {
+            attrs = attrs.family(family_enum);
+        }
+
+        attrs
+    }
+
+    /// Parse font family string into a glyphon Family.
+    fn parse_font_family(font_family: Option<&String>) -> Option<Family<'_>> {
+        let family = font_family?;
+        let family_clean = family.trim();
+        if family_clean.is_empty() {
+            return Some(Family::Monospace);
+        }
+
+        // Parse the font family list and try to use the first available font
+        for font_spec in family_clean.split(',') {
+            let font_name = font_spec.trim().trim_matches('\'').trim_matches('"').trim();
+            if font_name.is_empty() {
+                continue;
+            }
+
+            // Check for generic families first
+            return Some(match font_name.to_lowercase().as_str() {
+                "monospace" => Family::Monospace,
+                "serif" => Family::Serif,
+                "sans-serif" => Family::SansSerif,
+                "cursive" => Family::Cursive,
+                "fantasy" => Family::Fantasy,
+                _ => Family::Name(font_name),
+            });
+        }
+
+        Some(Family::Monospace)
     }
 
     /// Create glyphon text areas from buffers and items.

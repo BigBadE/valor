@@ -1,4 +1,4 @@
-use css_box::compute_box_sides;
+use css_box::{LayoutUnit, compute_box_sides};
 use css_orchestrator::style_model::{BorderWidths, ComputedStyle, Edges};
 
 #[cfg(test)]
@@ -34,19 +34,20 @@ mod tests {
         };
 
         let sides = compute_box_sides(&style);
-        assert_eq!(sides.margin_top, 10i32);
-        assert_eq!(sides.margin_right, -5i32);
-        assert_eq!(sides.margin_bottom, 8i32);
-        assert_eq!(sides.margin_left, 0i32);
+        // Values are now in LayoutUnit (1/64px units)
+        assert_eq!(sides.margin_top, LayoutUnit::from_px(10.0));
+        assert_eq!(sides.margin_right, LayoutUnit::from_px(-5.0));
+        assert_eq!(sides.margin_bottom, LayoutUnit::from_px(8.0));
+        assert_eq!(sides.margin_left, LayoutUnit::from_px(0.0));
 
-        assert_eq!(sides.padding_top, 3i32);
-        assert_eq!(sides.padding_right, 4i32);
-        assert_eq!(sides.padding_bottom, 2i32);
-        assert_eq!(sides.padding_left, 1i32);
+        assert_eq!(sides.padding_top, LayoutUnit::from_px(3.5));
+        assert_eq!(sides.padding_right, LayoutUnit::from_px(4.0));
+        assert_eq!(sides.padding_bottom, LayoutUnit::from_px(2.0));
+        assert!((sides.padding_left.to_px() - 1.2).abs() < 0.01); // Approximate due to rounding
 
-        assert_eq!(sides.border_top, 2i32);
-        assert_eq!(sides.border_right, 2i32);
-        assert_eq!(sides.border_bottom, 0i32);
-        assert_eq!(sides.border_left, 1i32);
+        assert_eq!(sides.border_top, LayoutUnit::from_px(2.0));
+        assert!((sides.border_right.to_px() - 2.4).abs() < 0.01); // Approximate due to rounding
+        assert_eq!(sides.border_bottom, LayoutUnit::from_px(0.0));
+        assert_eq!(sides.border_left, LayoutUnit::from_px(1.0));
     }
 }

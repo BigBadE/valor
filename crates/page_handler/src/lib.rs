@@ -15,6 +15,8 @@ mod display_retained;
 mod embedded_chrome;
 pub mod events;
 pub mod focus;
+/// Layout manager for constraint-based layout
+pub mod layout_manager;
 /// Display list generation from layout and styles
 mod paint;
 /// JavaScript runtime abstraction and default runtime implementation

@@ -70,6 +70,7 @@ pub enum Display {
     #[default]
     Inline,
     Block,
+    InlineBlock,
     Flex,
     InlineFlex,
     None,
@@ -193,6 +194,8 @@ pub struct ComputedStyle {
     pub bottom_percent: Option<f32>,
     // Typography
     pub font_family: Option<String>,
+    /// Font weight (100-900, with 400=normal, 700=bold). Defaults to 400.
+    pub font_weight: u16,
     // Flexbox
     pub flex_grow: f32,
     pub flex_shrink: f32,

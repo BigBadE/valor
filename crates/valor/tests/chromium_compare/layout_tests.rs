@@ -6,71 +6,34 @@ use super::common::{
 };
 use super::json_compare::compare_json_with_epsilon;
 use anyhow::{Result, anyhow};
-use css::style_types::{AlignItems, BoxSizing, ComputedStyle, Display, Overflow};
-use css_core::{LayoutNodeKind, LayoutRect, Layouter};
+use css::style_types::{AlignItems, BoxSizing, ComputedStyle, Display, Overflow, Position};
+use css_core::LayoutRect;
 use headless_chrome::Tab;
-use js::DOMSubscriber as _;
-use js::DOMUpdate::{EndOfDocument, InsertElement, SetAttr};
 use js::NodeKey;
 use log::{error, info};
+use page_handler::layout_manager::LayoutManager;
+use page_handler::snapshots::LayoutNodeKind;
 use serde_json::{Map as JsonMap, Value as JsonValue, from_str, json};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
-type LayouterWithStyles = (Layouter, HashMap<NodeKey, ComputedStyle>);
-
-fn replay_into_layouter(
-    layouter: &mut Layouter,
-    tags_by_key: &HashMap<NodeKey, String>,
-    element_children: &HashMap<NodeKey, Vec<NodeKey>>,
-    attrs: &HashMap<NodeKey, HashMap<String, String>>,
-    parent: NodeKey,
-) {
-    let Some(children) = element_children.get(&parent) else {
-        return;
-    };
-    for child in children {
-        let tag = tags_by_key
-            .get(child)
-            .cloned()
-            .unwrap_or_else(|| "div".to_owned());
-        let _ignore_result = layouter.apply_update(InsertElement {
-            parent,
-            node: *child,
-            tag,
-            pos: 0,
-        });
-        if let Some(attr_map) = attrs.get(child) {
-            apply_element_attrs(layouter, *child, attr_map);
-        }
-        replay_into_layouter(layouter, tags_by_key, element_children, attrs, *child);
-    }
-}
-
-fn apply_element_attrs(layouter: &mut Layouter, node: NodeKey, attrs: &HashMap<String, String>) {
-    for key_name in ["id", "class", "style"] {
-        if let Some(val) = attrs.get(key_name) {
-            let _ignore_result = layouter.apply_update(SetAttr {
-                node,
-                name: key_name.to_owned(),
-                value: val.clone(),
-            });
-        }
-    }
-}
+type LayoutEngineWithStyles = (LayoutManager, HashMap<NodeKey, ComputedStyle>);
 
 /// Sets up a layouter for a fixture by creating a page and processing it.
 ///
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or layout computation fails.
-fn setup_layouter_for_fixture(runtime: &Runtime, input_path: &Path) -> Result<LayouterWithStyles> {
+fn setup_layouter_for_fixture(
+    runtime: &Runtime,
+    input_path: &Path,
+) -> Result<LayoutEngineWithStyles> {
     let url = to_file_url(input_path)?;
     let mut page = create_page(runtime, url)?;
     page.eval_js(css_reset_injection_script())?;
-    let mut layouter_mirror = page.create_mirror(Layouter::new());
+    let mut layouter_mirror = page.create_mirror(LayoutManager::new());
 
     let finished = update_until_finished(runtime, &mut page, |_page| {
         layouter_mirror.try_update_sync()?;
@@ -84,27 +47,15 @@ fn setup_layouter_for_fixture(runtime: &Runtime, input_path: &Path) -> Result<La
     runtime.block_on(page.update())?;
     layouter_mirror.try_update_sync()?;
 
-    let (tags_by_key, element_children) = page.layout_structure_snapshot();
-    let attrs_map = page.layouter_attrs_map();
-    {
-        let layouter = layouter_mirror.mirror_mut();
-        replay_into_layouter(
-            layouter,
-            &tags_by_key,
-            &element_children,
-            &attrs_map,
-            NodeKey::ROOT,
-        );
-        let _ignore_result = layouter.apply_update(EndOfDocument);
-    }
-
     let computed = page.computed_styles_snapshot()?;
     {
         let layouter = layouter_mirror.mirror_mut();
-        let sheet_for_layout = page.styles_snapshot()?;
-        layouter.set_stylesheet(sheet_for_layout);
+        // Match Chromium's viewport: 800x600 window with scrollbar gutter (31px)
+        // This matches the window_size in browser.rs and accounts for scrollbar-gutter:stable
+        layouter.set_viewport(769, 600);
+        // Styles come from orchestrator
         layouter.set_computed_styles(computed.clone());
-        let _count = layouter.compute_layout();
+        layouter.compute_layout();
     }
 
     Ok((layouter_mirror.into_inner(), computed))
@@ -171,8 +122,9 @@ fn process_layout_fixture(
             }
         };
 
-    let rects_external = layouter.compute_layout_geometry();
-    let our_json = our_layout_json(&layouter, &rects_external, &computed_for_serialization);
+    layouter.compute_layout();
+    let rects_external = layouter.rects();
+    let our_json = our_layout_json(&layouter, rects_external, &computed_for_serialization);
     let ch_json = if let Some(cached_value) = read_cached_json_for_fixture(input_path, harness_src)
     {
         cached_value
@@ -226,6 +178,10 @@ pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
 
     process_layout_fixture(input_path, &runtime, &tab, harness_src, &mut failed)?;
 
+    // Explicitly close tab and browser to ensure clean shutdown
+    drop(tab);
+    drop(browser);
+
     if failed.is_empty() {
         Ok(())
     } else {
@@ -259,6 +215,11 @@ pub fn run_chromium_layouts() -> Result<()> {
             ran += 1;
         }
     }
+
+    // Explicitly close tab and browser to ensure clean shutdown
+    drop(tab);
+    drop(browser);
+
     if failed.is_empty() {
         info!("[LAYOUT] {ran} fixtures passed");
         Ok(())
@@ -294,7 +255,7 @@ const FLEX_BASIS: &str = "auto";
 const fn effective_display(display: Display) -> &'static str {
     match display {
         Display::Inline => "inline",
-        Display::Block | Display::Contents => "block",
+        Display::Block | Display::InlineBlock | Display::Contents => "block",
         Display::Flex => "flex",
         Display::InlineFlex => "inline-flex",
         Display::None => "none",
@@ -302,6 +263,16 @@ const fn effective_display(display: Display) -> &'static str {
 }
 
 fn build_style_json(computed: &ComputedStyle) -> JsonValue {
+    let position_val = match computed.position {
+        Position::Static => "static",
+        Position::Relative => "relative",
+        Position::Absolute => "absolute",
+        Position::Fixed => "fixed",
+    };
+    let color_str = format!(
+        "rgb({}, {}, {})",
+        computed.color.red, computed.color.green, computed.color.blue
+    );
     json!({
         "display": effective_display(computed.display),
         "boxSizing": match computed.box_sizing { BoxSizing::BorderBox => "border-box", BoxSizing::ContentBox => "content-box" },
@@ -314,7 +285,13 @@ fn build_style_json(computed: &ComputedStyle) -> JsonValue {
             AlignItems::FlexEnd => "flex-end",
             AlignItems::Stretch => "normal",
         },
-        "overflow": match computed.overflow { Overflow::Visible => "visible", _ => "hidden" },
+        "overflow": match computed.overflow {
+            Overflow::Visible => "visible",
+            Overflow::Hidden => "hidden",
+            Overflow::Auto => "auto",
+            Overflow::Scroll => "scroll",
+            Overflow::Clip => "clip",
+        },
         "margin": {
             "top": format!("{}px", computed.margin.top),
             "right": format!("{}px", computed.margin.right),
@@ -332,30 +309,85 @@ fn build_style_json(computed: &ComputedStyle) -> JsonValue {
             "right": format!("{}px", computed.border_width.right),
             "bottom": format!("{}px", computed.border_width.bottom),
             "left": format!("{}px", computed.border_width.left),
-        }
+        },
+        "position": position_val,
+        "fontSize": format!("{}px", computed.font_size),
+        "fontWeight": computed.font_weight.to_string(),
+        "fontFamily": computed.font_family.as_deref().unwrap_or("").replace('\'', "\"").replace(',', ", "),
+        "color": color_str,
+        "lineHeight": computed.line_height.map_or_else(|| "normal".to_string(), |line_height| format!("{line_height}px")),
+        "zIndex": computed.z_index.map_or_else(|| "auto".to_string(), |z_index| z_index.to_string()),
+        "opacity": computed.opacity.map_or_else(|| "1".to_string(), |opacity_val| opacity_val.to_string()),
     })
 }
 
-fn collect_children_json(ctx: &LayoutCtx<'_>, key: NodeKey) -> Vec<JsonValue> {
+fn serialize_text_node(
+    ctx: &LayoutCtx<'_>,
+    key: NodeKey,
+    text: &str,
+    parent_computed: &ComputedStyle,
+) -> Option<JsonValue> {
+    // Skip whitespace-only text
+    if text.trim().is_empty() {
+        return None;
+    }
+
+    let rect = ctx.rects.get(&key).copied().unwrap_or_default();
+    let color_str = format!(
+        "rgb({}, {}, {})",
+        parent_computed.color.red, parent_computed.color.green, parent_computed.color.blue
+    );
+
+    Some(json!({
+        "type": "text",
+        "text": text,
+        "rect": {
+            "x": f64::from(rect.x),
+            "y": f64::from(rect.y),
+            "width": f64::from(rect.width),
+            "height": f64::from(rect.height),
+        },
+        "style": {
+            "fontSize": format!("{}px", parent_computed.font_size),
+            "fontWeight": parent_computed.font_weight.to_string(),
+            "color": color_str,
+            "lineHeight": parent_computed.line_height.map_or_else(|| "normal".to_string(), |line_height| format!("{line_height}px")),
+        }
+    }))
+}
+
+fn collect_children_json(
+    ctx: &LayoutCtx<'_>,
+    key: NodeKey,
+    parent_computed: &ComputedStyle,
+) -> Vec<JsonValue> {
     let mut kids_json: Vec<JsonValue> = Vec::new();
     if let Some(children) = ctx.children_by_key.get(&key) {
         for child in children {
-            if matches!(
-                ctx.kind_by_key.get(child),
-                Some(LayoutNodeKind::Block { .. })
-            ) {
-                // Skip elements with display:none
-                if let Some(computed) = ctx.computed.get(child)
-                    && computed.display == Display::None
-                {
-                    continue;
-                }
+            match ctx.kind_by_key.get(child) {
+                Some(LayoutNodeKind::Block { .. }) => {
+                    // Skip elements with display:none
+                    if let Some(computed) = ctx.computed.get(child)
+                        && computed.display == Display::None
+                    {
+                        continue;
+                    }
 
-                let child_json = serialize_element_subtree(ctx, *child);
-                // Skip empty JSON objects (filtered elements)
-                if !child_json.is_null() && !child_json.as_object().is_some_and(JsonMap::is_empty) {
-                    kids_json.push(child_json);
+                    let child_json = serialize_element_subtree(ctx, *child);
+                    // Skip empty JSON objects (filtered elements)
+                    if !child_json.is_null()
+                        && !child_json.as_object().is_some_and(JsonMap::is_empty)
+                    {
+                        kids_json.push(child_json);
+                    }
                 }
+                Some(LayoutNodeKind::InlineText { text }) => {
+                    if let Some(text_json) = serialize_text_node(ctx, *child, text, parent_computed)
+                    {
+                        kids_json.push(text_json);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -369,26 +401,56 @@ fn serialize_element_subtree(ctx: &LayoutCtx<'_>, key: NodeKey) -> JsonValue {
             return json!({});
         }
         let rect = ctx.rects.get(&key).copied().unwrap_or_default();
-        let display_tag = tag.clone();
+
+        // Use viewport-absolute coordinates (same as Chrome's getBoundingClientRect)
+        let x = rect.x;
+        let y = rect.y;
+
         let id = ctx
             .attrs_by_key
             .get(&key)
             .and_then(|attr_map| attr_map.get("id"))
             .cloned()
             .unwrap_or_default();
+        // Debug output removed for clippy compliance
+
+        // Collect attributes (type, checked, etc.)
+        let mut attrs = json!({});
+        if let Some(attr_map) = ctx.attrs_by_key.get(&key) {
+            if let Some(type_val) = attr_map.get("type") {
+                attrs["type"] = JsonValue::String(type_val.clone());
+            }
+            if attr_map.contains_key("checked") {
+                attrs["checked"] = JsonValue::String("true".to_string());
+            }
+        }
+
+        let display_tag = tag.clone();
         let computed = ctx.computed.get(&key).cloned().unwrap_or_default();
         out = json!({
+            "type": "element",
             "tag": display_tag,
             "id": id,
+            "attrs": attrs,
             "rect": {
-                "x": f64::from(rect.x),
-                "y": f64::from(rect.y),
+                "x": f64::from(x),
+                "y": f64::from(y),
                 "width": f64::from(rect.width),
                 "height": f64::from(rect.height),
             },
             "style": build_style_json(&computed)
         });
-        let kids_json = collect_children_json(ctx, key);
+
+        // Children are positioned relative to this element's border-box origin
+        let child_ctx = LayoutCtx {
+            kind_by_key: ctx.kind_by_key,
+            children_by_key: ctx.children_by_key,
+            attrs_by_key: ctx.attrs_by_key,
+            rects: ctx.rects,
+            computed: ctx.computed,
+        };
+
+        let kids_json = collect_children_json(&child_ctx, key, &computed);
         if let Some(obj) = out.as_object_mut() {
             obj.insert("children".to_owned(), JsonValue::Array(kids_json));
         }
@@ -424,7 +486,7 @@ fn find_root_element(
 }
 
 fn our_layout_json(
-    layouter: &Layouter,
+    layouter: &LayoutManager,
     rects: &HashMap<NodeKey, LayoutRect>,
     computed: &HashMap<NodeKey, ComputedStyle>,
 ) -> JsonValue {
@@ -435,7 +497,8 @@ fn our_layout_json(
         kind_by_key.insert(node_key, kind);
         children_by_key.insert(node_key, children);
     }
-    let attrs_by_key = layouter.attrs_map();
+    let attrs_by_key = layouter.attrs_map().clone();
+
     let mut body_key: Option<NodeKey> = None;
     let mut html_key: Option<NodeKey> = None;
     for (node_key, kind) in &kind_by_key {
@@ -452,6 +515,10 @@ fn our_layout_json(
 
     let root_key = find_root_element(body_key, html_key, &kind_by_key, &children_by_key)
         .unwrap_or(NodeKey::ROOT);
+
+    // Get root rect to establish coordinate origin
+    // Debug output removed for clippy compliance
+
     let ctx = LayoutCtx {
         kind_by_key: &kind_by_key,
         children_by_key: &children_by_key,
@@ -462,74 +529,125 @@ fn our_layout_json(
     serialize_element_subtree(&ctx, root_key)
 }
 
-fn chromium_layout_extraction_script() -> &'static str {
-    "(function() {
-        function shouldSkip(el) {
-            if (!el || !el.tagName) return false;
-            var tag = String(el.tagName).toLowerCase();
-            if (tag === 'style' && el.getAttribute('data-valor-test-reset') === '1') return true;
-            try {
-                var cs = window.getComputedStyle(el);
-                if (cs && String(cs.display||'').toLowerCase() === 'none') return true;
-            } catch (e) { /* ignore */ }
-            return false;
+const CHROMIUM_SCRIPT_HELPERS: &str = "function shouldSkip(el) {
+    if (!el || !el.tagName) return false;
+    var tag = String(el.tagName).toLowerCase();
+    if (tag === 'style' && el.getAttribute('data-valor-test-reset') === '1') return true;
+    try {
+        var cs = window.getComputedStyle(el);
+        if (cs && String(cs.display||'').toLowerCase() === 'none') return true;
+    } catch (e) { /* ignore */ }
+    return false;
+}
+function pickStyle(el, cs) {
+    var d = String(cs.display || '').toLowerCase();
+    function pickEdges(prefix) {
+        return {
+            top: cs[prefix + 'Top'] || '',
+            right: cs[prefix + 'Right'] || '',
+            bottom: cs[prefix + 'Bottom'] || '',
+            left: cs[prefix + 'Left'] || ''
+        };
+    }
+    return {
+        display: d,
+        boxSizing: (cs.boxSizing || '').toLowerCase(),
+        flexBasis: cs.flexBasis || '',
+        flexGrow: Number(cs.flexGrow || 0),
+        flexShrink: Number(cs.flexShrink || 0),
+        margin: pickEdges('margin'),
+        padding: pickEdges('padding'),
+        borderWidth: {
+            top: cs.borderTopWidth || '',
+            right: cs.borderRightWidth || '',
+            bottom: cs.borderBottomWidth || '',
+            left: cs.borderLeftWidth || '',
+        },
+        alignItems: (cs.alignItems || '').toLowerCase(),
+        overflow: (cs.overflow || '').toLowerCase(),
+        position: (cs.position || '').toLowerCase(),
+        fontSize: cs.fontSize || '',
+        fontWeight: cs.fontWeight || '',
+        fontFamily: cs.fontFamily || '',
+        color: cs.color || '',
+        lineHeight: cs.lineHeight || '',
+        zIndex: cs.zIndex || 'auto',
+        opacity: cs.opacity || '1'
+    };
+}";
+
+const CHROMIUM_SCRIPT_SERIALIZERS: &str = "function serText(textNode, parentEl) {
+    var text = textNode.textContent || '';
+    if (!text || /^\\s*$/.test(text)) return null;
+    var range = document.createRange();
+    range.selectNodeContents(textNode);
+    var r = range.getBoundingClientRect();
+    var cs = window.getComputedStyle(parentEl);
+    return {
+        type: 'text',
+        text: text,
+        rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+        style: {
+            fontSize: cs.fontSize || '',
+            fontWeight: cs.fontWeight || '',
+            color: cs.color || '',
+            lineHeight: cs.lineHeight || ''
         }
-        function pickStyle(el, cs) {
-            var d = String(cs.display || '').toLowerCase();
-            var display = (d === 'flex') ? 'flex' : 'block';
-            function pickEdges(prefix) {
-                return {
-                    top: cs[prefix + 'Top'] || '',
-                    right: cs[prefix + 'Right'] || '',
-                    bottom: cs[prefix + 'Bottom'] || '',
-                    left: cs[prefix + 'Left'] || ''
-                };
-            }
-            return {
-                display: display,
-                boxSizing: (cs.boxSizing || '').toLowerCase(),
-                flexBasis: cs.flexBasis || '',
-                flexGrow: Number(cs.flexGrow || 0),
-                flexShrink: Number(cs.flexShrink || 0),
-                margin: pickEdges('margin'),
-                padding: pickEdges('padding'),
-                borderWidth: {
-                    top: cs.borderTopWidth || '',
-                    right: cs.borderRightWidth || '',
-                    bottom: cs.borderBottomWidth || '',
-                    left: cs.borderLeftWidth || '',
-                },
-                alignItems: (cs.alignItems || '').toLowerCase(),
-                overflow: (cs.overflow || '').toLowerCase(),
-            };
-        }
-        function ser(el) {
-            var r = el.getBoundingClientRect();
-            var cs = window.getComputedStyle(el);
-            return {
-                tag: String(el.tagName||'').toLowerCase(),
-                id: String(el.id||''),
-                rect: { x: r.x, y: r.y, width: r.width, height: r.height },
-                style: pickStyle(el, cs),
-                children: Array.from(el.children).filter(function(c){ return !shouldSkip(c); }).map(ser)
-            };
-        }
-        if (!window._valorResults) { window._valorResults = []; }
-        if (typeof window._valorAssert !== 'function') {
-            window._valorAssert = function(name, cond, details) {
-                window._valorResults.push({ name: String(name||''), ok: !!cond, details: String(details||'') });
-            };
-        }
-        if (typeof window._valorRun === 'function') {
-            try { window._valorRun(); } catch (e) {
-                window._valorResults.push({ name: '_valorRun', ok: false, details: String(e && e.stack || e) });
-            }
-        }
-        var root = document.body || document.documentElement;
-        var layout = ser(root);
-        var asserts = Array.isArray(window._valorResults) ? window._valorResults : [];
-        return JSON.stringify({ layout: layout, asserts: asserts });
-    })()"
+    };
+}
+function serNode(node, parentEl) {
+    if (node.nodeType === 3) {
+        return serText(node, parentEl || node.parentElement);
+    }
+    if (node.nodeType === 1) {
+        return serElement(node);
+    }
+    return null;
+}
+function serElement(el) {
+    var r = el.getBoundingClientRect();
+    var cs = window.getComputedStyle(el);
+    var attrs = {};
+    if (el.hasAttribute('type')) attrs.type = el.getAttribute('type');
+    if (el.hasAttribute('checked')) attrs.checked = 'true';
+    var children = [];
+    for (var i = 0; i < el.childNodes.length; i++) {
+        var child = el.childNodes[i];
+        if (child.nodeType === 1 && shouldSkip(child)) continue;
+        var serialized = serNode(child, el);
+        if (serialized) children.push(serialized);
+    }
+    return {
+        type: 'element',
+        tag: String(el.tagName||'').toLowerCase(),
+        id: String(el.id||''),
+        attrs: attrs,
+        rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+        style: pickStyle(el, cs),
+        children: children
+    };
+}";
+
+const CHROMIUM_SCRIPT_MAIN: &str = "if (!window._valorResults) { window._valorResults = []; }
+if (typeof window._valorAssert !== 'function') {
+    window._valorAssert = function(name, cond, details) {
+        window._valorResults.push({ name: String(name||''), ok: !!cond, details: String(details||'') });
+    };
+}
+if (typeof window._valorRun === 'function') {
+    try { window._valorRun(); } catch (e) {
+        window._valorResults.push({ name: '_valorRun', ok: false, details: String(e && e.stack || e) });
+    }
+}
+var root = document.body || document.documentElement;
+var layout = serElement(root);
+var asserts = Array.isArray(window._valorResults) ? window._valorResults : [];
+return JSON.stringify({ layout: layout, asserts: asserts });";
+
+fn chromium_layout_extraction_script() -> String {
+    format!(
+        "(function() {{ {CHROMIUM_SCRIPT_HELPERS} {CHROMIUM_SCRIPT_SERIALIZERS} {CHROMIUM_SCRIPT_MAIN} }})()"
+    )
 }
 
 /// Extracts layout JSON from Chromium by evaluating JavaScript in a tab.
@@ -540,7 +658,7 @@ fn chromium_layout_extraction_script() -> &'static str {
 fn chromium_layout_json_in_tab(tab: &Tab, path: &Path) -> Result<JsonValue> {
     navigate_and_prepare_tab(tab, path)?;
     let script = chromium_layout_extraction_script();
-    let result = tab.evaluate(script, true)?;
+    let result = tab.evaluate(&script, true)?;
     let value = result
         .value
         .ok_or_else(|| anyhow!("No value returned from Chromium evaluate"))?;

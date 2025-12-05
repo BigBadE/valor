@@ -1,6 +1,6 @@
 //! Common snapshot types and aliases used across `page_handler`.
 
-use css_core::LayoutNodeKind;
+pub use crate::layout_manager::LayoutNodeKind;
 use js::NodeKey;
 
 /// Tuple representing one entry in a layout snapshot: (node key, kind, children).

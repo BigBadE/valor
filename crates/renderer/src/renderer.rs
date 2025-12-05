@@ -34,6 +34,12 @@ pub struct DrawText {
     pub text: String,
     pub color: [f32; 3],
     pub font_size: f32,
+    /// Font weight (100-900, default 400 = normal, 700 = bold)
+    pub font_weight: u16,
+    /// Font family (e.g., "Courier New", "monospace")
+    pub font_family: Option<String>,
+    /// Line height in pixels (for vertical metrics)
+    pub line_height: f32,
     /// Optional bounds for wrapping/clipping: (left, top, right, bottom) in framebuffer pixels.
     pub bounds: Option<TextBoundsPx>,
 }

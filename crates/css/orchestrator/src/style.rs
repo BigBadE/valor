@@ -31,6 +31,10 @@ pub struct StyleComputer {
     classes_by_node: HashMap<NodeKey, Vec<String>>,
     /// Parent pointers for descendant/child combinator matching.
     parent_by_node: HashMap<NodeKey, NodeKey>,
+    /// Type attribute for form controls (input type="text", "checkbox", etc.).
+    type_by_node: HashMap<NodeKey, String>,
+    /// All element attributes by node (used for attribute selectors).
+    attrs_by_node: HashMap<NodeKey, HashMap<String, String>>,
 }
 
 /// Parse visual effects such as `opacity`.
@@ -383,8 +387,51 @@ fn apply_offsets(computed: &mut style_model::ComputedStyle, decls: &HashMap<Stri
     }
 }
 
+/// Parse a font-size/line-height pair from a string like "14px/1.4".
+fn parse_font_size_line_height(size_part: &str, computed: &mut style_model::ComputedStyle) {
+    if let Some((size_str, line_str)) = size_part.split_once('/') {
+        // Has line-height: "14px/1.4"
+        if let Some(pixels) = parse_px(size_str) {
+            computed.font_size = pixels;
+        }
+        // Parse line-height
+        let trimmed_line = line_str.trim();
+        if let Ok(number) = trimmed_line.parse::<f32>() {
+            // Unitless number multiplies font-size
+            computed.line_height = Some(number * computed.font_size);
+        } else if let Some(px_str) = trimmed_line.strip_suffix("px")
+            && let Ok(pixel_value) = px_str.trim().parse::<f32>()
+        {
+            computed.line_height = Some(pixel_value);
+        }
+    } else {
+        // No line-height, just font-size
+        if let Some(pixels) = parse_px(size_part) {
+            computed.font_size = pixels;
+        }
+    }
+}
+
 /// Parse font-size and font-family.
 fn apply_typography(computed: &mut style_model::ComputedStyle, decls: &HashMap<String, String>) {
+    // Handle font: shorthand (e.g., "14px/1.4 sans-serif")
+    // Simplified parser: assumes format is [font-size]/[line-height] [font-family]
+    // or [font-size] [font-family]
+    if let Some(font_value) = decls.get("font") {
+        let parts: Vec<&str> = font_value.split_whitespace().collect();
+        if !parts.is_empty() {
+            // First part contains font-size and optionally line-height (size/line-height)
+            if let Some(size_part) = parts.first() {
+                parse_font_size_line_height(size_part, computed);
+            }
+            // Remaining parts are font-family
+            if parts.len() > 1 {
+                let family = parts[1..].join(" ");
+                computed.font_family = Some(family);
+            }
+        }
+    }
+    // Longhands override shorthand
     if let Some(value) = decls.get("font-size")
         && let Some(pixels) = parse_px(value)
     {
@@ -392,6 +439,18 @@ fn apply_typography(computed: &mut style_model::ComputedStyle, decls: &HashMap<S
     }
     if let Some(value) = decls.get("font-family") {
         computed.font_family = Some(value.clone());
+    }
+    // Parse font-weight: numeric values (100-900), keywords (normal=400, bold=700)
+    if let Some(value) = decls.get("font-weight") {
+        let trimmed = value.trim();
+        if trimmed.eq_ignore_ascii_case("normal") {
+            computed.font_weight = 400;
+        } else if trimmed.eq_ignore_ascii_case("bold") {
+            computed.font_weight = 700;
+        } else if let Ok(weight) = trimmed.parse::<u16>() {
+            // Clamp to valid range 100-900
+            computed.font_weight = weight.clamp(100, 900);
+        }
     }
     // Compute line-height: 'normal' -> None; number -> number * font-size; percentage -> resolved;
     // length (px) -> as-is. Other units not yet supported in this minimal engine.
@@ -539,20 +598,30 @@ fn parse_align_content_prop(
 }
 
 /// Build a computed style from inline declarations with sensible defaults.
-fn build_computed_from_inline(decls: &HashMap<String, String>) -> style_model::ComputedStyle {
-    let mut computed = style_model::ComputedStyle {
-        font_size: 16.0,
-        ..Default::default()
-    };
-    // Default text color to opaque black so currentColor is defined
-    if computed.color.alpha == 0 {
-        computed.color = style_model::Rgba {
+/// Inherits font-size and color from `parent_style` if provided.
+fn build_computed_from_inline(
+    decls: &HashMap<String, String>,
+    parent_style: Option<&style_model::ComputedStyle>,
+) -> style_model::ComputedStyle {
+    // Start with parent's inheritable properties or defaults
+    let inherited_font_size = parent_style.map_or(16.0, |parent| parent.font_size);
+    let inherited_color = parent_style.map_or(
+        style_model::Rgba {
             red: 0,
             green: 0,
             blue: 0,
             alpha: 255,
-        };
-    }
+        },
+        |parent| parent.color,
+    );
+    let inherited_font_weight = parent_style.map_or(400, |parent| parent.font_weight);
+
+    let mut computed = style_model::ComputedStyle {
+        font_size: inherited_font_size,
+        color: inherited_color,
+        font_weight: inherited_font_weight,
+        ..Default::default()
+    };
     apply_layout_keywords(&mut computed, decls);
     apply_dimensions(&mut computed, decls);
     apply_edges_and_borders(&mut computed, decls);
@@ -643,6 +712,15 @@ fn matches_simple_selector(
     }
     for class in sel.classes() {
         if !node_has_class(&style_comp.classes_by_node, node, class) {
+            return false;
+        }
+    }
+    for (attr_name, attr_value) in sel.attr_equals_list() {
+        let node_attr_value: Option<&String> = style_comp
+            .attrs_by_node
+            .get(&node)
+            .and_then(|attrs| attrs.get(attr_name));
+        if !node_attr_value.is_some_and(|value: &String| value.eq_ignore_ascii_case(attr_value)) {
             return false;
         }
     }
@@ -786,80 +864,129 @@ fn create_block_display_rules(source_order_start: u32) -> (Vec<types::Rule>, u32
     (rules, source_order)
 }
 
+/// Helper to create a UA rule with given selector and declarations.
+fn make_ua_rule(selector: &str, order: u32, props: &[(&str, &str)]) -> types::Rule {
+    types::Rule {
+        origin: types::Origin::UserAgent,
+        source_order: order,
+        prelude: selector.to_string(),
+        declarations: props
+            .iter()
+            .map(|(name, value)| types::Declaration {
+                name: (*name).to_string(),
+                value: (*value).to_string(),
+                important: false,
+            })
+            .collect(),
+    }
+}
+
+/// Create form control user-agent rules per HTML5 spec and browser defaults.
+fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
+    let mut rules = Vec::new();
+
+    // button { display: block; padding: 6px 10px; border: 1px solid; box-sizing: border-box }
+    rules.push(make_ua_rule(
+        "button",
+        source_order,
+        &[
+            ("display", "block"),
+            ("padding", "6px 10px"),
+            ("border", "1px solid"),
+            ("box-sizing", "border-box"),
+        ],
+    ));
+    source_order += 1;
+
+    // input { display: block; padding: 8px 12px; border: 2px solid; box-sizing: border-box; overflow: clip }
+    rules.push(make_ua_rule(
+        "input",
+        source_order,
+        &[
+            ("display", "block"),
+            ("padding", "8px 12px"),
+            ("border", "2px solid"),
+            ("box-sizing", "border-box"),
+            ("overflow", "clip"),
+        ],
+    ));
+    source_order += 1;
+
+    // input[type="checkbox"] { display: inline-block; padding: 0; border: 0 }
+    rules.push(make_ua_rule(
+        "input[type=\"checkbox\"]",
+        source_order,
+        &[
+            ("display", "inline-block"),
+            ("padding", "0"),
+            ("border", "0"),
+        ],
+    ));
+    source_order += 1;
+
+    // input[type="radio"] { display: inline-block; padding: 0; border: 0 }
+    rules.push(make_ua_rule(
+        "input[type=\"radio\"]",
+        source_order,
+        &[
+            ("display", "inline-block"),
+            ("padding", "0"),
+            ("border", "0"),
+        ],
+    ));
+    source_order += 1;
+
+    // label { display: inline }
+    rules.push(make_ua_rule(
+        "label",
+        source_order,
+        &[("display", "inline")],
+    ));
+    source_order += 1;
+
+    // textarea { display: block; padding: 10px; border: 2px solid; box-sizing: border-box; overflow: auto }
+    rules.push(make_ua_rule(
+        "textarea",
+        source_order,
+        &[
+            ("display", "block"),
+            ("padding", "10px"),
+            ("border", "2px solid"),
+            ("box-sizing", "border-box"),
+            ("overflow", "auto"),
+        ],
+    ));
+    source_order += 1;
+
+    (rules, source_order)
+}
+
 /// Create a minimal user-agent stylesheet with default display values for block-level HTML elements.
 fn create_ua_stylesheet() -> types::Stylesheet {
     let mut rules = Vec::new();
     let mut source_order = 0u32;
 
     // Add default color rule for the root element
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "html".to_string(),
-        declarations: vec![types::Declaration {
-            name: "color".to_string(),
-            value: "#000".to_string(), // Black text by default
-            important: false,
-        }],
-    });
+    rules.push(make_ua_rule("html", source_order, &[("color", "#000")]));
     source_order += 1;
+
+    // Hide HTML metadata elements per HTML5 spec
+    // These elements should not be rendered and should not participate in layout
+    let hidden_elements = [
+        "head", "meta", "title", "link", "style", "script", "base", "template", "noscript",
+    ];
+
+    for tag in &hidden_elements {
+        rules.push(make_ua_rule(tag, source_order, &[("display", "none")]));
+        source_order += 1;
+    }
 
     let (block_rules, next_order) = create_block_display_rules(source_order);
     rules.extend(block_rules);
     source_order = next_order;
 
-    // Add form control user-agent styles per HTML5 spec and browser defaults
-
-    // textarea { overflow: auto }
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "textarea".to_string(),
-        declarations: vec![types::Declaration {
-            name: "overflow".to_string(),
-            value: "auto".to_string(),
-            important: false,
-        }],
-    });
-    source_order += 1;
-
-    // button { padding: 1px 6px } - browser default padding for buttons
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "button".to_string(),
-        declarations: vec![types::Declaration {
-            name: "padding".to_string(),
-            value: "1px 6px".to_string(),
-            important: false,
-        }],
-    });
-    source_order += 1;
-
-    // input { padding: 1px 2px } - browser default padding for inputs
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "input".to_string(),
-        declarations: vec![types::Declaration {
-            name: "padding".to_string(),
-            value: "1px 2px".to_string(),
-            important: false,
-        }],
-    });
-    source_order += 1;
-
-    // textarea { padding: 2px } - browser default padding for textarea
-    rules.push(types::Rule {
-        origin: types::Origin::UserAgent,
-        source_order,
-        prelude: "textarea".to_string(),
-        declarations: vec![types::Declaration {
-            name: "padding".to_string(),
-            value: "2px".to_string(),
-            important: false,
-        }],
-    });
+    let (form_rules, _final_order) = create_form_control_rules(source_order);
+    rules.extend(form_rules);
 
     types::Stylesheet {
         rules,
@@ -882,6 +1009,8 @@ impl StyleComputer {
             id_by_node: HashMap::new(),
             classes_by_node: HashMap::new(),
             parent_by_node: HashMap::new(),
+            type_by_node: HashMap::new(),
+            attrs_by_node: HashMap::new(),
         }
     }
 
@@ -929,6 +1058,13 @@ impl StyleComputer {
             }
             DOMUpdate::InsertText { .. } | DOMUpdate::EndOfDocument => {}
             DOMUpdate::SetAttr { node, name, value } => {
+                // Store all attributes for attribute selector matching
+                self.attrs_by_node
+                    .entry(node)
+                    .or_default()
+                    .insert(name.clone(), value.clone());
+
+                // Handle specific attributes with special processing
                 if name.eq_ignore_ascii_case("id") {
                     self.id_by_node.insert(node, value);
                 } else if name.eq_ignore_ascii_case("class") {
@@ -943,6 +1079,8 @@ impl StyleComputer {
                     let custom = extract_custom_properties(&map);
                     self.inline_decls_by_node.insert(node, map);
                     self.inline_custom_props_by_node.insert(node, custom);
+                } else if name.eq_ignore_ascii_case("type") {
+                    self.type_by_node.insert(node, value);
                 }
                 self.changed_nodes.push(node);
             }
@@ -953,6 +1091,8 @@ impl StyleComputer {
                 self.inline_decls_by_node.remove(&node);
                 self.inline_custom_props_by_node.remove(&node);
                 self.parent_by_node.remove(&node);
+                self.type_by_node.remove(&node);
+                self.attrs_by_node.remove(&node);
                 self.computed.remove(&node);
                 self.style_changed = true;
             }
@@ -975,6 +1115,22 @@ impl StyleComputer {
         if !self.tag_by_node.is_empty() && !visited.contains(&NodeKey::ROOT) {
             nodes.push(NodeKey::ROOT);
         }
+
+        // Sort nodes in DOM tree order (parents before children) to ensure
+        // parent styles are computed before children need them for inheritance
+        nodes.sort_by_key(|node| {
+            let mut depth = 0;
+            let mut current = *node;
+            while let Some(&parent) = self.parent_by_node.get(&current) {
+                depth += 1;
+                current = parent;
+                if depth > 1000 {
+                    break; // Prevent infinite loops
+                }
+            }
+            depth
+        });
+
         for node in nodes {
             let mut props: HashMap<String, CascadedDecl> = HashMap::new();
             for rule in &self.sheet.rules {
@@ -1002,7 +1158,12 @@ impl StyleComputer {
             for (name, entry) in pairs {
                 decls.insert(name, entry.value);
             }
-            let computed = build_computed_from_inline(&decls);
+            // Get parent style for inheritance
+            let parent_style = self
+                .parent_by_node
+                .get(&node)
+                .and_then(|parent_key| self.computed.get(parent_key));
+            let computed = build_computed_from_inline(&decls, parent_style);
             let prev = self.computed.get(&node).cloned();
             if prev.as_ref() != Some(&computed) {
                 self.computed.insert(node, computed.clone());
@@ -1223,11 +1384,16 @@ fn apply_layout_keywords(
             style_model::Display::Block
         } else if value.eq_ignore_ascii_case("flex") {
             style_model::Display::Flex
+        } else if value.eq_ignore_ascii_case("inline-flex") {
+            style_model::Display::InlineFlex
         } else if value.eq_ignore_ascii_case("none") {
             style_model::Display::None
         } else if value.eq_ignore_ascii_case("contents") {
             style_model::Display::Contents
+        } else if value.eq_ignore_ascii_case("inline-block") {
+            style_model::Display::InlineBlock
         } else {
+            // Default to inline for unknown values or "inline"
             style_model::Display::Inline
         };
     }

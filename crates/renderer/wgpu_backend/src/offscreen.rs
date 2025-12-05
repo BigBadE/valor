@@ -18,6 +18,9 @@ fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
         text,
         color,
         font_size,
+        font_weight,
+        font_family,
+        line_height,
         bounds,
     } = item
     {
@@ -27,6 +30,9 @@ fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
             text: text.clone(),
             color: *color,
             font_size: *font_size,
+            font_weight: *font_weight,
+            font_family: font_family.clone(),
+            line_height: *line_height,
             bounds: *bounds,
         })
     } else {
@@ -306,12 +312,14 @@ fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> (Vec<DrawText>, Vec
             &mut params.glyphon_state.font_system,
             GlyphonMetrics::new(item.font_size, item.font_size),
         );
-        let attrs = GlyphonAttrs::new();
+        let attrs = GlyphonAttrs::new()
+            .cache_key_flags(glyphon::CacheKeyFlags::SUBPIXEL_RENDERING);
         buffer.set_text(
             &mut params.glyphon_state.font_system,
             &item.text,
             &attrs,
             GlyphonShaping::Advanced,
+            None,
         );
         buffers.push(buffer);
     }

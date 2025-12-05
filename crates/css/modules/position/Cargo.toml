@@ -4,3 +4,10 @@ edition.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+log.workspace = true
+css_core = { path = "../core" }
+css_orchestrator = { path = "../../orchestrator" }
+css_box = { path = "../box" }
+js = { path = "../../../js" }

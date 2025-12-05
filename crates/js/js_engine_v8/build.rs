@@ -6,8 +6,7 @@
 fn main() {
     // Ensure required Windows system libraries are linked when building with MSVC + rust-lld.
     // The v8 crate uses ETW (Event Tracing for Windows) and Windows Registry APIs which live in advapi32.
-    // Only needed when the real V8 engine is enabled.
-    #[cfg(all(target_os = "windows", feature = "v8"))]
+    #[cfg(target_os = "windows")]
     {
         println!("cargo:rustc-link-lib=advapi32");
     }

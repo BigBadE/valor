@@ -1,6 +1,7 @@
+use crate::snapshots::LayoutNodeKind;
 use crate::snapshots::{IRect, SnapshotSlice};
 use core::hash::BuildHasher;
-use css_core::{LayoutNodeKind, LayoutRect};
+use css_core::LayoutRect;
 use js::NodeKey;
 use std::collections::HashMap;
 

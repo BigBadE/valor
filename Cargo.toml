@@ -9,6 +9,7 @@ members = [
     "crates/js/js_engine_v8",
     "crates/renderer/wgpu_backend"
 ]
+exclude = ["deps/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -29,7 +30,8 @@ csscolorparser = "0.7.2"
 wgpu = "26.0.1"
 winit = "0.30.12"
 bytemuck = { version = "1.23.2", features = ["derive"] }
-glyphon = { git = "https://github.com/grovesNL/glyphon", rev = "724ab57edbd6c59ba219cd99cf89925d056392db" }
+glyphon = { path = "deps/glyphon" }
+cosmic-text = { path = "deps/cosmic-text" }
 pollster = "0.4.0"
 
 # Webpage handling
@@ -73,7 +75,7 @@ page_handler = { path = "crates/page_handler" }
 renderer = { path = "crates/renderer" }
 wgpu_backend = { path = "crates/renderer/wgpu_backend" }
 js = { path = "crates/js" }
-js_engine_v8 = { path = "crates/js/js_engine_v8", default-features = false }
+js_engine_v8 = { path = "crates/js/js_engine_v8" }
 benchhist = { path = "crates/benchhist" }
 
 # CSS modules (internal crates)
@@ -101,7 +103,6 @@ css_position = { path = "crates/css/modules/position" }
 css_sizing = { path = "crates/css/modules/sizing" }
 css_text = { path = "crates/css/modules/text" }
 css_text_decoration = { path = "crates/css/modules/text_decoration" }
-# Layouter was renamed to css_core
 css_core = { path = "crates/css/modules/core" }
 
 [profile.dev]

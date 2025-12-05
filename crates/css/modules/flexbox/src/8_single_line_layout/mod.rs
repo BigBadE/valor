@@ -111,7 +111,6 @@ fn plan_hypotheticals_and_flex(
     let sum: f32 = sizes.iter().copied().sum();
     let free_space = container.container_main_size - sum - gaps_total;
     debug!(
-        target: "css::flexbox::single_line",
         "[FLEX-JUSTIFY] items={} sum_sizes={:.3} gaps_total={:.3} container_main={:.3} free_space={:.3}",
         items.len(),
         sum,
@@ -201,10 +200,8 @@ fn clamp_first_offset_if_needed(
         && *first != 0.0
     {
         debug!(
-            target: "css::flexbox::single_line",
             "[FLEX-JUSTIFY] clamping first offset from {:.3} to 0.000 for {:?}",
-            *first,
-            justify_content
+            *first, justify_content
         );
         *first = 0.0;
     }
@@ -308,8 +305,19 @@ pub fn layout_multi_line_with_cross(
         cab.baseline_inputs.len(),
         "items and baseline_inputs length mismatch"
     );
+    debug!(
+        "[MULTI-LINE] Starting: items={} container_main={:.1} container_cross={:.1}",
+        items.len(),
+        container.container_main_size,
+        cross_ctx.container_cross_size
+    );
     // Break into lines using outer sizes (margin-aware)
     let line_ranges = break_into_lines(container.container_main_size, container.main_gap, items);
+    debug!(
+        "[MULTI-LINE] Line breaking: {} lines -> {:?}",
+        line_ranges.len(),
+        line_ranges
+    );
 
     // Per-line main and cross extents
     let (per_line_main, per_line_cross_max) = per_line_main_and_cross(
@@ -359,7 +367,8 @@ fn align_content_params(
         // Start and Stretch (stretch handled by line-size expansion)
         _ => (0.0, 0.0),
     };
-    (quantize_layout(start), quantize_layout(between))
+    // Use floor quantization for between-spacing to avoid accumulating rounding errors
+    (quantize_layout(start), quantize_layout_floor(between))
 }
 
 /// Line start/end indices for items included in the line: `[start, end)`.
@@ -412,21 +421,43 @@ fn per_line_main_and_cross(
 ) -> (PerLineMainVec, Vec<f32>) {
     let mut per_line_main: PerLineMainVec = Vec::with_capacity(line_ranges.len());
     let mut per_line_cross_max: Vec<f32> = Vec::with_capacity(line_ranges.len());
-    for (line_start, line_end) in line_ranges.iter().copied() {
+    for (line_idx, (line_start, line_end)) in line_ranges.iter().copied().enumerate() {
         let (Some(line_items), Some(line_cross_inputs)) = (
             items.get(line_start..line_end),
             cross_inputs.get(line_start..line_end),
         ) else {
             return (Vec::new(), Vec::new());
         };
+        debug!(
+            "[MULTI-LINE] Line {}: items=[{}..{}) count={}",
+            line_idx,
+            line_start,
+            line_end,
+            line_items.len()
+        );
         let line_main = layout_single_line(container, justify_content, line_items);
+        debug!(
+            "[MULTI-LINE] Line {} main results: {:?}",
+            line_idx,
+            line_main
+                .iter()
+                .map(|placement| (placement.main_offset, placement.main_size))
+                .collect::<Vec<_>>()
+        );
         let mut line_cross_max = 0.0f32;
-        for &(item_cross, min_c, max_c) in line_cross_inputs {
+        for (idx, &(item_cross, min_c, max_c)) in line_cross_inputs.iter().enumerate() {
             let clamped = clamp(item_cross, min_c, max_c);
-            if clamped > line_cross_max {
-                line_cross_max = clamped;
+            // Include cross-axis margins per CSS Flexbox spec
+            // For row direction, this is margin-top + margin-bottom
+            let global_item_idx = line_start + idx;
+            let item_margin_cross =
+                items[global_item_idx].margin_top + items[global_item_idx].margin_bottom;
+            let total_cross = clamped + item_margin_cross;
+            if total_cross > line_cross_max {
+                line_cross_max = total_cross;
             }
         }
+        debug!("[MULTI-LINE] Line {line_idx} cross_max={line_cross_max:.1}");
         per_line_main.push(line_main);
         per_line_cross_max.push(line_cross_max);
     }
@@ -438,12 +469,8 @@ fn stretch_line_crosses(cross_ctx: &CrossContext, per_line_cross_max: &[f32]) ->
     let lines_total_cross: f32 = line_cross_vec.iter().copied().sum();
     let line_count = line_cross_vec.len();
     debug!(
-        target: "css::flexbox::multi_line",
         "[ALIGN-CONTENT] mode={:?} container_cross={:.3} lines_total={:.3} line_count={}",
-        cross_ctx.align_content,
-        cross_ctx.container_cross_size,
-        lines_total_cross,
-        line_count
+        cross_ctx.align_content, cross_ctx.container_cross_size, lines_total_cross, line_count
     );
     if matches!(cross_ctx.align_content, AlignContent::Stretch) && line_count > 0 {
         let gaps_total = if line_count > 1 {
@@ -453,10 +480,7 @@ fn stretch_line_crosses(cross_ctx: &CrossContext, per_line_cross_max: &[f32]) ->
         };
         let remaining = (cross_ctx.container_cross_size - lines_total_cross - gaps_total).max(0.0);
         let add_each = remaining / line_count as f32;
-        debug!(
-            target: "css::flexbox::multi_line",
-            "[ALIGN-CONTENT] stretch: remaining={remaining:.3} add_each={add_each:.3}"
-        );
+        debug!("[ALIGN-CONTENT] stretch: remaining={remaining:.3} add_each={add_each:.3}");
         for value in &mut line_cross_vec {
             *value += add_each;
         }
@@ -706,7 +730,6 @@ pub fn layout_single_line(
         items.len(),
     );
     debug!(
-        target: "css::flexbox::single_line",
         "[FLEX-JUSTIFY] justify={:?} start_offset={:.3} between_spacing={:.3} total_including_gaps={:.3} sum_outer={:.3}",
         effective_justify,
         start_offset,
@@ -817,6 +840,7 @@ struct MainOffsetPlan {
 }
 
 /// Compute per-item main-axis offsets from a sizing plan and item sizes.
+/// Quantizes final positions to avoid accumulating rounding errors.
 fn accumulate_main_offsets(plan: &MainOffsetPlan, sizes: &[f32]) -> Vec<f32> {
     if plan.reverse {
         // Accumulate from the end in logical order so that earlier logical items
@@ -841,7 +865,7 @@ fn accumulate_main_offsets(plan: &MainOffsetPlan, sizes: &[f32]) -> Vec<f32> {
             offsets_accum.push(cursor);
             cursor = quantize_layout(cursor + *size_ref);
             if iter.peek().is_some() {
-                cursor = quantize_layout(cursor + (plan.main_gap + plan.between_spacing));
+                cursor = quantize_layout(cursor + plan.main_gap + plan.between_spacing);
             }
         }
         offsets_accum
@@ -850,6 +874,11 @@ fn accumulate_main_offsets(plan: &MainOffsetPlan, sizes: &[f32]) -> Vec<f32> {
 
 /// Clamp a value between min and max inclusive.
 const fn clamp(value: f32, min_v: f32, max_v: f32) -> f32 {
+    // Guard against invalid constraints where min > max
+    if min_v > max_v {
+        // Use the average as a reasonable fallback
+        return f32::midpoint(min_v, max_v);
+    }
     value.max(min_v).min(max_v)
 }
 
