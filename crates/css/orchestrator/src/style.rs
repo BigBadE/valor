@@ -898,12 +898,12 @@ fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
     ));
     source_order += 1;
 
-    // input { display: block; padding: 8px 12px; border: 2px solid; box-sizing: border-box; overflow: clip }
+    // input { display: inline-block; padding: 8px 12px; border: 2px solid; box-sizing: border-box; overflow: clip }
     rules.push(make_ua_rule(
         "input",
         source_order,
         &[
-            ("display", "block"),
+            ("display", "inline-block"),
             ("padding", "8px 12px"),
             ("border", "2px solid"),
             ("box-sizing", "border-box"),
@@ -912,7 +912,7 @@ fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
     ));
     source_order += 1;
 
-    // input[type="checkbox"] { display: inline-block; padding: 0; border: 0 }
+    // input[type="checkbox"] { display: inline-block; padding: 0; border: 0; overflow: visible }
     rules.push(make_ua_rule(
         "input[type=\"checkbox\"]",
         source_order,
@@ -920,11 +920,12 @@ fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
             ("display", "inline-block"),
             ("padding", "0"),
             ("border", "0"),
+            ("overflow", "visible"),
         ],
     ));
     source_order += 1;
 
-    // input[type="radio"] { display: inline-block; padding: 0; border: 0 }
+    // input[type="radio"] { display: inline-block; padding: 0; border: 0; overflow: visible }
     rules.push(make_ua_rule(
         "input[type=\"radio\"]",
         source_order,
@@ -932,6 +933,7 @@ fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
             ("display", "inline-block"),
             ("padding", "0"),
             ("border", "0"),
+            ("overflow", "visible"),
         ],
     ));
     source_order += 1;
@@ -944,12 +946,12 @@ fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
     ));
     source_order += 1;
 
-    // textarea { display: block; padding: 10px; border: 2px solid; box-sizing: border-box; overflow: auto }
+    // textarea { display: inline-block; padding: 10px; border: 2px solid; box-sizing: border-box; overflow: auto }
     rules.push(make_ua_rule(
         "textarea",
         source_order,
         &[
-            ("display", "block"),
+            ("display", "inline-block"),
             ("padding", "10px"),
             ("border", "2px solid"),
             ("box-sizing", "border-box"),

@@ -299,7 +299,10 @@ struct PrepareTextParams<'prepare> {
 }
 
 /// Prepare text items for rendering.
-fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> (Vec<DrawText>, Vec<GlyphonBuffer>) {
+///
+/// # Errors
+/// Returns an error if text preparation fails.
+fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> AnyhowResult<(Vec<DrawText>, Vec<GlyphonBuffer>)> {
     let texts: Vec<DrawText> = params
         .display_list
         .items
@@ -312,8 +315,7 @@ fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> (Vec<DrawText>, Vec
             &mut params.glyphon_state.font_system,
             GlyphonMetrics::new(item.font_size, item.font_size),
         );
-        let attrs = GlyphonAttrs::new()
-            .cache_key_flags(glyphon::CacheKeyFlags::SUBPIXEL_RENDERING);
+        let attrs = GlyphonAttrs::new().cache_key_flags(glyphon::CacheKeyFlags::SUBPIXEL_RENDERING);
         buffer.set_text(
             &mut params.glyphon_state.font_system,
             &item.text,
@@ -350,7 +352,7 @@ fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> (Vec<DrawText>, Vec
             custom_glyphs: &[],
         });
     }
-    let _unused_prepare = params.glyphon_state.text_renderer.prepare(
+    params.glyphon_state.text_renderer.prepare(
         params.device,
         params.queue,
         &mut params.glyphon_state.font_system,
@@ -358,8 +360,8 @@ fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> (Vec<DrawText>, Vec
         &params.glyphon_state.viewport,
         areas,
         &mut params.glyphon_state.swash_cache,
-    );
-    (texts, buffers)
+    )?;
+    Ok((texts, buffers))
 }
 
 /// Parameters for rendering rectangles.
@@ -433,13 +435,16 @@ fn render_rectangles_pass(params: &mut RenderRectsParams<'_>) {
 }
 
 /// Render text using Glyphon.
+///
+/// # Errors
+/// Returns an error if text rendering fails.
 fn render_text_pass(
     encoder: &mut CommandEncoder,
     texture_view: &TextureView,
     glyphon_state: &GlyphonState,
     width: u32,
     height: u32,
-) {
+) -> AnyhowResult<()> {
     let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
         label: Some("offscreen-text"),
         color_attachments: &[Some(RenderPassColorAttachment {
@@ -457,11 +462,12 @@ fn render_text_pass(
     });
     pass.set_viewport(0.0, 0.0, width as f32, height as f32, 0.0, 1.0);
     pass.set_scissor_rect(0, 0, width.max(1), height.max(1));
-    let _unused_render = glyphon_state.text_renderer.render(
+    glyphon_state.text_renderer.render(
         &glyphon_state.text_atlas,
         &glyphon_state.viewport,
         &mut pass,
-    );
+    )?;
+    Ok(())
 }
 
 /// Parameters for texture readback.
@@ -574,7 +580,7 @@ pub fn render_display_list_to_rgba(
         queue: &queue,
         width,
         height,
-    });
+    })?;
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
     render_rectangles_pass(&mut RenderRectsParams {
         encoder: &mut encoder,
@@ -585,7 +591,7 @@ pub fn render_display_list_to_rgba(
         width,
         height,
     });
-    render_text_pass(&mut encoder, &texture_view, &glyphon_state, width, height);
+    render_text_pass(&mut encoder, &texture_view, &glyphon_state, width, height)?;
     readback_texture(ReadbackParams {
         encoder,
         texture: &texture,

@@ -175,7 +175,13 @@ impl TextRendererState {
             );
             // Build font attributes with weight and family
             let attrs = Self::prepare_font_attrs(item);
-            buffer.set_text(&mut self.font_system, &item.text, &attrs, Shaping::Advanced, None);
+            buffer.set_text(
+                &mut self.font_system,
+                &item.text,
+                &attrs,
+                Shaping::Advanced,
+                None,
+            );
             buffers.push(buffer);
         }
         buffers

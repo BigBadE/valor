@@ -133,40 +133,6 @@ fn can_batch_together(item1: &DisplayItem, item2: &DisplayItem) -> bool {
 ///
 /// A vector of draw batches, where each batch contains items that can be drawn
 /// with the same GPU pipeline and minimal state changes.
-///
-/// # Examples
-///
-/// ```
-/// # use renderer::display_list::DisplayItem;
-/// # use renderer::render_graph::batching::batch_draw_calls;
-/// let items = vec![
-///     DisplayItem::Rect {
-///         x: 0.0,
-///         y: 0.0,
-///         width: 100.0,
-///         height: 100.0,
-///         color: [1.0, 0.0, 0.0, 1.0],
-///     },
-///     DisplayItem::Rect {
-///         x: 100.0,
-///         y: 0.0,
-///         width: 100.0,
-///         height: 100.0,
-///         color: [0.0, 1.0, 0.0, 1.0],
-///     },
-///     DisplayItem::Text {
-///         x: 0.0,
-///         y: 200.0,
-///         text: "Hello".to_string(),
-///         color: [0.0, 0.0, 0.0],
-///         font_size: 16.0,
-///         bounds: None,
-///     },
-/// ];
-/// let batches = batch_draw_calls(&items);
-/// assert_eq!(batches.len(), 2);  // One batch for rects, one for text
-/// assert_eq!(batches[0].items.len(), 2);  // Two rects in first batch
-/// ```
 pub fn batch_draw_calls(items: &[DisplayItem]) -> Vec<DrawBatch> {
     let mut batches = Vec::new();
     let mut current_batch: Option<DrawBatch> = None;

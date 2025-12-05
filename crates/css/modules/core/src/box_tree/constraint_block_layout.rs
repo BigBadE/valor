@@ -26,6 +26,9 @@ use css_flexbox::{
 // Import text measurement module for actual font metrics
 use css_text::measurement::{measure_text, measure_text_wrapped};
 
+// Import display module for normalize_children (handles display:none and display:contents)
+use css_display::normalize_children;
+
 /// Parameters for block layout operations (to avoid too many arguments).
 struct BlockLayoutParams<'params> {
     constraint_space: &'params ConstraintSpace,
@@ -75,6 +78,7 @@ struct BlockSizeParams<'exclusion> {
     child_space_bfc_offset: Option<LayoutUnit>,
     has_text_content: bool,
     exclusion_space: &'exclusion ExclusionSpace,
+    last_child_end_margin_strut: MarginStrut,
 }
 
 /// Parameters for applying flex placements.
@@ -207,6 +211,20 @@ impl ConstraintLayoutTree {
             };
         }
 
+        // Handle display: contents - these don't generate boxes themselves
+        // Their children are lifted by normalize_children, so this should not be reached
+        if matches!(style.display, Display::Contents) {
+            return LayoutResult {
+                inline_size: 0.0,
+                block_size: 0.0,
+                bfc_offset: constraint_space.bfc_offset,
+                exclusion_space: constraint_space.exclusion_space.clone(),
+                end_margin_strut: MarginStrut::default(),
+                baseline: None,
+                needs_relayout: false,
+            };
+        }
+
         let sides = compute_box_sides(&style);
 
         // Check if this establishes a new BFC
@@ -308,12 +326,93 @@ impl ConstraintLayoutTree {
         result
     }
 
+    /// Compute intrinsic width for form controls.
+    ///
+    /// Returns content-box width in pixels, or None if element doesn't have intrinsic width.
+    fn compute_form_control_intrinsic_width(&self, node: NodeKey) -> Option<f32> {
+        let tag = self.tags.get(&node)?;
+        let tag_lower = tag.to_lowercase();
+
+        match tag_lower.as_str() {
+            "input" => {
+                // Checkboxes and radios have intrinsic 13x13 size
+                if let Some(attrs) = self.attrs.get(&node) {
+                    if let Some(input_type) = attrs.get("type") {
+                        let type_lower = input_type.to_lowercase();
+                        if type_lower == "checkbox" || type_lower == "radio" {
+                            return Some(13.0);
+                        }
+                    }
+                }
+                // Other inputs don't have intrinsic width (they respect CSS width)
+                None
+            }
+            "button" => {
+                // Buttons shrink-wrap their content, no intrinsic width
+                // This allows them to size based on their text content
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Compute intrinsic height for form controls.
+    ///
+    /// Returns content-box height in pixels, or None if element doesn't have intrinsic height.
+    fn compute_form_control_intrinsic_height(
+        &self,
+        node: NodeKey,
+        style: &ComputedStyle,
+    ) -> Option<f32> {
+        let tag = self.tags.get(&node)?;
+        let tag_lower = tag.to_lowercase();
+
+        match tag_lower.as_str() {
+            "input" => {
+                if let Some(attrs) = self.attrs.get(&node) {
+                    if let Some(input_type) = attrs.get("type") {
+                        let type_lower = input_type.to_lowercase();
+                        if type_lower == "checkbox" || type_lower == "radio" {
+                            // Checkboxes and radios have intrinsic 13x13 size
+                            return Some(13.0);
+                        }
+                    }
+                }
+                // Text inputs: intrinsic height based on font-size + a bit of spacing
+                // Chrome uses approximately: font-size * 1.2 (line-height) + small buffer
+                let font_size = if style.font_size > 0.0 {
+                    style.font_size
+                } else {
+                    14.0
+                };
+                // Use similar calculation to Chrome: ~1.2x font-size for line-height
+                let line_height = (font_size * 1.2).round();
+                Some(line_height)
+            }
+            "button" => {
+                // Buttons: intrinsic height based on font line-height
+                let font_size = if style.font_size > 0.0 {
+                    style.font_size
+                } else {
+                    16.0
+                };
+                let line_height = (font_size * 1.2).round();
+                Some(line_height)
+            }
+            "textarea" => {
+                // Textareas don't have intrinsic height, they respect CSS height
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// Compute inline size (width) for a block.
     ///
     /// Returns the content-box width (not including padding/border).
     fn compute_inline_size(
         &self,
-        _node: NodeKey,
+        node: NodeKey,
         constraint_space: &ConstraintSpace,
         style: &ComputedStyle,
         sides: &BoxSides,
@@ -321,6 +420,11 @@ impl ConstraintLayoutTree {
         // Compute content-box width first
         let content_width = style.width.map_or_else(
             || {
+                // Check for form control intrinsic width first
+                if let Some(intrinsic_width) = self.compute_form_control_intrinsic_width(node) {
+                    return intrinsic_width;
+                }
+
                 // Auto width: fill available space
                 let available = match constraint_space.available_inline_size {
                     AvailableSize::Definite(size) => size.to_px(),
@@ -591,9 +695,18 @@ impl ConstraintLayoutTree {
         let (text_width, text_height) =
             self.measure_text(child, Some(parent), child_space.available_inline_size);
 
+        // Get the parent's line-height for vertical spacing
+        let parent_style = self.styles.get(&parent).cloned().unwrap_or_default();
+        let line_height = if let Some(lh) = parent_style.line_height {
+            lh
+        } else {
+            // Use default line-height calculation
+            css_text::default_line_height_px(&parent_style) as f32
+        };
+
         let text_result = LayoutResult {
             inline_size: text_width,
-            block_size: text_height,
+            block_size: text_height, // Text node rect uses actual font height
             bfc_offset: BfcOffset::new(child_space.bfc_offset.inline_offset, Some(resolved_offset)),
             exclusion_space: child_space.exclusion_space.clone(),
             end_margin_strut: MarginStrut::default(),
@@ -603,8 +716,9 @@ impl ConstraintLayoutTree {
 
         self.layout_results.insert(child, text_result);
         child_space.margin_strut = MarginStrut::default();
+        // Use line-height for vertical spacing, not text_height
         child_space.bfc_offset.block_offset =
-            Some(resolved_offset + LayoutUnit::from_px(text_height.round()));
+            Some(resolved_offset + LayoutUnit::from_px(line_height.round()));
         true
     }
 
@@ -617,13 +731,6 @@ impl ConstraintLayoutTree {
         can_collapse_with_children: bool,
     ) {
         let child_result = self.layout_block(child, child_space);
-        tracing::debug!(
-            "layout_block_child_and_update_state: child={:?} result: bfc_offset={:?}, block_size={}, end_margin_strut={:?}",
-            child,
-            child_result.bfc_offset,
-            child_result.block_size,
-            child_result.end_margin_strut
-        );
         child_space.exclusion_space = child_result.exclusion_space.clone();
 
         let child_style = self.style(child);
@@ -651,16 +758,25 @@ impl ConstraintLayoutTree {
                 }
 
                 state.first_inflow_child_seen = true;
-                let child_end = child_start + LayoutUnit::from_px(child_result.block_size.round());
-                // Set next child's starting position to bottom of current child
-                // The margin strut will be carried forward for sibling collapse
-                child_space.bfc_offset.block_offset = Some(child_end);
-                tracing::debug!(
-                    "layout_block_child_and_update_state: Setting next child bfc_offset to child_end={:?} (child_start={:?} + block_size={})",
-                    child_end,
-                    child_start,
-                    child_result.block_size
-                );
+                let child_border_box_end =
+                    child_start + LayoutUnit::from_px(child_result.block_size.round());
+
+                // BUG FIX: For self-collapsing elements, margins collapse THROUGH them
+                // The next sibling should start at the parent's base offset, not after the self-collapsing element
+                // We detect self-collapsing by: block_size==0 and end_margin_strut contains incoming margins
+                let is_self_collapsing = child_result.block_size.abs() < 0.01
+                    && child_result.end_margin_strut.positive_margin > LayoutUnit::zero();
+
+                if is_self_collapsing && can_collapse_with_children {
+                    // Self-collapsing element: next sibling starts where this element's incoming position was
+                    // This allows the next sibling's margin to collapse with all the accumulated margins
+                    // NOTE: child_space.bfc_offset.block_offset stays unchanged (not advanced)
+                } else {
+                    // Normal element: set next child's starting position to bottom of current child
+                    let child_end = child_border_box_end;
+                    // The margin strut will be carried forward for potential sibling collapse
+                    child_space.bfc_offset.block_offset = Some(child_end);
+                }
             }
 
             // Carry forward the child's end margin strut for potential sibling collapse
@@ -707,6 +823,7 @@ impl ConstraintLayoutTree {
         sides: &BoxSides,
         state: &ChildrenLayoutState,
         _child_space: &ConstraintSpace,
+        incoming_space: &ConstraintSpace,
         can_collapse_with_children: bool,
         block_size: f32,
     ) -> MarginStrut {
@@ -723,9 +840,11 @@ impl ConstraintLayoutTree {
             && can_collapse_with_children;
 
         if is_self_collapsing {
-            // Self-collapsing element: collapse top and bottom margins together
-            // This allows the next sibling to collapse with all our margins
-            let mut strut = MarginStrut::default();
+            // Self-collapsing element: margins collapse THROUGH the element
+            // The next sibling should see all margins that collapsed through this element
+            // BUG FIX: Include the INCOMING margin strut (which contains parent/sibling margins)
+            // along with this element's own top and bottom margins
+            let mut strut = incoming_space.margin_strut;
             strut.append(sides.margin_top);
             strut.append(sides.margin_bottom);
             return strut;
@@ -755,6 +874,8 @@ impl ConstraintLayoutTree {
 
     /// Compute final block size from children layout.
     fn compute_block_size_from_children(
+        &self,
+        node: NodeKey,
         params: &BlockSizeParams<'_>,
         sides: &BoxSides,
         style: &ComputedStyle,
@@ -762,6 +883,18 @@ impl ConstraintLayoutTree {
         // Compute border-box height
         let border_box_height = params.style_height.map_or_else(
             || {
+                // Check for form control intrinsic height first
+                if let Some(intrinsic_height) =
+                    self.compute_form_control_intrinsic_height(node, style)
+                {
+                    // Form control has intrinsic height - use it as content-box height
+                    let padding_border = sides.padding_top.to_px()
+                        + sides.padding_bottom.to_px()
+                        + sides.border_top.to_px()
+                        + sides.border_bottom.to_px();
+                    return intrinsic_height + padding_border;
+                }
+
                 // Auto height: compute from children
                 // For BFC roots, children are laid out in the new BFC starting at 0
                 // For non-BFC elements, use resolved/bfc offset depending on margin collapse
@@ -790,21 +923,32 @@ impl ConstraintLayoutTree {
                     content_height = 18.0;
                 }
 
+                // BUG FIX: When bottom margin doesn't collapse (padding/border present),
+                // the last child's margin must be included in the height calculation
+                let can_collapse_bottom = sides.padding_bottom == LayoutUnit::zero()
+                    && sides.border_bottom == LayoutUnit::zero();
+                let non_collapsing_bottom_margin = if !can_collapse_bottom {
+                    params.last_child_end_margin_strut.collapse().to_px()
+                } else {
+                    0.0
+                };
+
                 if params.can_collapse_with_children {
                     content_height
+                        + non_collapsing_bottom_margin
                         + sides.padding_top.to_px()
                         + sides.padding_bottom.to_px()
                         + sides.border_top.to_px()
                         + sides.border_bottom.to_px()
                 } else {
-                    // When can_collapse_with_children is false, start_offset is measured from the
-                    // content area (includes border_top + padding_top). content_height is the distance
-                    // from content area start to the end of children. To get border-box height, we need
-                    // to add back the top edges that were included in start_offset, plus bottom edges.
+                    // When can_collapse_with_children is false, start_offset includes padding_top + border_top.
+                    // content_height is measured from that position to the end of children (including non-collapsing margin).
+                    // To get border-box height, we need to add ALL edges (top edges were subtracted in computing content_height).
                     content_height
+                        + non_collapsing_bottom_margin
                         + sides.padding_top.to_px()
-                        + sides.border_top.to_px()
                         + sides.padding_bottom.to_px()
+                        + sides.border_top.to_px()
                         + sides.border_bottom.to_px()
                 }
             },
@@ -846,21 +990,27 @@ impl ConstraintLayoutTree {
         can_collapse_with_children: bool,
         state: &ChildrenLayoutState,
         params: &BlockLayoutParams,
-        initial_margin_strut: MarginStrut,
+        _initial_margin_strut: MarginStrut,
     ) -> BfcOffset {
         // - Self-collapsing box: resolve based on parent offset + collapsed margins
         // - Box that collapses with first child: use the resolved offset (matches first child)
         // - Box with border/padding (can't collapse): use params offset
         if block_size.abs() < 0.01 && !state.first_inflow_child_seen && can_collapse_with_children {
-            // Self-collapsing box: resolve position based on parent offset + collapsed top margins
+            // Self-collapsing box: resolve position based on parent offset + all collapsed margins
+            // BUG FIX: Use the incoming margin strut from params, not just the element's own margins
+            // The incoming strut includes parent/sibling margins that should collapse with this element
             let parent_offset = params
                 .constraint_space
                 .bfc_offset
                 .block_offset
                 .unwrap_or(LayoutUnit::zero());
-            let margin_collapse = initial_margin_strut.collapse();
+            let mut margin_strut = params.constraint_space.margin_strut;
+            margin_strut.append(params.sides.margin_top);
+            margin_strut.append(params.sides.margin_bottom);
+            let margin_collapse = margin_strut.collapse();
             let resolved_offset = parent_offset + margin_collapse;
-            BfcOffset::new(params.bfc_offset.inline_offset, Some(resolved_offset))
+            let result = BfcOffset::new(params.bfc_offset.inline_offset, Some(resolved_offset));
+            result
         } else if can_collapse_with_children && state.first_inflow_child_seen {
             // Non-self-collapsing box that can collapse with children: use resolved offset
             // (this is where the first child ended up after margin collapse)
@@ -879,7 +1029,8 @@ impl ConstraintLayoutTree {
         state: &mut ChildrenLayoutState,
         can_collapse_with_children: bool,
     ) {
-        let children = self.children.get(&node).cloned().unwrap_or_default();
+        // Normalize children to handle display:none and display:contents
+        let children = normalize_children(&self.children, &self.styles, node);
 
         for child in children {
             if self.is_text_node(child) {
@@ -950,15 +1101,21 @@ impl ConstraintLayoutTree {
             child_space_bfc_offset: child_space.bfc_offset.block_offset,
             has_text_content: state.has_text_content,
             exclusion_space: &child_space.exclusion_space,
+            last_child_end_margin_strut: state.last_child_end_margin_strut,
         };
-        let block_size =
-            Self::compute_block_size_from_children(&block_size_params, params.sides, params.style);
+        let block_size = self.compute_block_size_from_children(
+            node,
+            &block_size_params,
+            params.sides,
+            params.style,
+        );
         let border_box_inline = Self::compute_border_box_inline(params.inline_size, params.sides);
 
         let end_margin_strut = Self::compute_end_margin_strut(
             params.sides,
             &state,
             &child_space,
+            params.constraint_space,
             can_collapse_with_children,
             block_size,
         );
@@ -1024,7 +1181,8 @@ impl ConstraintLayoutTree {
             fragmentainer_offset: constraint_space.fragmentainer_offset,
         };
 
-        let children = self.children.get(&node).cloned().unwrap_or_default();
+        // Normalize children to handle display:none and display:contents
+        let children = normalize_children(&self.children, &self.styles, node);
         let mut content_height = 0.0f32;
 
         for child in children {
@@ -1153,7 +1311,8 @@ impl ConstraintLayoutTree {
             fragmentainer_offset: constraint_space.fragmentainer_offset,
         };
 
-        let children = self.children.get(&node).cloned().unwrap_or_default();
+        // Normalize children to handle display:none and display:contents
+        let children = normalize_children(&self.children, &self.styles, node);
         let mut content_height = 0.0f32;
 
         for child in children {
@@ -1234,15 +1393,47 @@ impl ConstraintLayoutTree {
         sides: &BoxSides,
     ) -> LayoutResult {
         // Absolutely positioned elements establish BFC
-        // Auto width for abspos: shrink to fit (simplified to 200.0)
-        let inline_size = style.width.unwrap_or(200.0);
+
+        // Compute border-box width with box-sizing (match height logic below)
+        let border_box_inline = style.width.map_or_else(
+            || {
+                // Auto width for abspos: shrink to fit (simplified to 200.0 content + padding/border)
+                200.0
+                    + sides.padding_left.to_px()
+                    + sides.padding_right.to_px()
+                    + sides.border_left.to_px()
+                    + sides.border_right.to_px()
+            },
+            |width| match style.box_sizing {
+                BoxSizing::ContentBox => {
+                    let padding_border = sides.padding_left.to_px()
+                        + sides.padding_right.to_px()
+                        + sides.border_left.to_px()
+                        + sides.border_right.to_px();
+                    width + padding_border
+                }
+                BoxSizing::BorderBox => width,
+            },
+        );
+
+        // Compute content-box width for laying out children
+        let content_inline_size = match style.box_sizing {
+            BoxSizing::ContentBox => style.width.unwrap_or(200.0),
+            BoxSizing::BorderBox => {
+                let padding_border = sides.padding_left.to_px()
+                    + sides.padding_right.to_px()
+                    + sides.border_left.to_px()
+                    + sides.border_right.to_px();
+                style.width.unwrap_or(200.0 + padding_border) - padding_border
+            }
+        };
 
         // Compute border-box height with box-sizing and constraints
         let block_size = style.height.map_or_else(
             || {
                 // Auto height: layout children
                 let content_height =
-                    self.layout_absolute_children(node, inline_size, constraint_space);
+                    self.layout_absolute_children(node, content_inline_size, constraint_space);
                 let border_box_height = content_height
                     + sides.padding_top.to_px()
                     + sides.padding_bottom.to_px()
@@ -1264,13 +1455,6 @@ impl ConstraintLayoutTree {
                 Self::apply_height_constraints(border_box_height, style, sides)
             },
         );
-
-        // LayoutResult should contain border-box dimensions
-        let border_box_inline = inline_size
-            + sides.padding_left.to_px()
-            + sides.padding_right.to_px()
-            + sides.border_left.to_px()
-            + sides.border_right.to_px();
 
         let abspos_bfc_offset = self.compute_abspos_offset(constraint_space, style, sides);
 
@@ -1486,6 +1670,9 @@ impl ConstraintLayoutTree {
     fn create_flex_abspos_constraint_space(
         bfc_offset: BfcOffset,
         sides: &BoxSides,
+        container_style: &ComputedStyle,
+        child_style: &ComputedStyle,
+        child_sides: &BoxSides,
         container_inline_size: f32,
         final_cross_size: f32,
         is_row: bool,
@@ -1498,7 +1685,80 @@ impl ConstraintLayoutTree {
             .block_offset
             .map(|y| y + sides.padding_top + sides.border_top);
 
-        let content_bfc_offset = BfcOffset::new(content_inline_offset, content_block_offset);
+        // Per flexbox spec: For abspos children with auto offsets, compute static position
+        // by aligning as if the child were the sole flex item using justify-content and align-items
+        // Only apply static position if the child doesn't have explicit offsets
+        let has_explicit_inline_offset = if is_row {
+            child_style.left.is_some() || child_style.left_percent.is_some()
+        } else {
+            child_style.top.is_some() || child_style.top_percent.is_some()
+        };
+
+        let has_explicit_block_offset = if is_row {
+            child_style.top.is_some() || child_style.top_percent.is_some()
+        } else {
+            child_style.left.is_some() || child_style.left_percent.is_some()
+        };
+
+        let static_main_offset = if !has_explicit_inline_offset {
+            if is_row {
+                // Row: main axis is inline, justify-content applies
+                Self::compute_flex_abspos_main_offset(
+                    container_style,
+                    child_style,
+                    child_sides,
+                    container_inline_size,
+                    is_row,
+                )
+            } else {
+                // Column: main axis is block, justify-content still applies to block axis
+                Self::compute_flex_abspos_main_offset(
+                    container_style,
+                    child_style,
+                    child_sides,
+                    final_cross_size,
+                    is_row,
+                )
+            }
+        } else {
+            0.0
+        };
+
+        let static_cross_offset = if !has_explicit_block_offset {
+            if is_row {
+                // Row: cross axis is block, align-items applies
+                Self::compute_flex_abspos_cross_offset(
+                    container_style,
+                    child_style,
+                    child_sides,
+                    final_cross_size,
+                    is_row,
+                )
+            } else {
+                // Column: cross axis is inline, align-items applies
+                Self::compute_flex_abspos_cross_offset(
+                    container_style,
+                    child_style,
+                    child_sides,
+                    container_inline_size,
+                    is_row,
+                )
+            }
+        } else {
+            0.0
+        };
+
+        let content_bfc_offset = if is_row {
+            BfcOffset::new(
+                content_inline_offset + LayoutUnit::from_px(static_main_offset),
+                content_block_offset.map(|y| y + LayoutUnit::from_px(static_cross_offset)),
+            )
+        } else {
+            BfcOffset::new(
+                content_inline_offset + LayoutUnit::from_px(static_cross_offset),
+                content_block_offset.map(|y| y + LayoutUnit::from_px(static_main_offset)),
+            )
+        };
 
         ConstraintSpace {
             available_inline_size: AvailableSize::Definite(LayoutUnit::from_px(
@@ -1520,6 +1780,89 @@ impl ConstraintLayoutTree {
             }),
             fragmentainer_block_size: None,
             fragmentainer_offset: LayoutUnit::zero(),
+        }
+    }
+
+    /// Compute static position offset along the main axis for abspos child in flex container.
+    fn compute_flex_abspos_main_offset(
+        container_style: &ComputedStyle,
+        child_style: &ComputedStyle,
+        child_sides: &BoxSides,
+        container_main_size: f32,
+        is_row: bool,
+    ) -> f32 {
+        // Get child's main size (border-box)
+        let child_main_size = if is_row {
+            if let Some(width) = child_style.width {
+                width
+                    + child_sides.padding_left.to_px()
+                    + child_sides.padding_right.to_px()
+                    + child_sides.border_left.to_px()
+                    + child_sides.border_right.to_px()
+            } else {
+                // Default width for abspos with no explicit width
+                200.0
+                    + child_sides.padding_left.to_px()
+                    + child_sides.padding_right.to_px()
+                    + child_sides.border_left.to_px()
+                    + child_sides.border_right.to_px()
+            }
+        } else {
+            child_style.height.unwrap_or(0.0)
+                + child_sides.padding_top.to_px()
+                + child_sides.padding_bottom.to_px()
+                + child_sides.border_top.to_px()
+                + child_sides.border_bottom.to_px()
+        };
+
+        // Apply justify-content to compute main axis offset
+        use css_orchestrator::style_model::JustifyContent;
+        match container_style.justify_content {
+            JustifyContent::Center => (container_main_size - child_main_size) / 2.0,
+            JustifyContent::FlexEnd => container_main_size - child_main_size,
+            _ => 0.0, // FlexStart or other values default to start
+        }
+    }
+
+    /// Compute static position offset along the cross axis for abspos child in flex container.
+    fn compute_flex_abspos_cross_offset(
+        container_style: &ComputedStyle,
+        child_style: &ComputedStyle,
+        child_sides: &BoxSides,
+        container_cross_size: f32,
+        is_row: bool,
+    ) -> f32 {
+        // Get child's cross size (border-box)
+        let child_cross_size = if is_row {
+            // Row: cross axis is block (height)
+            child_style.height.unwrap_or(0.0)
+                + child_sides.padding_top.to_px()
+                + child_sides.padding_bottom.to_px()
+                + child_sides.border_top.to_px()
+                + child_sides.border_bottom.to_px()
+        } else {
+            // Column: cross axis is inline (width)
+            if let Some(width) = child_style.width {
+                width
+                    + child_sides.padding_left.to_px()
+                    + child_sides.padding_right.to_px()
+                    + child_sides.border_left.to_px()
+                    + child_sides.border_right.to_px()
+            } else {
+                200.0
+                    + child_sides.padding_left.to_px()
+                    + child_sides.padding_right.to_px()
+                    + child_sides.border_left.to_px()
+                    + child_sides.border_right.to_px()
+            }
+        };
+
+        // Apply align-items to compute cross axis offset
+        use css_orchestrator::style_model::AlignItems;
+        match container_style.align_items {
+            AlignItems::Center => (container_cross_size - child_cross_size) / 2.0,
+            AlignItems::FlexEnd => container_cross_size - child_cross_size,
+            _ => 0.0, // FlexStart or other values default to start
         }
     }
 
@@ -1617,6 +1960,7 @@ impl ConstraintLayoutTree {
         abspos_children: &[NodeKey],
         bfc_offset: BfcOffset,
         container_sides: &BoxSides,
+        container_style: &ComputedStyle,
         params: &FlexResultParams,
     ) {
         for abspos_child in abspos_children {
@@ -1626,6 +1970,9 @@ impl ConstraintLayoutTree {
             let abspos_space = Self::create_flex_abspos_constraint_space(
                 bfc_offset,
                 container_sides,
+                container_style,
+                &abspos_child_style,
+                &abspos_child_sides,
                 params.container_inline_size,
                 params.final_cross_size,
                 params.is_row,
@@ -1705,11 +2052,17 @@ impl ConstraintLayoutTree {
 
         // Check if text needs wrapping
         if available_width.is_finite() && available_width < 1e9 {
-            // Measure with wrapping
-            let (height, _line_count) = measure_text_wrapped(text, &style, available_width);
+            // Measure without wrapping first to see if text fits
             let metrics = measure_text(text, &style);
-            let width = metrics.width.min(available_width);
-            (width, height)
+
+            if metrics.width <= available_width {
+                // Text fits on one line - use actual width
+                (metrics.width, metrics.height)
+            } else {
+                // Text needs wrapping - measure wrapped height and use available width
+                let (height, _line_count) = measure_text_wrapped(text, &style, available_width);
+                (available_width, height)
+            }
         } else {
             // Measure without wrapping
             let metrics = measure_text(text, &style);
@@ -1828,11 +2181,29 @@ impl ConstraintLayoutTree {
         };
 
         let is_row = matches!(flex_direction, FlexboxDirection::Row);
-        let children = self.children.get(&node).cloned().unwrap_or_default();
+        // Normalize children to handle display:none and display:contents
+        let children = normalize_children(&self.children, &self.styles, node);
 
         let (mut flex_items, child_styles, abspos_children) = self.build_flex_items(&children);
 
         if flex_items.is_empty() {
+            // No flex items, but we may still have absolutely positioned children
+            // Layout abspos children before returning
+            if !abspos_children.is_empty() {
+                let result_params = FlexResultParams {
+                    container_inline_size,
+                    final_cross_size: container_cross_size,
+                    is_row,
+                };
+                self.layout_flex_abspos_children(
+                    &abspos_children,
+                    bfc_offset,
+                    sides,
+                    style,
+                    &result_params,
+                );
+            }
+
             return Self::create_empty_flex_result(
                 container_inline_size,
                 container_cross_size,
@@ -1891,7 +2262,13 @@ impl ConstraintLayoutTree {
             is_row,
         };
 
-        self.layout_flex_abspos_children(&abspos_children, bfc_offset, sides, &result_params);
+        self.layout_flex_abspos_children(
+            &abspos_children,
+            bfc_offset,
+            sides,
+            style,
+            &result_params,
+        );
 
         Self::create_flex_result(&result_params, bfc_offset, sides)
     }

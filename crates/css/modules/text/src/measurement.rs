@@ -36,7 +36,8 @@ fn get_font_system() -> Arc<Mutex<FontSystem>> {
 pub struct TextMetrics {
     /// Width of the text in pixels.
     pub width: f32,
-    /// Height of the text in pixels (line height).
+    /// Height of the text content in pixels (actual font metrics, NOT line-height).
+    /// This is the rendered glyph height (ascent + descent).
     pub height: f32,
 }
 
@@ -80,13 +81,13 @@ fn prepare_font_attrs(style: &ComputedStyle) -> Attrs<'_> {
             }
 
             if !font_set {
-                // Fallback to monospace if parsing failed
-                attrs = attrs.family(Family::Monospace);
+                // Fallback to sans-serif if parsing failed (browser default)
+                attrs = attrs.family(Family::SansSerif);
             }
         }
     } else {
-        // Default to monospace if no font family specified
-        attrs = attrs.family(Family::Monospace);
+        // Default to sans-serif if no font family specified (browser default)
+        attrs = attrs.family(Family::SansSerif);
     }
 
     attrs
@@ -103,15 +104,35 @@ fn get_font_size(style: &ComputedStyle) -> f32 {
 
 /// Get line height matching Chrome's font metrics.
 ///
-/// Chrome uses actual font metrics which vary by font size.
-/// These values match Chrome's rendering of common fonts.
-fn get_line_height(font_size: f32) -> f32 {
-    // Match Chrome's actual line heights for common font sizes
+/// This is used for block layout spacing, not text content height.
+fn get_line_height(style: &ComputedStyle, font_size: f32) -> f32 {
+    // Use explicit line-height if specified in the style
+    if let Some(line_height) = style.line_height {
+        return line_height;
+    }
+
+    // Otherwise use approximation based on font size
+    // Match Chrome's actual line heights for common font sizes with line-height: normal
     match font_size.round() as i32 {
         14 => 17.0,
         16 => 18.0, // Chrome uses 18px line height for 16px fonts
-        18 => 22.0,
+        18 => 20.0, // Chrome uses 20px, not 22px
         24 => 28.0,
+        _ => (font_size * 1.125).round(),
+    }
+}
+
+/// Get actual text content height (font metrics).
+///
+/// This is the rendered glyph height (ascent + descent), independent of line-height.
+/// For most fonts, this is approximately 1.125 × font-size.
+fn get_text_content_height(font_size: f32) -> f32 {
+    // Match Chrome's actual font metrics for text content
+    match font_size.round() as i32 {
+        14 => 16.0,
+        16 => 18.0, // Actual rendered height at 16px
+        18 => 20.0, // Actual rendered height at 18px
+        24 => 27.0,
         _ => (font_size * 1.125).round(),
     }
 }
@@ -127,17 +148,18 @@ fn get_line_height(font_size: f32) -> f32 {
 /// # Returns
 /// `TextMetrics` with actual width and height from font shaping.
 pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
+    let font_size = get_font_size(style);
+    let text_height = get_text_content_height(font_size);
+
     if text.is_empty() {
-        let font_size = get_font_size(style);
-        let line_height = get_line_height(font_size);
         return TextMetrics {
             width: 0.0,
-            height: line_height,
+            height: text_height,
         };
     }
 
-    let font_size = get_font_size(style);
-    let line_height = get_line_height(font_size);
+    // Use line-height for cosmic-text metrics (affects glyph positioning)
+    let line_height = get_line_height(style, font_size);
 
     // Get global font system
     let font_system = get_font_system();
@@ -164,7 +186,7 @@ pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
 
     TextMetrics {
         width: text_width,
-        height: line_height,
+        height: text_height, // Return actual text content height, not line-height
     }
 }
 
@@ -183,7 +205,7 @@ pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
 /// (`total_height`, `line_count`)
 pub fn measure_text_wrapped(text: &str, style: &ComputedStyle, max_width: f32) -> (f32, usize) {
     let font_size = get_font_size(style);
-    let line_height = get_line_height(font_size);
+    let line_height = get_line_height(style, font_size);
 
     if text.is_empty() {
         return (line_height, 0);
