@@ -7,7 +7,8 @@ members = [
     "crates/css/modules/*",
     "crates/css/orchestrator",
     "crates/js/js_engine_v8",
-    "crates/renderer/wgpu_backend"
+    "crates/renderer/wgpu_backend",
+    "crates/valor_dsl"
 ]
 exclude = ["testing"]
 
