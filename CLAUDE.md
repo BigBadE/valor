@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Valor is a browser engine written in Rust, implementing HTML parsing, CSS styling, layout computation, and rendering with GPU acceleration.
 
+DO NOT USE CARGO CLEAN WITHOUT EXPLICIT PERMISSION. REBUILDS TAKE FOREVER.
+
 ## Essential Commands
 
 ### Building and Testing

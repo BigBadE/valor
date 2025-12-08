@@ -2,13 +2,15 @@ use anyhow::Result as AnyhowResult;
 use bytemuck::cast_slice;
 use core::mem::size_of;
 use glyphon::{
-    Attrs as GlyphonAttrs, Buffer as GlyphonBuffer, Cache as GlyphonCache, Color as GlyphonColor,
-    FontSystem, Metrics as GlyphonMetrics, Resolution, Shaping as GlyphonShaping, SwashCache,
-    TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
+    Attrs as GlyphonAttrs, Buffer as GlyphonBuffer, Cache as GlyphonCache, CacheKeyFlags,
+    Color as GlyphonColor, FontSystem, Metrics as GlyphonMetrics, Resolution,
+    Shaping as GlyphonShaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 use pollster::block_on;
 use renderer::display_list::{DisplayItem, DisplayList, batch_display_list};
 use renderer::renderer::DrawText;
+
+type PreparedText = (Vec<DrawText>, Vec<GlyphonBuffer>);
 
 /// Map a display item to text if it's a text item, otherwise return None.
 fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
@@ -302,7 +304,7 @@ struct PrepareTextParams<'prepare> {
 ///
 /// # Errors
 /// Returns an error if text preparation fails.
-fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> AnyhowResult<(Vec<DrawText>, Vec<GlyphonBuffer>)> {
+fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> AnyhowResult<PreparedText> {
     let texts: Vec<DrawText> = params
         .display_list
         .items
@@ -315,7 +317,7 @@ fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> AnyhowResult<(Vec<D
             &mut params.glyphon_state.font_system,
             GlyphonMetrics::new(item.font_size, item.font_size),
         );
-        let attrs = GlyphonAttrs::new().cache_key_flags(glyphon::CacheKeyFlags::SUBPIXEL_RENDERING);
+        let attrs = GlyphonAttrs::new().cache_key_flags(CacheKeyFlags::SUBPIXEL_RENDERING);
         buffer.set_text(
             &mut params.glyphon_state.font_system,
             &item.text,
@@ -327,7 +329,13 @@ fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> AnyhowResult<(Vec<D
     }
     let mut areas: Vec<TextArea> = Vec::with_capacity(texts.len());
     for (index, item) in texts.iter().enumerate() {
-        let color = GlyphonColor(0xFF00_0000);
+        // Convert RGB [f32; 3] to Glyphon RGBA u32 format: 0xAARRGGBB
+        // Cosmic-text Color format: ((a << 24) | (r << 16) | (g << 8) | b)
+        let red = (item.color[0] * 255.0).clamp(0.0, 255.0) as u32;
+        let green = (item.color[1] * 255.0).clamp(0.0, 255.0) as u32;
+        let blue = (item.color[2] * 255.0).clamp(0.0, 255.0) as u32;
+        let alpha = 0xFF; // Opaque
+        let color = GlyphonColor((alpha << 24) | (red << 16) | (green << 8) | blue);
         let bounds = match item.bounds {
             Some((left, top, right, bottom)) => TextBounds {
                 left,

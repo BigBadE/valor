@@ -9,7 +9,7 @@ mod logical_encoder;
 /// New pipeline builders for extended display items (Border, BoxShadow, Image, Gradients).
 mod new_pipelines;
 /// Offscreen rendering utilities.
-mod offscreen;
+pub mod offscreen;
 /// Pipeline creation and vertex buffer management.
 mod pipelines;
 /// Main rendering state and implementation.
@@ -30,5 +30,5 @@ pub use new_pipelines::{
 };
 pub use offscreen::render_display_list_to_rgba;
 pub use pipelines::{Vertex, build_pipeline_and_buffers, build_texture_pipeline};
-pub use state::{Layer, RenderState};
+pub use state::{GlyphBounds, Layer, RenderState};
 pub use texture_pool::TexturePool;

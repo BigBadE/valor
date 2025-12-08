@@ -1,0 +1,76 @@
+[package]
+name = "valor_dsl"
+version.workspace = true
+edition.workspace = true
+
+[lints.clippy]
+needless_pass_by_value = "allow"
+type_complexity = "allow"
+
+[dependencies]
+# Valor crates
+js = { workspace = true }
+html = { workspace = true }
+css = { workspace = true }
+page_handler = { workspace = true }
+renderer = { workspace = true }
+wgpu_backend = { workspace = true }
+
+# HTML/CSS parsing
+html5ever = { workspace = true }
+markup5ever_rcdom = "0.35"
+cssparser = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# URL handling
+url = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+
+# Data structures
+indextree = { workspace = true }
+
+# Windowing (for visual examples)
+winit = { workspace = true }
+pollster = { workspace = true }
+
+# Bevy (optional)
+bevy = { version = "0.15", optional = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_render",
+    "bevy_sprite",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_winit",
+    "png",
+    "x11",
+] }
+
+[features]
+default = []
+bevy_integration = ["bevy"]
+
+[[example]]
+name = "counter"
+required-features = ["bevy_integration"]
+
+[[example]]
+name = "todo_list"
+required-features = ["bevy_integration"]
+
+[[example]]
+name = "styled_form"
+required-features = ["bevy_integration"]
+
+[[example]]
+name = "simple_counter"
+
+[[example]]
+name = "bevy_ui"
+required-features = ["bevy_integration"]

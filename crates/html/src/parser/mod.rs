@@ -120,9 +120,9 @@ impl ParserDOMMirror {
     /// Returns an error if sending the batch fails.
     #[inline]
     pub fn finish_update(&mut self) -> Result<(), Error> {
-        self.in_updater
-            .try_send(mem::take(&mut self.current_batch))
-            .map_err(|err| anyhow::anyhow!(err))
+        // Ignore send errors - receiver might be dropped during shutdown
+        drop(self.in_updater.try_send(mem::take(&mut self.current_batch)));
+        Ok(())
     }
 
     #[inline]

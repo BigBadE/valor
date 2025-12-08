@@ -1,3 +1,11 @@
+# Enable experimental setup scripts
+experimental = ["setup-scripts"]
+
+# Define Chrome startup script
+[scripts.setup.chrome]
+command = "bash scripts/start-chrome.sh"
+slow-timeout = { period = "30s" }
+
 [profile.default]
 # Run tests in parallel with reasonable thread count
 test-threads = 4
@@ -11,6 +19,11 @@ retries = 0
 # Show output for failing tests
 status-level = "fail"
 final-status-level = "fail"
+
+# Run Chrome setup script before chromium tests
+[[profile.default.scripts]]
+filter = "binary(chromium_tests)"
+setup = "chrome"
 
 [profile.ci]
 # More conservative settings for CI

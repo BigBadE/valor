@@ -1,23 +1,23 @@
-use super::browser::{TestType, navigate_and_prepare_tab, setup_chrome_browser};
+use super::browser::navigate_and_prepare_page;
 use super::common::{
-    clear_valor_layout_cache_if_harness_changed, create_page, css_reset_injection_script,
-    get_filtered_fixtures, init_test_logger, read_cached_json_for_fixture, to_file_url,
-    update_until_finished, write_cached_json_for_fixture, write_named_json_for_fixture,
+    CacheFetcher, create_page, css_reset_injection_script, read_or_fetch_cache, test_cache_dir,
+    to_file_url, update_until_finished,
 };
 use super::json_compare::compare_json_with_epsilon;
 use anyhow::{Result, anyhow};
+use chromiumoxide::page::Page;
 use css::style_types::{AlignItems, BoxSizing, ComputedStyle, Display, Overflow, Position};
 use css_core::LayoutRect;
-use headless_chrome::Tab;
 use js::NodeKey;
-use log::{error, info};
 use page_handler::layout_manager::LayoutManager;
 use page_handler::snapshots::LayoutNodeKind;
-use serde_json::{Map as JsonMap, Value as JsonValue, from_str, json};
+use serde_json::{Map as JsonMap, Value as JsonValue, from_str, json, to_string};
 use std::collections::HashMap;
+use std::fs::{create_dir_all, write};
 use std::path::Path;
-use std::sync::Arc;
-use tokio::runtime::Runtime;
+use std::str::from_utf8;
+use std::time::Instant;
+use tokio::runtime::Handle;
 
 type LayoutEngineWithStyles = (LayoutManager, HashMap<NodeKey, ComputedStyle>);
 
@@ -26,25 +26,26 @@ type LayoutEngineWithStyles = (LayoutManager, HashMap<NodeKey, ComputedStyle>);
 /// # Errors
 ///
 /// Returns an error if page creation, parsing, or layout computation fails.
-fn setup_layouter_for_fixture(
-    runtime: &Runtime,
+async fn setup_layouter_for_fixture(
+    handle: &Handle,
     input_path: &Path,
 ) -> Result<LayoutEngineWithStyles> {
     let url = to_file_url(input_path)?;
-    let mut page = create_page(runtime, url)?;
+    let mut page = create_page(handle, url).await?;
     page.eval_js(css_reset_injection_script())?;
     let mut layouter_mirror = page.create_mirror(LayoutManager::new());
 
-    let finished = update_until_finished(runtime, &mut page, |_page| {
+    let finished = update_until_finished(handle, &mut page, |_page| {
         layouter_mirror.try_update_sync()?;
         Ok(())
-    })?;
+    })
+    .await?;
 
     if !finished {
         return Err(anyhow!("Parsing did not finish"));
     }
 
-    runtime.block_on(page.update())?;
+    page.update().await?;
     layouter_mirror.try_update_sync()?;
 
     let computed = page.computed_styles_snapshot()?;
@@ -77,7 +78,6 @@ fn process_assertion_entry(
         .unwrap_or("");
     if !assertion_passed {
         let msg = format!("JS assertion failed: {assert_name} - {assert_details}");
-        error!("[LAYOUT] {display_name} ... FAILED: {msg}");
         failed.push((display_name.to_string(), msg));
     }
 }
@@ -103,136 +103,117 @@ fn check_js_assertions(
 /// # Errors
 ///
 /// Returns an error if fixture processing, layouter setup, or JSON operations fail.
-fn process_layout_fixture(
+async fn process_layout_fixture(
     input_path: &Path,
-    runtime: &Runtime,
-    tab: &Arc<Tab>,
-    harness_src: &str,
+    handle: &Handle,
+    page: &Page,
+    _harness_src: &str,
     failed: &mut Vec<(String, String)>,
 ) -> Result<bool> {
     let display_name = input_path.display().to_string();
+
+    let setup_start = Instant::now();
     let (mut layouter, computed_for_serialization) =
-        match setup_layouter_for_fixture(runtime, input_path) {
+        match setup_layouter_for_fixture(handle, input_path).await {
             Ok(result) => result,
             Err(err) => {
                 let msg = format!("Setup failed: {err}");
-                error!("[LAYOUT] {display_name} ... FAILED: {msg}");
                 failed.push((display_name.clone(), msg));
                 return Ok(false);
             }
         };
+    let setup_time = setup_start.elapsed();
 
+    let compute_start = Instant::now();
     layouter.compute_layout();
     let rects_external = layouter.rects();
-    let our_json = our_layout_json(&layouter, rects_external, &computed_for_serialization);
-    let ch_json = if let Some(cached_value) = read_cached_json_for_fixture(input_path, harness_src)
-    {
-        cached_value
-    } else {
-        let chromium_value = chromium_layout_json_in_tab(tab, input_path)?;
-        write_cached_json_for_fixture(input_path, harness_src, &chromium_value)?;
-        chromium_value
-    };
+    let compute_time = compute_start.elapsed();
 
-    write_named_json_for_fixture(input_path, harness_src, "chromium", &ch_json)?;
-    write_named_json_for_fixture(input_path, harness_src, "valor", &our_json)?;
+    let serialize_start = Instant::now();
+    let our_json = our_layout_json(&layouter, rects_external, &computed_for_serialization);
+    let serialize_time = serialize_start.elapsed();
+
+    let chromium_start = Instant::now();
+    let ch_json = match read_or_fetch_cache(CacheFetcher {
+        test_name: "layout",
+        fixture_path: input_path,
+        cache_suffix: "_chromium.json",
+        fetch_fn: || chromium_layout_json_in_page(page, input_path),
+        deserialize_fn: |bytes| {
+            let string = from_utf8(bytes)?;
+            Ok(from_str(string)?)
+        },
+        serialize_fn: |value| Ok(to_string(value)?.into_bytes()),
+    })
+    .await
+    {
+        Ok(value) => value,
+        Err(err) => {
+            let msg = format!("Failed to get chromium layout: {err}");
+            failed.push((display_name.clone(), msg));
+            return Ok(false);
+        }
+    };
+    let chromium_time = chromium_start.elapsed();
+
     check_js_assertions(&ch_json, &display_name, failed);
 
     let ch_layout_json = if ch_json.get("layout").is_some() || ch_json.get("asserts").is_some() {
         ch_json.get("layout").cloned().unwrap_or_else(|| json!({}))
     } else {
-        ch_json.clone()
+        ch_json
     };
 
-    // Use 3.0px tolerance for sub-pixel rendering, line-height, and margin collapse differences
-    let eps = 3.0;
-    match compare_json_with_epsilon(&our_json, &ch_layout_json, eps) {
-        Ok(()) => {
-            info!("[LAYOUT] {display_name} ... ok");
-            Ok(true)
-        }
+    let _compare_start = Instant::now();
+    let eps = 0.0;
+    let result = match compare_json_with_epsilon(&our_json, &ch_layout_json, eps) {
+        Ok(()) => Ok(true),
         Err(msg) => {
+            let name = Path::new(&display_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
+
+            // Save diff to file silently
+            if let Ok(failing_dir) = test_cache_dir("layout").map(|d| d.join("failing")) {
+                let _ = create_dir_all(&failing_dir);
+                let diff_path = failing_dir.join(format!("{}.diff.txt", name));
+                let _ = write(&diff_path, &msg);
+            }
+
             failed.push((display_name.clone(), msg));
             Ok(false)
         }
-    }
+    };
+
+    // Timing variables kept for potential debugging
+    let _ = (setup_time, compute_time, serialize_time, chromium_time);
+
+    result
 }
 
-/// Runs a single layout test for a given fixture path.
+/// Runs a single layout test for a given fixture path with a provided page.
 ///
 /// # Errors
 ///
-/// Returns an error if browser setup, layout computation, or comparison fails.
-pub fn run_single_layout_test(input_path: &Path) -> Result<()> {
-    init_test_logger();
+/// Returns an error if layout computation or comparison fails.
+pub async fn run_single_layout_test_with_page(input_path: &Path, page: &Page) -> Result<()> {
     let harness_src = concat!(
         include_str!("layout_tests.rs"),
         include_str!("common.rs"),
         include_str!("json_compare.rs"),
         include_str!("browser.rs"),
     );
-    clear_valor_layout_cache_if_harness_changed(harness_src)?;
-    let browser = setup_chrome_browser(TestType::Layout)?;
-    let tab = browser.new_tab()?;
     let mut failed: Vec<(String, String)> = Vec::new();
-    let runtime = Runtime::new()?;
+    let handle = Handle::current();
 
-    process_layout_fixture(input_path, &runtime, &tab, harness_src, &mut failed)?;
-
-    // Explicitly close tab and browser to ensure clean shutdown
-    drop(tab);
-    drop(browser);
+    process_layout_fixture(input_path, &handle, page, harness_src, &mut failed).await?;
 
     if failed.is_empty() {
         Ok(())
     } else {
         let (name, msg) = &failed[0];
         Err(anyhow!("{name}: {msg}"))
-    }
-}
-
-/// Tests layout computation by comparing Valor layout with Chromium layout.
-///
-/// # Errors
-///
-/// Returns an error if browser setup fails or any layout comparisons fail.
-pub fn run_chromium_layouts() -> Result<()> {
-    init_test_logger();
-    let harness_src = concat!(
-        include_str!("layout_tests.rs"),
-        include_str!("common.rs"),
-        include_str!("json_compare.rs"),
-        include_str!("browser.rs"),
-    );
-    clear_valor_layout_cache_if_harness_changed(harness_src)?;
-    let browser = setup_chrome_browser(TestType::Layout)?;
-    let tab = browser.new_tab()?;
-    let mut failed: Vec<(String, String)> = Vec::new();
-    let runtime = Runtime::new()?;
-    let fixtures = get_filtered_fixtures("LAYOUT")?;
-    let mut ran = 0;
-    for input_path in fixtures {
-        if process_layout_fixture(&input_path, &runtime, &tab, harness_src, &mut failed)? {
-            ran += 1;
-        }
-    }
-
-    // Explicitly close tab and browser to ensure clean shutdown
-    drop(tab);
-    drop(browser);
-
-    if failed.is_empty() {
-        info!("[LAYOUT] {ran} fixtures passed");
-        Ok(())
-    } else {
-        error!("==== LAYOUT FAILURES ({} total) ====", failed.len());
-        for (name, msg) in &failed {
-            error!("- {name}\n  {msg}\n");
-        }
-        Err(anyhow!(
-            "{} layout fixture(s) failed; see log above.",
-            failed.len()
-        ))
     }
 }
 
@@ -668,17 +649,17 @@ fn chromium_layout_extraction_script() -> String {
     )
 }
 
-/// Extracts layout JSON from Chromium by evaluating JavaScript in a tab.
+/// Extracts layout JSON from Chromium by evaluating JavaScript in a page.
 ///
 /// # Errors
 ///
 /// Returns an error if navigation, script evaluation, or JSON parsing fails.
-fn chromium_layout_json_in_tab(tab: &Tab, path: &Path) -> Result<JsonValue> {
-    navigate_and_prepare_tab(tab, path)?;
+async fn chromium_layout_json_in_page(page: &Page, path: &Path) -> Result<JsonValue> {
+    navigate_and_prepare_page(page, path).await?;
     let script = chromium_layout_extraction_script();
-    let result = tab.evaluate(&script, true)?;
+    let result = page.evaluate(script).await?;
     let value = result
-        .value
+        .value()
         .ok_or_else(|| anyhow!("No value returned from Chromium evaluate"))?;
     let json_string = value
         .as_str()

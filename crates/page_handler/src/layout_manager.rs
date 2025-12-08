@@ -158,9 +158,14 @@ impl DOMSubscriber for LayoutManager {
             DOMUpdate::InsertElement {
                 parent, tag, node, ..
             } => {
-                self.tags.insert(node, tag);
+                self.tags.insert(node, tag.clone());
                 self.children.entry(parent).or_default().push(node);
-                if parent == NodeKey::ROOT && self.root.is_none() {
+                // Set root to html or body element, preferring body
+                let tag_lower = tag.to_lowercase();
+                if tag_lower == "body"
+                    || (tag_lower == "html" && self.root.is_none())
+                    || (parent == NodeKey::ROOT && self.root.is_none())
+                {
                     self.root = Some(node);
                 }
             }

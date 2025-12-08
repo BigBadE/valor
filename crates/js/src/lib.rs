@@ -274,9 +274,8 @@ impl<T: DOMSubscriber> DOMMirror<T> {
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Lagged(_)) => {}
                 Err(TryRecvError::Closed) => {
-                    return Err(AnyhowError::msg(
-                        "Recv channel was closed before document ended!",
-                    ));
+                    // Channel closed - this is normal during shutdown, not an error
+                    break;
                 }
             }
         }
@@ -304,7 +303,8 @@ impl<T: DOMSubscriber> DOMMirror<T> {
     /// Returns an error if the channel is closed.
     #[inline]
     pub async fn send_dom_change(&mut self, changes: Vec<DOMUpdate>) -> Result<()> {
-        self.out_updater.send(changes).await?;
+        // Ignore send errors - receiver might be dropped during shutdown
+        drop(self.out_updater.send(changes).await);
         Ok(())
     }
 }

@@ -16,6 +16,19 @@ use std::sync::Arc;
 use wgpu::*;
 use winit::dpi::PhysicalSize;
 
+/// A bounding box for a single glyph in screen coordinates.
+#[derive(Debug, Clone, Copy)]
+pub struct GlyphBounds {
+    /// Left edge in pixels
+    pub left: f32,
+    /// Top edge in pixels
+    pub top: f32,
+    /// Right edge in pixels
+    pub right: f32,
+    /// Bottom edge in pixels
+    pub bottom: f32,
+}
+
 /// Text renderer state encapsulating all Glyphon text rendering resources.
 /// This struct has a single responsibility: managing text rendering.
 pub struct TextRendererState {
@@ -31,6 +44,8 @@ pub struct TextRendererState {
     _glyphon_cache: Cache,
     /// Glyphon viewport for text rendering.
     viewport: Viewport,
+    /// Cached glyph bounding boxes from the last `prepare()` call.
+    glyph_bounds: Vec<GlyphBounds>,
 }
 
 impl TextRendererState {
@@ -63,6 +78,7 @@ impl TextRendererState {
             text_renderer,
             _glyphon_cache: glyphon_cache,
             viewport,
+            glyph_bounds: Vec::new(),
         }
     }
 
@@ -76,6 +92,10 @@ impl TextRendererState {
     ) {
         let (size, scale) = viewport_params;
         let buffers = self.create_glyphon_buffers(items, scale);
+
+        // Extract glyph bounds before creating text areas
+        self.glyph_bounds = Self::extract_glyph_bounds(&buffers, items, scale);
+
         let areas = Self::create_text_areas(&buffers, items, scale, size.width, size.height);
 
         let viewport_scope = ErrorScopeGuard::push(device, "glyphon-viewport-update");
@@ -132,6 +152,12 @@ impl TextRendererState {
             error!(target: "wgpu_renderer", "Glyphon text_renderer.render() generated validation error: {error:?}");
         }
         result
+    }
+
+    /// Returns the glyph bounds from the last `prepare()` call.
+    #[inline]
+    pub fn glyph_bounds(&self) -> &[GlyphBounds] {
+        &self.glyph_bounds
     }
 
     /// Reset text renderer for the next frame.
@@ -240,12 +266,13 @@ impl TextRendererState {
     ) -> Vec<TextArea<'buffer>> {
         let mut areas = Vec::with_capacity(items.len());
         for (index, item) in items.iter().enumerate() {
-            // Convert RGB [f32; 3] to Glyphon RGBA u32 format: 0xAABBGGRR
+            // Convert RGB [f32; 3] to Glyphon RGBA u32 format: 0xAARRGGBB
+            // Cosmic-text Color format: ((a << 24) | (r << 16) | (g << 8) | b)
             let red = (item.color[0] * 255.0).clamp(0.0, 255.0) as u32;
             let green = (item.color[1] * 255.0).clamp(0.0, 255.0) as u32;
             let blue = (item.color[2] * 255.0).clamp(0.0, 255.0) as u32;
             let alpha = 0xFF; // Opaque
-            let color = GlyphonColor((alpha << 24) | (blue << 16) | (green << 8) | red);
+            let color = GlyphonColor((alpha << 24) | (red << 16) | (green << 8) | blue);
             let bounds = match item.bounds {
                 Some((left, top, right, bottom)) => TextBounds {
                     left: i32::try_from((left as f32 * scale).round() as u32).unwrap_or(i32::MAX),
@@ -272,5 +299,109 @@ impl TextRendererState {
             });
         }
         areas
+    }
+
+    /// Extract per-glyph bounding boxes from buffers for precise text region masking.
+    fn extract_glyph_bounds(
+        buffers: &[GlyphonBuffer],
+        items: &[DrawText],
+        scale: f32,
+    ) -> Vec<GlyphBounds> {
+        buffers
+            .iter()
+            .zip(items.iter())
+            .flat_map(|(buffer, item)| {
+                buffer.layout_runs().flat_map(move |run| {
+                    let line_height = run.line_y;
+                    run.glyphs.iter().map(move |glyph| {
+                        // Glyph positions are relative to the text area origin
+                        // Add the text area's position to get screen coordinates
+                        let glyph_left = item.x.mul_add(scale, glyph.x);
+                        let glyph_top = item.y.mul_add(scale, glyph.y);
+                        let glyph_right = glyph_left + glyph.w;
+                        let glyph_bottom = glyph_top + line_height;
+
+                        GlyphBounds {
+                            left: glyph_left,
+                            top: glyph_top,
+                            right: glyph_right,
+                            bottom: glyph_bottom,
+                        }
+                    })
+                })
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Tests that pure red RGB(1.0, 0.0, 0.0) converts to ARGB `0xFF_FF_00_00`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if color conversion produces incorrect value.
+    #[test]
+    fn test_color_conversion_red() {
+        // Pure red: RGB(255, 0, 0) should map to 0xFF_FF_00_00 (AARRGGBB)
+        let red = 1.0f32;
+        let green = 0.0f32;
+        let blue = 0.0f32;
+
+        let red_u32 = (red * 255.0).clamp(0.0, 255.0) as u32;
+        let green_u32 = (green * 255.0).clamp(0.0, 255.0) as u32;
+        let blue_u32 = (blue * 255.0).clamp(0.0, 255.0) as u32;
+        let alpha = 0xFF;
+
+        let color = (alpha << 24) | (red_u32 << 16) | (green_u32 << 8) | blue_u32;
+
+        // Expected: 0xFF_FF_00_00 (alpha=255, red=255, green=0, blue=0)
+        assert_eq!(color, 0xFF_FF_00_00);
+    }
+
+    /// Tests that pure green RGB(0.0, 1.0, 0.0) converts to ARGB `0xFF_00_FF_00`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if color conversion produces incorrect value.
+    #[test]
+    fn test_color_conversion_green() {
+        // Pure green: RGB(0, 255, 0) should map to 0xFF_00_FF_00 (AARRGGBB)
+        let red = 0.0f32;
+        let green = 1.0f32;
+        let blue = 0.0f32;
+
+        let red_u32 = (red * 255.0).clamp(0.0, 255.0) as u32;
+        let green_u32 = (green * 255.0).clamp(0.0, 255.0) as u32;
+        let blue_u32 = (blue * 255.0).clamp(0.0, 255.0) as u32;
+        let alpha = 0xFF;
+
+        let color = (alpha << 24) | (red_u32 << 16) | (green_u32 << 8) | blue_u32;
+
+        // Expected: 0xFF_00_FF_00 (alpha=255, red=0, green=255, blue=0)
+        assert_eq!(color, 0xFF_00_FF_00);
+    }
+
+    /// Tests that pure blue RGB(0.0, 0.0, 1.0) converts to ARGB `0xFF_00_00_FF`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if color conversion produces incorrect value.
+    #[test]
+    fn test_color_conversion_blue() {
+        // Pure blue: RGB(0, 0, 255) should map to 0xFF_00_00_FF (AARRGGBB)
+        let red = 0.0f32;
+        let green = 0.0f32;
+        let blue = 1.0f32;
+
+        let red_u32 = (red * 255.0).clamp(0.0, 255.0) as u32;
+        let green_u32 = (green * 255.0).clamp(0.0, 255.0) as u32;
+        let blue_u32 = (blue * 255.0).clamp(0.0, 255.0) as u32;
+        let alpha = 0xFF;
+
+        let color = (alpha << 24) | (red_u32 << 16) | (green_u32 << 8) | blue_u32;
+
+        // Expected: 0xFF_00_00_FF (alpha=255, red=0, green=0, blue=255)
+        assert_eq!(color, 0xFF_00_00_FF);
     }
 }

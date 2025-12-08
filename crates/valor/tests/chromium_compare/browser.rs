@@ -1,71 +1,67 @@
 use anyhow::Result;
-use headless_chrome::{Browser, LaunchOptionsBuilder, Tab};
-use std::ffi::OsStr;
+use chromiumoxide::browser::Browser;
+use chromiumoxide::page::Page;
+use futures::StreamExt as _;
 use std::path::Path;
-use std::time::Duration;
+use tokio::spawn;
+use tokio::task::JoinHandle;
 
 use super::common::{css_reset_injection_script, to_file_url};
 
-/// Type of chromium comparison test being run.
-#[derive(Debug, Clone, Copy)]
-pub enum TestType {
-    /// Layout comparison tests.
-    Layout,
-    /// Graphics/rendering comparison tests.
-    Graphics,
+/// Hardcoded port for the shared Chrome instance
+const CHROME_PORT: u16 = 19222;
+
+/// Browser with its handler task
+pub struct BrowserWithHandler {
+    pub browser: Browser,
+    _handler_task: JoinHandle<()>,
 }
 
-/// Sets up a headless Chrome browser for comparison testing.
+/// Connects to the shared Chrome instance.
 ///
 /// # Errors
 ///
-/// Returns an error if browser launch fails.
-pub fn setup_chrome_browser(test_type: TestType) -> Result<Browser> {
-    let (timeout, extra_args): (Duration, Vec<&OsStr>) = match test_type {
-        TestType::Layout => (
-            Duration::from_secs(300),
-            vec![
-                OsStr::new("--disable-features=OverlayScrollbar"),
-                OsStr::new("--allow-file-access-from-files"),
-                OsStr::new("--disable-dev-shm-usage"),
-                OsStr::new("--no-sandbox"),
-                OsStr::new("--disable-extensions"),
-                OsStr::new("--disable-background-networking"),
-                OsStr::new("--disable-sync"),
-            ],
-        ),
-        TestType::Graphics => (
-            Duration::from_secs(120),
-            vec![OsStr::new("--force-color-profile=sRGB")],
-        ),
-    };
+/// Returns an error if connection fails.
+pub async fn connect_to_chrome_internal() -> Result<BrowserWithHandler> {
+    let ws_url = format!("http://localhost:{CHROME_PORT}");
 
-    let mut args = vec![
-        OsStr::new("--force-device-scale-factor=1"),
-        OsStr::new("--hide-scrollbars"),
-        OsStr::new("--blink-settings=imagesEnabled=false"),
-        OsStr::new("--disable-gpu"),
-    ];
-    args.extend(extra_args);
+    // Connect to the existing Chrome instance
+    let (browser, mut handler) = Browser::connect(&ws_url).await.map_err(|_err| {
+        anyhow::anyhow!(
+            "Failed to connect to Chrome on {ws_url}\n\n\
+            ERROR: You need to run tests with cargo-nextest!\n\
+            The nextest setup script starts Chrome instances that tests connect to.\n\n\
+            Run: cargo nextest run --workspace --exclude cosmic-text --exclude glyphon\n\
+            Or:  ./scripts/verify.sh"
+        )
+    })?;
 
-    let launch_opts = LaunchOptionsBuilder::default()
-        .headless(true)
-        .window_size(Some((800, 600)))
-        .idle_browser_timeout(timeout)
-        .args(args)
-        .build()?;
-    Browser::new(launch_opts)
+    // Spawn the handler task to keep it running
+    let handler_task = spawn(async move {
+        while let Some(event) = handler.next().await {
+            match event {
+                Ok(()) => {}
+                Err(err) => {
+                    log::debug!("Browser handler error: {err}");
+                }
+            }
+        }
+    });
+
+    Ok(BrowserWithHandler {
+        browser,
+        _handler_task: handler_task,
+    })
 }
 
-/// Navigates a Chrome tab to a fixture and prepares it for testing.
+/// Navigates a Chrome page to a fixture and prepares it for testing.
 ///
 /// # Errors
 ///
 /// Returns an error if navigation or script evaluation fails.
-pub fn navigate_and_prepare_tab(tab: &Tab, path: &Path) -> Result<()> {
+pub async fn navigate_and_prepare_page(page: &Page, path: &Path) -> Result<()> {
     let url = to_file_url(path)?;
-    tab.navigate_to(url.as_str())?;
-    tab.wait_until_navigated()?;
-    let _result = tab.evaluate(css_reset_injection_script(), false)?;
+    page.goto(url.as_str()).await?;
+    page.evaluate(css_reset_injection_script()).await?;
     Ok(())
 }

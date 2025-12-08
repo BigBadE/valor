@@ -32,6 +32,7 @@ use renderer::display_list::{DisplayItem, DisplayList};
 use renderer::renderer::{DrawRect, DrawText};
 use resource_tracker::ResourceTracker;
 use std::sync::Arc;
+pub use text_renderer_state::GlyphBounds;
 use text_renderer_state::TextRendererState;
 use tracing::info_span;
 use wgpu::util::DeviceExt as _;
@@ -243,6 +244,13 @@ impl RenderState {
     /// Set the framebuffer clear color (canvas background). RGBA in [0,1].
     pub const fn set_clear_color(&mut self, rgba: [f32; 4]) {
         self.clear_color = rgba;
+    }
+
+    /// Get glyph bounds from the last prepared text rendering.
+    /// Returns per-glyph bounding boxes in screen coordinates.
+    #[inline]
+    pub fn glyph_bounds(&self) -> &[GlyphBounds] {
+        self.text.glyph_bounds()
     }
 
     /// Handle window resize and reconfigure the surface.

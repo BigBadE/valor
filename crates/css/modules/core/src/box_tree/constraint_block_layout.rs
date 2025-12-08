@@ -24,6 +24,7 @@ use css_flexbox::{
 };
 
 // Import text measurement module for actual font metrics
+use css_text::default_line_height_px;
 use css_text::measurement::{measure_text, measure_text_wrapped};
 
 // Import display module for normalize_children (handles display:none and display:contents)
@@ -93,6 +94,7 @@ struct FlexResultParams {
     container_inline_size: f32,
     final_cross_size: f32,
     is_row: bool,
+    container_style: ComputedStyle,
 }
 
 /// Parameters for running flexbox layout.
@@ -101,6 +103,27 @@ struct FlexboxLayoutParams {
     is_row: bool,
     container_inline_size: f32,
     container_cross_size: f32,
+}
+
+/// Parameters for computing end margin strut.
+struct EndMarginStrutParams<'params> {
+    sides: &'params BoxSides,
+    state: &'params ChildrenLayoutState,
+    incoming_space: &'params ConstraintSpace,
+    can_collapse_with_children: bool,
+    block_size: f32,
+}
+
+/// Parameters for creating flex abspos constraint space.
+struct FlexAbsposConstraintParams<'params> {
+    bfc_offset: BfcOffset,
+    sides: &'params BoxSides,
+    container_style: &'params ComputedStyle,
+    child_style: &'params ComputedStyle,
+    child_sides: &'params BoxSides,
+    container_inline_size: f32,
+    final_cross_size: f32,
+    is_row: bool,
 }
 
 /// Layout tree for constraint-based layout.
@@ -336,12 +359,12 @@ impl ConstraintLayoutTree {
         match tag_lower.as_str() {
             "input" => {
                 // Checkboxes and radios have intrinsic 13x13 size
-                if let Some(attrs) = self.attrs.get(&node) {
-                    if let Some(input_type) = attrs.get("type") {
-                        let type_lower = input_type.to_lowercase();
-                        if type_lower == "checkbox" || type_lower == "radio" {
-                            return Some(13.0);
-                        }
+                if let Some(attrs) = self.attrs.get(&node)
+                    && let Some(input_type) = attrs.get("type")
+                {
+                    let type_lower = input_type.to_lowercase();
+                    if type_lower == "checkbox" || type_lower == "radio" {
+                        return Some(13.0);
                     }
                 }
                 // Other inputs don't have intrinsic width (they respect CSS width)
@@ -369,13 +392,13 @@ impl ConstraintLayoutTree {
 
         match tag_lower.as_str() {
             "input" => {
-                if let Some(attrs) = self.attrs.get(&node) {
-                    if let Some(input_type) = attrs.get("type") {
-                        let type_lower = input_type.to_lowercase();
-                        if type_lower == "checkbox" || type_lower == "radio" {
-                            // Checkboxes and radios have intrinsic 13x13 size
-                            return Some(13.0);
-                        }
+                if let Some(attrs) = self.attrs.get(&node)
+                    && let Some(input_type) = attrs.get("type")
+                {
+                    let type_lower = input_type.to_lowercase();
+                    if type_lower == "checkbox" || type_lower == "radio" {
+                        // Checkboxes and radios have intrinsic 13x13 size
+                        return Some(13.0);
                     }
                 }
                 // Text inputs: intrinsic height based on font-size + a bit of spacing
@@ -697,12 +720,9 @@ impl ConstraintLayoutTree {
 
         // Get the parent's line-height for vertical spacing
         let parent_style = self.styles.get(&parent).cloned().unwrap_or_default();
-        let line_height = if let Some(lh) = parent_style.line_height {
-            lh
-        } else {
-            // Use default line-height calculation
-            css_text::default_line_height_px(&parent_style) as f32
-        };
+        let line_height = parent_style
+            .line_height
+            .unwrap_or_else(|| default_line_height_px(&parent_style) as f32);
 
         let text_result = LayoutResult {
             inline_size: text_width,
@@ -819,56 +839,49 @@ impl ConstraintLayoutTree {
     }
 
     /// Compute end margin strut for block element.
-    fn compute_end_margin_strut(
-        sides: &BoxSides,
-        state: &ChildrenLayoutState,
-        _child_space: &ConstraintSpace,
-        incoming_space: &ConstraintSpace,
-        can_collapse_with_children: bool,
-        block_size: f32,
-    ) -> MarginStrut {
-        let can_collapse_bottom =
-            sides.padding_bottom == LayoutUnit::zero() && sides.border_bottom == LayoutUnit::zero();
-        let can_collapse_top =
-            sides.padding_top == LayoutUnit::zero() && sides.border_top == LayoutUnit::zero();
+    fn compute_end_margin_strut(params: &EndMarginStrutParams<'_>) -> MarginStrut {
+        let can_collapse_bottom = params.sides.padding_bottom == LayoutUnit::zero()
+            && params.sides.border_bottom == LayoutUnit::zero();
+        let can_collapse_top = params.sides.padding_top == LayoutUnit::zero()
+            && params.sides.border_top == LayoutUnit::zero();
 
         // Check if this is a self-collapsing element (no content/height, no children)
-        let is_self_collapsing = block_size.abs() < 0.01
-            && !state.first_inflow_child_seen
+        let is_self_collapsing = params.block_size.abs() < 0.01
+            && !params.state.first_inflow_child_seen
             && can_collapse_top
             && can_collapse_bottom
-            && can_collapse_with_children;
+            && params.can_collapse_with_children;
 
         if is_self_collapsing {
             // Self-collapsing element: margins collapse THROUGH the element
             // The next sibling should see all margins that collapsed through this element
             // BUG FIX: Include the INCOMING margin strut (which contains parent/sibling margins)
             // along with this element's own top and bottom margins
-            let mut strut = incoming_space.margin_strut;
-            strut.append(sides.margin_top);
-            strut.append(sides.margin_bottom);
+            let mut strut = params.incoming_space.margin_strut;
+            strut.append(params.sides.margin_top);
+            strut.append(params.sides.margin_bottom);
             return strut;
         }
 
         // If we have children and can collapse bottom margins
-        if state.first_inflow_child_seen && can_collapse_bottom {
+        if params.state.first_inflow_child_seen && can_collapse_bottom {
             // Collapse our bottom margin with last child's end margin strut
-            let mut strut = state.last_child_end_margin_strut;
-            strut.append(sides.margin_bottom);
+            let mut strut = params.state.last_child_end_margin_strut;
+            strut.append(params.sides.margin_bottom);
             return strut;
         }
 
         // If we cannot collapse bottom (have padding/border), only our own bottom margin
         if !can_collapse_bottom {
             let mut strut = MarginStrut::default();
-            strut.append(sides.margin_bottom);
+            strut.append(params.sides.margin_bottom);
             return strut;
         }
 
         // No children and can collapse bottom (but not self-collapsing due to explicit height):
         // Return just the bottom margin
         let mut strut = MarginStrut::default();
-        strut.append(sides.margin_bottom);
+        strut.append(params.sides.margin_bottom);
         strut
     }
 
@@ -927,30 +940,22 @@ impl ConstraintLayoutTree {
                 // the last child's margin must be included in the height calculation
                 let can_collapse_bottom = sides.padding_bottom == LayoutUnit::zero()
                     && sides.border_bottom == LayoutUnit::zero();
-                let non_collapsing_bottom_margin = if !can_collapse_bottom {
-                    params.last_child_end_margin_strut.collapse().to_px()
-                } else {
+                let non_collapsing_bottom_margin = if can_collapse_bottom {
                     0.0
+                } else {
+                    params.last_child_end_margin_strut.collapse().to_px()
                 };
 
-                if params.can_collapse_with_children {
-                    content_height
-                        + non_collapsing_bottom_margin
-                        + sides.padding_top.to_px()
-                        + sides.padding_bottom.to_px()
-                        + sides.border_top.to_px()
-                        + sides.border_bottom.to_px()
-                } else {
-                    // When can_collapse_with_children is false, start_offset includes padding_top + border_top.
-                    // content_height is measured from that position to the end of children (including non-collapsing margin).
-                    // To get border-box height, we need to add ALL edges (top edges were subtracted in computing content_height).
-                    content_height
-                        + non_collapsing_bottom_margin
-                        + sides.padding_top.to_px()
-                        + sides.padding_bottom.to_px()
-                        + sides.border_top.to_px()
-                        + sides.border_bottom.to_px()
-                }
+                // For both can_collapse_with_children cases, we use content_height as base:
+                // - When true: padding/border is added below
+                // - When false: start_offset already includes padding_top + border_top,
+                //   but we still add all edges below to get correct border-box height
+                content_height
+                    + non_collapsing_bottom_margin
+                    + sides.padding_top.to_px()
+                    + sides.padding_bottom.to_px()
+                    + sides.border_top.to_px()
+                    + sides.border_bottom.to_px()
             },
             |height| {
                 // Apply box-sizing transformation to specified height
@@ -1009,8 +1014,7 @@ impl ConstraintLayoutTree {
             margin_strut.append(params.sides.margin_bottom);
             let margin_collapse = margin_strut.collapse();
             let resolved_offset = parent_offset + margin_collapse;
-            let result = BfcOffset::new(params.bfc_offset.inline_offset, Some(resolved_offset));
-            result
+            BfcOffset::new(params.bfc_offset.inline_offset, Some(resolved_offset))
         } else if can_collapse_with_children && state.first_inflow_child_seen {
             // Non-self-collapsing box that can collapse with children: use resolved offset
             // (this is where the first child ended up after margin collapse)
@@ -1111,14 +1115,14 @@ impl ConstraintLayoutTree {
         );
         let border_box_inline = Self::compute_border_box_inline(params.inline_size, params.sides);
 
-        let end_margin_strut = Self::compute_end_margin_strut(
-            params.sides,
-            &state,
-            &child_space,
-            params.constraint_space,
+        let end_margin_strut_params = EndMarginStrutParams {
+            sides: params.sides,
+            state: &state,
+            incoming_space: params.constraint_space,
             can_collapse_with_children,
             block_size,
-        );
+        };
+        let end_margin_strut = Self::compute_end_margin_strut(&end_margin_strut_params);
 
         let final_bfc_offset = Self::resolve_final_bfc_offset(
             block_size,
@@ -1663,92 +1667,99 @@ impl ConstraintLayoutTree {
         }
     }
 
+    /// Check if child has explicit inline offset based on direction.
+    fn has_explicit_inline_offset(child_style: &ComputedStyle, is_row: bool) -> bool {
+        if is_row {
+            child_style.left.is_some() || child_style.left_percent.is_some()
+        } else {
+            child_style.top.is_some() || child_style.top_percent.is_some()
+        }
+    }
+
+    /// Check if child has explicit block offset based on direction.
+    fn has_explicit_block_offset(child_style: &ComputedStyle, is_row: bool) -> bool {
+        if is_row {
+            child_style.top.is_some() || child_style.top_percent.is_some()
+        } else {
+            child_style.left.is_some() || child_style.left_percent.is_some()
+        }
+    }
+
+    /// Compute static main offset for flex abspos child.
+    fn compute_static_main_offset(params: &FlexAbsposConstraintParams<'_>) -> f32 {
+        if Self::has_explicit_inline_offset(params.child_style, params.is_row) {
+            return 0.0;
+        }
+
+        if params.is_row {
+            // Row: main axis is inline, justify-content applies
+            Self::compute_flex_abspos_main_offset(
+                params.container_style,
+                params.child_style,
+                params.child_sides,
+                params.container_inline_size,
+                params.is_row,
+            )
+        } else {
+            // Column: main axis is block, justify-content still applies to block axis
+            Self::compute_flex_abspos_main_offset(
+                params.container_style,
+                params.child_style,
+                params.child_sides,
+                params.final_cross_size,
+                params.is_row,
+            )
+        }
+    }
+
+    /// Compute static cross offset for flex abspos child.
+    fn compute_static_cross_offset(params: &FlexAbsposConstraintParams<'_>) -> f32 {
+        if Self::has_explicit_block_offset(params.child_style, params.is_row) {
+            return 0.0;
+        }
+
+        if params.is_row {
+            // Row: cross axis is block, align-items applies
+            Self::compute_flex_abspos_cross_offset(
+                params.container_style,
+                params.child_style,
+                params.child_sides,
+                params.final_cross_size,
+                params.is_row,
+            )
+        } else {
+            // Column: cross axis is inline, align-items applies
+            Self::compute_flex_abspos_cross_offset(
+                params.container_style,
+                params.child_style,
+                params.child_sides,
+                params.container_inline_size,
+                params.is_row,
+            )
+        }
+    }
+
     /// Create constraint space for abspos children in flex container.
     ///
     /// The containing block for absolutely positioned children of a flex container
     /// is the padding box of the flex container (content box + padding).
     fn create_flex_abspos_constraint_space(
-        bfc_offset: BfcOffset,
-        sides: &BoxSides,
-        container_style: &ComputedStyle,
-        child_style: &ComputedStyle,
-        child_sides: &BoxSides,
-        container_inline_size: f32,
-        final_cross_size: f32,
-        is_row: bool,
+        params: &FlexAbsposConstraintParams<'_>,
     ) -> ConstraintSpace {
         // The containing block for abspos children starts at the content box
         // (i.e., inside padding and border)
         let content_inline_offset =
-            bfc_offset.inline_offset + sides.padding_left + sides.border_left;
-        let content_block_offset = bfc_offset
+            params.bfc_offset.inline_offset + params.sides.padding_left + params.sides.border_left;
+        let content_block_offset = params
+            .bfc_offset
             .block_offset
-            .map(|y| y + sides.padding_top + sides.border_top);
+            .map(|y| y + params.sides.padding_top + params.sides.border_top);
 
-        // Per flexbox spec: For abspos children with auto offsets, compute static position
-        // by aligning as if the child were the sole flex item using justify-content and align-items
-        // Only apply static position if the child doesn't have explicit offsets
-        let has_explicit_inline_offset = if is_row {
-            child_style.left.is_some() || child_style.left_percent.is_some()
-        } else {
-            child_style.top.is_some() || child_style.top_percent.is_some()
-        };
+        // Compute static position offsets (only if child doesn't have explicit offsets)
+        let static_main_offset = Self::compute_static_main_offset(params);
+        let static_cross_offset = Self::compute_static_cross_offset(params);
 
-        let has_explicit_block_offset = if is_row {
-            child_style.top.is_some() || child_style.top_percent.is_some()
-        } else {
-            child_style.left.is_some() || child_style.left_percent.is_some()
-        };
-
-        let static_main_offset = if !has_explicit_inline_offset {
-            if is_row {
-                // Row: main axis is inline, justify-content applies
-                Self::compute_flex_abspos_main_offset(
-                    container_style,
-                    child_style,
-                    child_sides,
-                    container_inline_size,
-                    is_row,
-                )
-            } else {
-                // Column: main axis is block, justify-content still applies to block axis
-                Self::compute_flex_abspos_main_offset(
-                    container_style,
-                    child_style,
-                    child_sides,
-                    final_cross_size,
-                    is_row,
-                )
-            }
-        } else {
-            0.0
-        };
-
-        let static_cross_offset = if !has_explicit_block_offset {
-            if is_row {
-                // Row: cross axis is block, align-items applies
-                Self::compute_flex_abspos_cross_offset(
-                    container_style,
-                    child_style,
-                    child_sides,
-                    final_cross_size,
-                    is_row,
-                )
-            } else {
-                // Column: cross axis is inline, align-items applies
-                Self::compute_flex_abspos_cross_offset(
-                    container_style,
-                    child_style,
-                    child_sides,
-                    container_inline_size,
-                    is_row,
-                )
-            }
-        } else {
-            0.0
-        };
-
-        let content_bfc_offset = if is_row {
+        let content_bfc_offset = if params.is_row {
             BfcOffset::new(
                 content_inline_offset + LayoutUnit::from_px(static_main_offset),
                 content_block_offset.map(|y| y + LayoutUnit::from_px(static_cross_offset)),
@@ -1762,21 +1773,21 @@ impl ConstraintLayoutTree {
 
         ConstraintSpace {
             available_inline_size: AvailableSize::Definite(LayoutUnit::from_px(
-                container_inline_size,
+                params.container_inline_size,
             )),
-            available_block_size: AvailableSize::Definite(if is_row {
-                LayoutUnit::from_px(final_cross_size)
+            available_block_size: AvailableSize::Definite(if params.is_row {
+                LayoutUnit::from_px(params.final_cross_size)
             } else {
-                LayoutUnit::from_px(container_inline_size)
+                LayoutUnit::from_px(params.container_inline_size)
             }),
             bfc_offset: content_bfc_offset,
             exclusion_space: ExclusionSpace::new(),
             margin_strut: MarginStrut::default(),
             is_new_formatting_context: true,
-            percentage_resolution_block_size: Some(if is_row {
-                LayoutUnit::from_px(final_cross_size)
+            percentage_resolution_block_size: Some(if params.is_row {
+                LayoutUnit::from_px(params.final_cross_size)
             } else {
-                LayoutUnit::from_px(container_inline_size)
+                LayoutUnit::from_px(params.container_inline_size)
             }),
             fragmentainer_block_size: None,
             fragmentainer_offset: LayoutUnit::zero(),
@@ -1791,22 +1802,26 @@ impl ConstraintLayoutTree {
         container_main_size: f32,
         is_row: bool,
     ) -> f32 {
+        use css_orchestrator::style_model::JustifyContent;
+
         // Get child's main size (border-box)
         let child_main_size = if is_row {
-            if let Some(width) = child_style.width {
-                width
-                    + child_sides.padding_left.to_px()
-                    + child_sides.padding_right.to_px()
-                    + child_sides.border_left.to_px()
-                    + child_sides.border_right.to_px()
-            } else {
-                // Default width for abspos with no explicit width
-                200.0
-                    + child_sides.padding_left.to_px()
-                    + child_sides.padding_right.to_px()
-                    + child_sides.border_left.to_px()
-                    + child_sides.border_right.to_px()
-            }
+            child_style.width.map_or_else(
+                || {
+                    200.0
+                        + child_sides.padding_left.to_px()
+                        + child_sides.padding_right.to_px()
+                        + child_sides.border_left.to_px()
+                        + child_sides.border_right.to_px()
+                },
+                |width| {
+                    width
+                        + child_sides.padding_left.to_px()
+                        + child_sides.padding_right.to_px()
+                        + child_sides.border_left.to_px()
+                        + child_sides.border_right.to_px()
+                },
+            )
         } else {
             child_style.height.unwrap_or(0.0)
                 + child_sides.padding_top.to_px()
@@ -1816,7 +1831,6 @@ impl ConstraintLayoutTree {
         };
 
         // Apply justify-content to compute main axis offset
-        use css_orchestrator::style_model::JustifyContent;
         match container_style.justify_content {
             JustifyContent::Center => (container_main_size - child_main_size) / 2.0,
             JustifyContent::FlexEnd => container_main_size - child_main_size,
@@ -1832,6 +1846,8 @@ impl ConstraintLayoutTree {
         container_cross_size: f32,
         is_row: bool,
     ) -> f32 {
+        use css_orchestrator::style_model::AlignItems;
+
         // Get child's cross size (border-box)
         let child_cross_size = if is_row {
             // Row: cross axis is block (height)
@@ -1842,23 +1858,25 @@ impl ConstraintLayoutTree {
                 + child_sides.border_bottom.to_px()
         } else {
             // Column: cross axis is inline (width)
-            if let Some(width) = child_style.width {
-                width
-                    + child_sides.padding_left.to_px()
-                    + child_sides.padding_right.to_px()
-                    + child_sides.border_left.to_px()
-                    + child_sides.border_right.to_px()
-            } else {
-                200.0
-                    + child_sides.padding_left.to_px()
-                    + child_sides.padding_right.to_px()
-                    + child_sides.border_left.to_px()
-                    + child_sides.border_right.to_px()
-            }
+            child_style.width.map_or_else(
+                || {
+                    200.0
+                        + child_sides.padding_left.to_px()
+                        + child_sides.padding_right.to_px()
+                        + child_sides.border_left.to_px()
+                        + child_sides.border_right.to_px()
+                },
+                |width| {
+                    width
+                        + child_sides.padding_left.to_px()
+                        + child_sides.padding_right.to_px()
+                        + child_sides.border_left.to_px()
+                        + child_sides.border_right.to_px()
+                },
+            )
         };
 
         // Apply align-items to compute cross axis offset
-        use css_orchestrator::style_model::AlignItems;
         match container_style.align_items {
             AlignItems::Center => (container_cross_size - child_cross_size) / 2.0,
             AlignItems::FlexEnd => container_cross_size - child_cross_size,
@@ -1960,23 +1978,24 @@ impl ConstraintLayoutTree {
         abspos_children: &[NodeKey],
         bfc_offset: BfcOffset,
         container_sides: &BoxSides,
-        container_style: &ComputedStyle,
         params: &FlexResultParams,
     ) {
+        let container_style = params.container_style.clone();
         for abspos_child in abspos_children {
             let abspos_child_style = self.style(*abspos_child);
             let abspos_child_sides = compute_box_sides(&abspos_child_style);
 
-            let abspos_space = Self::create_flex_abspos_constraint_space(
+            let abspos_params = FlexAbsposConstraintParams {
                 bfc_offset,
-                container_sides,
-                container_style,
-                &abspos_child_style,
-                &abspos_child_sides,
-                params.container_inline_size,
-                params.final_cross_size,
-                params.is_row,
-            );
+                sides: container_sides,
+                container_style: &container_style,
+                child_style: &abspos_child_style,
+                child_sides: &abspos_child_sides,
+                container_inline_size: params.container_inline_size,
+                final_cross_size: params.final_cross_size,
+                is_row: params.is_row,
+            };
+            let abspos_space = Self::create_flex_abspos_constraint_space(&abspos_params);
 
             let abspos_result = self.layout_absolute(
                 *abspos_child,
@@ -2050,11 +2069,11 @@ impl ConstraintLayoutTree {
         // Use actual font metrics from css_text::measurement module
         let available_width = available_inline.resolve(self.icb_width).to_px();
 
+        // Measure without wrapping first to see if text fits
+        let metrics = measure_text(text, &style);
+
         // Check if text needs wrapping
         if available_width.is_finite() && available_width < 1e9 {
-            // Measure without wrapping first to see if text fits
-            let metrics = measure_text(text, &style);
-
             if metrics.width <= available_width {
                 // Text fits on one line - use actual width
                 (metrics.width, metrics.height)
@@ -2065,8 +2084,51 @@ impl ConstraintLayoutTree {
             }
         } else {
             // Measure without wrapping
-            let metrics = measure_text(text, &style);
             (metrics.width, metrics.height)
+        }
+    }
+
+    /// Handle empty flex container case.
+    fn handle_empty_flex_container(
+        &mut self,
+        abspos_children: &[NodeKey],
+        bfc_offset: BfcOffset,
+        sides: &BoxSides,
+        result_params: &FlexResultParams,
+    ) -> LayoutResult {
+        if !abspos_children.is_empty() {
+            self.layout_flex_abspos_children(abspos_children, bfc_offset, sides, result_params);
+        }
+
+        Self::create_empty_flex_result(
+            result_params.container_inline_size,
+            result_params.final_cross_size,
+            bfc_offset,
+            sides,
+        )
+    }
+
+    /// Prepare flexbox container inputs.
+    fn prepare_flex_container_inputs(
+        flex_direction: FlexboxDirection,
+        container_inline_size: f32,
+        container_cross_size: f32,
+        is_row: bool,
+        style: &ComputedStyle,
+    ) -> FlexContainerInputs {
+        FlexContainerInputs {
+            direction: flex_direction,
+            writing_mode: WritingMode::HorizontalTb,
+            container_main_size: if is_row {
+                container_inline_size
+            } else {
+                container_cross_size
+            },
+            main_gap: if is_row {
+                style.column_gap
+            } else {
+                style.row_gap
+            },
         }
     }
 
@@ -2181,53 +2243,34 @@ impl ConstraintLayoutTree {
         };
 
         let is_row = matches!(flex_direction, FlexboxDirection::Row);
-        // Normalize children to handle display:none and display:contents
         let children = normalize_children(&self.children, &self.styles, node);
 
         let (mut flex_items, child_styles, abspos_children) = self.build_flex_items(&children);
 
         if flex_items.is_empty() {
-            // No flex items, but we may still have absolutely positioned children
-            // Layout abspos children before returning
-            if !abspos_children.is_empty() {
-                let result_params = FlexResultParams {
-                    container_inline_size,
-                    final_cross_size: container_cross_size,
-                    is_row,
-                };
-                self.layout_flex_abspos_children(
-                    &abspos_children,
-                    bfc_offset,
-                    sides,
-                    style,
-                    &result_params,
-                );
-            }
-
-            return Self::create_empty_flex_result(
+            let result_params = FlexResultParams {
                 container_inline_size,
-                container_cross_size,
+                final_cross_size: container_cross_size,
+                is_row,
+                container_style: style.clone(),
+            };
+            return self.handle_empty_flex_container(
+                &abspos_children,
                 bfc_offset,
                 sides,
+                &result_params,
             );
         }
 
         Self::update_flex_item_basis(&mut flex_items, &child_styles, is_row);
 
-        let container_inputs = FlexContainerInputs {
-            direction: flex_direction,
-            writing_mode: WritingMode::HorizontalTb,
-            container_main_size: if is_row {
-                container_inline_size
-            } else {
-                container_cross_size
-            },
-            main_gap: if is_row {
-                style.column_gap
-            } else {
-                style.row_gap
-            },
-        };
+        let container_inputs = Self::prepare_flex_container_inputs(
+            flex_direction,
+            container_inline_size,
+            container_cross_size,
+            is_row,
+            style,
+        );
 
         let flexbox_params = FlexboxLayoutParams {
             container_inputs,
@@ -2260,15 +2303,10 @@ impl ConstraintLayoutTree {
             container_inline_size,
             final_cross_size,
             is_row,
+            container_style: style.clone(),
         };
 
-        self.layout_flex_abspos_children(
-            &abspos_children,
-            bfc_offset,
-            sides,
-            style,
-            &result_params,
-        );
+        self.layout_flex_abspos_children(&abspos_children, bfc_offset, sides, &result_params);
 
         Self::create_flex_result(&result_params, bfc_offset, sides)
     }
