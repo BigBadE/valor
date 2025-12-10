@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Text Rendering Matrix Test</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        background: white;
+        padding: 10px;
+        font-family: sans-serif;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+      .sample {
+        border: 1px solid #ccc;
+        padding: 10px;
+        background: white;
+      }
+      .label {
+        font-size: 10px;
+        color: #666;
+        margin-bottom: 5px;
+        font-family: monospace;
+      }
+      .section-title {
+        font-size: 14px;
+        font-weight: bold;
+        margin: 20px 0 10px 0;
+        padding: 5px;
+        background: #f0f0f0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 style="font-size: 20px; margin-bottom: 20px;">Text Rendering Matrix</h1>
+
+    <!-- Size variations -->
+    <div class="section-title">Font Sizes (sans-serif, weight 400)</div>
+    <div class="grid">
+      <div class="sample"><div class="label">8px</div><div style="font-size: 8px;">The quick brown fox jumps over the lazy dog 0123456789</div></div>
+      <div class="sample"><div class="label">10px</div><div style="font-size: 10px;">The quick brown fox jumps over the lazy dog 0123456789</div></div>
+      <div class="sample"><div class="label">12px</div><div style="font-size: 12px;">The quick brown fox jumps over the lazy dog 0123456789</div></div>
+      <div class="sample"><div class="label">14px</div><div style="font-size: 14px;">The quick brown fox jumps over the lazy dog 0123456789</div></div>
+      <div class="sample"><div class="label">16px</div><div style="font-size: 16px;">The quick brown fox jumps over the lazy dog 0123456789</div></div>
+      <div class="sample"><div class="label">18px</div><div style="font-size: 18px;">The quick brown fox jumps over the lazy dog 0123456789</div></div>
+      <div class="sample"><div class="label">24px</div><div style="font-size: 24px;">The quick brown fox jumps over the lazy dog 0123456789</div></div>
+      <div class="sample"><div class="label">32px</div><div style="font-size: 32px;">The quick brown fox jumps 0123456789</div></div>
+      <div class="sample"><div class="label">48px</div><div style="font-size: 48px;">Quick fox 0123</div></div>
+    </div>
+
+    <!-- Weight variations -->
+    <div class="section-title">Font Weights (16px, sans-serif)</div>
+    <div class="grid">
+      <div class="sample"><div class="label">weight: 100</div><div style="font-size: 16px; font-weight: 100;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample"><div class="label">weight: 200</div><div style="font-size: 16px; font-weight: 200;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample"><div class="label">weight: 300</div><div style="font-size: 16px; font-weight: 300;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample"><div class="label">weight: 400</div><div style="font-size: 16px; font-weight: 400;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample"><div class="label">weight: 500</div><div style="font-size: 16px; font-weight: 500;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample"><div class="label">weight: 600</div><div style="font-size: 16px; font-weight: 600;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample"><div class="label">weight: 700</div><div style="font-size: 16px; font-weight: 700;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample"><div class="label">weight: 800</div><div style="font-size: 16px; font-weight: 800;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample"><div class="label">weight: 900</div><div style="font-size: 16px; font-weight: 900;">The quick brown fox jumps over the lazy dog</div></div>
+    </div>
+
+    <!-- Font family variations -->
+    <div class="section-title">Font Families (16px, weight 400)</div>
+    <div class="grid">
+      <div class="sample"><div class="label">sans-serif</div><div style="font-size: 16px; font-family: sans-serif;">The quick brown fox jumps over the lazy dog 0123456789</div></div>
+      <div class="sample"><div class="label">serif</div><div style="font-size: 16px; font-family: serif;">The quick brown fox jumps over the lazy dog 0123456789</div></div>
+      <div class="sample"><div class="label">monospace</div><div style="font-size: 16px; font-family: monospace;">The quick brown fox jumps over 0123456789</div></div>
+      <div class="sample"><div class="label">Arial</div><div style="font-size: 16px; font-family: Arial;">The quick brown fox jumps over the lazy dog 0123456789</div></div>
+      <div class="sample"><div class="label">Times New Roman</div><div style="font-size: 16px; font-family: 'Times New Roman';">The quick brown fox jumps over the lazy dog 0123456789</div></div>
+      <div class="sample"><div class="label">Courier New</div><div style="font-size: 16px; font-family: 'Courier New';">The quick brown fox jumps 0123456789</div></div>
+    </div>
+
+    <!-- Color variations -->
+    <div class="section-title">Text Colors (16px, sans-serif)</div>
+    <div class="grid">
+      <div class="sample"><div class="label">black</div><div style="font-size: 16px; color: black;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample" style="background: black;"><div class="label" style="color: white;">white on black</div><div style="font-size: 16px; color: white;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample"><div class="label">gray #666</div><div style="font-size: 16px; color: #666;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample"><div class="label">red</div><div style="font-size: 16px; color: red;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample"><div class="label">blue</div><div style="font-size: 16px; color: blue;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample"><div class="label">green</div><div style="font-size: 16px; color: green;">The quick brown fox jumps over the lazy dog</div></div>
+    </div>
+
+    <!-- Unicode and special characters -->
+    <div class="section-title">Unicode & Special Characters (16px, sans-serif)</div>
+    <div class="grid">
+      <div class="sample"><div class="label">Latin extended</div><div style="font-size: 16px;">Café résumé naïve Zürich</div></div>
+      <div class="sample"><div class="label">Punctuation</div><div style="font-size: 16px;">Hello, world! Question? Yes. "Quoted" 'text' (parens) [brackets]</div></div>
+      <div class="sample"><div class="label">Math symbols</div><div style="font-size: 16px;">± × ÷ = ≠ ≈ < > ≤ ≥</div></div>
+      <div class="sample"><div class="label">Currency</div><div style="font-size: 16px;">$100 €50 £30 ¥1000</div></div>
+      <div class="sample"><div class="label">Emoji/Symbols</div><div style="font-size: 16px;">★ ☆ ♥ ♦ ◆ ● ○ ■ □</div></div>
+    </div>
+
+    <!-- Mixed size/weight combinations -->
+    <div class="section-title">Mixed Combinations</div>
+    <div class="grid">
+      <div class="sample"><div class="label">12px bold</div><div style="font-size: 12px; font-weight: 700;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample"><div class="label">12px light</div><div style="font-size: 12px; font-weight: 300;">The quick brown fox jumps over the lazy dog</div></div>
+      <div class="sample"><div class="label">24px bold</div><div style="font-size: 24px; font-weight: 700;">The quick brown fox</div></div>
+      <div class="sample"><div class="label">24px light</div><div style="font-size: 24px; font-weight: 300;">The quick brown fox</div></div>
+      <div class="sample"><div class="label">10px monospace</div><div style="font-size: 10px; font-family: monospace;">function test() { return 42; }</div></div>
+      <div class="sample"><div class="label">14px serif bold</div><div style="font-size: 14px; font-family: serif; font-weight: 700;">The quick brown fox jumps</div></div>
+    </div>
+
+    <!-- Line height variations -->
+    <div class="section-title">Line Heights (14px, sans-serif)</div>
+    <div class="grid">
+      <div class="sample"><div class="label">line-height: 1.0</div><div style="font-size: 14px; line-height: 1.0;">First line<br>Second line<br>Third line</div></div>
+      <div class="sample"><div class="label">line-height: 1.5</div><div style="font-size: 14px; line-height: 1.5;">First line<br>Second line<br>Third line</div></div>
+      <div class="sample"><div class="label">line-height: 2.0</div><div style="font-size: 14px; line-height: 2.0;">First line<br>Second line<br>Third line</div></div>
+    </div>
+
+  </body>
+</html>

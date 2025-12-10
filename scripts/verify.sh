@@ -125,10 +125,6 @@ fi
 echo "[verify] Running Rust tests..."
 cargo nextest run --workspace
 
-# Stop Chrome (started by nextest setup script)
-echo "[verify] Stopping Chrome..."
-"$(dirname "${BASH_SOURCE[0]}")/stop-chrome.sh"
-
 # Clean old artifacts if not in CI
 if [ -z "${RENDERER_CI:-}" ]; then
   if command -v cargo-sweep &> /dev/null; then

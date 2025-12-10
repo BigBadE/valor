@@ -34,6 +34,16 @@ fn collect_html_recursively(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Collects HTML files from a fixtures directory and adds them to the fixture groups.
+fn add_fixtures_to_group(fixtures_path: &Path, fixture_groups: &mut HashMap<String, Vec<PathBuf>>) {
+    let crate_name = extract_crate_name(fixtures_path);
+    let mut files = Vec::new();
+    collect_html_recursively(fixtures_path, &mut files);
+    if !files.is_empty() {
+        fixture_groups.entry(crate_name).or_default().extend(files);
+    }
+}
+
 /// Recursively scans a directory for crate fixture folders and groups fixtures by crate.
 fn scan_crate_fixtures(dir: &Path, fixture_groups: &mut HashMap<String, Vec<PathBuf>>) {
     if !dir.exists() {
@@ -48,22 +58,11 @@ fn scan_crate_fixtures(dir: &Path, fixture_groups: &mut HashMap<String, Vec<Path
         let path = entry.path();
         if path.is_dir() {
             if path.file_name().is_some_and(|name| name == "fixtures") {
-                // Found a fixtures directory - determine the crate name
-                let crate_name = extract_crate_name(&path);
-                let mut files = Vec::new();
-                collect_html_recursively(&path, &mut files);
-                if !files.is_empty() {
-                    fixture_groups.entry(crate_name).or_default().extend(files);
-                }
+                add_fixtures_to_group(&path, fixture_groups);
             } else if path.file_name().is_some_and(|name| name == "tests") {
                 let fixtures_path = path.join("fixtures");
                 if fixtures_path.exists() {
-                    let crate_name = extract_crate_name(&fixtures_path);
-                    let mut files = Vec::new();
-                    collect_html_recursively(&fixtures_path, &mut files);
-                    if !files.is_empty() {
-                        fixture_groups.entry(crate_name).or_default().extend(files);
-                    }
+                    add_fixtures_to_group(&fixtures_path, fixture_groups);
                 }
             } else {
                 scan_crate_fixtures(&path, fixture_groups);
@@ -79,7 +78,7 @@ fn extract_crate_name(fixtures_path: &Path) -> String {
     let components: Vec<&str> = path_str.split(['/', '\\']).collect();
 
     // Find the index of "crates" and build the name from there
-    if let Some(crates_idx) = components.iter().position(|&c| c == "crates") {
+    if let Some(crates_idx) = components.iter().position(|&comp| comp == "crates") {
         let relevant_parts: Vec<&str> = components[crates_idx + 1..]
             .iter()
             .filter(|&&part| part != "tests" && part != "fixtures" && !part.is_empty())
@@ -94,28 +93,9 @@ fn extract_crate_name(fixtures_path: &Path) -> String {
     components
         .iter()
         .rev()
-        .skip_while(|&&c| c == "fixtures" || c == "tests")
-        .find(|&&c| !c.is_empty())
-        .map_or_else(|| "unknown".to_string(), |&s| s.to_string())
-}
-
-/// Converts a name to a valid Rust identifier.
-fn sanitize_test_name(name: &str) -> String {
-    let mut result = String::new();
-    let mut prev_was_underscore = false;
-
-    for c in name.chars() {
-        if c.is_alphanumeric() {
-            result.push(c);
-            prev_was_underscore = false;
-        } else if !prev_was_underscore {
-            result.push('_');
-            prev_was_underscore = true;
-        }
-    }
-
-    // Trim leading/trailing underscores
-    result.trim_matches('_').to_string()
+        .skip_while(|&&comp| comp == "fixtures" || comp == "tests")
+        .find(|&&comp| !comp.is_empty())
+        .map_or_else(|| "unknown".to_string(), |&seg| seg.to_string())
 }
 
 fn generate_fixture_tests() {
@@ -130,7 +110,7 @@ fn generate_fixture_tests() {
 
     // Sort fixture groups by name for deterministic output
     let mut sorted_groups: Vec<_> = fixture_groups.into_iter().collect();
-    sorted_groups.sort_by(|a, b| a.0.cmp(&b.0));
+    sorted_groups.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
 
     // Sort files within each group
     for (_name, files) in &mut sorted_groups {
@@ -145,43 +125,37 @@ fn generate_fixture_tests() {
 
     let mut test_code = String::from("// Auto-generated fixture tests\n\n");
     test_code.push_str("#[cfg(test)]\nmod tests {\n");
-    test_code.push_str("    use super::chromium_compare::common;\n");
+    test_code.push_str("    use super::chromium_compare::fixture_runner;\n");
     test_code.push_str("    use anyhow::Result;\n");
     test_code.push_str("    use std::path::PathBuf;\n\n");
 
-    // Generate a separate test for each crate's fixtures
-    for (crate_name, files) in &sorted_groups {
-        let test_name = sanitize_test_name(crate_name);
-
-        // Generate constant for this group's fixture paths
-        let const_name = format!("FIXTURES_{}", test_name.to_uppercase());
-        test_code.push_str(&format!("    const {const_name}: &[&str] = &[\n"));
+    // Collect all fixtures into one constant
+    test_code.push_str("    const ALL_FIXTURES: &[&str] = &[\n");
+    for (_crate_name, files) in &sorted_groups {
         for file in files {
             let file_path = file.display().to_string().replace('\\', "\\\\");
             let _ignore = writeln!(test_code, "        r\"{file_path}\",");
         }
-        test_code.push_str("    ];\n\n");
-
-        // Generate test function for this group
-        test_code.push_str(&format!(
-            "    /// Tests fixtures from {crate_name} crate against Chromium.\n"
-        ));
-        test_code.push_str("    ///\n");
-        test_code.push_str("    /// # Errors\n");
-        test_code.push_str("    ///\n");
-        test_code.push_str("    /// Returns an error if the test infrastructure fails.\n");
-        test_code.push_str("    ///\n");
-        test_code.push_str("    /// # Panics\n");
-        test_code.push_str("    ///\n");
-        test_code.push_str("    /// May panic if the runtime fails.\n");
-        test_code.push_str("    #[tokio::test]\n");
-        test_code.push_str(&format!("    async fn {test_name}() -> Result<()> {{\n"));
-        test_code.push_str(&format!(
-            "        let fixtures: Vec<PathBuf> = {const_name}.iter().map(PathBuf::from).collect();\n"
-        ));
-        test_code.push_str("        common::run_all_fixtures(&fixtures).await\n");
-        test_code.push_str("    }\n\n");
     }
+    test_code.push_str("    ];\n\n");
+
+    // Generate a single test that runs all fixtures
+    test_code.push_str("    /// Tests all fixtures against Chromium.\n");
+    test_code.push_str("    ///\n");
+    test_code.push_str("    /// # Errors\n");
+    test_code.push_str("    ///\n");
+    test_code.push_str("    /// Returns an error if the test infrastructure fails.\n");
+    test_code.push_str("    ///\n");
+    test_code.push_str("    /// # Panics\n");
+    test_code.push_str("    ///\n");
+    test_code.push_str("    /// May panic if the runtime fails.\n");
+    test_code.push_str("    #[tokio::test]\n");
+    test_code.push_str("    async fn all_fixtures() -> Result<()> {\n");
+    test_code.push_str(
+        "        let fixtures: Vec<PathBuf> = ALL_FIXTURES.iter().map(PathBuf::from).collect();\n",
+    );
+    test_code.push_str("        fixture_runner::run_all_fixtures(&fixtures).await\n");
+    test_code.push_str("    }\n");
 
     test_code.push_str("}\n");
 

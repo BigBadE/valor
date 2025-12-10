@@ -1,0 +1,29 @@
+<!doctype html>
+<!-- VALOR fixture: Grid Layout with mixed track sizes (px, fr, %) -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Grid Layout with mixed track sizes</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #container {
+      display: grid;
+      grid-template-columns: 100px 2fr 1fr;
+      width: 400px;
+      height: 100px;
+      background: white;
+    }
+    .item {
+      background: #ccc;
+      border: 1px solid #999;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div class="item" id="a"></div>
+    <div class="item" id="b"></div>
+    <div class="item" id="c"></div>
+  </div>
+</body>
+</html>

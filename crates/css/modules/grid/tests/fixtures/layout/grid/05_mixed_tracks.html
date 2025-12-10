@@ -1,0 +1,42 @@
+<!doctype html>
+<!-- VALOR fixture: Grid with mixed track sizes -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Grid with mixed track sizes</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    .grid-container {
+      display: grid;
+      grid-template-columns: 200px 1fr 150px;
+      grid-template-rows: 80px 120px 100px;
+      gap: 12px;
+      width: 700px;
+      background: #fef9e7;
+      padding: 12px;
+    }
+    .grid-item {
+      background: #f39c12;
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="grid-container">
+    <div class="grid-item">Header</div>
+    <div class="grid-item">Title</div>
+    <div class="grid-item">Menu</div>
+    <div class="grid-item">Sidebar</div>
+    <div class="grid-item">Content</div>
+    <div class="grid-item">Ads</div>
+    <div class="grid-item">Footer 1</div>
+    <div class="grid-item">Footer 2</div>
+    <div class="grid-item">Footer 3</div>
+  </div>
+</body>
+</html>

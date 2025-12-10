@@ -9,6 +9,16 @@ use css_style_attr::parse_style_attribute_into_map;
 use css_variables::{CustomProperties, extract_custom_properties};
 use js::{DOMUpdate, NodeKey};
 
+/// Normalize a CSS font-family value to match browser behavior.
+///
+/// Converts single quotes to double quotes for consistency with Chromium.
+///
+/// # Example
+/// `'Courier New', Courier, monospace` → `"Courier New", Courier, monospace`
+fn normalize_font_family(value: &str) -> String {
+    value.replace('\'', "\"")
+}
+
 /// Tracks stylesheet state and a tiny computed styles cache.
 pub struct StyleComputer {
     /// The active stylesheet applied to the document.
@@ -246,6 +256,33 @@ fn apply_gaps(computed: &mut style_model::ComputedStyle, decls: &HashMap<String,
     computed.column_gap_percent = col_gap_percent;
 }
 
+/// Parse and apply grid properties.
+///
+/// For MVP, we store the raw string values for grid-template-columns/rows
+/// and parse them during layout.
+fn apply_grid_properties(
+    computed: &mut style_model::ComputedStyle,
+    decls: &HashMap<String, String>,
+) {
+    if let Some(value) = decls.get("grid-template-columns") {
+        computed.grid_template_columns = Some(value.clone());
+    }
+    if let Some(value) = decls.get("grid-template-rows") {
+        computed.grid_template_rows = Some(value.clone());
+    }
+    if let Some(value) = decls.get("grid-auto-flow") {
+        computed.grid_auto_flow = if value.eq_ignore_ascii_case("column") {
+            style_model::GridAutoFlow::Column
+        } else if value.eq_ignore_ascii_case("row dense") || value.eq_ignore_ascii_case("dense") {
+            style_model::GridAutoFlow::RowDense
+        } else if value.eq_ignore_ascii_case("column dense") {
+            style_model::GridAutoFlow::ColumnDense
+        } else {
+            style_model::GridAutoFlow::Row
+        };
+    }
+}
+
 /// Denotes a single border side for per-side shorthand parsing.
 #[derive(Clone, Copy)]
 enum BorderSide {
@@ -438,7 +475,11 @@ fn apply_typography(computed: &mut style_model::ComputedStyle, decls: &HashMap<S
         computed.font_size = pixels;
     }
     if let Some(value) = decls.get("font-family") {
-        computed.font_family = Some(value.clone());
+        // Normalize font-family value: remove surrounding quotes from font names
+        // CSS allows 'Courier New', "Arial", or unquoted names
+        // We store the normalized form for consistent matching
+        let normalized = normalize_font_family(value);
+        computed.font_family = Some(normalized);
     }
     // Parse font-weight: numeric values (100-900), keywords (normal=400, bold=700)
     if let Some(value) = decls.get("font-weight") {
@@ -598,7 +639,7 @@ fn parse_align_content_prop(
 }
 
 /// Build a computed style from inline declarations with sensible defaults.
-/// Inherits font-size and color from `parent_style` if provided.
+/// Inherits font-size, font-family, font-weight, and color from `parent_style` if provided.
 fn build_computed_from_inline(
     decls: &HashMap<String, String>,
     parent_style: Option<&style_model::ComputedStyle>,
@@ -615,11 +656,13 @@ fn build_computed_from_inline(
         |parent| parent.color,
     );
     let inherited_font_weight = parent_style.map_or(400, |parent| parent.font_weight);
+    let inherited_font_family = parent_style.and_then(|parent| parent.font_family.clone());
 
     let mut computed = style_model::ComputedStyle {
         font_size: inherited_font_size,
         color: inherited_color,
         font_weight: inherited_font_weight,
+        font_family: inherited_font_family,
         ..Default::default()
     };
     apply_layout_keywords(&mut computed, decls);
@@ -633,6 +676,7 @@ fn build_computed_from_inline(
     apply_flex_scalars(&mut computed, decls);
     apply_flex_alignment(&mut computed, decls);
     apply_gaps(&mut computed, decls);
+    apply_grid_properties(&mut computed, decls);
     apply_offsets(&mut computed, decls);
     computed
 }
@@ -885,7 +929,8 @@ fn make_ua_rule(selector: &str, order: u32, props: &[(&str, &str)]) -> types::Ru
 fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
     let mut rules = Vec::new();
 
-    // button { display: block; padding: 6px 10px; border: 1px solid; box-sizing: border-box }
+    // button { display: block; padding: 6px 10px; border: 1px solid; box-sizing: border-box; min-height: 20px }
+    // Note: min-height ensures buttons have reasonable height even without explicit content
     rules.push(make_ua_rule(
         "button",
         source_order,
@@ -894,6 +939,7 @@ fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
             ("padding", "6px 10px"),
             ("border", "1px solid"),
             ("box-sizing", "border-box"),
+            ("min-height", "20px"),
         ],
     ));
     source_order += 1;
@@ -920,6 +966,7 @@ fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
             ("display", "inline-block"),
             ("padding", "0"),
             ("border", "0"),
+            ("font-size", "13.3333px"),
             ("overflow", "visible"),
         ],
     ));
@@ -933,6 +980,7 @@ fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
             ("display", "inline-block"),
             ("padding", "0"),
             ("border", "0"),
+            ("font-size", "13.3333px"),
             ("overflow", "visible"),
         ],
     ));
@@ -987,8 +1035,15 @@ fn create_ua_stylesheet() -> types::Stylesheet {
     rules.extend(block_rules);
     source_order = next_order;
 
-    let (form_rules, _final_order) = create_form_control_rules(source_order);
+    let (form_rules, next_order_after_forms) = create_form_control_rules(source_order);
     rules.extend(form_rules);
+    source_order = next_order_after_forms;
+
+    // Add heading styles to match browser defaults
+    for tag in &["h1", "h2", "h3", "h4", "h5", "h6"] {
+        rules.push(make_ua_rule(tag, source_order, &[("font-weight", "700")]));
+        source_order += 1;
+    }
 
     types::Stylesheet {
         rules,
@@ -1388,6 +1443,10 @@ fn apply_layout_keywords(
             style_model::Display::Flex
         } else if value.eq_ignore_ascii_case("inline-flex") {
             style_model::Display::InlineFlex
+        } else if value.eq_ignore_ascii_case("grid") {
+            style_model::Display::Grid
+        } else if value.eq_ignore_ascii_case("inline-grid") {
+            style_model::Display::InlineGrid
         } else if value.eq_ignore_ascii_case("none") {
             style_model::Display::None
         } else if value.eq_ignore_ascii_case("contents") {

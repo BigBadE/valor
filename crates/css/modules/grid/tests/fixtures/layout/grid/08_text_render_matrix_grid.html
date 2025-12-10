@@ -1,0 +1,66 @@
+<!doctype html>
+<!-- VALOR fixture: Grid layout for text rendering samples -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Text Rendering Grid</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        background: white;
+        padding: 10px;
+        font-family: sans-serif;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+      .sample {
+        border: 1px solid #ccc;
+        padding: 10px;
+        background: white;
+      }
+      .label {
+        font-size: 10px;
+        color: #666;
+        margin-bottom: 5px;
+        font-family: monospace;
+      }
+      .section-title {
+        font-size: 14px;
+        font-weight: bold;
+        margin: 20px 0 10px 0;
+        padding: 5px;
+        background: #f0f0f0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 style="font-size: 20px; margin-bottom: 20px;">Text Rendering Grid</h1>
+
+    <div class="section-title">Font Sizes</div>
+    <div class="grid">
+      <div class="sample"><div class="label">12px</div><div style="font-size: 12px;">The quick brown fox</div></div>
+      <div class="sample"><div class="label">14px</div><div style="font-size: 14px;">The quick brown fox</div></div>
+      <div class="sample"><div class="label">16px</div><div style="font-size: 16px;">The quick brown fox</div></div>
+      <div class="sample"><div class="label">18px</div><div style="font-size: 18px;">The quick brown fox</div></div>
+      <div class="sample"><div class="label">24px</div><div style="font-size: 24px;">Quick fox</div></div>
+    </div>
+
+    <div class="section-title">Font Weights</div>
+    <div class="grid">
+      <div class="sample"><div class="label">weight: 300</div><div style="font-size: 16px; font-weight: 300;">Light text sample</div></div>
+      <div class="sample"><div class="label">weight: 400</div><div style="font-size: 16px; font-weight: 400;">Normal text sample</div></div>
+      <div class="sample"><div class="label">weight: 700</div><div style="font-size: 16px; font-weight: 700;">Bold text sample</div></div>
+    </div>
+
+    <div class="section-title">Font Families</div>
+    <div class="grid">
+      <div class="sample"><div class="label">sans-serif</div><div style="font-size: 16px; font-family: sans-serif;">Sample text</div></div>
+      <div class="sample"><div class="label">serif</div><div style="font-size: 16px; font-family: serif;">Sample text</div></div>
+      <div class="sample"><div class="label">monospace</div><div style="font-size: 16px; font-family: monospace;">Sample text</div></div>
+    </div>
+  </body>
+</html>

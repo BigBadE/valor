@@ -73,6 +73,8 @@ pub enum Display {
     InlineBlock,
     Flex,
     InlineFlex,
+    Grid,
+    InlineGrid,
     None,
     Contents,
 }
@@ -136,6 +138,15 @@ pub enum JustifyContent {
     SpaceBetween,
     SpaceAround,
     SpaceEvenly,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GridAutoFlow {
+    #[default]
+    Row,
+    Column,
+    RowDense,
+    ColumnDense,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -213,4 +224,11 @@ pub struct ComputedStyle {
     pub row_gap_percent: Option<f32>,
     /// Optional column-gap percentage (0.0..=1.0). When present, resolved during layout.
     pub column_gap_percent: Option<f32>,
+    // Grid layout properties
+    /// Grid template columns definition (serialized for MVP)
+    pub grid_template_columns: Option<String>,
+    /// Grid template rows definition (serialized for MVP)
+    pub grid_template_rows: Option<String>,
+    /// Grid auto flow direction
+    pub grid_auto_flow: GridAutoFlow,
 }

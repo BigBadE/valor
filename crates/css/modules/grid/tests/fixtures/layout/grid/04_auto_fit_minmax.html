@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- VALOR fixture: Grid with auto-fit and minmax -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Grid with auto-fit and minmax</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    .grid-container {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 10px;
+      width: 800px;
+      background: #ecf0f1;
+      padding: 10px;
+    }
+    .grid-item {
+      background: #3498db;
+      color: white;
+      padding: 30px;
+      text-align: center;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="grid-container">
+    <div class="grid-item">Card 1</div>
+    <div class="grid-item">Card 2</div>
+    <div class="grid-item">Card 3</div>
+    <div class="grid-item">Card 4</div>
+    <div class="grid-item">Card 5</div>
+    <div class="grid-item">Card 6</div>
+  </div>
+</body>
+</html>

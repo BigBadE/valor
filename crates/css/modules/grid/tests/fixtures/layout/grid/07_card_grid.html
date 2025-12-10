@@ -1,0 +1,57 @@
+<!doctype html>
+<!-- VALOR fixture: Card grid layout -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Card Grid Layout</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    .grid-container {
+      display: grid;
+      grid-template-columns: repeat(3, 200px);
+      gap: 16px;
+      background: #f8f9fa;
+      padding: 16px;
+    }
+    .card {
+      background: white;
+      border: 1px solid #dee2e6;
+      padding: 16px;
+      border-radius: 4px;
+    }
+    .card-title {
+      font-size: 18px;
+      font-weight: bold;
+      margin-bottom: 8px;
+    }
+    .card-content {
+      font-size: 14px;
+      color: #6c757d;
+    }
+  </style>
+</head>
+<body>
+  <div class="grid-container">
+    <div class="card">
+      <div class="card-title">Card 1</div>
+      <div class="card-content">Some content here</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Card 2</div>
+      <div class="card-content">More content</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Card 3</div>
+      <div class="card-content">Even more content</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Card 4</div>
+      <div class="card-content">Additional content</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Card 5</div>
+      <div class="card-content">Final content</div>
+    </div>
+  </div>
+</body>
+</html>

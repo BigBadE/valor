@@ -1,8 +1,6 @@
-use super::browser::navigate_and_prepare_page;
-use super::common::{
-    CacheFetcher, create_page, css_reset_injection_script, read_or_fetch_cache, test_cache_dir,
-    to_file_url, update_until_finished,
-};
+use super::cache_utils::{CacheFetcher, read_or_fetch_cache, test_failing_dir};
+use super::chrome::navigate_and_prepare_page;
+use super::common::{create_page, css_reset_injection_script, to_file_url, update_until_finished};
 use super::json_compare::compare_json_with_epsilon;
 use anyhow::{Result, anyhow};
 use chromiumoxide::page::Page;
@@ -13,7 +11,7 @@ use page_handler::layout_manager::LayoutManager;
 use page_handler::snapshots::LayoutNodeKind;
 use serde_json::{Map as JsonMap, Value as JsonValue, from_str, json, to_string};
 use std::collections::HashMap;
-use std::fs::{create_dir_all, write};
+use std::fs::write;
 use std::path::Path;
 use std::str::from_utf8;
 use std::time::Instant;
@@ -52,7 +50,7 @@ async fn setup_layouter_for_fixture(
     {
         let layouter = layouter_mirror.mirror_mut();
         // Match Chromium's viewport: 800x600 window with scrollbar gutter (31px)
-        // This matches the window_size in browser.rs and accounts for scrollbar-gutter:stable
+        // This matches the window_size in chrome.rs and accounts for scrollbar-gutter:stable
         layouter.set_viewport(769, 600);
         // Styles come from orchestrator
         layouter.set_computed_styles(computed.clone());
@@ -165,20 +163,20 @@ async fn process_layout_fixture(
     };
 
     let _compare_start = Instant::now();
+    // Require exact pixel-perfect match - no tolerance
     let eps = 0.0;
     let result = match compare_json_with_epsilon(&our_json, &ch_layout_json, eps) {
         Ok(()) => Ok(true),
         Err(msg) => {
             let name = Path::new(&display_name)
                 .file_stem()
-                .and_then(|s| s.to_str())
+                .and_then(|stem| stem.to_str())
                 .unwrap_or("unknown");
 
             // Save diff to file silently
-            if let Ok(failing_dir) = test_cache_dir("layout").map(|d| d.join("failing")) {
-                let _ = create_dir_all(&failing_dir);
-                let diff_path = failing_dir.join(format!("{}.diff.txt", name));
-                let _ = write(&diff_path, &msg);
+            if let Ok(failing_dir) = test_failing_dir("layout") {
+                let diff_path = failing_dir.join(format!("{name}.diff.txt"));
+                let _ignore_write_error = write(&diff_path, &msg);
             }
 
             failed.push((display_name.clone(), msg));
@@ -202,7 +200,7 @@ pub async fn run_single_layout_test_with_page(input_path: &Path, page: &Page) ->
         include_str!("layout_tests.rs"),
         include_str!("common.rs"),
         include_str!("json_compare.rs"),
-        include_str!("browser.rs"),
+        include_str!("chrome.rs"),
     );
     let mut failed: Vec<(String, String)> = Vec::new();
     let handle = Handle::current();
@@ -241,6 +239,8 @@ const fn effective_display(display: Display) -> &'static str {
         Display::InlineBlock => "inline-block",
         Display::Flex => "flex",
         Display::InlineFlex => "inline-flex",
+        Display::Grid => "grid",
+        Display::InlineGrid => "inline-grid",
         Display::None => "none",
         Display::Contents => "contents",
     }

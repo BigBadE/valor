@@ -101,6 +101,7 @@ css_images = { path = "crates/css/modules/images" }
 css_fonts = { path = "crates/css/modules/fonts" }
 css_writing_modes = { path = "crates/css/modules/writing_modes" }
 css_flexbox = { path = "crates/css/modules/flexbox" }
+css_grid = { path = "crates/css/modules/grid" }
 css_ui = { path = "crates/css/modules/ui" }
 css_transforms = { path = "crates/css/modules/transforms" }
 css_position = { path = "crates/css/modules/position" }

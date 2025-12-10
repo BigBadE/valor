@@ -17,4 +17,5 @@ css_text.workspace = true
 css_box.workspace = true
 css_display.workspace = true
 css_flexbox.workspace = true
+css_grid.workspace = true
 css_sizing.workspace = true

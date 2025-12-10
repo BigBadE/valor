@@ -1,0 +1,59 @@
+<!doctype html>
+<!-- VALOR fixture: Grid format matching text_render_matrix.html structure -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Grid format like text render matrix</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: white;
+      padding: 10px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 10px;
+      margin-bottom: 20px;
+      background: #f9f9f9;
+    }
+    .sample {
+      border: 1px solid #ccc;
+      padding: 10px;
+      background: white;
+      min-height: 60px;
+    }
+    .label {
+      font-size: 10px;
+      color: #666;
+      margin-bottom: 5px;
+      font-family: monospace;
+    }
+    .section-title {
+      font-size: 14px;
+      font-weight: bold;
+      margin: 20px 0 10px 0;
+      padding: 5px;
+      background: #f0f0f0;
+    }
+  </style>
+</head>
+<body>
+  <h1 style="font-size: 20px; margin-bottom: 20px;">Grid Layout Test</h1>
+
+  <div class="section-title">Section 1</div>
+  <div class="grid">
+    <div class="sample"><div class="label">Sample A</div><div style="font-size: 16px;">Content A</div></div>
+    <div class="sample"><div class="label">Sample B</div><div style="font-size: 16px;">Content B</div></div>
+    <div class="sample"><div class="label">Sample C</div><div style="font-size: 16px;">Content C</div></div>
+    <div class="sample"><div class="label">Sample D</div><div style="font-size: 16px;">Content D</div></div>
+  </div>
+
+  <div class="section-title">Section 2</div>
+  <div class="grid">
+    <div class="sample"><div class="label">Sample E</div><div style="font-size: 16px;">Content E</div></div>
+    <div class="sample"><div class="label">Sample F</div><div style="font-size: 16px;">Content F</div></div>
+    <div class="sample"><div class="label">Sample G</div><div style="font-size: 16px;">Content G</div></div>
+  </div>
+</body>
+</html>

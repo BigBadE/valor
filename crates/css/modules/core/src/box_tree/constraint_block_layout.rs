@@ -10,7 +10,7 @@ use css_box::{BoxSides, compute_box_sides};
 use css_orchestrator::style_model::{
     AlignContent as StyleAlignContent, AlignItems as StyleAlignItems, BoxSizing, Clear,
     ComputedStyle, Display, FlexDirection as StyleFlexDirection, FlexWrap as StyleFlexWrap, Float,
-    JustifyContent as StyleJustifyContent, Overflow, Position,
+    GridAutoFlow as StyleGridAutoFlow, JustifyContent as StyleJustifyContent, Overflow, Position,
 };
 use js::NodeKey;
 use std::collections::HashMap;
@@ -29,6 +29,12 @@ use css_text::measurement::{measure_text, measure_text_wrapped};
 
 // Import display module for normalize_children (handles display:none and display:contents)
 use css_display::normalize_children;
+
+// Import grid module types and functions
+use css_grid::{
+    GridAlignment, GridAutoFlow, GridAxisTracks, GridContainerInputs, GridItem, GridLayoutResult,
+    GridTrack, GridTrackSize, TrackBreadth, TrackListType, layout_grid,
+};
 
 /// Parameters for block layout operations (to avoid too many arguments).
 struct BlockLayoutParams<'params> {
@@ -186,7 +192,7 @@ impl ConstraintLayoutTree {
         }
 
         // Flex/grid containers establish BFC
-        if matches!(style.display, Display::Flex) {
+        if matches!(style.display, Display::Flex | Display::Grid) {
             return true;
         }
 
@@ -261,6 +267,11 @@ impl ConstraintLayoutTree {
         // Handle flex containers
         if matches!(style.display, Display::Flex) {
             return self.layout_flex(node, constraint_space, &style, &sides);
+        }
+
+        // Handle grid containers
+        if matches!(style.display, Display::Grid) {
+            return self.layout_grid_container(node, constraint_space, &style, &sides);
         }
 
         // Handle absolutely positioned
@@ -1589,8 +1600,87 @@ impl ConstraintLayoutTree {
         })
     }
 
+    /// Process text node as flex item.
+    fn process_text_flex_item(
+        &self,
+        child: NodeKey,
+        parent_node: NodeKey,
+        child_space: &ConstraintSpace,
+    ) -> (FlexChild, ChildStyleInfo) {
+        // Text nodes in flexbox create anonymous flex items
+        // Measure the text to get its intrinsic size
+        let (text_width, text_height) =
+            self.measure_text(child, Some(parent_node), child_space.available_inline_size);
+
+        tracing::debug!(
+            "Measured text node {:?} in flex container: {}×{}",
+            child,
+            text_width,
+            text_height
+        );
+
+        // Create a layout result for the text node with measured dimensions
+        let child_result = LayoutResult {
+            inline_size: text_width,
+            block_size: text_height,
+            bfc_offset: BfcOffset::root(),
+            exclusion_space: ExclusionSpace::new(),
+            end_margin_strut: MarginStrut::default(),
+            baseline: None,
+            needs_relayout: false,
+        };
+
+        // Create a dummy style for text nodes (they don't have their own style)
+        let child_style = ComputedStyle::default();
+
+        let flex_child = FlexChild {
+            handle: ItemRef(child.0),
+            flex_basis: 0.0,  // Will be filled later
+            flex_grow: 0.0,   // Text doesn't grow
+            flex_shrink: 1.0, // Text can shrink
+            min_main: 0.0,
+            max_main: 1e9,
+            margin_left: 0.0,
+            margin_right: 0.0,
+            margin_top: 0.0,
+            margin_bottom: 0.0,
+            margin_left_auto: false,
+            margin_right_auto: false,
+        };
+
+        (flex_child, (child, child_style, child_result))
+    }
+
+    /// Process element node as flex item.
+    fn process_element_flex_item(
+        &mut self,
+        child: NodeKey,
+        child_space: &ConstraintSpace,
+    ) -> (FlexChild, ChildStyleInfo) {
+        let child_style = self.style(child);
+        let child_result = self.layout_block(child, child_space);
+        let child_sides = compute_box_sides(&child_style);
+
+        let flex_child = FlexChild {
+            handle: ItemRef(child.0),
+            flex_basis: 0.0, // Will be filled later
+            flex_grow: child_style.flex_grow,
+            flex_shrink: child_style.flex_shrink,
+            min_main: 0.0,
+            max_main: 1e9,
+            margin_left: child_sides.margin_left.to_px(),
+            margin_right: child_sides.margin_right.to_px(),
+            margin_top: child_sides.margin_top.to_px(),
+            margin_bottom: child_sides.margin_bottom.to_px(),
+            margin_left_auto: false,
+            margin_right_auto: false,
+        };
+
+        (flex_child, (child, child_style, child_result))
+    }
+
     /// Build flex items from children, filtering out abspos and display:none.
-    fn build_flex_items(&mut self, children: &[NodeKey]) -> FlexLayoutResult {
+    fn build_flex_items(&mut self, node: NodeKey, children: &[NodeKey]) -> FlexLayoutResult {
         let mut flex_items = Vec::new();
         let mut child_styles = Vec::new();
         let mut abspos_children = Vec::new();
@@ -1617,6 +1707,15 @@ impl ConstraintLayoutTree {
                 continue;
             }
 
+            // Handle text nodes specially - they need to be measured, not laid out as blocks
+            if self.is_text_node(*child) {
+                let (flex_child, child_info) =
+                    self.process_text_flex_item(*child, node, &child_space);
+                flex_items.push(flex_child);
+                child_styles.push(child_info);
+                continue;
+            }
+
             let child_style = self.style(*child);
 
             if matches!(child_style.display, Display::None) {
@@ -1628,25 +1727,9 @@ impl ConstraintLayoutTree {
                 continue;
             }
 
-            let child_result = self.layout_block(*child, &child_space);
-            let child_sides = compute_box_sides(&child_style);
-
-            flex_items.push(FlexChild {
-                handle: ItemRef(child.0),
-                flex_basis: 0.0, // Will be filled later
-                flex_grow: child_style.flex_grow,
-                flex_shrink: child_style.flex_shrink,
-                min_main: 0.0,
-                max_main: 1e9,
-                margin_left: child_sides.margin_left.to_px(),
-                margin_right: child_sides.margin_right.to_px(),
-                margin_top: child_sides.margin_top.to_px(),
-                margin_bottom: child_sides.margin_bottom.to_px(),
-                margin_left_auto: false,
-                margin_right_auto: false,
-            });
-
-            child_styles.push((*child, child_style, child_result));
+            let (flex_child, child_info) = self.process_element_flex_item(*child, &child_space);
+            flex_items.push(flex_child);
+            child_styles.push(child_info);
         }
 
         (flex_items, child_styles, abspos_children)
@@ -2066,25 +2149,59 @@ impl ConstraintLayoutTree {
             |parent| self.styles.get(&parent).cloned().unwrap_or_default(),
         );
 
-        // Use actual font metrics from css_text::measurement module
-        let available_width = available_inline.resolve(self.icb_width).to_px();
-
         // Measure without wrapping first to see if text fits
         let metrics = measure_text(text, &style);
 
-        // Check if text needs wrapping
-        if available_width.is_finite() && available_width < 1e9 {
-            if metrics.width <= available_width {
-                // Text fits on one line - use actual width
+        // For intrinsic sizing (Indefinite), always use the natural text width without wrapping
+        // For definite sizes, check if wrapping is needed
+        // IMPORTANT: If available width is absurdly small (< 50px), it's likely an intrinsic sizing
+        // pass with incorrect ICB width, so use natural width instead of wrapping
+        match available_inline {
+            AvailableSize::Indefinite | AvailableSize::MaxContent | AvailableSize::MinContent => {
+                // Intrinsic sizing - use natural width without wrapping
+                log::debug!(
+                    "measure_text: INTRINSIC sizing for text='{}', mode={:?}, metrics.width={}, using natural width",
+                    text,
+                    available_inline,
+                    metrics.width
+                );
                 (metrics.width, metrics.height)
-            } else {
-                // Text needs wrapping - measure wrapped height and use available width
-                let (height, _line_count) = measure_text_wrapped(text, &style, available_width);
-                (available_width, height)
             }
-        } else {
-            // Measure without wrapping
-            (metrics.width, metrics.height)
+            AvailableSize::Definite(size) => {
+                const MIN_WRAP_WIDTH: f32 = 50.0;
+                let available_width = size.to_px();
+                // Don't wrap at absurdly small widths - use natural width instead
+                if available_width < MIN_WRAP_WIDTH {
+                    log::debug!(
+                        "measure_text: SMALL DEFINITE ({}px < {}px) for text='{}', metrics.width={}, using natural width",
+                        available_width,
+                        MIN_WRAP_WIDTH,
+                        text,
+                        metrics.width
+                    );
+                    (metrics.width, metrics.height)
+                } else if metrics.width <= available_width {
+                    // Text fits on one line - use actual width
+                    log::debug!(
+                        "measure_text: FITS for text='{}', available={}, metrics.width={}, using natural width",
+                        text,
+                        available_width,
+                        metrics.width
+                    );
+                    (metrics.width, metrics.height)
+                } else {
+                    // Text needs wrapping - measure wrapped height and use available width
+                    let (height, _line_count) = measure_text_wrapped(text, &style, available_width);
+                    log::debug!(
+                        "measure_text: WRAPPING for text='{}', available={}, metrics.width={}, wrapped_height={}",
+                        text,
+                        available_width,
+                        metrics.width,
+                        height
+                    );
+                    (available_width, height)
+                }
+            }
         }
     }
 
@@ -2245,7 +2362,8 @@ impl ConstraintLayoutTree {
         let is_row = matches!(flex_direction, FlexboxDirection::Row);
         let children = normalize_children(&self.children, &self.styles, node);
 
-        let (mut flex_items, child_styles, abspos_children) = self.build_flex_items(&children);
+        let (mut flex_items, child_styles, abspos_children) =
+            self.build_flex_items(node, &children);
 
         if flex_items.is_empty() {
             let result_params = FlexResultParams {
@@ -2310,10 +2428,405 @@ impl ConstraintLayoutTree {
 
         Self::create_flex_result(&result_params, bfc_offset, sides)
     }
+
+    /// Parse grid template string into tracks.
+    ///
+    /// Supports:
+    /// - Fixed lengths: "100px 200px"
+    /// - `repeat()`: "repeat(3, 200px)" or "repeat(auto-fit, minmax(200px, 1fr))"
+    fn parse_grid_template(template: &str, gap: f32) -> GridAxisTracks {
+        let template = template.trim();
+        let mut tracks = Vec::new();
+
+        // Handle repeat() notation
+        if let Some(repeat_start) = template.find("repeat(") {
+            let repeat_end = template.find(')').unwrap_or(template.len());
+            let repeat_content = &template[repeat_start + 7..repeat_end];
+            Self::parse_repeat_notation(repeat_content, &mut tracks);
+        } else {
+            Self::parse_space_separated_tracks(template, &mut tracks);
+        }
+
+        // Default to one track if parsing failed
+        if tracks.is_empty() {
+            tracks.push(GridTrack {
+                size: GridTrackSize::Breadth(TrackBreadth::Auto),
+                track_type: TrackListType::Explicit,
+            });
+        }
+
+        GridAxisTracks::new(tracks, gap)
+    }
+
+    /// Parse `repeat()` notation content.
+    ///
+    /// Handles both explicit count (e.g., "3, 200px") and auto-fit/auto-fill
+    /// (e.g., "auto-fit, minmax(200px, 1fr)").
+    fn parse_repeat_notation(repeat_content: &str, tracks: &mut Vec<GridTrack>) {
+        let parts: Vec<&str> = repeat_content.split(',').map(str::trim).collect();
+
+        if parts.len() < 2 {
+            return;
+        }
+
+        let count_str = parts[0];
+        let track_pattern = parts[1..].join(" ");
+
+        if count_str == "auto-fit" || count_str == "auto-fill" {
+            Self::parse_auto_repeat(&track_pattern, tracks);
+        } else if let Ok(count) = count_str.parse::<usize>() {
+            Self::parse_explicit_repeat(count, &track_pattern, tracks);
+        }
+    }
+
+    /// Parse auto-fit or auto-fill repeat notation.
+    ///
+    /// Creates 3 tracks as a reasonable default for auto-sizing.
+    fn parse_auto_repeat(track_pattern: &str, tracks: &mut Vec<GridTrack>) {
+        const AUTO_REPEAT_COUNT: usize = 3;
+
+        if let Some(track_size) = Self::parse_minmax_if_present(track_pattern) {
+            for _ in 0..AUTO_REPEAT_COUNT {
+                tracks.push(GridTrack {
+                    size: track_size.clone(),
+                    track_type: TrackListType::Explicit,
+                });
+            }
+        } else {
+            // Simple auto-fit/auto-fill without minmax
+            let breadth = Self::parse_track_breadth(track_pattern);
+            for _ in 0..AUTO_REPEAT_COUNT {
+                tracks.push(GridTrack {
+                    size: GridTrackSize::Breadth(breadth.clone()),
+                    track_type: TrackListType::Explicit,
+                });
+            }
+        }
+    }
+
+    /// Parse explicit count repeat notation (e.g., "repeat(3, 200px)").
+    fn parse_explicit_repeat(count: usize, track_pattern: &str, tracks: &mut Vec<GridTrack>) {
+        let breadth = Self::parse_track_breadth(track_pattern);
+        for _ in 0..count {
+            tracks.push(GridTrack {
+                size: GridTrackSize::Breadth(breadth.clone()),
+                track_type: TrackListType::Explicit,
+            });
+        }
+    }
+
+    /// Parse `minmax()` notation if present in the track pattern.
+    ///
+    /// Returns `Some(GridTrackSize::MinMax)` if `minmax()` is found and parsed successfully.
+    fn parse_minmax_if_present(track_pattern: &str) -> Option<GridTrackSize> {
+        if !track_pattern.contains("minmax(") {
+            return None;
+        }
+
+        let minmax_start = track_pattern.find("minmax(")?;
+        let minmax_end = track_pattern.find(')')?;
+        let minmax_content = &track_pattern[minmax_start + 7..minmax_end];
+        let minmax_parts: Vec<&str> = minmax_content.split(',').map(str::trim).collect();
+
+        if minmax_parts.len() != 2 {
+            return None;
+        }
+
+        let min_breadth = Self::parse_track_breadth(minmax_parts[0]);
+        let max_breadth = Self::parse_track_breadth(minmax_parts[1]);
+        Some(GridTrackSize::MinMax(min_breadth, max_breadth))
+    }
+
+    /// Parse space-separated list of track sizes.
+    fn parse_space_separated_tracks(template: &str, tracks: &mut Vec<GridTrack>) {
+        for part in template.split_whitespace() {
+            let breadth = Self::parse_track_breadth(part);
+            tracks.push(GridTrack {
+                size: GridTrackSize::Breadth(breadth),
+                track_type: TrackListType::Explicit,
+            });
+        }
+    }
+
+    /// Parse a single track breadth value.
+    fn parse_track_breadth(value: &str) -> TrackBreadth {
+        let value = value.trim();
+
+        if let Some(pixel_str) = value.strip_suffix("px")
+            && let Ok(pixels) = pixel_str.parse::<f32>()
+        {
+            return TrackBreadth::Length(pixels);
+        }
+
+        if let Some(percent_str) = value.strip_suffix('%')
+            && let Ok(percent) = percent_str.parse::<f32>()
+        {
+            return TrackBreadth::Percentage(percent / 100.0);
+        }
+
+        if let Some(flex_str) = value.strip_suffix("fr")
+            && let Ok(flex_value) = flex_str.parse::<f32>()
+        {
+            return TrackBreadth::Flex(flex_value);
+        }
+
+        match value {
+            "min-content" => TrackBreadth::MinContent,
+            "max-content" => TrackBreadth::MaxContent,
+            _ => TrackBreadth::Auto, // Default to auto for unrecognized values including "auto"
+        }
+    }
+
+    /// Parse grid track templates from style.
+    fn parse_grid_tracks(style: &ComputedStyle) -> (GridAxisTracks, GridAxisTracks) {
+        let col_tracks = style.grid_template_columns.as_ref().map_or_else(
+            || {
+                GridAxisTracks::new(
+                    vec![GridTrack {
+                        size: GridTrackSize::Breadth(TrackBreadth::Flex(1.0)),
+                        track_type: TrackListType::Explicit,
+                    }],
+                    style.column_gap,
+                )
+            },
+            |template| Self::parse_grid_template(template, style.column_gap),
+        );
+
+        let row_tracks = style.grid_template_rows.as_ref().map_or_else(
+            || {
+                GridAxisTracks::new(
+                    vec![GridTrack {
+                        size: GridTrackSize::Breadth(TrackBreadth::Auto),
+                        track_type: TrackListType::Explicit,
+                    }],
+                    style.row_gap,
+                )
+            },
+            |template| Self::parse_grid_template(template, style.row_gap),
+        );
+
+        (col_tracks, row_tracks)
+    }
+
+    /// Prepare grid items by filtering normalized children.
+    fn prepare_grid_items(
+        &mut self,
+        node: NodeKey,
+        available_inline: f32,
+    ) -> Vec<GridItem<NodeKey>> {
+        let normalized_children = normalize_children(&self.children, &self.styles, node);
+
+        // Grid layout: filter out whitespace-only text nodes (CSS Grid spec §5.1)
+        // Text nodes containing only whitespace do not generate grid items
+        let normalized_children: Vec<NodeKey> = normalized_children
+            .into_iter()
+            .filter(|child| {
+                self.text_nodes
+                    .get(child)
+                    .is_none_or(|text| !text.trim().is_empty())
+            })
+            .collect();
+
+        // Create grid items with measured content sizes
+        normalized_children
+            .iter()
+            .map(|&child| {
+                let mut item = GridItem::new(child);
+
+                // Measure content size for this grid item
+                // Use available inline size for measurement
+                let measure_space = ConstraintSpace {
+                    available_inline_size: AvailableSize::Definite(LayoutUnit::from_px(
+                        available_inline.max(0.0),
+                    )),
+                    available_block_size: AvailableSize::Indefinite,
+                    bfc_offset: BfcOffset::root(),
+                    exclusion_space: ExclusionSpace::new(),
+                    margin_strut: MarginStrut::default(),
+                    is_new_formatting_context: true,
+                    percentage_resolution_block_size: None,
+                    fragmentainer_block_size: None,
+                    fragmentainer_offset: LayoutUnit::zero(),
+                };
+
+                // Layout the item to measure its content
+                let measured = self.layout_block(child, &measure_space);
+                item.max_content_width = measured.inline_size;
+                item.max_content_height = measured.block_size;
+                item.min_content_width = measured.inline_size;
+                item.min_content_height = measured.block_size;
+
+                item
+            })
+            .collect()
+    }
+
+    /// Layout grid items and store their results.
+    fn layout_grid_items(
+        &mut self,
+        grid_result: &GridLayoutResult<NodeKey>,
+        bfc_offset: BfcOffset,
+        sides: &BoxSides,
+        constraint_space: &ConstraintSpace,
+    ) {
+        for placed_item in &grid_result.items {
+            let node_key = placed_item.node_id;
+
+            // Create constraint space for this grid item
+            // Grid area provides available space, but item sizes to content unless stretched
+            let item_inline_size = LayoutUnit::from_px(placed_item.width);
+            let item_block_size = LayoutUnit::from_px(placed_item.height);
+
+            let item_bfc_inline = bfc_offset.inline_offset
+                + LayoutUnit::from_px(
+                    sides.padding_left.to_px() + sides.border_left.to_px() + placed_item.x,
+                );
+
+            let item_bfc_block = bfc_offset.block_offset.unwrap_or(LayoutUnit::zero())
+                + LayoutUnit::from_px(
+                    sides.padding_top.to_px() + sides.border_top.to_px() + placed_item.y,
+                );
+
+            let item_constraint = ConstraintSpace {
+                available_inline_size: AvailableSize::Definite(item_inline_size),
+                available_block_size: AvailableSize::Definite(item_block_size),
+                percentage_resolution_block_size: constraint_space.percentage_resolution_block_size,
+                bfc_offset: BfcOffset::new(item_bfc_inline, Some(item_bfc_block)),
+                exclusion_space: ExclusionSpace::new(),
+                margin_strut: MarginStrut::default(),
+                is_new_formatting_context: true,
+                fragmentainer_block_size: None,
+                fragmentainer_offset: LayoutUnit::zero(),
+            };
+
+            // Layout the grid item to compute its internal layout
+            let item_result = self.layout_block(node_key, &item_constraint);
+
+            // Use item's natural size, not grid area size (simplified - ignores stretch)
+            // TODO: Implement align-self/justify-self properly
+            let grid_item_result = LayoutResult {
+                inline_size: item_result.inline_size,
+                block_size: item_result.block_size,
+                bfc_offset: BfcOffset::new(item_bfc_inline, Some(item_bfc_block)),
+                exclusion_space: item_result.exclusion_space,
+                end_margin_strut: MarginStrut::default(),
+                baseline: item_result.baseline,
+                needs_relayout: false,
+            };
+
+            self.layout_results.insert(node_key, grid_item_result);
+        }
+    }
+
+    /// Layout a grid container.
+    fn layout_grid_container(
+        &mut self,
+        node: NodeKey,
+        constraint_space: &ConstraintSpace,
+        style: &ComputedStyle,
+        sides: &BoxSides,
+    ) -> LayoutResult {
+        tracing::debug!("layout_grid_container for node {:?}", node);
+
+        // Compute container size
+        let container_inline_size = self.compute_inline_size(node, constraint_space, style, sides);
+
+        // Resolve BFC offset
+        let bfc_offset = if constraint_space.bfc_offset.is_resolved() {
+            constraint_space.bfc_offset
+        } else {
+            BfcOffset::new(
+                constraint_space.bfc_offset.inline_offset,
+                Some(LayoutUnit::zero()),
+            )
+        };
+
+        // Parse grid properties
+        let (col_tracks, row_tracks) = Self::parse_grid_tracks(style);
+
+        // Run grid layout
+        // Use explicit container height if specified, otherwise use available space
+        let container_block_size = if let Some(height) = style.height {
+            height
+        } else {
+            constraint_space
+                .available_block_size
+                .resolve(LayoutUnit::from_px(10000.0))
+                .to_px()
+        };
+
+        // Convert GridAutoFlow from style model to grid module type
+        let grid_auto_flow = match style.grid_auto_flow {
+            StyleGridAutoFlow::Row => GridAutoFlow::Row,
+            StyleGridAutoFlow::Column => GridAutoFlow::Column,
+            StyleGridAutoFlow::RowDense => GridAutoFlow::RowDense,
+            StyleGridAutoFlow::ColumnDense => GridAutoFlow::ColumnDense,
+        };
+
+        let padding_inline_sum = sides.padding_left.to_px() + sides.padding_right.to_px();
+        let border_inline_sum = sides.border_left.to_px() + sides.border_right.to_px();
+        let padding_block_sum = sides.padding_top.to_px() + sides.padding_bottom.to_px();
+        let border_block_sum = sides.border_top.to_px() + sides.border_bottom.to_px();
+
+        // Compute available space for grid content
+        let grid_available_inline = container_inline_size - padding_inline_sum - border_inline_sum;
+
+        // For measurement, use indefinite space (let items size to content)
+        // Grid algorithm will handle distributing space among tracks
+        let grid_items = self.prepare_grid_items(node, f32::INFINITY);
+
+        let grid_inputs = GridContainerInputs {
+            row_tracks,
+            col_tracks,
+            auto_flow: grid_auto_flow,
+            available_width: container_inline_size - padding_inline_sum - border_inline_sum,
+            available_height: container_block_size - padding_block_sum - border_block_sum,
+            align_items: GridAlignment::default(),
+            justify_items: GridAlignment::default(),
+        };
+
+        let grid_result = match layout_grid(&grid_items, &grid_inputs) {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::error!("Grid layout failed: {}", error);
+                return LayoutResult {
+                    inline_size: container_inline_size,
+                    block_size: 0.0,
+                    bfc_offset,
+                    exclusion_space: constraint_space.exclusion_space.clone(),
+                    end_margin_strut: MarginStrut::default(),
+                    baseline: None,
+                    needs_relayout: false,
+                };
+            }
+        };
+
+        self.layout_grid_items(&grid_result, bfc_offset, sides, constraint_space);
+
+        // Compute final container size
+        let content_block = grid_result.total_height;
+        let final_inline_size = container_inline_size;
+        let final_block_size = content_block + padding_block_sum + border_block_sum;
+
+        LayoutResult {
+            inline_size: final_inline_size,
+            block_size: final_block_size,
+            bfc_offset,
+            exclusion_space: constraint_space.exclusion_space.clone(),
+            end_margin_strut: MarginStrut::default(),
+            baseline: None,
+            needs_relayout: false,
+        }
+    }
 }
 
 /// Run layout on the entire tree starting from root.
 pub fn layout_tree(tree: &mut ConstraintLayoutTree, root: NodeKey) -> LayoutResult {
     let initial_space = ConstraintSpace::new_for_root(tree.icb_width, tree.icb_height);
-    tree.layout_block(root, &initial_space)
+    let result = tree.layout_block(root, &initial_space);
+
+    // Store layout result for root element (html/body) so it gets proper rect
+    tree.layout_results.insert(root, result.clone());
+
+    result
 }

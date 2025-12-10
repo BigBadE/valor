@@ -1,0 +1,35 @@
+<!doctype html>
+<!-- VALOR fixture: Grid Layout with repeat(auto-fit, minmax()) - matching text_render_matrix format -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Grid Layout with auto-fit minmax</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #container {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      width: 500px;
+      background: white;
+      padding: 10px;
+    }
+    .item {
+      background: #e0e0e0;
+      border: 1px solid #999;
+      padding: 10px;
+      min-height: 50px;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div class="item" id="a">Item A</div>
+    <div class="item" id="b">Item B</div>
+    <div class="item" id="c">Item C</div>
+    <div class="item" id="d">Item D</div>
+    <div class="item" id="e">Item E</div>
+    <div class="item" id="f">Item F</div>
+  </div>
+</body>
+</html>

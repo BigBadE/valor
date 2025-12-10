@@ -217,6 +217,15 @@ impl DisplayListBuilder {
                 _ => (style.font_size * 1.125).round(),
             };
 
+            log::debug!(
+                "paint_text_content: text='{}', rect=({}, {}, {}, {})",
+                text,
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height
+            );
+
             items.push(DisplayItem::Text {
                 x: rect.x,
                 y: rect.y + style.font_size, // baseline

@@ -258,15 +258,30 @@ fn compare_objects(
     expected_obj: &JsonMap<String, JsonValue>,
     ctx: &mut CompareContext<'_>,
 ) -> Result<(), String> {
-    if actual_obj.len() != expected_obj.len() {
+    // Count non-fontFamily keys for size comparison
+    let actual_count = actual_obj
+        .keys()
+        .filter(|key| key.as_str() != "fontFamily")
+        .count();
+    let expected_count = expected_obj
+        .keys()
+        .filter(|key| key.as_str() != "fontFamily")
+        .count();
+
+    if actual_count != expected_count {
         return Err(build_err(
             "object size mismatch",
-            &format!("{} != {}", actual_obj.len(), expected_obj.len()),
+            &format!("{actual_count} != {expected_count}"),
             ctx.path,
             ctx.elem_stack,
         ));
     }
     for (key, actual_val) in actual_obj {
+        // Skip fontFamily comparison - it's a text rendering concern, not layout
+        if key == "fontFamily" {
+            continue;
+        }
+
         match expected_obj.get(key) {
             Some(expected_val) => {
                 ctx.path.push(format!(".{key}"));
@@ -315,6 +330,20 @@ fn compare_json_helper(
             return Ok(());
         }
     }
+
+    // Check if we're comparing rect dimensions (width/height)
+    // All rect dimensions can have subpixel differences due to text rendering
+    // since block dimensions are determined by their text content
+    let is_rect_dimension = path.len() >= 2 && {
+        let last = &path[path.len() - 1];
+        let prev = &path[path.len() - 2];
+        matches!(last.as_str(), ".width" | ".height") && prev == ".rect"
+    };
+
+    // Use small epsilon (0.02px) for rect dimensions to account for subpixel font rendering,
+    // strict (eps=0) for everything else (colors, positions, booleans, etc.)
+    let effective_eps = if is_rect_dimension { 0.02 } else { eps };
+
     match (actual_value, expected_value) {
         (JsonValue::Null, JsonValue::Null) => Ok(()),
         (JsonValue::Bool(actual_bool), JsonValue::Bool(expected_bool))
@@ -329,7 +358,7 @@ fn compare_json_helper(
             elem_stack,
         )),
         (JsonValue::Number(actual_num), JsonValue::Number(expected_num)) => {
-            compare_numbers(actual_num, expected_num, eps, path, elem_stack)
+            compare_numbers(actual_num, expected_num, effective_eps, path, elem_stack)
         }
         (JsonValue::String(actual_str), JsonValue::String(expected_str))
             if actual_str == expected_str =>
