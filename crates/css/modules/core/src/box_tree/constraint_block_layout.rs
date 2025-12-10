@@ -2788,11 +2788,11 @@ impl ConstraintLayoutTree {
         let border_block_sum = sides.border_top.to_px() + sides.border_bottom.to_px();
 
         // Compute available space for grid content
-        let grid_available_inline = container_inline_size - padding_inline_sum - border_inline_sum;
+        let grid_available_inline = container_inline_size;
 
-        // For measurement, use indefinite space (let items size to content)
-        // Grid algorithm will handle distributing space among tracks
-        let grid_items = self.prepare_grid_items(node, f32::INFINITY);
+        // For measurement, use the container width
+        // Grid tracks will be sized based on content and available space
+        let grid_items = self.prepare_grid_items(node, grid_available_inline);
 
         let grid_inputs = GridContainerInputs {
             row_tracks,
