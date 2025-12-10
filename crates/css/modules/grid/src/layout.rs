@@ -40,6 +40,8 @@ pub struct GridContainerInputs {
     pub align_items: GridAlignment,
     /// Justify items in their grid area (main-axis)
     pub justify_items: GridAlignment,
+    /// Whether container has explicit height (distribute space to auto row tracks)
+    pub has_explicit_height: bool,
 }
 
 impl GridContainerInputs {
@@ -58,6 +60,7 @@ impl GridContainerInputs {
             available_height,
             align_items: GridAlignment::default(),
             justify_items: GridAlignment::default(),
+            has_explicit_height: false,
         }
     }
 }
@@ -118,22 +121,25 @@ pub fn layout_grid<NodeId: Clone>(
     // Step 1: Place grid items
     let placements = place_grid_items(items, row_count, col_count, inputs.auto_flow)?;
 
-    // Step 2: Resolve column track sizes
+    // Step 2: Resolve column track sizes (don't distribute to auto tracks)
     let col_sizes = resolve_track_sizes(
         &inputs.col_tracks,
         inputs.available_width,
         items,
         &placements,
         GridAxis::Column,
+        false, // Don't distribute to auto column tracks
     )?;
 
     // Step 3: Resolve row track sizes
+    // Distribute to auto tracks if container has explicit height
     let row_sizes = resolve_track_sizes(
         &inputs.row_tracks,
         inputs.available_height,
         items,
         &placements,
         GridAxis::Row,
+        inputs.has_explicit_height, // Distribute if explicit height
     )?;
 
     // Step 4: Position items in their grid areas

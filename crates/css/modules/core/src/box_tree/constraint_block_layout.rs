@@ -2702,11 +2702,30 @@ impl ConstraintLayoutTree {
             // Layout the grid item to compute its internal layout
             let item_result = self.layout_block(node_key, &item_constraint);
 
-            // Use item's natural size, not grid area size (simplified - ignores stretch)
-            // TODO: Implement align-self/justify-self properly
+            // Determine final size based on item's explicit sizing
+            // If item has no explicit height, it should stretch to grid area (default align-self: stretch)
+            // If item has explicit height, use its natural size
+            let style = &self.styles[&node_key];
+            let has_explicit_height = style.height.is_some();
+            let has_explicit_width = style.width.is_some();
+
+            let final_inline_size = if has_explicit_width {
+                item_result.inline_size
+            } else {
+                // Stretch to fill grid area width (default justify-self: stretch)
+                placed_item.width
+            };
+
+            let final_block_size = if has_explicit_height {
+                item_result.block_size
+            } else {
+                // Stretch to fill grid area height (default align-self: stretch)
+                placed_item.height
+            };
+
             let grid_item_result = LayoutResult {
-                inline_size: item_result.inline_size,
-                block_size: item_result.block_size,
+                inline_size: final_inline_size,
+                block_size: final_block_size,
                 bfc_offset: BfcOffset::new(item_bfc_inline, Some(item_bfc_block)),
                 exclusion_space: item_result.exclusion_space,
                 end_margin_strut: MarginStrut::default(),
@@ -2779,10 +2798,11 @@ impl ConstraintLayoutTree {
             row_tracks,
             col_tracks,
             auto_flow: grid_auto_flow,
-            available_width: container_inline_size - padding_inline_sum - border_inline_sum,
-            available_height: container_block_size - padding_block_sum - border_block_sum,
+            available_width: container_inline_size, // Already content-box width
+            available_height: container_block_size, // Already content-box height
             align_items: GridAlignment::default(),
             justify_items: GridAlignment::default(),
+            has_explicit_height: style.height.is_some(), // Distribute to auto rows if explicit height
         };
 
         let grid_result = match layout_grid(&grid_items, &grid_inputs) {

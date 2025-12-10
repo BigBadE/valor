@@ -160,6 +160,7 @@ pub fn resolve_track_sizes<NodeId>(
     items: &[GridItem<NodeId>],
     placements: &[GridArea],
     axis: GridAxis,
+    distribute_auto: bool,
 ) -> Result<ResolvedTrackSizes, String> {
     let track_count = axis_tracks.count();
     let mut resolved = ResolvedTrackSizes::new(track_count);
@@ -181,12 +182,18 @@ pub fn resolve_track_sizes<NodeId>(
 
     // Phase 1: Resolve fixed and percentage tracks
     let mut remaining_space = available_for_tracks;
-    let (flex_tracks, _auto_tracks) = resolve_non_flex_tracks(
+    let (flex_tracks, auto_tracks) = resolve_non_flex_tracks(
         &mut resolved,
         &axis_tracks.tracks,
         &mut remaining_space,
         &ctx,
     );
+
+    // Phase 1.5: If requested and no flex tracks, distribute remaining space to auto tracks
+    if distribute_auto && flex_tracks.is_empty() && !auto_tracks.is_empty() && remaining_space > 0.0 {
+        distribute_auto_space(&mut resolved, &auto_tracks, remaining_space);
+        remaining_space = 0.0;
+    }
 
     // Phase 2: Distribute remaining space to flexible tracks
     distribute_flex_space(&mut resolved, &flex_tracks, remaining_space);
