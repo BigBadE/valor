@@ -8,7 +8,7 @@ use super::error_scope::ErrorScopeGuard;
 use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Cache, CacheKeyFlags, Color as GlyphonColor, Family,
     FontSystem, Metrics, RenderError as GlyphonRenderError, Resolution, Shaping, SwashCache,
-    TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
+    TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight, cosmic_text::Wrap,
 };
 use log::{debug, error};
 use renderer::renderer::DrawText;
@@ -201,6 +201,19 @@ impl TextRendererState {
             );
             // Build font attributes with weight and family
             let attrs = Self::prepare_font_attrs(item);
+
+            // Enable text wrapping by setting buffer size based on bounds BEFORE setting text
+            // CRITICAL: wrap mode and size must be set BEFORE set_text for glyphon to wrap correctly
+            // This matches the pattern in css_text::measurement::measure_text_wrapped
+            // Bounds are in physical pixels, but buffer metrics are scaled, so width needs scaling too
+            if let Some((left, _top, right, _bottom)) = item.bounds {
+                let width_px = (right - left) as f32;
+                let width_scaled = width_px * scale;
+                buffer.set_wrap(&mut self.font_system, Wrap::WordOrGlyph);
+                buffer.set_size(&mut self.font_system, Some(width_scaled), None);
+            }
+
+            // Set text AFTER configuring wrap and size
             buffer.set_text(
                 &mut self.font_system,
                 &item.text,
@@ -208,6 +221,10 @@ impl TextRendererState {
                 Shaping::Advanced,
                 None,
             );
+
+            // Shape the text with wrapping applied
+            buffer.shape_until_scroll(&mut self.font_system, false);
+
             buffers.push(buffer);
         }
         buffers

@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  width: 800px;
+}
+.sample {
+  border: 1px solid #ccc;
+  padding: 10px;
+  background: white;
+}
+</style>
+</head>
+<body>
+<div class="grid">
+  <div class="sample">Item 1 with some text that should wrap when constrained to column width</div>
+  <div class="sample">Item 2 with more text that will wrap</div>
+  <div class="sample">Item 3 has text too</div>
+</div>
+</body>
+</html>

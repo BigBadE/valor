@@ -15,6 +15,7 @@ pub use css_box::LayoutUnit;
 pub mod constraint_block_layout;
 pub mod constraint_space;
 pub mod exclusion_space;
+pub mod grid_template_parser;
 pub mod margin_strut;
 
 // Export constraint-based layout types

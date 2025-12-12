@@ -1,6 +1,7 @@
 //! HTML parsing module.
 /// HTML5 parser implementation using html5ever.
 mod html5ever_engine;
+mod sink;
 
 use crate::parser::html5ever_engine::Html5everEngine;
 use anyhow::{Error, anyhow};

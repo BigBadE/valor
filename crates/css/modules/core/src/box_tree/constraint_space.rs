@@ -44,6 +44,17 @@ pub struct ConstraintSpace {
     /// Whether we're in a fragmentation context (e.g., multi-column, print)
     pub fragmentainer_block_size: Option<LayoutUnit>,
     pub fragmentainer_offset: LayoutUnit,
+
+    /// Whether this constraint space is being used for measurement only.
+    ///
+    /// This is critical for distinguishing between:
+    /// - Root-level layout (`is_for_measurement_only` = false): Should do spec-compliant two-pass sizing
+    /// - Nested measurement (`is_for_measurement_only` = true): Should do single-pass to avoid exponential blowup
+    ///
+    /// Grid layout uses this to determine whether to run the full two-pass sizing algorithm
+    /// (columns then rows) or use a single-pass approximation to avoid infinite recursion
+    /// when measuring nested grids.
+    pub is_for_measurement_only: bool,
 }
 
 /// Available size can be definite (fixed), indefinite (auto), or constrained by min/max.
@@ -130,6 +141,7 @@ impl ConstraintSpace {
             percentage_resolution_block_size: Some(icb_height),
             fragmentainer_block_size: None,
             fragmentainer_offset: LayoutUnit::zero(),
+            is_for_measurement_only: false, // Root layout is final layout
         }
     }
 
@@ -169,6 +181,7 @@ impl ConstraintSpace {
             percentage_resolution_block_size: self.percentage_resolution_block_size,
             fragmentainer_block_size: self.fragmentainer_block_size,
             fragmentainer_offset: self.fragmentainer_offset,
+            is_for_measurement_only: self.is_for_measurement_only, // Propagate measurement flag
         }
     }
 }

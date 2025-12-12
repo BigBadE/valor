@@ -13,7 +13,9 @@ pub use types::{
 
 // Track sizing algorithm
 mod track_sizing;
-pub use track_sizing::{GridAxis, GridAxisTracks, ResolvedTrackSizes, resolve_track_sizes};
+pub use track_sizing::{
+    GridAxis, GridAxisTracks, ResolvedTrackSizes, TrackSizingParams, resolve_track_sizes,
+};
 
 // Grid placement algorithm
 mod placement;

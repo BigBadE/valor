@@ -5,9 +5,8 @@ use anyhow::{Error, anyhow};
 use env_logger::init as env_logger_init;
 use js::ChromeHostCommand;
 use log::{error, info};
-use page_handler::config::ValorConfig;
-use page_handler::events::KeyMods;
-use page_handler::state::HtmlPage;
+use page_handler::HtmlPage;
+use page_handler::{KeyMods, ValorConfig};
 use renderer::{DisplayItem, DisplayList};
 use std::process::exit;
 use std::sync::Arc;
@@ -153,11 +152,11 @@ impl App {
         let content_dl = state
             .pages
             .get_mut(1)
-            .and_then(|page| page.display_list_retained_snapshot().ok());
+            .map(HtmlPage::display_list_retained_snapshot);
         let chrome_dl = state
             .pages
             .get_mut(0)
-            .and_then(|page| page.display_list_retained_snapshot().ok());
+            .map(HtmlPage::display_list_retained_snapshot);
         if let Some(display_list) = content_dl {
             // Prepend full-viewport bg
             let clear_color = state
@@ -352,11 +351,11 @@ impl App {
         let content_dl = state
             .pages
             .get_mut(1)
-            .and_then(|page_ref| page_ref.display_list_retained_snapshot().ok());
+            .map(HtmlPage::display_list_retained_snapshot);
         let chrome_dl = state
             .pages
             .get_mut(0)
-            .and_then(|page_ref| page_ref.display_list_retained_snapshot().ok());
+            .map(HtmlPage::display_list_retained_snapshot);
         Self::push_layer_opt(state, &Layer::Content(DisplayList::new()), content_dl);
         Self::push_layer_opt(state, &Layer::Chrome(DisplayList::new()), chrome_dl);
         info!("App: requesting redraw");

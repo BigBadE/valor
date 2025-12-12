@@ -36,6 +36,7 @@
 //! - [Production] Universal sizing entry point (all formatting contexts)
 //! - [Production] Box-sizing transformation (content-box, border-box)
 //! - [Production] Min/max constraints
+//! - [Production] Intrinsic sizing (min-content, max-content)
 //! - [TODO] Aspect ratio preservation
 
 use css_orchestrator::style_model::BoxSizing;
@@ -249,6 +250,93 @@ pub fn compute_element_size(ctx: SizingContext) -> f32 {
 
     // Phase 3: Apply constraints
     apply_constraints(border_box_size, ctx.min, ctx.max)
+}
+
+//=============================================================================
+// Intrinsic Sizing
+//=============================================================================
+
+/// Intrinsic sizes of an element.
+///
+/// [Spec: CSS Sizing Level 3 §4 Intrinsic Size Determination]
+/// <https://www.w3.org/TR/css-sizing-3/#intrinsic-sizes>
+///
+/// ## Definition
+///
+/// Intrinsic sizes are determined by the element's content, not by its containing block.
+/// These are used by layout algorithms like Grid and Flexbox to size tracks/items.
+///
+/// - **Min-content inline**: Width when the element wraps as much as possible (zero-width container)
+/// - **Max-content inline**: Width when the element doesn't wrap at all (infinite-width container)
+/// - **Min-content block**: Height when laid out at min-content inline width
+/// - **Max-content block**: Height when laid out at max-content inline width
+///
+/// ## Examples
+///
+/// For a text block with "Hello World":
+/// - Min-content inline: width of "Hello" or "World" (whichever is wider, fully wrapped)
+/// - Max-content inline: width of "Hello World" (no wrapping)
+/// - Min-content block: height when text is at min-content width (tall, wrapped)
+/// - Max-content block: height when text is at max-content width (short, unwrapped)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IntrinsicSizes {
+    /// Min-content inline size (width in horizontal writing mode).
+    ///
+    /// The smallest inline size the element can be without overflow, allowing maximum wrapping.
+    /// For text, this is typically the width of the longest word.
+    pub min_content_inline: f32,
+
+    /// Max-content inline size (width in horizontal writing mode).
+    ///
+    /// The ideal inline size the element would take if given infinite available space.
+    /// For text, this is the width with no wrapping.
+    pub max_content_inline: f32,
+
+    /// Min-content block size (height in horizontal writing mode).
+    ///
+    /// The block size when the element is laid out at min-content inline size.
+    /// For text, this is the height when maximally wrapped.
+    pub min_content_block: f32,
+
+    /// Max-content block size (height in horizontal writing mode).
+    ///
+    /// The block size when the element is laid out at max-content inline size.
+    /// For text, this is the height when not wrapped.
+    pub max_content_block: f32,
+}
+
+impl IntrinsicSizes {
+    /// Create a new `IntrinsicSizes` with all dimensions set to zero.
+    ///
+    /// Useful for elements with no content or replaced elements where intrinsic
+    /// sizes are determined externally.
+    pub fn zero() -> Self {
+        Self {
+            min_content_inline: 0.0,
+            max_content_inline: 0.0,
+            min_content_block: 0.0,
+            max_content_block: 0.0,
+        }
+    }
+
+    /// Create `IntrinsicSizes` for a fixed-size element.
+    ///
+    /// For replaced elements (images, form controls) where the intrinsic size
+    /// is the same regardless of available space.
+    pub fn fixed(inline: f32, block: f32) -> Self {
+        Self {
+            min_content_inline: inline,
+            max_content_inline: inline,
+            min_content_block: block,
+            max_content_block: block,
+        }
+    }
+}
+
+impl Default for IntrinsicSizes {
+    fn default() -> Self {
+        Self::zero()
+    }
 }
 
 //=============================================================================

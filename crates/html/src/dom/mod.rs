@@ -86,13 +86,17 @@ impl DOM {
         self.keyspace.register_manager()
     }
 
-    /// Apply pending DOM updates from the receiver.
+    /// Apply pending DOM updates from the receiver and return them.
     ///
     /// # Errors
     /// Returns an error if update application fails.
     #[inline]
-    pub fn update(&mut self) -> Result<(), Error> {
+    pub fn update(&mut self) -> Result<Vec<DOMUpdate>, Error> {
+        let mut all_updates = Vec::new();
         while let Ok(batch) = self.in_receiver.try_recv() {
+            // Collect all updates for return
+            all_updates.extend(batch.clone());
+
             // Apply and collect simple counts for test-printing diagnostics
             let mut insert_element_count = 0usize;
             let mut insert_text_count = 0usize;
@@ -122,7 +126,7 @@ impl DOM {
             // Send update to mirrors, ignoring it if there's no listeners.
             drop(self.out_updater.send(batch));
         }
-        Ok(())
+        Ok(all_updates)
     }
 
     #[inline]

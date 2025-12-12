@@ -5,28 +5,31 @@
 //! dispatch while maintaining synchronized mirrors for style computation, layout, and
 //! rendering subsystems.
 
-pub mod accessibility;
-pub mod config;
-/// Display API methods (now integrated into state.rs)
-mod display_api;
-/// Display list building helpers for retained mode
-mod display_retained;
-/// Embedded chrome assets for valor:// URL scheme
-mod embedded_chrome;
-pub mod events;
-pub mod focus;
-/// Layout manager for constraint-based layout
-pub mod layout_manager;
-/// Display list generation from layout and styles
-mod paint;
-/// JavaScript runtime abstraction and default runtime implementation
-mod runtime;
-pub mod scheduler;
-pub mod selection;
-pub mod snapshots;
-/// CSS stacking context and z-index handling
-mod stacking;
-pub mod state;
-pub mod telemetry;
-/// URL streaming utilities for http, https, file, and valor:// schemes
-mod url;
+// Core page state and orchestration
+pub mod core;
+
+// Rendering pipeline modules
+pub mod rendering;
+
+// Input and interaction
+pub mod input;
+
+// Utilities and support
+pub mod utilities;
+
+// Internal helpers
+mod internal;
+
+// Re-export main types for convenience
+pub use core::pipeline::{Pipeline, PipelineConfig, RenderingMode};
+pub use core::state::{HtmlPage, UpdateOutcome};
+
+pub use input::events::KeyMods;
+pub use input::focus;
+pub use input::selection;
+
+pub use utilities::accessibility;
+pub use utilities::config::ValorConfig;
+pub use utilities::scheduler::FrameScheduler;
+pub use utilities::snapshots::{IRect, LayoutNodeKind};
+pub use utilities::telemetry::PerfCounters;

@@ -1,7 +1,6 @@
 use anyhow::Result;
 use js::ChromeHostCommand;
-use page_handler::config::ValorConfig;
-use page_handler::state::HtmlPage;
+use page_handler::{HtmlPage, ValorConfig};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use url::Url;

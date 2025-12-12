@@ -1,10 +1,8 @@
 use anyhow::{Result, anyhow};
 use image::{ColorType, ImageEncoder as _, codecs::png::PngEncoder};
 use log::{LevelFilter, warn};
-use page_handler::config::ValorConfig;
-use page_handler::state::HtmlPage;
-use std::env;
-use std::env::set_var;
+use page_handler::{HtmlPage, ValorConfig};
+use std::env::{set_var, var};
 use std::fs::{create_dir_all, read, write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -83,7 +81,16 @@ pub fn to_file_url(path: &Path) -> Result<Url> {
 ///
 /// Returns an error if page creation fails.
 pub async fn create_page(handle: &Handle, url: Url) -> Result<HtmlPage> {
-    let config = ValorConfig::from_env();
+    let mut config = ValorConfig::from_env();
+    // Override viewport dimensions from env if set, otherwise use test defaults
+    config.viewport_width = var("VALOR_VIEWPORT_WIDTH")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(config.viewport_width);
+    config.viewport_height = var("VALOR_VIEWPORT_HEIGHT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(config.viewport_height);
     let page = HtmlPage::new(handle, url, config).await?;
     Ok(page)
 }

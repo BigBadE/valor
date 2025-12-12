@@ -1,5 +1,5 @@
 use js::ChromeHostCommand;
-use page_handler::state::HtmlPage;
+use page_handler::HtmlPage;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::UnboundedReceiver;
 use wgpu_backend::RenderState;

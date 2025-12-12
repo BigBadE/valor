@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use pollster::block_on;
 use renderer::{DisplayItem, DisplayList};
+use std::env::set_var;
 use std::path::Path;
 use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -126,9 +127,16 @@ pub async fn build_display_list_for_fixture(
     viewport_w: u32,
     viewport_h: u32,
 ) -> Result<DisplayList> {
+    // Set viewport dimensions via environment for the page
+    // Safety: This is a test environment where we control the execution
+    unsafe {
+        set_var("VALOR_VIEWPORT_WIDTH", viewport_w.to_string());
+        set_var("VALOR_VIEWPORT_HEIGHT", viewport_h.to_string());
+    }
+
     let handle = Handle::current();
     let mut page = setup_page_for_fixture(&handle, path).await?;
-    let display_list = page.display_list_retained_snapshot()?;
+    let display_list = page.display_list_retained_snapshot();
     let clear_color = page.background_rgba();
     let mut items = Vec::with_capacity(display_list.items.len() + 1);
     items.push(DisplayItem::Rect {

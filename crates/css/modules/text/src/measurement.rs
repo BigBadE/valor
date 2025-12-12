@@ -4,7 +4,7 @@
 //! This is the SINGLE SOURCE OF TRUTH for text measurement in the layout engine.
 
 use css_orchestrator::style_model::ComputedStyle;
-use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight};
+use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight, cosmic_text::Wrap};
 use std::sync::{Arc, Mutex, PoisonError};
 
 type FontSystemOption = Option<Arc<Mutex<FontSystem>>>;
@@ -125,13 +125,16 @@ fn get_line_height(style: &ComputedStyle, font_size: f32) -> f32 {
 /// Get actual text content height (font metrics).
 ///
 /// This is the rendered glyph height (ascent + descent), independent of line-height.
-/// For most fonts, this is approximately 1.125 × font-size.
+/// For most fonts, this is approximately 1.125 × font-size, but some sizes vary.
 fn get_text_content_height(font_size: f32) -> f32 {
     // Match Chrome's actual font metrics for text content
+    // Note: These values come from empirical testing against Chromium
     match font_size.round() as i32 {
+        10 => 11.0,
         14 => 16.0,
-        16 => 18.0, // Actual rendered height at 16px
-        18 => 20.0, // Actual rendered height at 18px
+        16 => 18.0,
+        18 => 20.0,
+        20 => 22.0,
         24 => 27.0,
         _ => (font_size * 1.125).round(),
     }
@@ -222,17 +225,24 @@ pub fn measure_text_wrapped(text: &str, style: &ComputedStyle, max_width: f32) -
     // Set font attributes
     let attrs = prepare_font_attrs(style);
 
-    buffer.set_text(&mut font_sys, text, &attrs, Shaping::Advanced, None);
-
-    // Set buffer size to enable wrapping
+    // Enable wrapping and set size BEFORE setting text
+    buffer.set_wrap(&mut font_sys, Wrap::WordOrGlyph);
     buffer.set_size(&mut font_sys, Some(max_width), None);
+
+    buffer.set_text(&mut font_sys, text, &attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(&mut font_sys, false);
 
-    // Count lines and calculate total height
-    let line_count = buffer.lines.len();
-    let total_height = line_count as f32 * line_height;
+    // Count LAYOUT lines (wrapped visual lines), not buffer lines (paragraphs)
+    let mut layout_line_count = 0;
+    for line_idx in 0..buffer.lines.len() {
+        if let Some(layout_lines) = buffer.line_layout(&mut font_sys, line_idx) {
+            layout_line_count += layout_lines.len();
+        }
+    }
 
-    (total_height, line_count)
+    let total_height = layout_line_count as f32 * line_height;
+
+    (total_height, layout_line_count)
 }
 
 /// Measure text width using actual font metrics.

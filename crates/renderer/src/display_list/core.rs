@@ -11,7 +11,7 @@ use core::mem::take;
 /// Framebuffer pixel bounds for text (left, top, right, bottom).
 pub type TextBoundsPx = (i32, i32, i32, i32);
 
-// Compact aliases to keep tuple-heavy types readable and satisfy clippy's type_complexity.
+/// Compact aliases to keep tuple-heavy types readable and satisfy clippy's `type_complexity`.
 pub type Scissor = (u32, u32, u32, u32);
 
 /// Gradient color stops as (offset, color) pairs, where offset is in [0,1].

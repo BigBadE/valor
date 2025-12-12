@@ -12,6 +12,25 @@ set -euo pipefail
 # Environment variables:
 #   RENDERER_CI   Set to skip clean step in CI environments
 
+check_file_sizes() {
+  local max_lines=500
+  local violations=$(
+          find crates -type f -name '*.rs' -print0 |
+          xargs -0 awk -v max="$max_lines" '
+            { count[FILENAME]++ }
+            ENDFILE { if (count[FILENAME] > max) print FILENAME ": " count[FILENAME] " lines" }
+          '
+        )
+
+  if [ -n "$violations" ]; then
+    echo "ERROR: The following files exceed $max_lines lines:"
+    echo "$violations"
+    return 1
+  fi
+
+  return 0
+}
+
 check_allows() {
   # This project does not allow ANY #[allow] or #[expect] annotations
   # All warnings must be fixed, not silenced
@@ -98,6 +117,10 @@ done
 echo "================================================"
 echo "Renderer Project Verification"
 echo "================================================"
+
+# Check file sizes
+echo "[verify] Checking file sizes..."
+check_file_sizes
 
 # Check for disallowed allow/expect annotations
 echo "[verify] Checking for disallowed #[allow] and #[expect] annotations..."

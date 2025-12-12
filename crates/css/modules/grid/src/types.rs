@@ -136,13 +136,13 @@ pub struct GridItem<NodeId = usize> {
     pub col_start: Option<i32>,
     /// Explicit column end position (if specified)
     pub col_end: Option<i32>,
-    /// Minimum content width
+    /// Min-content inline size (width at maximum wrapping)
     pub min_content_width: f32,
-    /// Maximum content width
+    /// Max-content inline size (width with no wrapping)
     pub max_content_width: f32,
-    /// Minimum content height
+    /// Min-content block size (height when laid out at min-content width)
     pub min_content_height: f32,
-    /// Maximum content height
+    /// Max-content block size (height when laid out at max-content width)
     pub max_content_height: f32,
 }
 
