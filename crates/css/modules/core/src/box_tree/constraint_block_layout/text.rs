@@ -60,12 +60,6 @@ impl ConstraintLayoutTree {
         let (text_width, text_height) =
             self.measure_text(child, Some(parent), child_space.available_inline_size);
 
-        // Get the parent's line-height for vertical spacing
-        let parent_style = self.styles.get(&parent).cloned().unwrap_or_default();
-        let line_height = parent_style
-            .line_height
-            .unwrap_or_else(|| default_line_height_px(&parent_style) as f32);
-
         let text_result = LayoutResult {
             inline_size: text_width,
             block_size: text_height, // Text node rect uses actual font height
@@ -78,9 +72,10 @@ impl ConstraintLayoutTree {
 
         self.layout_results.insert(child, text_result);
         child_space.margin_strut = MarginStrut::default();
-        // Use line-height for vertical spacing, not text_height
+        // Advance BFC offset by the actual text height (which includes wrapping)
+        // Note: text_height already accounts for multiple lines when text wraps
         child_space.bfc_offset.block_offset =
-            Some(resolved_offset + LayoutUnit::from_px(line_height.round()));
+            Some(resolved_offset + LayoutUnit::from_px(text_height));
         true
     }
 
@@ -97,8 +92,8 @@ impl ConstraintLayoutTree {
             return (0.0, 0.0);
         }
 
-        // Text nodes inherit font properties from their parent
-        // Try to get parent's style, fallback to default
+        // Text nodes inherit font properties from their parent.
+        // Get the parent's COMPUTED style (which includes cascaded inline styles).
         let style = parent_node.map_or_else(
             || self.styles.get(&child_node).cloned().unwrap_or_default(),
             |parent| self.styles.get(&parent).cloned().unwrap_or_default(),
@@ -137,23 +132,10 @@ impl ConstraintLayoutTree {
                     (metrics.width, metrics.height)
                 } else if metrics.width <= available_width {
                     // Text fits on one line - use actual width
-                    log::debug!(
-                        "measure_text: FITS for text='{}', available={}, metrics.width={}, using natural width",
-                        text,
-                        available_width,
-                        metrics.width
-                    );
                     (metrics.width, metrics.height)
                 } else {
                     // Text needs wrapping - measure wrapped height and use available width
                     let (height, _line_count) = measure_text_wrapped(text, &style, available_width);
-                    log::debug!(
-                        "measure_text: WRAPPING for text='{}', available={}, metrics.width={}, wrapped_height={}",
-                        text,
-                        available_width,
-                        metrics.width,
-                        height
-                    );
                     (available_width, height)
                 }
             }

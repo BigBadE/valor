@@ -117,12 +117,6 @@ impl ConstraintLayoutTree {
             AvailableSize::Indefinite,
         );
 
-        tracing::debug!(
-            "measure_block_at_inline: node={:?} -> block_size={:.1}px",
-            node,
-            size.block
-        );
-
         size.block
     }
 

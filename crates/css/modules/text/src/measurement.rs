@@ -36,8 +36,10 @@ fn get_font_system() -> Arc<Mutex<FontSystem>> {
 pub struct TextMetrics {
     /// Width of the text in pixels.
     pub width: f32,
-    /// Height of the text content in pixels (actual font metrics, NOT line-height).
-    /// This is the rendered glyph height (ascent + descent).
+    /// Height of the text LINE in pixels (CSS line-height).
+    /// This is ascent + descent + line_gap from actual font metrics,
+    /// or explicit line-height from CSS if specified.
+    /// This is what CSS layout uses for box sizing.
     pub height: f32,
 }
 
@@ -93,80 +95,71 @@ fn prepare_font_attrs(style: &ComputedStyle) -> Attrs<'_> {
     attrs
 }
 
-/// Get font size from style with fallback.
-fn get_font_size(style: &ComputedStyle) -> f32 {
-    if style.font_size > 0.0 {
-        style.font_size
-    } else {
-        16.0
-    }
-}
-
-/// Get line height matching Chrome's font metrics.
-///
-/// This is used for block layout spacing, not text content height.
-fn get_line_height(style: &ComputedStyle, font_size: f32) -> f32 {
-    // Use explicit line-height if specified in the style
-    if let Some(line_height) = style.line_height {
-        return line_height;
-    }
-
-    // Otherwise use approximation based on font size
-    // Match Chrome's actual line heights for common font sizes with line-height: normal
-    match font_size.round() as i32 {
-        14 => 17.0,
-        16 => 18.0, // Chrome uses 18px line height for 16px fonts
-        18 => 20.0, // Chrome uses 20px, not 22px
-        24 => 28.0,
-        _ => (font_size * 1.125).round(),
-    }
-}
-
-/// Get actual text content height (font metrics).
-///
-/// This is the rendered glyph height (ascent + descent), independent of line-height.
-/// For most fonts, this is approximately 1.125 × font-size, but some sizes vary.
-fn get_text_content_height(font_size: f32) -> f32 {
-    // Match Chrome's actual font metrics for text content
-    // Note: These values come from empirical testing against Chromium
-    match font_size.round() as i32 {
-        10 => 11.0,
-        14 => 16.0,
-        16 => 18.0,
-        18 => 20.0,
-        20 => 22.0,
-        24 => 27.0,
-        _ => (font_size * 1.125).round(),
-    }
-}
-
 /// Measure text using actual font metrics from glyphon.
 ///
 /// This function uses glyphon's font shaping to get exact text dimensions.
+/// Returns the LINE HEIGHT (the vertical space needed for the line), which matches
+/// what CSS layout uses for box sizing.
 ///
 /// # Arguments
 /// * `text` - The text to measure (whitespace should be collapsed beforehand)
 /// * `style` - The computed style containing `font-size` and other properties
 ///
 /// # Returns
-/// `TextMetrics` with actual width and height from font shaping.
+/// `TextMetrics` with actual width and LINE HEIGHT from font shaping.
+/// The height includes the line-height spacing as used by CSS.
 pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
-    let font_size = get_font_size(style);
-    let text_height = get_text_content_height(font_size);
+    // Get global font system
+    let font_system = get_font_system();
+    let mut font_sys = font_system.lock().unwrap_or_else(PoisonError::into_inner);
+
+    // font_size MUST be specified, no fallback
+    let font_size = style.font_size;
+    assert!(font_size > 0.0, "font_size must be specified in ComputedStyle");
+
+    // Compute line-height from explicit style or actual font metrics
+    let line_height = if let Some(explicit_line_height) = style.line_height {
+        // Use explicit line-height from CSS
+        explicit_line_height
+    } else {
+        // CSS line-height: normal
+        // Per CSS spec, browsers use font metrics to determine "normal" line height.
+        // We query the font metrics directly from the shaped text buffer.
+        let attrs = prepare_font_attrs(style);
+
+        // Create a temporary buffer to get font metrics via shaping
+        let temp_metrics = Metrics::new(font_size, font_size); // temporary line_height
+        let mut temp_buffer = Buffer::new(&mut font_sys, temp_metrics);
+        temp_buffer.set_text(&mut font_sys, "M", &attrs, Shaping::Advanced, None);
+        temp_buffer.shape_until_scroll(&mut font_sys, false);
+
+        // Extract actual line height from shaped glyphs
+        let mut computed_line_height = None;
+        for line_idx in 0..temp_buffer.lines.len() {
+            if let Some(layout_lines) = temp_buffer.line_layout(&mut font_sys, line_idx) {
+                for layout_line in layout_lines {
+                    let ascent = layout_line.max_ascent;
+                    let descent = layout_line.max_descent;
+                    if ascent > 0.0 || descent > 0.0 {
+                        computed_line_height = Some(ascent + descent);
+                        break;
+                    }
+                }
+                if computed_line_height.is_some() {
+                    break;
+                }
+            }
+        }
+
+        computed_line_height.expect("Failed to compute line height from font metrics - no glyphs shaped")
+    };
 
     if text.is_empty() {
         return TextMetrics {
             width: 0.0,
-            height: text_height,
+            height: line_height,
         };
     }
-
-    // Use line-height for cosmic-text metrics (affects glyph positioning)
-    let line_height = get_line_height(style, font_size);
-
-    // Get global font system
-    let font_system = get_font_system();
-    let mut font_sys = font_system.lock().unwrap_or_else(PoisonError::into_inner);
 
     // Create a buffer for measurement
     let metrics = Metrics::new(font_size, line_height);
@@ -179,17 +172,22 @@ pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
     buffer.set_text(&mut font_sys, text, &attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(&mut font_sys, false);
 
-    // Get the actual width from the shaped buffer
+    // Get the actual dimensions from the shaped buffer
     let mut max_width = 0.0f32;
-    for run in buffer.layout_runs() {
-        max_width = max_width.max(run.line_w);
+
+    for line_idx in 0..buffer.lines.len() {
+        if let Some(layout_lines) = buffer.line_layout(&mut font_sys, line_idx) {
+            for layout_line in layout_lines {
+                max_width = max_width.max(layout_line.w);
+            }
+        }
     }
 
-    let text_width = max_width;
-
+    // Return the LINE HEIGHT, not just ascent+descent
+    // This is what CSS uses for box sizing and matches the vertical space occupied
     TextMetrics {
-        width: text_width,
-        height: text_height, // Return actual text content height, not line-height
+        width: max_width,
+        height: line_height,
     }
 }
 
@@ -207,16 +205,50 @@ pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
 ///
 /// (`total_height`, `line_count`)
 pub fn measure_text_wrapped(text: &str, style: &ComputedStyle, max_width: f32) -> (f32, usize) {
-    let font_size = get_font_size(style);
-    let line_height = get_line_height(style, font_size);
+    // Get global font system
+    let font_system = get_font_system();
+    let mut font_sys = font_system.lock().unwrap_or_else(PoisonError::into_inner);
+
+    // font_size MUST be specified, no fallback
+    let font_size = style.font_size;
+    assert!(font_size > 0.0, "font_size must be specified in ComputedStyle");
+
+    // Compute line-height from explicit style or actual font metrics
+    let line_height = if let Some(explicit_line_height) = style.line_height {
+        explicit_line_height
+    } else {
+        let attrs = prepare_font_attrs(style);
+
+        // Create a temporary buffer to get font metrics via shaping
+        let temp_metrics = Metrics::new(font_size, font_size);
+        let mut temp_buffer = Buffer::new(&mut font_sys, temp_metrics);
+        temp_buffer.set_text(&mut font_sys, "M", &attrs, Shaping::Advanced, None);
+        temp_buffer.shape_until_scroll(&mut font_sys, false);
+
+        // Extract actual line height from shaped glyphs
+        let mut computed_line_height = None;
+        for line_idx in 0..temp_buffer.lines.len() {
+            if let Some(layout_lines) = temp_buffer.line_layout(&mut font_sys, line_idx) {
+                for layout_line in layout_lines {
+                    let ascent = layout_line.max_ascent;
+                    let descent = layout_line.max_descent;
+                    if ascent > 0.0 || descent > 0.0 {
+                        computed_line_height = Some(ascent + descent);
+                        break;
+                    }
+                }
+                if computed_line_height.is_some() {
+                    break;
+                }
+            }
+        }
+
+        computed_line_height.expect("Failed to compute line height from font metrics for wrapped text")
+    };
 
     if text.is_empty() {
         return (line_height, 0);
     }
-
-    // Get global font system
-    let font_system = get_font_system();
-    let mut font_sys = font_system.lock().unwrap_or_else(PoisonError::into_inner);
 
     // Create a buffer with wrapping enabled
     let metrics = Metrics::new(font_size, line_height);
@@ -270,7 +302,10 @@ mod tests {
     /// Panics if empty text has non-zero width or zero height.
     #[test]
     fn test_empty_text() {
-        let style = ComputedStyle::default();
+        let style = ComputedStyle {
+            font_size: 16.0,
+            ..Default::default()
+        };
         let metrics = measure_text("", &style);
         assert!(metrics.width.abs() < f32::EPSILON);
         assert!(metrics.height > 0.0); // Should have line height
