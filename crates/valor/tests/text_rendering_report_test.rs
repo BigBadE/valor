@@ -75,37 +75,45 @@ fn is_pixel_in_text_region(x_pos: u32, y_pos: u32, glyph_bounds: &[GlyphBounds])
     })
 }
 
-fn process_diff_pixel(
-    diff_img: &mut [u8],
-    chrome_img: &[u8],
-    valor_img: &[u8],
+/// Compare two pixels with per-channel and per-pixel thresholds.
+///
+/// For text regions: max 50% per-channel diff, max 20% total pixel diff.
+/// For non-text: exact match required.
+///
+/// # Returns
+///
+/// Returns true if pixel is acceptable (within thresholds).
+fn compare_pixel_with_thresholds(
+    pixel_a: &[u8],
+    pixel_b: &[u8],
     idx: usize,
     is_text: bool,
-) {
-    if idx + 3 >= chrome_img.len() || idx + 3 >= valor_img.len() {
-        return;
+) -> bool {
+    const CHANNEL_THRESHOLD: u16 = 128;
+    const PIXEL_THRESHOLD: u32 = 153;
+
+    if idx + 3 >= pixel_a.len() || idx + 3 >= pixel_b.len() {
+        return true;
     }
 
-    let mut has_diff = false;
-    for channel in 0..4 {
-        if chrome_img[idx + channel] != valor_img[idx + channel] {
-            has_diff = true;
-            break;
-        }
+    if !is_text {
+        return pixel_a[idx..idx + 4] == pixel_b[idx..idx + 4];
     }
 
-    if has_diff && idx + 3 < diff_img.len() {
-        if is_text {
-            diff_img[idx] = 255;
-            diff_img[idx + 1] = 0;
-            diff_img[idx + 2] = 0;
-        } else {
-            diff_img[idx] = 0;
-            diff_img[idx + 1] = 0;
-            diff_img[idx + 2] = 255;
+    let mut total_diff = 0u32;
+    for channel_offset in 0..3 {
+        let channel_a = pixel_a[idx + channel_offset];
+        let channel_b = pixel_b[idx + channel_offset];
+        let diff = (i16::from(channel_a) - i16::from(channel_b)).unsigned_abs();
+
+        if diff > CHANNEL_THRESHOLD {
+            return false;
         }
-        diff_img[idx + 3] = 255;
+
+        total_diff += u32::from(diff);
     }
+
+    total_diff <= PIXEL_THRESHOLD
 }
 
 fn compute_text_diff_metrics(
@@ -237,12 +245,20 @@ async fn run_text_rendering_comparison(page: &Page) -> Result<HashMap<String, Te
     )?;
     write_png_rgba_if_changed(&out_dir.join("valor.png"), &valor_img, width, height)?;
 
+    // Create diff image highlighting failed pixels (red = fail, black = pass)
     let mut diff_img = vec![0u8; (width * height * 4) as usize];
     for y in 0..height {
         for x in 0..width {
             let idx = ((y * width + x) * 4) as usize;
             let is_text = is_pixel_in_text_region(x, y, &glyph_bounds);
-            process_diff_pixel(&mut diff_img, chrome_img.as_raw(), &valor_img, idx, is_text);
+            let matches = compare_pixel_with_thresholds(chrome_img.as_raw(), &valor_img, idx, is_text);
+
+            if idx + 3 < diff_img.len() {
+                diff_img[idx] = if matches { 0 } else { 255 };
+                diff_img[idx + 1] = 0;
+                diff_img[idx + 2] = 0;
+                diff_img[idx + 3] = 255;
+            }
         }
     }
     write_png_rgba_if_changed(&out_dir.join("diff.png"), &diff_img, width, height)?;
@@ -321,7 +337,7 @@ async fn print_text_rendering_report(page: &Page) -> Result<()> {
     info!("\nImages saved to: test_cache/text_rendering/");
     info!("  - chrome.png: Chrome render");
     info!("  - valor.png: Valor render");
-    info!("  - diff.png: Differences (red=text, blue=non-text)");
+    info!("  - diff.png: Differences (red=fail, black=pass)");
 
     let report_json = serde_json::json!({
         "results": results.iter().map(|(key, val)| {

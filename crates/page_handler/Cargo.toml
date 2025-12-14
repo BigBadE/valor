@@ -10,6 +10,7 @@ html.workspace = true
 css.workspace = true
 css_core.workspace = true
 css_display.workspace = true
+css_text.workspace = true
 renderer.workspace = true
 js_engine_v8.workspace = true
 js.workspace = true

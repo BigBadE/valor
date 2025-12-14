@@ -1,5 +1,6 @@
 //! Track resolution logic for computing track sizes.
 
+use crate::GridAxis;
 use crate::types::{GridTrack, GridTrackSize, TrackBreadth};
 
 use super::helpers::calculate_auto_track_size;
@@ -81,7 +82,7 @@ fn resolve_breadth_track<NodeId>(
             // Auto and content-based tracks get content size (simplified)
             let content_size = calculate_auto_track_size(ctx.items, ctx.placements, idx, ctx.axis);
 
-            if matches!(ctx.axis, crate::track_sizing::GridAxis::Row) {
+            if matches!(ctx.axis, GridAxis::Row) {
                 tracing::info!(
                     "resolve_breadth_track: ROW track {} (breadth={:?}) -> content_size={:.1}px",
                     idx,

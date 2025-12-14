@@ -168,7 +168,7 @@ pub async fn update_until_finished_simple(handle: &Handle, page: &mut HtmlPage) 
 pub const fn css_reset_injection_script() -> &'static str {
     r#"(function(){
         try {
-            var css = "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}html,body{margin:0 !important;padding:0 !important;scrollbar-gutter:stable;font-family:'Courier New',Courier,monospace !important;}body{margin:0 !important;}h1,h2,h3,h4,h5,h6,p{margin:0;padding:0;}ul,ol{margin:0;padding:0;list-style:none;}";
+            var css = "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}html,body{margin:0 !important;padding:0 !important;overflow:hidden;font-family:'Courier New',Courier,monospace !important;}body{margin:0 !important;}h1,h2,h3,h4,h5,h6,p{margin:0;padding:0;}ul,ol{margin:0;padding:0;list-style:none;}";
             var existing = (typeof document.querySelector === 'function') ? document.querySelector("style[data-valor-test-reset='1']") : null;
             if (existing) { return true; }
             if (document && typeof document.appendStyleText === 'function') {

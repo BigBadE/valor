@@ -97,7 +97,9 @@ impl ConstraintLayoutTree {
             // Re-measure items at their actual column widths to get correct heights
             self.remeasure_items_for_rows(&mut grid_items, &column_result.items);
 
-            tracing::info!("Grid layout pass 2 (rows): re-measured items, calling layout_grid again");
+            tracing::info!(
+                "Grid layout pass 2 (rows): re-measured items, calling layout_grid again"
+            );
 
             // Run layout again with correct row heights
             let final_result = layout_grid(&grid_items, grid_inputs)?;
@@ -113,7 +115,9 @@ impl ConstraintLayoutTree {
 
             Ok(final_result)
         } else {
-            tracing::info!("Grid layout: Skipping PASS 2 (is_final_layout=false, measurement mode)");
+            tracing::info!(
+                "Grid layout: Skipping PASS 2 (is_final_layout=false, measurement mode)"
+            );
             // For measurement/nested grids, use column_result directly
             // Heights will be approximate but avoid infinite recursion
             Ok(column_result)
@@ -188,10 +192,7 @@ impl ConstraintLayoutTree {
         items: &mut [GridItem<NodeKey>],
         placements: &[GridPlacedItem<NodeKey>],
     ) {
-        tracing::info!(
-            "=== REMEASURE_ITEMS_FOR_ROWS: {} items ===",
-            items.len()
-        );
+        tracing::info!("=== REMEASURE_ITEMS_FOR_ROWS: {} items ===", items.len());
 
         for (item, placement) in items.iter_mut().zip(placements.iter()) {
             let old_height = item.max_content_height;
@@ -305,15 +306,10 @@ impl ConstraintLayoutTree {
         // Compute container size
         let container_inline_size = self.compute_inline_size(node, constraint_space, style, sides);
 
-        // Resolve BFC offset
-        let bfc_offset = if constraint_space.bfc_offset.is_resolved() {
-            constraint_space.bfc_offset
-        } else {
-            BfcOffset::new(
-                constraint_space.bfc_offset.inline_offset,
-                Some(LayoutUnit::zero()),
-            )
-        };
+        // Resolve BFC offset properly to handle incoming margins
+        // Grid containers establish a new BFC, so we need to collapse incoming margin strut
+        let (bfc_offset, _can_collapse_with_children) =
+            Self::resolve_bfc_offset(constraint_space, style, sides, true);
 
         // Determine if this is measurement or final layout using the explicit flag
         // This avoids ambiguity between root layout and nested measurement

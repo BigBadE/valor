@@ -4,6 +4,7 @@ use crate::rendering::stacking;
 use crate::utilities::snapshots::LayoutNodeKind;
 use css::style_types::{BorderStyle, ComputedStyle, Overflow};
 use css_core::LayoutRect;
+use css_text::measurement::measure_text;
 use js::NodeKey;
 use renderer::{DisplayItem, DisplayList};
 use std::collections::HashMap;
@@ -152,24 +153,7 @@ fn paint_node_content(
 
     // Steps 2-5: Paint children in stacking order
     if let Some((_, children)) = ctx.node_map.get(&key) {
-        // Sort children by CSS stacking order
-        let sorted_children = stacking::sort_children_by_stacking_order(children, ctx.styles);
-
-        // Paint each child in order
-        for stacking_child in sorted_children {
-            // Check if this child is an inline text node
-            if let Some((LayoutNodeKind::InlineText { text }, _)) =
-                ctx.node_map.get(&stacking_child.key)
-            {
-                // Paint text if it has a layout rect
-                if let Some(text_rect) = ctx.rects.get(&stacking_child.key) {
-                    paint_text(text, text_rect, style, items);
-                }
-            } else {
-                // Recursively paint non-text children
-                paint_node_recursive(stacking_child.key, ctx, items);
-            }
-        }
+        paint_children_in_stacking_order(children, style, ctx, items);
     }
 
     // End clipping region
@@ -261,6 +245,56 @@ fn paint_borders(rect: &LayoutRect, style: &ComputedStyle, items: &mut Vec<Displ
     }
 }
 
+/// Paint children in CSS stacking order, combining consecutive text nodes.
+fn paint_children_in_stacking_order(
+    children: &[NodeKey],
+    style: &ComputedStyle,
+    ctx: &PaintContext<'_>,
+    items: &mut Vec<DisplayItem>,
+) {
+    // Sort children by CSS stacking order
+    let sorted_children = stacking::sort_children_by_stacking_order(children, ctx.styles);
+
+    // Paint each child in order, combining consecutive text nodes
+    let mut skip_until_idx = 0;
+    for (idx, stacking_child) in sorted_children.iter().enumerate() {
+        if idx < skip_until_idx {
+            continue; // Skip already-painted continuation text nodes
+        }
+
+        // Check if this child is an inline text node
+        if let Some((LayoutNodeKind::InlineText { text }, _)) =
+            ctx.node_map.get(&stacking_child.key)
+        {
+            // Combine consecutive text nodes
+            let mut combined_text = text.clone();
+            let mut last_text_idx = idx;
+
+            // Look ahead for consecutive text siblings
+            for (next_idx, next_child) in sorted_children[(idx + 1)..].iter().enumerate() {
+                let Some((LayoutNodeKind::InlineText { text: next_text }, _)) =
+                    ctx.node_map.get(&next_child.key)
+                else {
+                    break; // Stop at first non-text node
+                };
+
+                combined_text.push_str(next_text);
+                last_text_idx = idx + 1 + next_idx;
+            }
+
+            skip_until_idx = last_text_idx + 1;
+
+            // Paint combined text if it has a layout rect
+            if let Some(text_rect) = ctx.rects.get(&stacking_child.key) {
+                paint_text(&combined_text, text_rect, style, items);
+            }
+        } else {
+            // Recursively paint non-text children
+            paint_node_recursive(stacking_child.key, ctx, items);
+        }
+    }
+}
+
 /// Paint text content.
 fn paint_text(text: &str, rect: &LayoutRect, style: &ComputedStyle, items: &mut Vec<DisplayItem>) {
     // Skip empty or whitespace-only text
@@ -280,19 +314,16 @@ fn paint_text(text: &str, rect: &LayoutRect, style: &ComputedStyle, items: &mut 
     let font_weight = style.font_weight;
     let font_family = style.font_family.clone();
 
-    // Calculate line height (matches css_text::measurement logic)
+    // Calculate line height using actual font metrics (MUST match css_text::measurement logic!)
+    // For line-height: normal, measure_text gets font metrics directly (no shaping).
+    // This ensures we use the EXACT same calculation as layout.
     let line_height = style
         .line_height
-        .unwrap_or_else(|| match font_size.round() as i32 {
-            14 => 17.0,
-            16 => 18.0,
-            18 => 22.0,
-            24 => 28.0,
-            _ => (font_size * 1.125).round(),
-        });
+        .unwrap_or_else(|| measure_text("M", style).height);
 
     // Create text display item
     // Note: Glyphon positions text from the top-left corner, not the baseline
+
     items.push(DisplayItem::Text {
         x: rect.x,
         y: rect.y,
@@ -302,11 +333,14 @@ fn paint_text(text: &str, rect: &LayoutRect, style: &ComputedStyle, items: &mut 
         font_weight,
         font_family,
         line_height,
+        // IMPORTANT: Round UP the bounds to avoid text wrapping due to fractional pixel truncation.
+        // If text measures at 252.04px and we truncate to 252px, glyphon will wrap the text.
+        // Using ceil() ensures we always have enough space.
         bounds: Some((
-            rect.x as i32,
-            rect.y as i32,
-            (rect.x + rect.width) as i32,
-            (rect.y + rect.height) as i32,
+            rect.x.floor() as i32,
+            rect.y.floor() as i32,
+            (rect.x + rect.width).ceil() as i32,
+            (rect.y + rect.height).ceil() as i32,
         )),
     });
 }
