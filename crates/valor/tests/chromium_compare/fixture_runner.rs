@@ -1,26 +1,32 @@
 // Fixture test runner - only used by chromium_tests.rs (generated tests)
-// Requires graphics_tests and layout_tests modules to be available
+// Uses the unified comparison framework for all test types
 
 use super::chrome::start_and_connect_chrome;
 use super::common::{init_test_logger, target_dir, test_cache_dir};
-use super::{graphics_tests, layout_tests};
+use super::comparison_framework::run_comparison_test_simple;
+use super::graphics_comparison::GraphicsComparison;
+use super::layout_comparison::LayoutComparison;
+use super::text_rendering_comparison::TextRenderingComparison;
 use anyhow::{Result, anyhow};
 use chromiumoxide::Browser;
 use log::warn;
 use std::fs::remove_file;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use tokio::runtime::Handle;
 
 struct FixtureResult {
     path: PathBuf,
     layout_passed: bool,
     graphics_passed: bool,
+    text_rendering_passed: bool,
     _layout_error: Option<String>,
     _graphics_error: Option<String>,
+    _text_rendering_error: Option<String>,
     _duration: Duration,
 }
 
-/// Processes a single fixture test with both layout and graphics tests.
+/// Processes a single fixture test with both layout and graphics tests using the unified framework.
 ///
 /// # Errors
 ///
@@ -39,11 +45,18 @@ async fn process_fixture(
             path: fixture_path.to_path_buf(),
             layout_passed: true,
             graphics_passed: true,
+            text_rendering_passed: true,
             _layout_error: None,
             _graphics_error: None,
+            _text_rendering_error: None,
             _duration: fixture_start.elapsed(),
         };
     }
+
+    // Text rendering fixtures are NOT run as part of chromium_tests
+    // Only text_render_matrix.html runs as a separate test (text_rendering_report_test)
+    // The fixtures/text/ directory contains layout tests, not text rendering tests
+    let is_text_rendering_fixture = false;
 
     // Create a new page for this fixture
     let page = match browser.new_page("about:blank").await {
@@ -54,8 +67,10 @@ async fn process_fixture(
                 path: fixture_path.to_path_buf(),
                 layout_passed: false,
                 graphics_passed: false,
+                text_rendering_passed: false,
                 _layout_error: Some(error_msg.clone()),
-                _graphics_error: Some(error_msg),
+                _graphics_error: Some(error_msg.clone()),
+                _text_rendering_error: Some(error_msg),
                 _duration: fixture_start.elapsed(),
             };
         }
@@ -63,27 +78,52 @@ async fn process_fixture(
 
     // Run tests and ensure page cleanup even on error
     let result = async {
-        // Run layout test
-        let layout_result =
-            layout_tests::run_single_layout_test_with_page(fixture_path, &page).await;
-        let layout_passed = layout_result.is_ok();
-        let layout_error = layout_result.err().map(|err| err.to_string());
+        let handle = Handle::current();
 
-        // Run graphics test
-        let graphics_result =
-            graphics_tests::run_single_graphics_test_with_page(fixture_path, &page).await;
-        let graphics_passed = graphics_result.is_ok();
-        let graphics_error = graphics_result.err().map(|err| err.to_string());
+        // Run appropriate tests based on fixture type
+        if is_text_rendering_fixture {
+            // For text rendering fixtures, run only the text rendering test
+            let text_rendering_result =
+                run_comparison_test_simple::<TextRenderingComparison>(&page, &handle, fixture_path).await;
+            let text_rendering_passed = text_rendering_result.is_ok();
+            let text_rendering_error = text_rendering_result.err().map(|err| err.to_string());
 
-        let duration = fixture_start.elapsed();
+            let duration = fixture_start.elapsed();
 
-        FixtureResult {
-            path: fixture_path.to_path_buf(),
-            layout_passed,
-            graphics_passed,
-            _layout_error: layout_error,
-            _graphics_error: graphics_error,
-            _duration: duration,
+            FixtureResult {
+                path: fixture_path.to_path_buf(),
+                layout_passed: true, // Not tested for text rendering fixtures
+                graphics_passed: true, // Not tested for text rendering fixtures
+                text_rendering_passed,
+                _layout_error: None,
+                _graphics_error: None,
+                _text_rendering_error: text_rendering_error,
+                _duration: duration,
+            }
+        } else {
+            // For regular fixtures, run layout and graphics tests
+            let layout_result =
+                run_comparison_test_simple::<LayoutComparison>(&page, &handle, fixture_path).await;
+            let layout_passed = layout_result.is_ok();
+            let layout_error = layout_result.err().map(|err| err.to_string());
+
+            let graphics_result =
+                run_comparison_test_simple::<GraphicsComparison>(&page, &handle, fixture_path).await;
+            let graphics_passed = graphics_result.is_ok();
+            let graphics_error = graphics_result.err().map(|err| err.to_string());
+
+            let duration = fixture_start.elapsed();
+
+            FixtureResult {
+                path: fixture_path.to_path_buf(),
+                layout_passed,
+                graphics_passed,
+                text_rendering_passed: true, // Not tested for regular fixtures
+                _layout_error: layout_error,
+                _graphics_error: graphics_error,
+                _text_rendering_error: None,
+                _duration: duration,
+            }
         }
     }
     .await;
@@ -98,7 +138,7 @@ async fn process_fixture(
 fn print_summary(results: &[FixtureResult], _total_duration: Duration) {
     let failed = results
         .iter()
-        .filter(|result| !result.layout_passed || !result.graphics_passed)
+        .filter(|result| !result.layout_passed || !result.graphics_passed || !result.text_rendering_passed)
         .count();
 
     if failed > 0 {
@@ -106,7 +146,7 @@ fn print_summary(results: &[FixtureResult], _total_duration: Duration) {
         warn!("────────────────────────────────────────");
 
         for result in results {
-            if !result.layout_passed || !result.graphics_passed {
+            if !result.layout_passed || !result.graphics_passed || !result.text_rendering_passed {
                 let name = result
                     .path
                     .file_stem()
@@ -119,6 +159,9 @@ fn print_summary(results: &[FixtureResult], _total_duration: Duration) {
                 }
                 if !result.graphics_passed {
                     details.push("graphics");
+                }
+                if !result.text_rendering_passed {
+                    details.push("text_rendering");
                 }
 
                 let details_str = details.join(" ");
@@ -202,7 +245,7 @@ pub async fn run_all_fixtures(fixtures: &[PathBuf]) -> Result<()> {
     // Fail the test if any fixtures failed
     let failed_count = results
         .iter()
-        .filter(|result| !result.layout_passed || !result.graphics_passed)
+        .filter(|result| !result.layout_passed || !result.graphics_passed || !result.text_rendering_passed)
         .count();
 
     if failed_count > 0 {

@@ -23,12 +23,13 @@ struct SerializationContext<'context> {
 }
 
 /// Serialize a layout box's rect as JSON.
+/// Chrome rounds dimensions to whole pixels for text boxes, so we do the same.
 fn serialize_rect(rect: &LayoutRect) -> JsonValue {
     json!({
         "x": f64::from(rect.x),
         "y": f64::from(rect.y),
         "width": f64::from(rect.width),
-        "height": f64::from(rect.height)
+        "height": f64::from(rect.height.round())
     })
 }
 
@@ -71,10 +72,10 @@ fn serialize_style(computed: &ComputedStyle) -> JsonValue {
         BoxSizing::ContentBox => "content-box",
     };
 
-    // For flex containers, align-items defaults to stretch
-    // For non-flex containers, Chrome returns normal, but we model it as stretch
-    // Since Stretch is our default, we output stretch for all cases
+    // For flex containers, align-items defaults to normal (which behaves like stretch)
+    // Chrome serializes "normal" for the initial value, "stretch" when explicitly set
     let align_items_str = match computed.align_items {
+        AlignItems::Normal => "normal",
         AlignItems::Stretch => "stretch",
         AlignItems::Center => "center",
         AlignItems::FlexStart => "flex-start",
@@ -131,7 +132,7 @@ fn serialize_style(computed: &ComputedStyle) -> JsonValue {
     })
 }
 
-/// Helper to serialize a block child if it's a Block layout node.
+/// Helper to serialize a child node (both Block and InlineText nodes).
 ///
 /// # Errors
 ///
@@ -141,12 +142,9 @@ fn serialize_block_child(
     ctx: &SerializationContext<'_>,
     child_json: &mut Vec<JsonValue>,
 ) -> Result<()> {
-    // Check if this child is a Block node before serializing
-    if let Some((_, child_kind, _)) = ctx.snapshot.iter().find(|(key, _, _)| *key == child_key)
-        && matches!(child_kind, LayoutNodeKind::Block { .. })
-    {
-        serialize_element_recursive(child_key, ctx, child_json)?;
-    }
+    // Serialize all children (Block and InlineText nodes)
+    // serialize_element_recursive handles both types correctly
+    serialize_element_recursive(child_key, ctx, child_json)?;
     Ok(())
 }
 
@@ -202,7 +200,7 @@ fn serialize_block_children(
     let mut child_json = Vec::new();
 
     // Serialize children recursively (unless it's a form control)
-    // Only count Block layout nodes as children, not InlineText
+    // Include both Block and InlineText nodes to match Chrome output
     if !is_form_control {
         for child_key in children {
             serialize_block_child(*child_key, ctx, &mut child_json)?;
@@ -275,26 +273,53 @@ fn serialize_element_recursive(
         return Ok(());
     };
 
-    // Get layout rect
-    let Some(rect) = ctx.rects.get(&key) else {
-        return Ok(());
-    };
-
-    // Get computed style
-    let Some(computed) = ctx.styles.get(&key) else {
-        return Ok(());
-    };
-
-    // Skip nodes with display:none
-    if computed.display == Display::None {
-        return Ok(());
-    }
-
     match kind {
         LayoutNodeKind::InlineText { text } => {
+            // Text nodes need rect and their parent's computed style for font info
+            let Some(rect) = ctx.rects.get(&key) else {
+                return Ok(());
+            };
+
+            // Skip whitespace-only text nodes with zero dimensions
+            // (Chrome filters these out from layout output)
+            if rect.width == 0.0 && rect.height == 0.0 && text.trim().is_empty() {
+                return Ok(());
+            }
+
+            // Text nodes don't have their own computed styles - they inherit from parent
+            // Find parent and use its computed style for font/color information
+            let parent_key = ctx.snapshot.iter()
+                .find(|(_, _, child_keys)| child_keys.contains(&key))
+                .map(|(parent_key, _, _)| parent_key);
+
+            let computed = parent_key
+                .and_then(|pk| ctx.styles.get(pk))
+                .or_else(|| {
+                    // Fallback: try to get style from the text node itself
+                    // (in case the engine set it, though it normally doesn't)
+                    ctx.styles.get(&key)
+                });
+
+            let Some(computed) = computed else {
+                return Ok(());
+            };
+
             parent_children.push(serialize_text_node(text, rect, computed));
         }
         LayoutNodeKind::Block { tag } => {
+            // Block elements need rect and computed style
+            let Some(rect) = ctx.rects.get(&key) else {
+                return Ok(());
+            };
+            let Some(computed) = ctx.styles.get(&key) else {
+                return Ok(());
+            };
+
+            // Skip nodes with display:none
+            if computed.display == Display::None {
+                return Ok(());
+            }
+
             serialize_block_element(key, tag, children, ctx, parent_children)?;
         }
         LayoutNodeKind::Document => {

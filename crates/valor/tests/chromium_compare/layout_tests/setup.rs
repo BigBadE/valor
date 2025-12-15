@@ -26,10 +26,6 @@ pub async fn setup_page_for_fixture(handle: &Handle, input_path: &Path) -> Resul
 
     page.update().await?;
 
-    // Match Chromium's viewport: 800x600 window with scrollbar gutter (31px)
-    // This matches the window_size in chrome.rs and accounts for scrollbar-gutter:stable
-    page.set_viewport(769, 600);
-
     // Ensure layout is computed
     page.ensure_layout_now();
 

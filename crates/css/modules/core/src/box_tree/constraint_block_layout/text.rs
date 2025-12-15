@@ -74,18 +74,25 @@ impl ConstraintLayoutTree {
         // For the lead text node, measure the combined text.
         // For continuation nodes, they contribute to the combined measurement but
         // get zero inline size individually (the lead node takes all the space).
-        let (text_width, text_height) = if is_continuation {
+        let (text_width, _total_height, glyph_height, _ascent, single_line_height, text_rect_height) = if is_continuation {
             // Continuation node: zero inline size, same block size as lead
             // The rendering pass will combine all consecutive text nodes
-            (0.0, 0.0)
+            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         } else {
             self.measure_text(child, Some(parent), child_space.available_inline_size)
         };
 
+        // Calculate text Y position within the line box (centering vertically)
+        // Use SINGLE-LINE height for half-leading calculation, not total height.
+        // The text baseline should be: container_y + (single_line_height - glyph_height) / 2 + ascent
+        // But since we're storing just the offset, we need: (single_line_height - glyph_height) / 2
+        let half_leading = (single_line_height - glyph_height) / 2.0;
+        let text_y_offset = resolved_offset + LayoutUnit::from_px(half_leading);
+
         let text_result = LayoutResult {
             inline_size: text_width,
-            block_size: text_height,
-            bfc_offset: BfcOffset::new(child_space.bfc_offset.inline_offset, Some(resolved_offset)),
+            block_size: text_rect_height, // Chrome: glyph_height for single-line, glyph_height * line_count for multi-line
+            bfc_offset: BfcOffset::new(child_space.bfc_offset.inline_offset, Some(text_y_offset)),
             exclusion_space: child_space.exclusion_space.clone(),
             end_margin_strut: MarginStrut::default(),
             baseline: None,
@@ -102,10 +109,10 @@ impl ConstraintLayoutTree {
         // Only advance BFC offset for the lead text node, not continuations
         if !is_continuation {
             child_space.margin_strut = MarginStrut::default();
-            // Advance BFC offset by the actual text height (which includes wrapping)
-            // Note: text_height already accounts for multiple lines when text wraps
+            // Advance BFC offset by the TEXT RECT HEIGHT (matches Chrome behavior)
+            // This ensures parent containers size correctly to contain the text
             child_space.bfc_offset.block_offset =
-                Some(resolved_offset + LayoutUnit::from_px(text_height));
+                Some(resolved_offset + LayoutUnit::from_px(text_rect_height));
         }
 
         !is_continuation
@@ -137,12 +144,15 @@ impl ConstraintLayoutTree {
 
     /// Measure text node dimensions using actual font metrics.
     /// For consecutive text nodes, combines them before measuring to ensure proper wrapping.
+    ///
+    /// Returns: (width, total_height, glyph_height, ascent, single_line_height, text_rect_height)
+    /// - text_rect_height: glyph_height for single-line, glyph_height * line_count for multi-line
     pub(super) fn measure_text(
         &self,
         child_node: NodeKey,
         parent_node: Option<NodeKey>,
         available_inline: AvailableSize,
-    ) -> (f32, f32) {
+    ) -> (f32, f32, f32, f32, f32, f32) {
         // Combine consecutive text nodes that share the same parent
         // This ensures "Unicode ", "&", " Special Characters" are measured together
         let combined_text = parent_node.map_or_else(
@@ -166,7 +176,7 @@ impl ConstraintLayoutTree {
         let text = combined_text.as_str();
 
         if text.is_empty() {
-            return (0.0, 0.0);
+            return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         }
 
         // Text nodes inherit font properties from their parent.
@@ -192,7 +202,8 @@ impl ConstraintLayoutTree {
                     available_inline,
                     metrics.width
                 );
-                (metrics.width, metrics.height)
+                // For non-wrapped text: text_rect_height = glyph_height (single line)
+                (metrics.width, metrics.height, metrics.glyph_height, metrics.ascent, metrics.height, metrics.glyph_height)
             }
             AvailableSize::Definite(size) => {
                 const MIN_WRAP_WIDTH: f32 = 50.0;
@@ -206,14 +217,19 @@ impl ConstraintLayoutTree {
                         text,
                         metrics.width
                     );
-                    (metrics.width, metrics.height)
+                    // For non-wrapped text: text_rect_height = glyph_height (single line)
+                    (metrics.width, metrics.height, metrics.glyph_height, metrics.ascent, metrics.height, metrics.glyph_height)
                 } else if metrics.width <= available_width {
                     // Text fits on one line - use actual width
-                    (metrics.width, metrics.height)
+                    // For non-wrapped text: text_rect_height = glyph_height (single line)
+                    (metrics.width, metrics.height, metrics.glyph_height, metrics.ascent, metrics.height, metrics.glyph_height)
                 } else {
                     // Text needs wrapping - measure wrapped height and use available width
-                    let (height, _line_count) = measure_text_wrapped(text, &style, available_width);
-                    (available_width, height)
+                    let (total_height, line_count, glyph_height, ascent, _descent, single_line_height) =
+                        measure_text_wrapped(text, &style, available_width);
+                    // For wrapped text: text_rect_height = glyph_height * line_count (Chrome behavior)
+                    let text_rect_height = glyph_height * line_count as f32;
+                    (available_width, total_height, glyph_height, ascent, single_line_height, text_rect_height)
                 }
             }
         }

@@ -377,7 +377,11 @@ impl ConstraintLayoutTree {
 
         // Compute final container size
         let content_block = grid_result.total_height;
-        let final_inline_size = container_inline_size;
+
+        // Convert content-box width to border-box (matching block layout behavior)
+        let padding_inline_sum = sides.padding_left.to_px() + sides.padding_right.to_px();
+        let border_inline_sum = sides.border_left.to_px() + sides.border_right.to_px();
+        let final_inline_size = container_inline_size + padding_inline_sum + border_inline_sum;
         let final_block_size = content_block + padding_block_sum + border_block_sum;
 
         LayoutResult {

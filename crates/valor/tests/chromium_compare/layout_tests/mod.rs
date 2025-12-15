@@ -1,8 +1,8 @@
 //! Layout comparison tests against Chromium.
 
-mod chromium_extraction;
-mod serialization;
-mod setup;
+pub mod chromium_extraction;
+pub mod serialization;
+pub mod setup;
 
 use super::cache_utils::{CacheFetcher, read_or_fetch_cache, test_failing_dir};
 use super::chrome;

@@ -16,19 +16,24 @@ pub fn parse_grid_template(template: &str, gap: f32) -> GridAxisTracks {
 
     loop {
         // Skip whitespace
-        drop(parser.try_parse(cssparser::Parser::expect_whitespace));
+        let _ = parser.try_parse(cssparser::Parser::expect_whitespace);
 
-        // Try to parse next track or function
-        let Ok(token) = parser.next_including_whitespace_and_comments() else {
+        // Check if we've reached the end
+        if parser.is_exhausted() {
+            break;
+        }
+
+        // Try to parse next track size
+        let Ok(token) = parser.next() else {
             break;
         };
 
         match token {
             Token::Function(name) if name.eq_ignore_ascii_case("repeat") => {
-                if let Ok(Some(result)) = parser.parse_nested_block(|parser| {
+                match parser.parse_nested_block(|parser| {
                     Ok::<Option<RepeatResult>, ParseError<'_, ()>>(parse_repeat(parser))
                 }) {
-                    match result {
+                    Ok(Some(result)) => match result {
                         RepeatResult::Explicit(count, track_size) => {
                             tracks.extend(repeat_n(
                                 GridTrack {
@@ -41,38 +46,96 @@ pub fn parse_grid_template(template: &str, gap: f32) -> GridAxisTracks {
                         RepeatResult::Auto(repeat) => {
                             auto_repeat = Some(repeat);
                         }
+                    },
+                    Ok(None) => {
+                        // Invalid repeat syntax, stop parsing
+                        break;
+                    }
+                    Err(_) => {
+                        // Parse error in repeat(), stop parsing
+                        break;
                     }
                 }
             }
             Token::Function(name) if name.eq_ignore_ascii_case("minmax") => {
-                if let Ok(track_size) = parser.parse_nested_block(|parser| parse_minmax(parser)) {
-                    tracks.push(GridTrack {
-                        size: track_size,
-                        track_type: TrackListType::Explicit,
-                    });
+                match parser.parse_nested_block(|parser| parse_minmax(parser)) {
+                    Ok(track_size) => {
+                        tracks.push(GridTrack {
+                            size: track_size,
+                            track_type: TrackListType::Explicit,
+                        });
+                    }
+                    Err(_) => {
+                        // Parse error in minmax(), stop parsing
+                        break;
+                    }
+                }
+            }
+            Token::Dimension { value, unit, .. } => {
+                let unit_lower = unit.as_ref().to_ascii_lowercase();
+                match unit_lower.as_str() {
+                    "px" => {
+                        tracks.push(GridTrack {
+                            size: GridTrackSize::Breadth(TrackBreadth::Length(*value)),
+                            track_type: TrackListType::Explicit,
+                        });
+                    }
+                    "fr" => {
+                        tracks.push(GridTrack {
+                            size: GridTrackSize::Breadth(TrackBreadth::Flex(*value)),
+                            track_type: TrackListType::Explicit,
+                        });
+                    }
+                    _ => {
+                        // Unknown unit, stop parsing
+                        break;
+                    }
+                }
+            }
+            Token::Percentage { unit_value, .. } => {
+                tracks.push(GridTrack {
+                    size: GridTrackSize::Breadth(TrackBreadth::Percentage(*unit_value)),
+                    track_type: TrackListType::Explicit,
+                });
+            }
+            Token::Number { value: 0.0, .. } => {
+                tracks.push(GridTrack {
+                    size: GridTrackSize::Breadth(TrackBreadth::Length(0.0)),
+                    track_type: TrackListType::Explicit,
+                });
+            }
+            Token::Ident(name) => {
+                let name_lower = name.as_ref().to_ascii_lowercase();
+                match name_lower.as_str() {
+                    "auto" => {
+                        tracks.push(GridTrack {
+                            size: GridTrackSize::Breadth(TrackBreadth::Auto),
+                            track_type: TrackListType::Explicit,
+                        });
+                    }
+                    "min-content" => {
+                        tracks.push(GridTrack {
+                            size: GridTrackSize::Breadth(TrackBreadth::MinContent),
+                            track_type: TrackListType::Explicit,
+                        });
+                    }
+                    "max-content" => {
+                        tracks.push(GridTrack {
+                            size: GridTrackSize::Breadth(TrackBreadth::MaxContent),
+                            track_type: TrackListType::Explicit,
+                        });
+                    }
+                    _ => {
+                        // Unknown identifier, stop parsing
+                        break;
+                    }
                 }
             }
             _ => {
-                // Reset and try to parse as track breadth
-                parser.reset(&parser.state());
-                if let Some(breadth) = parse_track_breadth(&mut parser) {
-                    tracks.push(GridTrack {
-                        size: GridTrackSize::Breadth(breadth),
-                        track_type: TrackListType::Explicit,
-                    });
-                } else {
-                    break;
-                }
+                // Unknown token, stop parsing
+                break;
             }
         }
-    }
-
-    // Default to one auto track if nothing parsed
-    if tracks.is_empty() && auto_repeat.is_none() {
-        tracks.push(GridTrack {
-            size: GridTrackSize::Breadth(TrackBreadth::Auto),
-            track_type: TrackListType::Explicit,
-        });
     }
 
     if let Some(repeat) = auto_repeat {

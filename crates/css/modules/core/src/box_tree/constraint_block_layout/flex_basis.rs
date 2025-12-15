@@ -101,18 +101,40 @@ impl ConstraintLayoutTree {
     pub(super) fn compute_flex_container_cross_size(
         style: &ComputedStyle,
         sides: &BoxSides,
+        constraint_space: &ConstraintSpace,
     ) -> f32 {
-        style.height.map_or(100.0, |height| match style.box_sizing {
-            BoxSizing::BorderBox => {
-                let padding_border = (sides.padding_top
-                    + sides.padding_bottom
-                    + sides.border_top
-                    + sides.border_bottom)
-                    .to_px();
-                (height - padding_border).max(0.0)
-            }
-            BoxSizing::ContentBox => height,
-        })
+        style.height.map_or_else(
+            || {
+                // No explicit height - use available block size from constraint space
+                match constraint_space.available_block_size {
+                    AvailableSize::Definite(size) => {
+                        // Subtract padding and border to get content-box size
+                        let padding_border = (sides.padding_top
+                            + sides.padding_bottom
+                            + sides.border_top
+                            + sides.border_bottom)
+                            .to_px();
+                        (size.to_px() - padding_border).max(0.0)
+                    }
+                    AvailableSize::Indefinite | AvailableSize::MinContent | AvailableSize::MaxContent => {
+                        // No available size - container will size to content
+                        // Return 0 for now, will be adjusted after measuring children
+                        0.0
+                    }
+                }
+            },
+            |height| match style.box_sizing {
+                BoxSizing::BorderBox => {
+                    let padding_border = (sides.padding_top
+                        + sides.padding_bottom
+                        + sides.border_top
+                        + sides.border_bottom)
+                        .to_px();
+                    (height - padding_border).max(0.0)
+                }
+                BoxSizing::ContentBox => height,
+            },
+        )
     }
 
     /// Process text node as flex item.
@@ -124,20 +146,14 @@ impl ConstraintLayoutTree {
     ) -> (FlexChild, ChildStyleInfo) {
         // Text nodes in flexbox create anonymous flex items
         // Measure the text to get its intrinsic size
-        let (text_width, text_height) =
+        let (text_width, _total_height, _glyph_height, _ascent, _single_line_height, text_rect_height) =
             self.measure_text(child, Some(parent_node), child_space.available_inline_size);
 
-        tracing::debug!(
-            "Measured text node {:?} in flex container: {}×{}",
-            child,
-            text_width,
-            text_height
-        );
-
         // Create a layout result for the text node with measured dimensions
+        // Use text_rect_height (glyph_height for single-line, glyph_height * lines for multi-line)
         let child_result = LayoutResult {
             inline_size: text_width,
-            block_size: text_height,
+            block_size: text_rect_height,
             bfc_offset: BfcOffset::root(),
             exclusion_space: ExclusionSpace::new(),
             end_margin_strut: MarginStrut::default(),

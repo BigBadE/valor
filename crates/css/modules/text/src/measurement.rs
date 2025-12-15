@@ -27,6 +27,12 @@ fn get_font_system() -> Arc<Mutex<FontSystem>> {
         // Load system fonts
         font_system.db_mut().load_system_fonts();
 
+        // Set generic font families to match Chrome on Windows
+        // cosmic-text defaults to "Noto Sans Mono" etc. which don't exist on Windows
+        font_system.db_mut().set_monospace_family("Courier New");
+        font_system.db_mut().set_sans_serif_family("Arial");
+        font_system.db_mut().set_serif_family("Times New Roman");
+
         let arc = Arc::new(Mutex::new(font_system));
         *guard = Some(Arc::clone(&arc));
         arc
@@ -43,17 +49,35 @@ pub struct TextMetrics {
     /// or explicit line-height from CSS if specified.
     /// This is what CSS layout uses for box sizing.
     pub height: f32,
+    /// Actual rendered glyph height (ascent + descent from font metrics).
+    /// This is the bounding box of the actual glyphs, used for text node rects.
+    pub glyph_height: f32,
+    /// Ascent from the baseline (positive, upward).
+    pub ascent: f32,
+    /// Descent from the baseline (positive, downward).
+    pub descent: f32,
 }
 
-/// Get line-height from actual font metrics (ascent + descent).
+/// Font metrics from actual font file.
+#[derive(Debug, Clone, Copy)]
+struct FontMetricsData {
+    /// Ascent in font units (normalized to 0-1 range).
+    ascent: f32,
+    /// Descent in font units (normalized to 0-1 range, positive value).
+    descent: f32,
+    /// Leading (line-gap) in font units (normalized to 0-1 range).
+    /// This is the recommended additional spacing between lines.
+    leading: f32,
+}
+
+/// Get font metrics (ascent + descent + leading) from actual font file.
 /// This directly accesses font metrics without shaping, matching what Chromium does.
 ///
 /// Returns `None` if no font matches are found or if the font fails to load.
-fn get_line_height_from_font_metrics(
+fn get_font_metrics(
     font_sys: &mut FontSystem,
     attrs: &Attrs<'_>,
-    font_size: f32,
-) -> Option<f32> {
+) -> Option<FontMetricsData> {
     use fontdb::Weight;
 
     // Get font matches for the given attributes
@@ -73,10 +97,9 @@ fn get_line_height_from_font_metrics(
     let units_per_em = f32::from(metrics.units_per_em);
     let ascent = metrics.ascent / units_per_em;
     let descent = -metrics.descent / units_per_em; // Note: descent is negative in font metrics
+    let leading = metrics.leading / units_per_em; // Line-gap for "normal" line-height
 
-    // Line height = (ascent + descent) * font_size
-    // This gives us the actual font metrics scaled to the requested font size
-    Some((ascent + descent) * font_size)
+    Some(FontMetricsData { ascent, descent, leading })
 }
 
 /// Prepare font attributes from computed style.
@@ -159,28 +182,73 @@ pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
         "font_size must be specified in ComputedStyle"
     );
 
-    // Compute line-height from explicit style or actual font metrics
-    // CSS line-height: normal uses actual font metrics (ascent + descent) directly from the font.
-    // NO SHAPING - direct access to font metrics!
-    let line_height = style.line_height.unwrap_or_else(|| {
-        let attrs = prepare_font_attrs(style);
-        // Font loading may fail - use font_size as fallback (minimum possible line-height)
-        get_line_height_from_font_metrics(&mut font_sys, &attrs, font_size).unwrap_or(font_size)
-    });
+    // Get font metrics (ascent + descent)
+    let attrs = prepare_font_attrs(style);
+    let font_metrics = get_font_metrics(&mut font_sys, &attrs);
+
+    // Compute actual glyph height and line-height
+    // We need two versions: unrounded for cosmic-text, rounded for layout
+    let (glyph_height, ascent, descent, line_height, line_height_unrounded) = if let Some(metrics) = font_metrics {
+        let ascent_px = metrics.ascent * font_size;
+        let descent_px = metrics.descent * font_size;
+        let leading_px = metrics.leading * font_size;
+        let glyph_h = ascent_px + descent_px;
+
+        // CSS "normal" line-height = ascent + descent + leading (line-gap from font metrics)
+        // Note: Chrome's font engine may report different leading values than skrifa/cosmic-text.
+        // This can cause 1-2px differences in "normal" line-height calculations for small fonts.
+        let normal_line_h = glyph_h + leading_px;
+
+        // Unrounded line height for cosmic-text internal calculations
+        let line_h_unrounded = style.line_height.unwrap_or(normal_line_h);
+
+        // Chrome rounds ascent normally, but ceils descent
+        // For 10px monospace: ascent.round()=8 + descent.ceil()=4 = 12 (matches Chrome)
+        // This asymmetric rounding ensures the baseline has enough space below it
+        // Chrome's text node rect height calculation:
+        // - For small text (glyph_height < 12px): use ceil() to ensure readability
+        // - For normal text (glyph_height >= 12px): use round() for accurate layout
+        let glyph_h_rounded = if glyph_h < 12.0 {
+            glyph_h.ceil()
+        } else {
+            glyph_h.round()
+        };
+
+        // Individual metrics still use standard rounding
+        let ascent_rounded = ascent_px.round();
+        let descent_rounded = descent_px.round();
+
+        // IMPORTANT: Apply same rounding to line height as glyph height
+        // This ensures line_height >= glyph_height, avoiding negative half-leading
+        let normal_line_h_rounded = if normal_line_h < 12.0 {
+            normal_line_h.ceil()
+        } else {
+            normal_line_h.round()
+        };
+
+        // Line height: explicit from CSS or use normal (glyph + leading) for 'normal'
+        let line_h = style.line_height.unwrap_or(normal_line_h_rounded);
+
+        (glyph_h_rounded, ascent_rounded, descent_rounded, line_h, line_h_unrounded)
+    } else {
+        // Fallback if font metrics unavailable
+        let fallback = style.line_height.unwrap_or(font_size);
+        (font_size, font_size * 0.8, font_size * 0.2, fallback, fallback)
+    };
 
     if text.is_empty() {
         return TextMetrics {
             width: 0.0,
             height: line_height,
+            glyph_height,
+            ascent,
+            descent,
         };
     }
 
-    // Create a buffer for measurement
-    let metrics = Metrics::new(font_size, line_height);
+    // Create a buffer for measurement - use UNROUNDED line_height for cosmic-text
+    let metrics = Metrics::new(font_size, line_height_unrounded);
     let mut buffer = Buffer::new(&mut font_sys, metrics);
-
-    // Set font attributes
-    let attrs = prepare_font_attrs(style);
 
     // Shape the text to get actual metrics
     buffer.set_text(&mut font_sys, text, &attrs, Shaping::Advanced, None);
@@ -197,18 +265,22 @@ pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
         }
     }
 
-    // Return the LINE HEIGHT, not just ascent+descent
-    // This is what CSS uses for box sizing and matches the vertical space occupied
+    // Use generic font metrics (like Chrome) instead of actual glyph bounds
+    // This matches Chrome's behavior which uses the font's ascent + descent
+    // for all characters, not the actual shaped glyph bounds.
     TextMetrics {
         width: max_width,
         height: line_height,
+        glyph_height,
+        ascent,
+        descent,
     }
 }
 
 /// Measure text with wrapping at a specific width.
 ///
 /// Returns the total height needed for the text when wrapped to fit within
-/// the given width, along with the number of lines.
+/// the given width, along with the number of lines and glyph metrics.
 ///
 /// # Arguments
 /// * `text` - The text to measure (whitespace should be collapsed beforehand)
@@ -217,11 +289,15 @@ pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
 ///
 /// # Returns
 ///
-/// (`total_height`, `line_count`)
+/// (`total_height`, `line_count`, `glyph_height`, `ascent`, `descent`, `single_line_height`)
 ///
 /// # Panics
 /// Panics if `font_size` in the style is 0.0 or not set.
-pub fn measure_text_wrapped(text: &str, style: &ComputedStyle, max_width: f32) -> (f32, usize) {
+pub fn measure_text_wrapped(
+    text: &str,
+    style: &ComputedStyle,
+    max_width: f32,
+) -> (f32, usize, f32, f32, f32, f32) {
     // Get global font system
     let font_system = get_font_system();
     let mut font_sys = font_system.lock().unwrap_or_else(PoisonError::into_inner);
@@ -233,25 +309,67 @@ pub fn measure_text_wrapped(text: &str, style: &ComputedStyle, max_width: f32) -
         "font_size must be specified in ComputedStyle"
     );
 
-    // Compute line-height from explicit style or actual font metrics
-    // CSS line-height: normal uses actual font metrics (ascent + descent) directly from the font.
-    // NO SHAPING - direct access to font metrics!
-    let line_height = style.line_height.unwrap_or_else(|| {
-        let attrs = prepare_font_attrs(style);
-        // Font loading may fail - use font_size as fallback (minimum possible line-height)
-        get_line_height_from_font_metrics(&mut font_sys, &attrs, font_size).unwrap_or(font_size)
-    });
+    // Get font metrics (ascent + descent + leading)
+    let attrs = prepare_font_attrs(style);
+    let font_metrics = get_font_metrics(&mut font_sys, &attrs);
+
+    // Compute actual glyph height and line-height
+    // We need two versions: unrounded for cosmic-text, rounded for layout
+    let (glyph_height, ascent, descent, line_height, line_height_unrounded) = if let Some(metrics) = font_metrics {
+        let ascent_px = metrics.ascent * font_size;
+        let descent_px = metrics.descent * font_size;
+        let leading_px = metrics.leading * font_size;
+        let glyph_h = ascent_px + descent_px;
+
+        // CSS "normal" line-height = ascent + descent + leading (line-gap from font metrics)
+        // Note: Chrome's font engine may report different leading values than skrifa/cosmic-text.
+        // This can cause 1-2px differences in "normal" line-height calculations for small fonts.
+        let normal_line_h = glyph_h + leading_px;
+
+        // Unrounded line height for cosmic-text internal calculations
+        let line_h_unrounded = style.line_height.unwrap_or(normal_line_h);
+
+        // Chrome rounds ascent normally, but ceils descent
+        // For 10px monospace: ascent.round()=8 + descent.ceil()=4 = 12 (matches Chrome)
+        // This asymmetric rounding ensures the baseline has enough space below it
+        // Chrome's text node rect height calculation:
+        // - For small text (glyph_height < 12px): use ceil() to ensure readability
+        // - For normal text (glyph_height >= 12px): use round() for accurate layout
+        let glyph_h_rounded = if glyph_h < 12.0 {
+            glyph_h.ceil()
+        } else {
+            glyph_h.round()
+        };
+
+        // Individual metrics still use standard rounding
+        let ascent_rounded = ascent_px.round();
+        let descent_rounded = descent_px.round();
+
+        // IMPORTANT: Apply same rounding to line height as glyph height
+        // This ensures line_height >= glyph_height, avoiding negative half-leading
+        let normal_line_h_rounded = if normal_line_h < 12.0 {
+            normal_line_h.ceil()
+        } else {
+            normal_line_h.round()
+        };
+
+        // Line height: explicit from CSS or use normal (glyph + leading) for 'normal'
+        let line_h = style.line_height.unwrap_or(normal_line_h_rounded);
+
+        (glyph_h_rounded, ascent_rounded, descent_rounded, line_h, line_h_unrounded)
+    } else {
+        // Fallback if font metrics unavailable
+        let fallback = style.line_height.unwrap_or(font_size);
+        (font_size, font_size * 0.8, font_size * 0.2, fallback, fallback)
+    };
 
     if text.is_empty() {
-        return (line_height, 0);
+        return (line_height, 0, glyph_height, ascent, descent, line_height);
     }
 
-    // Create a buffer with wrapping enabled
-    let metrics = Metrics::new(font_size, line_height);
+    // Create a buffer with wrapping enabled - use UNROUNDED line_height for cosmic-text
+    let metrics = Metrics::new(font_size, line_height_unrounded);
     let mut buffer = Buffer::new(&mut font_sys, metrics);
-
-    // Set font attributes
-    let attrs = prepare_font_attrs(style);
 
     // Enable wrapping and set size BEFORE setting text
     buffer.set_wrap(&mut font_sys, Wrap::WordOrGlyph);
@@ -261,16 +379,32 @@ pub fn measure_text_wrapped(text: &str, style: &ComputedStyle, max_width: f32) -
     buffer.shape_until_scroll(&mut font_sys, false);
 
     // Count LAYOUT lines (wrapped visual lines), not buffer lines (paragraphs)
+    // Also get actual glyph bounds from shaped text
     let mut layout_line_count = 0;
+    let mut actual_max_ascent = 0.0f32;
+    let mut actual_max_descent = 0.0f32;
+
     for line_idx in 0..buffer.lines.len() {
         if let Some(layout_lines) = buffer.line_layout(&mut font_sys, line_idx) {
             layout_line_count += layout_lines.len();
+            for layout_line in layout_lines {
+                actual_max_ascent = actual_max_ascent.max(layout_line.max_ascent);
+                actual_max_descent = actual_max_descent.max(layout_line.max_descent);
+            }
         }
     }
 
+    // Use actual glyph bounds if we got valid values from shaping
+    let (final_glyph_height, final_ascent, final_descent) = if actual_max_ascent > 0.0 || actual_max_descent > 0.0 {
+        let actual_glyph_h = actual_max_ascent + actual_max_descent;
+        (actual_glyph_h, actual_max_ascent, actual_max_descent)
+    } else {
+        (glyph_height, ascent, descent)
+    };
+
     let total_height = layout_line_count as f32 * line_height;
 
-    (total_height, layout_line_count)
+    (total_height, layout_line_count, final_glyph_height, final_ascent, final_descent, line_height)
 }
 
 /// Measure text width using actual font metrics.
@@ -334,7 +468,7 @@ mod tests {
             font_size: 16.0,
             ..Default::default()
         };
-        let (height, lines) = measure_text_wrapped("Hello World This Is A Test", &style, 100.0);
+        let (height, lines, _glyph_height, _ascent, _descent, _single_line_height) = measure_text_wrapped("Hello World This Is A Test", &style, 100.0);
 
         // Note: Text wrapping behavior depends on font metrics and available width.
         // With some fonts, this text might fit on one line at 100px width.

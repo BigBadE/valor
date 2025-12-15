@@ -88,7 +88,7 @@ impl ConstraintLayoutTree {
     pub(super) fn compute_form_control_intrinsic_height(
         &self,
         node: NodeKey,
-        style: &ComputedStyle,
+        _style: &ComputedStyle,
     ) -> Option<f32> {
         let tag = self.tags.get(&node)?;
         let tag_lower = tag.to_lowercase();
@@ -104,26 +104,12 @@ impl ConstraintLayoutTree {
                         return Some(13.0);
                     }
                 }
-                // Text inputs: intrinsic height based on font-size + a bit of spacing
-                // Chrome uses approximately: font-size * 1.2 (line-height) + small buffer
-                let font_size = if style.font_size > 0.0 {
-                    style.font_size
-                } else {
-                    14.0
-                };
-                // Use similar calculation to Chrome: ~1.2x font-size for line-height
-                let line_height = (font_size * 1.2).round();
-                Some(line_height)
+                // Text inputs don't have intrinsic height - they size based on their content
+                None
             }
             "button" => {
-                // Buttons: intrinsic height based on font line-height
-                let font_size = if style.font_size > 0.0 {
-                    style.font_size
-                } else {
-                    16.0
-                };
-                let line_height = (font_size * 1.2).round();
-                Some(line_height)
+                // Buttons don't have intrinsic height - they size based on their content
+                None
             }
             "textarea" => {
                 // Textareas don't have intrinsic height, they respect CSS height

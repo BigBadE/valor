@@ -75,14 +75,18 @@ fn parse_align_items_prop(
     decls: &HashMap<String, String>,
 ) {
     if let Some(value) = decls.get("align-items") {
-        computed.align_items = if value.eq_ignore_ascii_case("flex-start") {
+        computed.align_items = if value.eq_ignore_ascii_case("normal") {
+            style_model::AlignItems::Normal
+        } else if value.eq_ignore_ascii_case("stretch") {
+            style_model::AlignItems::Stretch
+        } else if value.eq_ignore_ascii_case("flex-start") {
             style_model::AlignItems::FlexStart
         } else if value.eq_ignore_ascii_case("center") {
             style_model::AlignItems::Center
         } else if value.eq_ignore_ascii_case("flex-end") {
             style_model::AlignItems::FlexEnd
         } else {
-            style_model::AlignItems::Stretch
+            style_model::AlignItems::Normal
         };
     }
 }

@@ -46,6 +46,8 @@ fn main() {
 
 #[derive(Clone, Debug)]
 struct Todo {
+    id: u32,
+    text: String,
     completed: bool,
 }
 
@@ -201,51 +203,5 @@ fn _get_todo_html_template() -> &'static str {
                 </div>
             </body>
         </html>
-    "#;
-
-    let mut callbacks = EventCallbacks::new();
-
-    let add_todos = Arc::clone(&todo_state.todos);
-    let add_next_id = Arc::clone(&todo_state.next_id);
-    callbacks.register("add_todo", move |_ctx: &EventContext| {
-        let (Ok(mut todos), Ok(mut next_id)) = (add_todos.lock(), add_next_id.lock()) else {
-            error!("Failed to lock todo state mutexes");
-            return;
-        };
-
-        todos.push(Todo {
-            id: *next_id,
-            text: "New todo".into(),
-            completed: false,
-        });
-        *next_id += 1;
-
-        info!("Added new todo. Total: {}", todos.len());
-    });
-
-    let delete_todos = Arc::clone(&todo_state.todos);
-    callbacks.register("delete_todo", move |_ctx: &EventContext| {
-        let Ok(mut todos) = delete_todos.lock() else {
-            error!("Failed to lock todos mutex");
-            return;
-        };
-        if !todos.is_empty() {
-            todos.pop();
-            info!("Deleted todo. Remaining: {}", todos.len());
-        }
-    });
-
-    let toggle_todos = Arc::clone(&todo_state.todos);
-    callbacks.register("toggle_todo", move |_ctx: &EventContext| {
-        let Ok(mut todos) = toggle_todos.lock() else {
-            error!("Failed to lock todos mutex");
-            return;
-        };
-        if let Some(todo) = todos.first_mut() {
-            todo.completed = !todo.completed;
-            info!("Toggled todo completion");
-        }
-    });
-
-    info!("Todo list app started with HTML UI");
+    "#
 }

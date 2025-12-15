@@ -73,7 +73,7 @@ impl ConstraintLayoutTree {
         type BaselineInput = Option<(f32, f32)>;
 
         let align_items = match style.align_items {
-            StyleAlignItems::Stretch => FlexAlignItems::Stretch,
+            StyleAlignItems::Normal | StyleAlignItems::Stretch => FlexAlignItems::Stretch,
             StyleAlignItems::FlexStart => FlexAlignItems::FlexStart,
             StyleAlignItems::Center => FlexAlignItems::Center,
             StyleAlignItems::FlexEnd => FlexAlignItems::FlexEnd,
@@ -100,7 +100,8 @@ impl ConstraintLayoutTree {
 
         let cross_inputs: Vec<(f32, f32, f32)> = child_styles
             .iter()
-            .map(|(_, _, result)| {
+            .enumerate()
+            .map(|(_idx, (_child, _, result))| {
                 let cross_size = if params.is_row {
                     result.block_size
                 } else {
@@ -161,7 +162,7 @@ impl ConstraintLayoutTree {
         sides: &BoxSides,
     ) -> LayoutResult {
         let container_inline_size = self.compute_inline_size(node, constraint_space, style, sides);
-        let container_cross_size = Self::compute_flex_container_cross_size(style, sides);
+        let container_cross_size = Self::compute_flex_container_cross_size(style, sides, constraint_space);
 
         let bfc_offset = BfcOffset::new(
             constraint_space.bfc_offset.inline_offset + sides.margin_left,
