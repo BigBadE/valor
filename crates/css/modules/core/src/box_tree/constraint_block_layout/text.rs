@@ -189,6 +189,15 @@ impl ConstraintLayoutTree {
         // Measure without wrapping first to see if text fits
         let metrics = measure_text(text, &style);
 
+        // Determine text_rect_height for single-line text:
+        // - Explicit line-height (e.g., line-height: 2.0) → use metrics.height (line-height)
+        // - Normal line-height (default) → use glyph_height (just the glyph bounds)
+        let single_line_text_rect_height = if style.line_height.is_some() {
+            metrics.height  // Explicit line-height: use full line-height
+        } else {
+            metrics.glyph_height  // Normal line-height: use glyph-height only
+        };
+
         // For intrinsic sizing (Indefinite), always use the natural text width without wrapping
         // For definite sizes, check if wrapping is needed
         // IMPORTANT: If available width is absurdly small (< 50px), it's likely an intrinsic sizing
@@ -202,8 +211,8 @@ impl ConstraintLayoutTree {
                     available_inline,
                     metrics.width
                 );
-                // For non-wrapped text: text_rect_height = glyph_height (single line)
-                (metrics.width, metrics.height, metrics.glyph_height, metrics.ascent, metrics.height, metrics.glyph_height)
+                // For non-wrapped text: use single_line_text_rect_height
+                (metrics.width, metrics.height, metrics.glyph_height, metrics.ascent, metrics.height, single_line_text_rect_height)
             }
             AvailableSize::Definite(size) => {
                 const MIN_WRAP_WIDTH: f32 = 50.0;
@@ -217,18 +226,18 @@ impl ConstraintLayoutTree {
                         text,
                         metrics.width
                     );
-                    // For non-wrapped text: text_rect_height = glyph_height (single line)
-                    (metrics.width, metrics.height, metrics.glyph_height, metrics.ascent, metrics.height, metrics.glyph_height)
+                    // For non-wrapped text: use single_line_text_rect_height
+                    (metrics.width, metrics.height, metrics.glyph_height, metrics.ascent, metrics.height, single_line_text_rect_height)
                 } else if metrics.width <= available_width {
                     // Text fits on one line - use actual width
-                    // For non-wrapped text: text_rect_height = glyph_height (single line)
-                    (metrics.width, metrics.height, metrics.glyph_height, metrics.ascent, metrics.height, metrics.glyph_height)
+                    // For non-wrapped text: use single_line_text_rect_height
+                    (metrics.width, metrics.height, metrics.glyph_height, metrics.ascent, metrics.height, single_line_text_rect_height)
                 } else {
                     // Text needs wrapping - measure wrapped height and use available width
-                    let (total_height, line_count, glyph_height, ascent, _descent, single_line_height) =
+                    let (total_height, _line_count, glyph_height, ascent, _descent, single_line_height) =
                         measure_text_wrapped(text, &style, available_width);
-                    // For wrapped text: text_rect_height = glyph_height * line_count (Chrome behavior)
-                    let text_rect_height = glyph_height * line_count as f32;
+                    // For wrapped text: text_rect_height = total_height (line_height × line_count)
+                    let text_rect_height = total_height;
                     (available_width, total_height, glyph_height, ascent, single_line_height, text_rect_height)
                 }
             }
