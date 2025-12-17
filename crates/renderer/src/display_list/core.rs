@@ -59,14 +59,20 @@ pub enum DisplayItem {
         text: String,
         color: [f32; 3],
         font_size: f32,
-        /// Font weight (100-900, default 400 = normal, 700 = bold)
+        /// Requested font weight from CSS (100-900, default 400 = normal, 700 = bold)
         font_weight: u16,
+        /// Matched font weight after CSS font matching (e.g., requested 300 -> matched 400)
+        matched_font_weight: u16,
         /// Font family (e.g., "Courier New", "monospace")
         font_family: Option<String>,
-        /// Line height in pixels (for vertical metrics)
+        /// Line height in pixels (for vertical metrics) - ROUNDED for layout
         line_height: f32,
+        /// Unrounded line height in pixels - for rendering to match layout calculations
+        line_height_unrounded: f32,
         /// Optional bounds for wrapping/clipping in framebuffer pixels.
         bounds: Option<TextBoundsPx>,
+        /// Measured text width from layout (for wrapping during rendering)
+        measured_width: f32,
     },
     /// Push a rectangular clip onto the stack (placeholder; enforced as a scissor in `RenderState` for now).
     BeginClip {
@@ -238,9 +244,12 @@ impl DisplayList {
                     color,
                     font_size,
                     font_weight,
+                    matched_font_weight,
                     font_family,
                     line_height,
+                    line_height_unrounded,
                     bounds,
+                    measured_width,
                 } => texts.push(DrawText {
                     x: *x,
                     y: *y,
@@ -248,9 +257,12 @@ impl DisplayList {
                     color: *color,
                     font_size: *font_size,
                     font_weight: *font_weight,
+                    matched_font_weight: *matched_font_weight,
                     font_family: font_family.clone(),
                     line_height: *line_height,
+                    line_height_unrounded: *line_height_unrounded,
                     bounds: *bounds,
+                    measured_width: *measured_width,
                 }),
                 DisplayItem::BeginClip { .. }
                 | DisplayItem::EndClip

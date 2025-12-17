@@ -3,14 +3,13 @@
 use super::comparison_framework::ComparisonTest;
 use super::json_compare::compare_json_with_epsilon;
 use super::layout_tests::{
-    chromium_extraction::chromium_layout_json_in_page,
-    serialization::serialize_valor_layout,
+    chromium_extraction::chromium_layout_json_in_page, serialization::serialize_valor_layout,
     setup::setup_page_for_fixture,
 };
 use anyhow::Result;
 use chromiumoxide::page::Page;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value as JsonValue, to_string_pretty, to_vec_pretty, from_slice};
+use serde_json::{Value as JsonValue, from_slice, to_string_pretty, to_vec_pretty};
 use std::fs::write;
 use std::path::Path;
 use tokio::runtime::Handle;
@@ -77,10 +76,7 @@ impl ComparisonTest for LayoutComparison {
             for entry in asserts {
                 let assert_name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let assertion_passed = entry.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-                let assert_details = entry
-                    .get("details")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let assert_details = entry.get("details").and_then(|v| v.as_str()).unwrap_or("");
 
                 if assertion_passed {
                     js_passed += 1;

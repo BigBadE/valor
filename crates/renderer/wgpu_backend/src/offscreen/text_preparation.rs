@@ -19,9 +19,12 @@ fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
         color,
         font_size,
         font_weight,
+        matched_font_weight,
         font_family,
         line_height,
+        line_height_unrounded,
         bounds,
+        measured_width,
     } = item
     {
         Some(DrawText {
@@ -31,9 +34,12 @@ fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
             color: *color,
             font_size: *font_size,
             font_weight: *font_weight,
+            matched_font_weight: *matched_font_weight,
             font_family: font_family.clone(),
             line_height: *line_height,
+            line_height_unrounded: *line_height_unrounded,
             bounds: *bounds,
+            measured_width: *measured_width,
         })
     } else {
         None
@@ -52,64 +58,117 @@ pub struct PrepareTextParams<'prepare> {
     pub height: u32,
 }
 
-/// Helper function to get unrounded line_height from font metrics.
-fn get_line_height_unrounded(
-    item: &DrawText,
-    font_system: &mut glyphon::FontSystem,
-) -> f32 {
-    use glyphon::cosmic_text::{Attrs, Family, Weight};
-
-    let attrs = Attrs::new()
-        .family(match item.font_family.as_deref() {
-            Some("monospace") => Family::Monospace,
-            Some("serif") => Family::Serif,
-            Some(name) => Family::Name(name),
-            None => Family::SansSerif,
-        })
-        .weight(Weight(item.font_weight));
-
-    let font_matches = font_system.get_font_matches(&attrs);
-    let weight = Weight(item.font_weight);
-
-    if let Some(first_match) = font_matches.first() {
-        if let Some(font) = font_system.get_font(first_match.id, weight) {
-            let metrics = font.as_swash().metrics(&[]);
-            let ascent = metrics.ascent * item.font_size / metrics.units_per_em as f32;
-            let descent = metrics.descent * item.font_size / metrics.units_per_em as f32;
-            return ascent + descent;
-        }
-    }
-    item.line_height // Fallback to rounded value
-}
-
 /// Prepare text items for rendering.
 ///
 /// # Errors
 /// Returns an error if text preparation fails.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Text preparation requires detailed font processing"
+)]
 pub fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> AnyhowResult<PreparedText> {
+    use css_text::map_font_family;
+    use glyphon::cosmic_text::{Family, Weight};
+    use std::fs::OpenOptions;
+    use std::io::Write as _;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("C:/temp/font_debug.txt")
+        .ok();
+    #[allow(
+        clippy::let_underscore_must_use,
+        reason = "Debug logging, errors are intentionally ignored"
+    )]
+    if let Some(ref mut f) = file {
+        let _ = writeln!(f, "=== PREPARE_TEXT_ITEMS CALLED ===");
+    }
     let texts: Vec<DrawText> = params
         .display_list
         .items
         .iter()
         .filter_map(map_text_item)
         .collect();
+    #[allow(
+        clippy::let_underscore_must_use,
+        reason = "Debug logging, errors are intentionally ignored"
+    )]
+    if let Some(ref mut f) = file {
+        let _ = writeln!(f, "=== Found {} text items ===", texts.len());
+    }
 
     let mut buffers: Vec<GlyphonBuffer> = Vec::with_capacity(texts.len());
     for item in &texts {
-        // IMPORTANT: Recalculate unrounded line_height from font metrics.
-        // The line_height in DisplayItem is rounded to match Chrome's layout calculations,
-        // but glyphon needs the original unrounded value for accurate text shaping and wrapping.
-        let line_height_unrounded = get_line_height_unrounded(item, &mut params.glyphon_state.font_system);
-
+        // Use unrounded line_height from layout for accurate rendering.
+        // The line_height field is rounded for layout, but line_height_unrounded
+        // contains the original unrounded value for glyphon rendering.
         let mut buffer = GlyphonBuffer::new(
             &mut params.glyphon_state.font_system,
-            GlyphonMetrics::new(item.font_size, line_height_unrounded),
+            GlyphonMetrics::new(item.font_size, item.line_height_unrounded),
         );
-        let attrs = GlyphonAttrs::new().cache_key_flags(CacheKeyFlags::SUBPIXEL_RENDERING);
 
-        // Enable text wrapping by setting buffer size based on bounds BEFORE setting text
-        if let Some((left, _top, right, _bottom)) = item.bounds {
-            let width = (right - left) as f32;
+        // Map generic families using the shared function from css_text
+        // This ensures we use the exact same font as measurement/layout
+        let family = item.font_family.as_deref().map_or_else(
+            || {
+                // Default to sans-serif like Chrome
+                #[cfg(target_os = "windows")]
+                {
+                    Family::Name("Arial")
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    Family::Name("Helvetica")
+                }
+                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                {
+                    Family::SansSerif
+                }
+            },
+            map_font_family,
+        );
+
+        // CRITICAL: Match font weight using cosmic-text's matching algorithm
+        // We can't just pass the requested weight directly because fonts may not have
+        // that exact weight. For example, Arial only has 400 and 700, so requesting
+        // 300 or 600 needs to be matched to the closest available weight.
+        let requested_attrs = GlyphonAttrs::new()
+            .family(family)
+            .weight(Weight(item.font_weight));
+
+        let font_matches = params
+            .glyphon_state
+            .font_system
+            .get_font_matches(&requested_attrs);
+        let matched_weight = font_matches
+            .first()
+            .map_or(item.font_weight, |first_match| first_match.font_weight);
+
+        #[allow(
+            clippy::let_underscore_must_use,
+            reason = "Debug logging, errors are intentionally ignored"
+        )]
+        if let Some(ref mut f) = file {
+            let _ = writeln!(
+                f,
+                "FONT_MATCH: requested={}, matched={}, family={:?}, text='{}'",
+                item.font_weight,
+                matched_weight,
+                family,
+                &item.text[..item.text.len().min(10)]
+            );
+        }
+
+        let attrs = GlyphonAttrs::new()
+            .family(family)
+            .weight(Weight(matched_weight))
+            .cache_key_flags(CacheKeyFlags::SUBPIXEL_RENDERING);
+
+        // Enable text wrapping by setting buffer size based on MEASURED width, not bounds
+        // The bounds may have rounding errors from integer conversion, so use the original
+        // measured width from layout to ensure consistent wrapping behavior
+        if item.bounds.is_some() {
+            let width = item.measured_width;
             buffer.set_wrap(&mut params.glyphon_state.font_system, Wrap::WordOrGlyph);
             buffer.set_size(&mut params.glyphon_state.font_system, Some(width), None);
         }
@@ -131,7 +190,9 @@ pub fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> AnyhowResult<Pr
     for buffer in &mut buffers {
         let mut layout_line_count = 0;
         for line_idx in 0..buffer.lines.len() {
-            if let Some(layout_lines) = buffer.line_layout(&mut params.glyphon_state.font_system, line_idx) {
+            if let Some(layout_lines) =
+                buffer.line_layout(&mut params.glyphon_state.font_system, line_idx)
+            {
                 layout_line_count += layout_lines.len();
             }
         }
@@ -142,9 +203,8 @@ pub fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> AnyhowResult<Pr
     for (index, item) in texts.iter().enumerate() {
         let layout_line_count = line_counts[index];
 
-        // Get unrounded line_height for bounds adjustment
-        let line_height_unrounded = get_line_height_unrounded(item, &mut params.glyphon_state.font_system);
-
+        // Use unrounded line_height from layout for bounds adjustment
+        let line_height_unrounded = item.line_height_unrounded;
 
         // Convert RGB [f32; 3] to Glyphon RGBA u32 format: 0xAARRGGBB
         // Cosmic-text Color format: ((a << 24) | (r << 16) | (g << 8) | b)
@@ -166,14 +226,13 @@ pub fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> AnyhowResult<Pr
                 let height_adjustment = (rendered_height - layout_height).ceil() as i32;
                 let adjusted_bottom = bottom + height_adjustment;
 
-
                 TextBounds {
                     left,
                     top,
                     right,
                     bottom: adjusted_bottom,
                 }
-            },
+            }
             None => TextBounds {
                 left: 0,
                 top: 0,

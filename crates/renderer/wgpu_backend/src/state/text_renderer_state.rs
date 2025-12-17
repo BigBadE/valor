@@ -5,6 +5,7 @@
 //! responsibility: managing text rendering resources and operations.
 
 use super::error_scope::ErrorScopeGuard;
+use css_text::map_font_family;
 use glyphon::{
     Attrs, Buffer as GlyphonBuffer, Cache, CacheKeyFlags, Color as GlyphonColor, Family,
     FontSystem, Metrics, RenderError as GlyphonRenderError, Resolution, Shaping, SwashCache,
@@ -202,13 +203,13 @@ impl TextRendererState {
             // Build font attributes with weight and family
             let attrs = Self::prepare_font_attrs(item);
 
-            // Enable text wrapping by setting buffer size based on bounds BEFORE setting text
+            // Enable text wrapping by setting buffer size based on measured_width BEFORE setting text
             // CRITICAL: wrap mode and size must be set BEFORE set_text for glyphon to wrap correctly
             // This matches the pattern in css_text::measurement::measure_text_wrapped
-            // Bounds are in physical pixels, but buffer metrics are scaled, so width needs scaling too
-            if let Some((left, _top, right, _bottom)) = item.bounds {
-                let width_px = (right - left) as f32;
-                let width_scaled = width_px * scale;
+            // Use measured_width from layout instead of calculating from bounds to avoid rounding errors
+            // that can cause premature wrapping when (right - left) is slightly less than measured width
+            if item.bounds.is_some() {
+                let width_scaled = item.measured_width * scale;
                 buffer.set_wrap(&mut self.font_system, Wrap::WordOrGlyph);
                 buffer.set_size(&mut self.font_system, Some(width_scaled), None);
             }
@@ -232,7 +233,9 @@ impl TextRendererState {
 
     /// Prepare font attributes from `DrawText` (matches `css_text::measurement` logic).
     fn prepare_font_attrs(item: &DrawText) -> Attrs<'_> {
-        let weight = Weight(item.font_weight);
+        // Use matched_font_weight which was determined during measurement
+        // This ensures rendering uses the same font that layout calculated with
+        let weight = Weight(item.matched_font_weight);
         let mut attrs = Attrs::new()
             .weight(weight)
             .cache_key_flags(CacheKeyFlags::SUBPIXEL_RENDERING);
@@ -245,11 +248,16 @@ impl TextRendererState {
     }
 
     /// Parse font family string into a glyphon Family.
+    /// Uses the shared mapping function from `css_text` to ensure consistency with measurement.
     fn parse_font_family(font_family: Option<&String>) -> Option<Family<'_>> {
         let family = font_family?;
         let family_clean = family.trim();
         if family_clean.is_empty() {
-            return Some(Family::Monospace);
+            // Default to sans-serif like Chrome
+            #[cfg(target_os = "windows")]
+            return Some(Family::Name("Arial"));
+            #[cfg(not(target_os = "windows"))]
+            return Some(Family::SansSerif);
         }
 
         // Parse the font family list and try to use the first available font
@@ -259,18 +267,20 @@ impl TextRendererState {
                 continue;
             }
 
-            // Check for generic families first
-            return Some(match font_name.to_lowercase().as_str() {
-                "monospace" => Family::Monospace,
-                "serif" => Family::Serif,
-                "sans-serif" => Family::SansSerif,
-                "cursive" => Family::Cursive,
-                "fantasy" => Family::Fantasy,
-                _ => Family::Name(font_name),
-            });
+            // Use the shared mapping function from css_text to ensure
+            // we use the exact same font as measurement/layout
+            return Some(map_font_family(font_name));
         }
 
-        Some(Family::Monospace)
+        // Fallback to sans-serif like Chrome
+        #[cfg(target_os = "windows")]
+        {
+            Some(Family::Name("Arial"))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Some(Family::SansSerif)
+        }
     }
 
     /// Create glyphon text areas from buffers and items.

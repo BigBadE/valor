@@ -288,17 +288,17 @@ fn serialize_element_recursive(
 
             // Text nodes don't have their own computed styles - they inherit from parent
             // Find parent and use its computed style for font/color information
-            let parent_key = ctx.snapshot.iter()
+            let parent_key = ctx
+                .snapshot
+                .iter()
                 .find(|(_, _, child_keys)| child_keys.contains(&key))
                 .map(|(parent_key, _, _)| parent_key);
 
-            let computed = parent_key
-                .and_then(|pk| ctx.styles.get(pk))
-                .or_else(|| {
-                    // Fallback: try to get style from the text node itself
-                    // (in case the engine set it, though it normally doesn't)
-                    ctx.styles.get(&key)
-                });
+            let computed = parent_key.and_then(|pk| ctx.styles.get(pk)).or_else(|| {
+                // Fallback: try to get style from the text node itself
+                // (in case the engine set it, though it normally doesn't)
+                ctx.styles.get(&key)
+            });
 
             let Some(computed) = computed else {
                 return Ok(());

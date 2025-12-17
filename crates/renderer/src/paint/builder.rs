@@ -233,14 +233,17 @@ impl DisplayListBuilder {
                 color: style.text_color,
                 font_size: style.font_size,
                 font_weight: style.font_weight,
+                matched_font_weight: style.font_weight, // Test code doesn't do font matching
                 font_family: style.font_family.clone(),
                 line_height,
+                line_height_unrounded: line_height, // For test code, same as rounded
                 bounds: Some((
                     rect.x.round() as i32,
                     rect.y.round() as i32,
                     (rect.x + rect.width).round() as i32,
                     (rect.y + rect.height).round() as i32,
                 )),
+                measured_width: rect.width,
             });
         }
     }

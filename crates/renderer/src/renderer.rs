@@ -34,14 +34,20 @@ pub struct DrawText {
     pub text: String,
     pub color: [f32; 3],
     pub font_size: f32,
-    /// Font weight (100-900, default 400 = normal, 700 = bold)
+    /// Requested font weight from CSS (100-900, default 400 = normal, 700 = bold)
     pub font_weight: u16,
+    /// Matched font weight after CSS font matching (e.g., requested 300 -> matched 400)
+    pub matched_font_weight: u16,
     /// Font family (e.g., "Courier New", "monospace")
     pub font_family: Option<String>,
-    /// Line height in pixels (for vertical metrics)
+    /// Line height in pixels (for vertical metrics) - ROUNDED for layout
     pub line_height: f32,
+    /// Unrounded line height in pixels - for rendering to match layout calculations
+    pub line_height_unrounded: f32,
     /// Optional bounds for wrapping/clipping: (left, top, right, bottom) in framebuffer pixels.
     pub bounds: Option<TextBoundsPx>,
+    /// Measured text width from layout (for wrapping during rendering)
+    pub measured_width: f32,
 }
 
 /// `RenderNodeKind` represents the minimal kinds of nodes a renderer cares about

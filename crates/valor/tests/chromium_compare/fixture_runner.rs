@@ -84,7 +84,8 @@ async fn process_fixture(
         if is_text_rendering_fixture {
             // For text rendering fixtures, run only the text rendering test
             let text_rendering_result =
-                run_comparison_test_simple::<TextRenderingComparison>(&page, &handle, fixture_path).await;
+                run_comparison_test_simple::<TextRenderingComparison>(&page, &handle, fixture_path)
+                    .await;
             let text_rendering_passed = text_rendering_result.is_ok();
             let text_rendering_error = text_rendering_result.err().map(|err| err.to_string());
 
@@ -92,7 +93,7 @@ async fn process_fixture(
 
             FixtureResult {
                 path: fixture_path.to_path_buf(),
-                layout_passed: true, // Not tested for text rendering fixtures
+                layout_passed: true,   // Not tested for text rendering fixtures
                 graphics_passed: true, // Not tested for text rendering fixtures
                 text_rendering_passed,
                 _layout_error: None,
@@ -108,7 +109,8 @@ async fn process_fixture(
             let layout_error = layout_result.err().map(|err| err.to_string());
 
             let graphics_result =
-                run_comparison_test_simple::<GraphicsComparison>(&page, &handle, fixture_path).await;
+                run_comparison_test_simple::<GraphicsComparison>(&page, &handle, fixture_path)
+                    .await;
             let graphics_passed = graphics_result.is_ok();
             let graphics_error = graphics_result.err().map(|err| err.to_string());
 
@@ -138,7 +140,9 @@ async fn process_fixture(
 fn print_summary(results: &[FixtureResult], _total_duration: Duration) {
     let failed = results
         .iter()
-        .filter(|result| !result.layout_passed || !result.graphics_passed || !result.text_rendering_passed)
+        .filter(|result| {
+            !result.layout_passed || !result.graphics_passed || !result.text_rendering_passed
+        })
         .count();
 
     if failed > 0 {
@@ -245,7 +249,9 @@ pub async fn run_all_fixtures(fixtures: &[PathBuf]) -> Result<()> {
     // Fail the test if any fixtures failed
     let failed_count = results
         .iter()
-        .filter(|result| !result.layout_passed || !result.graphics_passed || !result.text_rendering_passed)
+        .filter(|result| {
+            !result.layout_passed || !result.graphics_passed || !result.text_rendering_passed
+        })
         .count();
 
     if failed_count > 0 {

@@ -9,6 +9,10 @@ if "cargo test" in command.strip().lower():
     print("Run the tests with nextest, not test!", file=sys.stderr)
     sys.exit(2)
 
+if "--test" in command.strip().lower():
+    print("Run all of the tests, not just one!", file=sys.stderr)
+    sys.exit(2)
+
 if command.strip().lower().startswith("git"):
     print("DO NOT USE GIT! EVER!", file=sys.stderr)
     sys.exit(2)

@@ -7,6 +7,10 @@ use cssparser::{ParseError, Parser, ParserInput, Token};
 use std::iter::repeat_n;
 
 /// Parse grid template (grid-template-columns or grid-template-rows).
+#[allow(
+    clippy::too_many_lines,
+    reason = "Grid template parsing requires handling many cases"
+)]
 pub fn parse_grid_template(template: &str, gap: f32) -> GridAxisTracks {
     let mut input = ParserInput::new(template.trim());
     let mut parser = Parser::new(&mut input);
@@ -16,6 +20,10 @@ pub fn parse_grid_template(template: &str, gap: f32) -> GridAxisTracks {
 
     loop {
         // Skip whitespace
+        #[allow(
+            clippy::let_underscore_must_use,
+            reason = "Whitespace parsing is optional and failure is expected"
+        )]
         let _ = parser.try_parse(cssparser::Parser::expect_whitespace);
 
         // Check if we've reached the end

@@ -194,11 +194,23 @@ pub async fn start_and_connect_chrome() -> Result<BrowserWithHandler> {
         .map_err(|err| anyhow!("Failed to connect to Chrome on {ws_url}: {err}"))?;
 
     let handler_task = spawn(async move {
-        while let Some(event) = handler.next().await {
-            match event {
-                Ok(()) => {}
-                Err(err) => {
-                    log::debug!("Browser handler error: {err}");
+        loop {
+            tokio::select! {
+                event = handler.next() => {
+                    match event {
+                        Some(Ok(())) => {}
+                        Some(Err(err)) => {
+                            log::debug!("Browser handler error: {err}");
+                        }
+                        None => {
+                            log::debug!("Browser handler stream ended");
+                            break;
+                        }
+                    }
+                }
+                _ = sleep(Duration::from_secs(5)) => {
+                    log::debug!("Browser handler timeout after 5s, stopping");
+                    break;
                 }
             }
         }

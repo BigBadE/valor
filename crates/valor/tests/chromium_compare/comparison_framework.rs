@@ -173,7 +173,12 @@ impl<T: ComparisonTest> FailureArtifacts<T> {
         T::write_valor_output(&self.valor_output, &base)?;
 
         // Write diff visualization if provided by the test type
-        T::write_diff(&self.chrome_output, &self.valor_output, &self.metadata, &base)?;
+        T::write_diff(
+            &self.chrome_output,
+            &self.valor_output,
+            &self.metadata,
+            &base,
+        )?;
 
         // Write error message only if no diff was written
         // (Check if a diff.png was created to determine this)

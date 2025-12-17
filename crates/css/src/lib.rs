@@ -87,6 +87,7 @@ impl CSSMirror {
         for node in &self.style_nodes_order {
             if let Some(text) = self.style_text_by_node.get(node) {
                 let parsed = parser::parse_stylesheet(text, out.origin, base);
+
                 // Avoid truncation on 64-bit by saturating len to u32::MAX
                 let addend = u32::try_from(parsed.rules.len()).map_or(u32::MAX, |count| count);
                 base = base.saturating_add(addend);

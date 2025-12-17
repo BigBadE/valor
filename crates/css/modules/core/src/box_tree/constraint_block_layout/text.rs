@@ -74,7 +74,14 @@ impl ConstraintLayoutTree {
         // For the lead text node, measure the combined text.
         // For continuation nodes, they contribute to the combined measurement but
         // get zero inline size individually (the lead node takes all the space).
-        let (text_width, _total_height, glyph_height, _ascent, single_line_height, text_rect_height) = if is_continuation {
+        let (
+            text_width,
+            _total_height,
+            glyph_height,
+            _ascent,
+            single_line_height,
+            text_rect_height,
+        ) = if is_continuation {
             // Continuation node: zero inline size, same block size as lead
             // The rendering pass will combine all consecutive text nodes
             (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -145,8 +152,16 @@ impl ConstraintLayoutTree {
     /// Measure text node dimensions using actual font metrics.
     /// For consecutive text nodes, combines them before measuring to ensure proper wrapping.
     ///
-    /// Returns: (width, total_height, glyph_height, ascent, single_line_height, text_rect_height)
-    /// - text_rect_height: glyph_height for single-line, glyph_height * line_count for multi-line
+    /// Returns: (`width`, `total_height`, `glyph_height`, `ascent`, `single_line_height`, `text_rect_height`)
+    /// - `text_rect_height`: `glyph_height` for single-line, `glyph_height` * `line_count` for multi-line
+    #[allow(
+        clippy::type_complexity,
+        reason = "Returning multiple related measurements as tuple is clearer than a struct"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Text measurement requires detailed handling of multiple cases"
+    )]
     pub(super) fn measure_text(
         &self,
         child_node: NodeKey,
@@ -189,14 +204,11 @@ impl ConstraintLayoutTree {
         // Measure without wrapping first to see if text fits
         let metrics = measure_text(text, &style);
 
-        // Determine text_rect_height for single-line text:
-        // - Explicit line-height (e.g., line-height: 2.0) → use metrics.height (line-height)
-        // - Normal line-height (default) → use glyph_height (just the glyph bounds)
-        let single_line_text_rect_height = if style.line_height.is_some() {
-            metrics.height  // Explicit line-height: use full line-height
-        } else {
-            metrics.glyph_height  // Normal line-height: use glyph-height only
-        };
+        // CRITICAL: Use full line-height for text_rect_height
+        // Text is positioned with half_leading offset from top, so container must be
+        // tall enough to include: half_leading + glyph_height + half_leading = line_height
+        // Using glyph_height causes bottom clipping because text extends below container
+        let single_line_text_rect_height = metrics.height;
 
         // For intrinsic sizing (Indefinite), always use the natural text width without wrapping
         // For definite sizes, check if wrapping is needed
@@ -212,7 +224,14 @@ impl ConstraintLayoutTree {
                     metrics.width
                 );
                 // For non-wrapped text: use single_line_text_rect_height
-                (metrics.width, metrics.height, metrics.glyph_height, metrics.ascent, metrics.height, single_line_text_rect_height)
+                (
+                    metrics.width,
+                    metrics.height,
+                    metrics.glyph_height,
+                    metrics.ascent,
+                    metrics.height,
+                    single_line_text_rect_height,
+                )
             }
             AvailableSize::Definite(size) => {
                 const MIN_WRAP_WIDTH: f32 = 50.0;
@@ -227,18 +246,48 @@ impl ConstraintLayoutTree {
                         metrics.width
                     );
                     // For non-wrapped text: use single_line_text_rect_height
-                    (metrics.width, metrics.height, metrics.glyph_height, metrics.ascent, metrics.height, single_line_text_rect_height)
+                    (
+                        metrics.width,
+                        metrics.height,
+                        metrics.glyph_height,
+                        metrics.ascent,
+                        metrics.height,
+                        single_line_text_rect_height,
+                    )
                 } else if metrics.width <= available_width {
                     // Text fits on one line - use actual width
                     // For non-wrapped text: use single_line_text_rect_height
-                    (metrics.width, metrics.height, metrics.glyph_height, metrics.ascent, metrics.height, single_line_text_rect_height)
+                    (
+                        metrics.width,
+                        metrics.height,
+                        metrics.glyph_height,
+                        metrics.ascent,
+                        metrics.height,
+                        single_line_text_rect_height,
+                    )
                 } else {
-                    // Text needs wrapping - measure wrapped height and use available width
-                    let (total_height, _line_count, glyph_height, ascent, _descent, single_line_height) =
-                        measure_text_wrapped(text, &style, available_width);
+                    // Text needs wrapping - measure wrapped height and use ACTUAL wrapped width
+                    let (
+                        total_height,
+                        _line_count,
+                        glyph_height,
+                        ascent,
+                        _descent,
+                        single_line_height,
+                        actual_width,
+                    ) = measure_text_wrapped(text, &style, available_width);
                     // For wrapped text: text_rect_height = total_height (line_height × line_count)
                     let text_rect_height = total_height;
-                    (available_width, total_height, glyph_height, ascent, single_line_height, text_rect_height)
+                    // Use actual_width from wrapped lines, not available_width
+                    // This prevents text from being clipped when it wraps to a narrower width
+                    (
+                        actual_width,
+                        total_height,
+                        glyph_height,
+                        ascent,
+                        single_line_height,
+                        text_rect_height,
+                    )
                 }
             }
         }

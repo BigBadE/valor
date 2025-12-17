@@ -262,7 +262,8 @@ pub fn write_diff_image(
         for x in 0..width {
             let idx = ((y * width + x) * 4) as usize;
             let is_text = is_pixel_in_text_region(x, y, glyph_bounds);
-            let matches = compare_pixel_with_thresholds(&chrome.pixels, &valor.pixels, idx, is_text);
+            let matches =
+                compare_pixel_with_thresholds(&chrome.pixels, &valor.pixels, idx, is_text);
 
             if idx + 3 < diff_img.len() {
                 diff_img[idx] = if matches { 0 } else { 255 }; // R

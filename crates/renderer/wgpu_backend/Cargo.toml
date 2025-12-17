@@ -16,3 +16,4 @@ glyphon.workspace = true
 tracing.workspace = true
 pollster.workspace = true
 log.workspace = true
+css_text.workspace = true

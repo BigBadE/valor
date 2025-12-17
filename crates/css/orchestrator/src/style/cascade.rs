@@ -380,6 +380,8 @@ impl StyleComputer {
 
         for node in nodes {
             let mut props: HashMap<String, CascadedDecl> = HashMap::new();
+
+            // DEBUG: Log stylesheet rules for first few nodes
             for rule in &self.sheet.rules {
                 apply_rule_to_props(rule, node, self, &mut props);
             }

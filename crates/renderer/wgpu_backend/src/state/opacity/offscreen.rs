@@ -115,9 +115,12 @@ impl OffscreenRenderer<'_> {
                     color,
                     font_size,
                     font_weight,
+                    matched_font_weight,
                     font_family,
                     line_height,
+                    line_height_unrounded,
                     bounds: text_bounds,
+                    measured_width,
                 } => DisplayItem::Text {
                     x: text_x - offset_x,
                     y: text_y - offset_y,
@@ -125,8 +128,10 @@ impl OffscreenRenderer<'_> {
                     color: *color,
                     font_size: *font_size,
                     font_weight: *font_weight,
+                    matched_font_weight: *matched_font_weight,
                     font_family: font_family.clone(),
                     line_height: *line_height,
+                    line_height_unrounded: *line_height_unrounded,
                     bounds: text_bounds.map(|(left, top, right, bottom)| {
                         (
                             (left as f32 - offset_x) as i32,
@@ -135,6 +140,7 @@ impl OffscreenRenderer<'_> {
                             (bottom as f32 - offset_y) as i32,
                         )
                     }),
+                    measured_width: *measured_width,
                 },
                 other => other.clone(),
             })

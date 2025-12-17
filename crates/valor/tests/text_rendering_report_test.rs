@@ -28,7 +28,6 @@ use std::fs::write;
 use std::path::PathBuf;
 use tokio::runtime::Handle;
 
-
 /// Runs text rendering comparison between Chrome and Valor using the unified framework.
 ///
 /// # Errors
@@ -43,20 +42,24 @@ async fn run_text_rendering_comparison(page: &Page) -> Result<serde_json::Value>
     info!("\n=== Text Rendering Comparison ===\n");
 
     let handle = Handle::current();
-    let outcome = run_comparison_test::<TextRenderingComparison>(page, &handle, &fixture_path).await?;
+    let outcome =
+        run_comparison_test::<TextRenderingComparison>(page, &handle, &fixture_path).await?;
 
     if let Some(result) = &outcome.result {
         info!("Text rendering comparison completed:");
         info!("  Total pixels: {}", result.total_pixels);
-        info!("  Text pixels: {} ({:.2}%)",
+        info!(
+            "  Text pixels: {} ({:.2}%)",
             result.text_pixels,
             (result.text_pixels as f64 / result.total_pixels as f64) * 100.0
         );
-        info!("  Text diff pixels: {} ({:.4}%)",
+        info!(
+            "  Text diff pixels: {} ({:.4}%)",
             result.text_diff_pixels,
             result.text_diff_ratio * 100.0
         );
-        info!("  Non-text diff pixels: {} ({:.4}%)",
+        info!(
+            "  Non-text diff pixels: {} ({:.4}%)",
             result.non_text_diff_pixels,
             result.non_text_diff_ratio * 100.0
         );
@@ -73,12 +76,11 @@ async fn run_text_rendering_comparison(page: &Page) -> Result<serde_json::Value>
     Ok(serde_json::to_value(&outcome)?)
 }
 
-
 /// Generates and logs a text rendering comparison report.
 ///
 /// # Errors
 ///
-/// Returns an error if comparison or report generation fails.
+/// Returns an error if comparison fails or report generation fails.
 async fn print_text_rendering_report(page: &Page) -> Result<()> {
     let results = run_text_rendering_comparison(page).await?;
 
@@ -94,6 +96,16 @@ async fn print_text_rendering_report(page: &Page) -> Result<()> {
     info!("  - test_cache/text_rendering/failing/*.chrome.json");
     info!("  - test_cache/text_rendering/failing/*.valor.json");
     info!("  - test_cache/text_rendering/failing/*.metadata.json");
+
+    // Assert that the test passed
+    let passed = results.get("passed").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !passed {
+        let error_msg = results
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown comparison error");
+        anyhow::bail!("Text rendering comparison failed:\n{}", error_msg);
+    }
 
     Ok(())
 }

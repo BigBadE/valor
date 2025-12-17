@@ -317,9 +317,10 @@ fn paint_text(text: &str, rect: &LayoutRect, style: &ComputedStyle, items: &mut 
     // Calculate line height using actual font metrics (MUST match css_text::measurement logic!)
     // For line-height: normal, measure_text gets font metrics directly (no shaping).
     // This ensures we use the EXACT same calculation as layout.
-    let line_height = style
-        .line_height
-        .unwrap_or_else(|| measure_text("M", style).height);
+    let metrics = measure_text("M", style);
+    let line_height = style.line_height.unwrap_or(metrics.height);
+    let line_height_unrounded = style.line_height.unwrap_or(metrics.height_unrounded);
+    let matched_font_weight = metrics.matched_font_weight;
 
     // Create text display item
     // Note: Glyphon positions text from the top-left corner, not the baseline
@@ -331,8 +332,10 @@ fn paint_text(text: &str, rect: &LayoutRect, style: &ComputedStyle, items: &mut 
         color: text_color,
         font_size,
         font_weight,
+        matched_font_weight,
         font_family,
         line_height,
+        line_height_unrounded,
         // IMPORTANT: Round UP the bounds to avoid text wrapping due to fractional pixel truncation.
         // If text measures at 252.04px and we truncate to 252px, glyphon will wrap the text.
         // Using ceil() ensures we always have enough space.
@@ -342,6 +345,7 @@ fn paint_text(text: &str, rect: &LayoutRect, style: &ComputedStyle, items: &mut 
             (rect.x + rect.width).ceil() as i32,
             (rect.y + rect.height).ceil() as i32,
         )),
+        measured_width: rect.width,
     });
 }
 

@@ -116,7 +116,9 @@ impl ConstraintLayoutTree {
                             .to_px();
                         (size.to_px() - padding_border).max(0.0)
                     }
-                    AvailableSize::Indefinite | AvailableSize::MinContent | AvailableSize::MaxContent => {
+                    AvailableSize::Indefinite
+                    | AvailableSize::MinContent
+                    | AvailableSize::MaxContent => {
                         // No available size - container will size to content
                         // Return 0 for now, will be adjusted after measuring children
                         0.0
@@ -146,8 +148,14 @@ impl ConstraintLayoutTree {
     ) -> (FlexChild, ChildStyleInfo) {
         // Text nodes in flexbox create anonymous flex items
         // Measure the text to get its intrinsic size
-        let (text_width, _total_height, _glyph_height, _ascent, _single_line_height, text_rect_height) =
-            self.measure_text(child, Some(parent_node), child_space.available_inline_size);
+        let (
+            text_width,
+            _total_height,
+            _glyph_height,
+            _ascent,
+            _single_line_height,
+            text_rect_height,
+        ) = self.measure_text(child, Some(parent_node), child_space.available_inline_size);
 
         // Create a layout result for the text node with measured dimensions
         // Use text_rect_height (glyph_height for single-line, glyph_height * lines for multi-line)

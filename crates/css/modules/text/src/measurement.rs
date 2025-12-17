@@ -9,6 +9,56 @@ use glyphon::{
 };
 use std::sync::{Arc, Mutex, PoisonError};
 
+/// Map a font family name to a glyphon Family enum.
+/// Maps generic families to match Chrome's default font choices on each platform.
+///
+/// This function ensures consistent font selection between layout (measurement) and rendering.
+#[allow(
+    clippy::excessive_nesting,
+    reason = "Platform-specific cfg blocks create unavoidable nesting"
+)]
+pub fn map_font_family(font_name: &str) -> Family<'_> {
+    match font_name.to_lowercase().as_str() {
+        "sans-serif" => {
+            #[cfg(target_os = "windows")]
+            {
+                Family::Name("Arial")
+            }
+            #[cfg(target_os = "macos")]
+            {
+                Family::Name("Helvetica")
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            {
+                Family::SansSerif
+            }
+        }
+        "serif" => {
+            #[cfg(target_os = "windows")]
+            {
+                Family::Name("Times New Roman")
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Family::Serif
+            }
+        }
+        "monospace" => {
+            #[cfg(target_os = "windows")]
+            {
+                Family::Name("Consolas")
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Family::Monospace
+            }
+        }
+        "cursive" => Family::Cursive,
+        "fantasy" => Family::Fantasy,
+        _ => Family::Name(font_name),
+    }
+}
+
 type FontSystemOption = Option<Arc<Mutex<FontSystem>>>;
 
 /// Global font system for text measurement.
@@ -44,11 +94,13 @@ fn get_font_system() -> Arc<Mutex<FontSystem>> {
 pub struct TextMetrics {
     /// Width of the text in pixels.
     pub width: f32,
-    /// Height of the text LINE in pixels (CSS line-height).
+    /// Height of the text LINE in pixels (CSS line-height) - ROUNDED for layout.
     /// This is ascent + descent + `line_gap` from actual font metrics,
     /// or explicit line-height from CSS if specified.
     /// This is what CSS layout uses for box sizing.
     pub height: f32,
+    /// Unrounded line height in pixels - for rendering to match layout calculations.
+    pub height_unrounded: f32,
     /// Actual rendered glyph height (ascent + descent from font metrics).
     /// This is the bounding box of the actual glyphs, used for text node rects.
     pub glyph_height: f32,
@@ -56,6 +108,8 @@ pub struct TextMetrics {
     pub ascent: f32,
     /// Descent from the baseline (positive, downward).
     pub descent: f32,
+    /// Matched font weight after CSS font matching algorithm (e.g., requested 300 -> matched 400).
+    pub matched_font_weight: u16,
 }
 
 /// Font metrics from actual font file.
@@ -74,10 +128,7 @@ struct FontMetricsData {
 /// This directly accesses font metrics without shaping, matching what Chromium does.
 ///
 /// Returns `None` if no font matches are found or if the font fails to load.
-fn get_font_metrics(
-    font_sys: &mut FontSystem,
-    attrs: &Attrs<'_>,
-) -> Option<FontMetricsData> {
+fn get_font_metrics(font_sys: &mut FontSystem, attrs: &Attrs<'_>) -> Option<FontMetricsData> {
     use fontdb::Weight;
 
     // Get font matches for the given attributes
@@ -99,7 +150,11 @@ fn get_font_metrics(
     let descent = -metrics.descent / units_per_em; // Note: descent is negative in font metrics
     let leading = metrics.leading / units_per_em; // Line-gap for "normal" line-height
 
-    Some(FontMetricsData { ascent, descent, leading })
+    Some(FontMetricsData {
+        ascent,
+        descent,
+        leading,
+    })
 }
 
 /// Prepare font attributes from computed style.
@@ -124,15 +179,8 @@ fn prepare_font_attrs(style: &ComputedStyle) -> Attrs<'_> {
                 let font_name = font_spec.trim().trim_matches('\'').trim_matches('"').trim();
 
                 if !font_name.is_empty() {
-                    // Check for generic families first
-                    let family_enum = match font_name.to_lowercase().as_str() {
-                        "monospace" => Family::Monospace,
-                        "serif" => Family::Serif,
-                        "sans-serif" => Family::SansSerif,
-                        "cursive" => Family::Cursive,
-                        "fantasy" => Family::Fantasy,
-                        _ => Family::Name(font_name),
-                    };
+                    // Map generic families to match Chrome's default font choices
+                    let family_enum = map_font_family(font_name);
 
                     attrs = attrs.family(family_enum);
                     font_set = true;
@@ -142,13 +190,36 @@ fn prepare_font_attrs(style: &ComputedStyle) -> Attrs<'_> {
             }
 
             if !font_set {
-                // Fallback to sans-serif if parsing failed (browser default)
-                attrs = attrs.family(Family::SansSerif);
+                // Fallback to Chrome's default serif font
+                #[cfg(target_os = "windows")]
+                {
+                    attrs = attrs.family(Family::Name("Times New Roman"));
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    attrs = attrs.family(Family::Name("Times"));
+                }
+                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                {
+                    attrs = attrs.family(Family::Serif);
+                }
             }
         }
     } else {
-        // Default to sans-serif if no font family specified (browser default)
-        attrs = attrs.family(Family::SansSerif);
+        // Default to browser default sans-serif font when no font family specified
+        // This matches Chrome's behavior for unstyled elements
+        #[cfg(target_os = "windows")]
+        {
+            attrs = attrs.family(Family::Name("Arial"));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            attrs = attrs.family(Family::Name("Helvetica"));
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            attrs = attrs.family(Family::SansSerif);
+        }
     }
 
     attrs
@@ -170,6 +241,10 @@ fn prepare_font_attrs(style: &ComputedStyle) -> Attrs<'_> {
 ///
 /// # Panics
 /// Panics if `font_size` in the style is 0.0 or not set.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Font measurement requires detailed metric calculations"
+)]
 pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
     // Get global font system
     let font_system = get_font_system();
@@ -182,67 +257,104 @@ pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
         "font_size must be specified in ComputedStyle"
     );
 
-    // Get font metrics (ascent + descent)
+    // Get font metrics (ascent + descent) and matched weight
     let attrs = prepare_font_attrs(style);
+
+    // Do font matching to get the actual weight that will be used
+    let font_matches = font_sys.get_font_matches(&attrs);
+    let matched_font_weight = font_matches.first().map_or_else(
+        || {
+            // Fallback to requested weight if no matches
+            if style.font_weight == 0 {
+                400
+            } else {
+                style.font_weight
+            }
+        },
+        |first_match| first_match.font_weight,
+    );
+
+    // CRITICAL: Update attrs to use the matched weight for accurate measurement
+    // This ensures text width measurement uses the same font weight as rendering
+    let attrs = attrs.weight(Weight(matched_font_weight));
+
     let font_metrics = get_font_metrics(&mut font_sys, &attrs);
 
     // Compute actual glyph height and line-height
     // We need two versions: unrounded for cosmic-text, rounded for layout
-    let (glyph_height, ascent, descent, line_height, line_height_unrounded) = if let Some(metrics) = font_metrics {
-        let ascent_px = metrics.ascent * font_size;
-        let descent_px = metrics.descent * font_size;
-        let leading_px = metrics.leading * font_size;
-        let glyph_h = ascent_px + descent_px;
+    let (glyph_height, ascent, descent, line_height, line_height_unrounded) = font_metrics
+        .map_or_else(
+            || {
+                // Fallback if font metrics unavailable
+                let fallback = style.line_height.unwrap_or(font_size);
+                (
+                    font_size,
+                    font_size * 0.8,
+                    font_size * 0.2,
+                    fallback,
+                    fallback,
+                )
+            },
+            |metrics| {
+                let ascent_px = metrics.ascent * font_size;
+                let descent_px = metrics.descent * font_size;
+                let leading_px = metrics.leading * font_size;
+                let glyph_h = ascent_px + descent_px;
 
-        // CSS "normal" line-height = ascent + descent + leading (line-gap from font metrics)
-        // Note: Chrome's font engine may report different leading values than skrifa/cosmic-text.
-        // This can cause 1-2px differences in "normal" line-height calculations for small fonts.
-        let normal_line_h = glyph_h + leading_px;
+                // CSS "normal" line-height = ascent + descent + leading (line-gap from font metrics)
+                // Note: Chrome's font engine may report different leading values than skrifa/cosmic-text.
+                // This can cause 1-2px differences in "normal" line-height calculations for small fonts.
+                let normal_line_h = glyph_h + leading_px;
 
-        // Unrounded line height for cosmic-text internal calculations
-        let line_h_unrounded = style.line_height.unwrap_or(normal_line_h);
+                // Unrounded line height for cosmic-text internal calculations
+                let line_h_unrounded = style.line_height.unwrap_or(normal_line_h);
 
-        // Chrome rounds ascent normally, but ceils descent
-        // For 10px monospace: ascent.round()=8 + descent.ceil()=4 = 12 (matches Chrome)
-        // This asymmetric rounding ensures the baseline has enough space below it
-        // Chrome's text node rect height calculation:
-        // - For small text (glyph_height < 12px): use ceil() to ensure readability
-        // - For normal text (glyph_height >= 12px): use round() for accurate layout
-        let glyph_h_rounded = if glyph_h < 12.0 {
-            glyph_h.ceil()
-        } else {
-            glyph_h.round()
-        };
+                // Chrome rounds ascent normally, but ceils descent
+                // For 10px monospace: ascent.round()=8 + descent.ceil()=4 = 12 (matches Chrome)
+                // This asymmetric rounding ensures the baseline has enough space below it
+                // Chrome's text node rect height calculation:
+                // - For small text (glyph_height < 12px): use ceil() to ensure readability
+                // - For normal text (glyph_height >= 12px): use round() for accurate layout
+                let glyph_h_rounded = if glyph_h < 12.0 {
+                    glyph_h.ceil()
+                } else {
+                    glyph_h.round()
+                };
 
-        // Individual metrics still use standard rounding
-        let ascent_rounded = ascent_px.round();
-        let descent_rounded = descent_px.round();
+                // Individual metrics still use standard rounding
+                let ascent_rounded = ascent_px.round();
+                let descent_rounded = descent_px.round();
 
-        // IMPORTANT: Apply same rounding to line height as glyph height
-        // This ensures line_height >= glyph_height, avoiding negative half-leading
-        let normal_line_h_rounded = if normal_line_h < 12.0 {
-            normal_line_h.ceil()
-        } else {
-            normal_line_h.round()
-        };
+                // IMPORTANT: Apply same rounding to line height as glyph height
+                // This ensures line_height >= glyph_height, avoiding negative half-leading
+                let normal_line_h_rounded = if normal_line_h < 12.0 {
+                    normal_line_h.ceil()
+                } else {
+                    normal_line_h.round()
+                };
 
-        // Line height: explicit from CSS or use normal (glyph + leading) for 'normal'
-        let line_h = style.line_height.unwrap_or(normal_line_h_rounded);
+                // Line height: explicit from CSS or use normal (glyph + leading) for 'normal'
+                let line_h = style.line_height.unwrap_or(normal_line_h_rounded);
 
-        (glyph_h_rounded, ascent_rounded, descent_rounded, line_h, line_h_unrounded)
-    } else {
-        // Fallback if font metrics unavailable
-        let fallback = style.line_height.unwrap_or(font_size);
-        (font_size, font_size * 0.8, font_size * 0.2, fallback, fallback)
-    };
+                (
+                    glyph_h_rounded,
+                    ascent_rounded,
+                    descent_rounded,
+                    line_h,
+                    line_h_unrounded,
+                )
+            },
+        );
 
     if text.is_empty() {
         return TextMetrics {
             width: 0.0,
             height: line_height,
+            height_unrounded: line_height_unrounded,
             glyph_height,
             ascent,
             descent,
+            matched_font_weight,
         };
     }
 
@@ -271,9 +383,11 @@ pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
     TextMetrics {
         width: max_width,
         height: line_height,
+        height_unrounded: line_height_unrounded,
         glyph_height,
         ascent,
         descent,
+        matched_font_weight,
     }
 }
 
@@ -289,15 +403,20 @@ pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
 ///
 /// # Returns
 ///
-/// (`total_height`, `line_count`, `glyph_height`, `ascent`, `descent`, `single_line_height`)
+/// (`total_height`, `line_count`, `glyph_height`, `ascent`, `descent`, `single_line_height`, `actual_width`)
 ///
 /// # Panics
 /// Panics if `font_size` in the style is 0.0 or not set.
+#[allow(
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    reason = "Wrapped text measurement requires detailed layout calculations"
+)]
 pub fn measure_text_wrapped(
     text: &str,
     style: &ComputedStyle,
     max_width: f32,
-) -> (f32, usize, f32, f32, f32, f32) {
+) -> (f32, usize, f32, f32, f32, f32, f32) {
     // Get global font system
     let font_system = get_font_system();
     let mut font_sys = font_system.lock().unwrap_or_else(PoisonError::into_inner);
@@ -311,60 +430,103 @@ pub fn measure_text_wrapped(
 
     // Get font metrics (ascent + descent + leading)
     let attrs = prepare_font_attrs(style);
+
+    // Do font matching to get the actual weight that will be used
+    let font_matches = font_sys.get_font_matches(&attrs);
+    let matched_font_weight = font_matches.first().map_or_else(
+        || {
+            // Fallback to requested weight if no matches
+            if style.font_weight == 0 {
+                400
+            } else {
+                style.font_weight
+            }
+        },
+        |first_match| first_match.font_weight,
+    );
+
+    // CRITICAL: Update attrs to use the matched weight for accurate measurement
+    // This ensures text width measurement uses the same font weight as rendering
+    let attrs = attrs.weight(Weight(matched_font_weight));
+
     let font_metrics = get_font_metrics(&mut font_sys, &attrs);
 
     // Compute actual glyph height and line-height
     // We need two versions: unrounded for cosmic-text, rounded for layout
-    let (glyph_height, ascent, descent, line_height, line_height_unrounded) = if let Some(metrics) = font_metrics {
-        let ascent_px = metrics.ascent * font_size;
-        let descent_px = metrics.descent * font_size;
-        let leading_px = metrics.leading * font_size;
-        let glyph_h = ascent_px + descent_px;
+    let (glyph_height, ascent, descent, line_height, line_height_unrounded) = font_metrics
+        .map_or_else(
+            || {
+                // Fallback if font metrics unavailable
+                let fallback = style.line_height.unwrap_or(font_size);
+                (
+                    font_size,
+                    font_size * 0.8,
+                    font_size * 0.2,
+                    fallback,
+                    fallback,
+                )
+            },
+            |metrics| {
+                let ascent_px = metrics.ascent * font_size;
+                let descent_px = metrics.descent * font_size;
+                let leading_px = metrics.leading * font_size;
+                let glyph_h = ascent_px + descent_px;
 
-        // CSS "normal" line-height = ascent + descent + leading (line-gap from font metrics)
-        // Note: Chrome's font engine may report different leading values than skrifa/cosmic-text.
-        // This can cause 1-2px differences in "normal" line-height calculations for small fonts.
-        let normal_line_h = glyph_h + leading_px;
+                // CSS "normal" line-height = ascent + descent + leading (line-gap from font metrics)
+                // Note: Chrome's font engine may report different leading values than skrifa/cosmic-text.
+                // This can cause 1-2px differences in "normal" line-height calculations for small fonts.
+                let normal_line_h = glyph_h + leading_px;
 
-        // Unrounded line height for cosmic-text internal calculations
-        let line_h_unrounded = style.line_height.unwrap_or(normal_line_h);
+                // Unrounded line height for cosmic-text internal calculations
+                let line_h_unrounded = style.line_height.unwrap_or(normal_line_h);
 
-        // Chrome rounds ascent normally, but ceils descent
-        // For 10px monospace: ascent.round()=8 + descent.ceil()=4 = 12 (matches Chrome)
-        // This asymmetric rounding ensures the baseline has enough space below it
-        // Chrome's text node rect height calculation:
-        // - For small text (glyph_height < 12px): use ceil() to ensure readability
-        // - For normal text (glyph_height >= 12px): use round() for accurate layout
-        let glyph_h_rounded = if glyph_h < 12.0 {
-            glyph_h.ceil()
-        } else {
-            glyph_h.round()
-        };
+                // Chrome rounds ascent normally, but ceils descent
+                // For 10px monospace: ascent.round()=8 + descent.ceil()=4 = 12 (matches Chrome)
+                // This asymmetric rounding ensures the baseline has enough space below it
+                // Chrome's text node rect height calculation:
+                // - For small text (glyph_height < 12px): use ceil() to ensure readability
+                // - For normal text (glyph_height >= 12px): use round() for accurate layout
+                let glyph_h_rounded = if glyph_h < 12.0 {
+                    glyph_h.ceil()
+                } else {
+                    glyph_h.round()
+                };
 
-        // Individual metrics still use standard rounding
-        let ascent_rounded = ascent_px.round();
-        let descent_rounded = descent_px.round();
+                // Individual metrics still use standard rounding
+                let ascent_rounded = ascent_px.round();
+                let descent_rounded = descent_px.round();
 
-        // IMPORTANT: Apply same rounding to line height as glyph height
-        // This ensures line_height >= glyph_height, avoiding negative half-leading
-        let normal_line_h_rounded = if normal_line_h < 12.0 {
-            normal_line_h.ceil()
-        } else {
-            normal_line_h.round()
-        };
+                // IMPORTANT: Apply same rounding to line height as glyph height
+                // This ensures line_height >= glyph_height, avoiding negative half-leading
+                let normal_line_h_rounded = if normal_line_h < 12.0 {
+                    normal_line_h.ceil()
+                } else {
+                    normal_line_h.round()
+                };
 
-        // Line height: explicit from CSS or use normal (glyph + leading) for 'normal'
-        let line_h = style.line_height.unwrap_or(normal_line_h_rounded);
+                // Line height: explicit from CSS or use normal (glyph + leading) for 'normal'
+                let line_h = style.line_height.unwrap_or(normal_line_h_rounded);
 
-        (glyph_h_rounded, ascent_rounded, descent_rounded, line_h, line_h_unrounded)
-    } else {
-        // Fallback if font metrics unavailable
-        let fallback = style.line_height.unwrap_or(font_size);
-        (font_size, font_size * 0.8, font_size * 0.2, fallback, fallback)
-    };
+                (
+                    glyph_h_rounded,
+                    ascent_rounded,
+                    descent_rounded,
+                    line_h,
+                    line_h_unrounded,
+                )
+            },
+        );
 
     if text.is_empty() {
-        return (line_height, 0, glyph_height, ascent, descent, line_height);
+        return (
+            line_height,
+            0,
+            glyph_height,
+            ascent,
+            descent,
+            line_height,
+            0.0,
+        );
     }
 
     // Create a buffer with wrapping enabled - use UNROUNDED line_height for cosmic-text
@@ -379,10 +541,11 @@ pub fn measure_text_wrapped(
     buffer.shape_until_scroll(&mut font_sys, false);
 
     // Count LAYOUT lines (wrapped visual lines), not buffer lines (paragraphs)
-    // Also get actual glyph bounds from shaped text
+    // Also get actual glyph bounds and max line width from shaped text
     let mut layout_line_count = 0;
     let mut actual_max_ascent = 0.0f32;
     let mut actual_max_descent = 0.0f32;
+    let mut actual_max_width = 0.0f32;
 
     for line_idx in 0..buffer.lines.len() {
         if let Some(layout_lines) = buffer.line_layout(&mut font_sys, line_idx) {
@@ -390,21 +553,33 @@ pub fn measure_text_wrapped(
             for layout_line in layout_lines {
                 actual_max_ascent = actual_max_ascent.max(layout_line.max_ascent);
                 actual_max_descent = actual_max_descent.max(layout_line.max_descent);
+                actual_max_width = actual_max_width.max(layout_line.w);
             }
         }
     }
 
     // Use actual glyph bounds if we got valid values from shaping
-    let (final_glyph_height, final_ascent, final_descent) = if actual_max_ascent > 0.0 || actual_max_descent > 0.0 {
-        let actual_glyph_h = actual_max_ascent + actual_max_descent;
-        (actual_glyph_h, actual_max_ascent, actual_max_descent)
-    } else {
-        (glyph_height, ascent, descent)
-    };
+    let (final_glyph_height, final_ascent, final_descent) =
+        if actual_max_ascent > 0.0 || actual_max_descent > 0.0 {
+            let actual_glyph_h = actual_max_ascent + actual_max_descent;
+            (actual_glyph_h, actual_max_ascent, actual_max_descent)
+        } else {
+            (glyph_height, ascent, descent)
+        };
 
     let total_height = layout_line_count as f32 * line_height;
 
-    (total_height, layout_line_count, final_glyph_height, final_ascent, final_descent, line_height)
+    // Return actual max width from wrapped lines, not the max_width constraint
+    // This is important because wrapped text may be narrower than the available width
+    (
+        total_height,
+        layout_line_count,
+        final_glyph_height,
+        final_ascent,
+        final_descent,
+        line_height,
+        actual_max_width,
+    )
 }
 
 /// Measure text width using actual font metrics.
@@ -468,7 +643,8 @@ mod tests {
             font_size: 16.0,
             ..Default::default()
         };
-        let (height, lines, _glyph_height, _ascent, _descent, _single_line_height) = measure_text_wrapped("Hello World This Is A Test", &style, 100.0);
+        let (height, lines, _glyph_height, _ascent, _descent, _single_line_height, _actual_width) =
+            measure_text_wrapped("Hello World This Is A Test", &style, 100.0);
 
         // Note: Text wrapping behavior depends on font metrics and available width.
         // With some fonts, this text might fit on one line at 100px width.

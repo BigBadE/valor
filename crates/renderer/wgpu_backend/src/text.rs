@@ -173,9 +173,12 @@ pub fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
         color,
         font_size,
         font_weight,
+        matched_font_weight,
         font_family,
         line_height,
+        line_height_unrounded,
         bounds,
+        measured_width,
     } = item
     {
         return Some(DrawText {
@@ -185,9 +188,12 @@ pub fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
             color: *color,
             font_size: *font_size,
             font_weight: *font_weight,
+            matched_font_weight: *matched_font_weight,
             font_family: font_family.clone(),
             line_height: *line_height,
+            line_height_unrounded: *line_height_unrounded,
             bounds: *bounds,
+            measured_width: *measured_width,
         });
     }
     None
