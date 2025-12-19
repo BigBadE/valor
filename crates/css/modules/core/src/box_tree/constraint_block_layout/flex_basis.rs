@@ -148,20 +148,14 @@ impl ConstraintLayoutTree {
     ) -> (FlexChild, ChildStyleInfo) {
         // Text nodes in flexbox create anonymous flex items
         // Measure the text to get its intrinsic size
-        let (
-            text_width,
-            _total_height,
-            _glyph_height,
-            _ascent,
-            _single_line_height,
-            text_rect_height,
-        ) = self.measure_text(child, Some(parent_node), child_space.available_inline_size);
+        let text_measurement =
+            self.measure_text(child, Some(parent_node), child_space.available_inline_size);
 
         // Create a layout result for the text node with measured dimensions
         // Use text_rect_height (glyph_height for single-line, glyph_height * lines for multi-line)
         let child_result = LayoutResult {
-            inline_size: text_width,
-            block_size: text_rect_height,
+            inline_size: text_measurement.width,
+            block_size: text_measurement.text_rect_height,
             bfc_offset: BfcOffset::root(),
             exclusion_space: ExclusionSpace::new(),
             end_margin_strut: MarginStrut::default(),

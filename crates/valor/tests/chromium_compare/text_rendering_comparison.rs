@@ -152,9 +152,7 @@ impl ComparisonTest for TextRenderingComparison {
                     let valor_value = valor.pixels[idx + channel_offset];
                     let diff = (i16::from(chrome_value) - i16::from(valor_value)).unsigned_abs();
 
-                    if diff > 0 {
-                        pixel_differs = true;
-                    }
+                    pixel_differs = pixel_differs || diff > 0;
 
                     max_channel_diff = max_channel_diff.max(diff);
                     channel_diffs.push(f64::from(diff));

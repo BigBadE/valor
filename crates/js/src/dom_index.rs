@@ -274,6 +274,11 @@ impl DOMSubscriber for DomIndex {
                 guard.remove_recursively(node);
                 drop(guard);
             }
+            DOMUpdate::UpdateText { node, text } => {
+                // Update the text content of an existing text node in-place
+                guard.text_by_key.insert(node, text);
+                drop(guard);
+            }
             DOMUpdate::EndOfDocument => {
                 drop(guard);
             }

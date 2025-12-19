@@ -3,11 +3,23 @@
 use super::ConstraintLayoutTree;
 use super::shared::ChildrenLayoutState;
 use css_box::LayoutUnit;
-use css_text::measurement::{measure_text, measure_text_wrapped};
+use css_orchestrator::style_model::ComputedStyle;
+use css_text::measurement::{TextMetrics, measure_text, measure_text_wrapped};
 use js::NodeKey;
 
 use super::super::constraint_space::{AvailableSize, BfcOffset, ConstraintSpace, LayoutResult};
 use super::super::margin_strut::MarginStrut;
+
+/// Result of text measurement containing all relevant metrics.
+#[derive(Debug, Clone, Copy)]
+pub struct TextMeasurement {
+    pub width: f32,
+    pub _total_height: f32,
+    pub glyph_height: f32,
+    pub _ascent: f32,
+    pub single_line_height: f32,
+    pub text_rect_height: f32,
+}
 
 impl ConstraintLayoutTree {
     pub(super) fn layout_text_child(
@@ -74,20 +86,25 @@ impl ConstraintLayoutTree {
         // For the lead text node, measure the combined text.
         // For continuation nodes, they contribute to the combined measurement but
         // get zero inline size individually (the lead node takes all the space).
-        let (
-            text_width,
-            _total_height,
-            glyph_height,
-            _ascent,
-            single_line_height,
-            text_rect_height,
-        ) = if is_continuation {
+        let measurement = if is_continuation {
             // Continuation node: zero inline size, same block size as lead
             // The rendering pass will combine all consecutive text nodes
-            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            TextMeasurement {
+                width: 0.0,
+                _total_height: 0.0,
+                glyph_height: 0.0,
+                _ascent: 0.0,
+                single_line_height: 0.0,
+                text_rect_height: 0.0,
+            }
         } else {
             self.measure_text(child, Some(parent), child_space.available_inline_size)
         };
+
+        let text_width = measurement.width;
+        let glyph_height = measurement.glyph_height;
+        let single_line_height = measurement.single_line_height;
+        let text_rect_height = measurement.text_rect_height;
 
         // Calculate text Y position within the line box (centering vertically)
         // Use SINGLE-LINE height for half-leading calculation, not total height.
@@ -151,23 +168,12 @@ impl ConstraintLayoutTree {
 
     /// Measure text node dimensions using actual font metrics.
     /// For consecutive text nodes, combines them before measuring to ensure proper wrapping.
-    ///
-    /// Returns: (`width`, `total_height`, `glyph_height`, `ascent`, `single_line_height`, `text_rect_height`)
-    /// - `text_rect_height`: `glyph_height` for single-line, `glyph_height` * `line_count` for multi-line
-    #[allow(
-        clippy::type_complexity,
-        reason = "Returning multiple related measurements as tuple is clearer than a struct"
-    )]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Text measurement requires detailed handling of multiple cases"
-    )]
     pub(super) fn measure_text(
         &self,
         child_node: NodeKey,
         parent_node: Option<NodeKey>,
         available_inline: AvailableSize,
-    ) -> (f32, f32, f32, f32, f32, f32) {
+    ) -> TextMeasurement {
         // Combine consecutive text nodes that share the same parent
         // This ensures "Unicode ", "&", " Special Characters" are measured together
         let combined_text = parent_node.map_or_else(
@@ -191,7 +197,14 @@ impl ConstraintLayoutTree {
         let text = combined_text.as_str();
 
         if text.is_empty() {
-            return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+            return TextMeasurement {
+                width: 0.0,
+                _total_height: 0.0,
+                glyph_height: 0.0,
+                _ascent: 0.0,
+                single_line_height: 0.0,
+                text_rect_height: 0.0,
+            };
         }
 
         // Text nodes inherit font properties from their parent.
@@ -203,6 +216,9 @@ impl ConstraintLayoutTree {
 
         // Measure without wrapping first to see if text fits
         let metrics = measure_text(text, &style);
+
+        // Debug: Log for text containing "Quoted"
+        Self::debug_log_quoted_text(text, &style, &metrics);
 
         // CRITICAL: Use full line-height for text_rect_height
         // Text is positioned with half_leading offset from top, so container must be
@@ -216,79 +232,139 @@ impl ConstraintLayoutTree {
         // pass with incorrect ICB width, so use natural width instead of wrapping
         match available_inline {
             AvailableSize::Indefinite | AvailableSize::MaxContent | AvailableSize::MinContent => {
-                // Intrinsic sizing - use natural width without wrapping
-                log::debug!(
-                    "measure_text: INTRINSIC sizing for text='{}', mode={:?}, metrics.width={}, using natural width",
+                Self::measure_intrinsic(
                     text,
                     available_inline,
-                    metrics.width
-                );
-                // For non-wrapped text: use single_line_text_rect_height
-                (
-                    metrics.width,
-                    metrics.height,
-                    metrics.glyph_height,
-                    metrics.ascent,
-                    metrics.height,
+                    &metrics,
                     single_line_text_rect_height,
                 )
             }
             AvailableSize::Definite(size) => {
-                const MIN_WRAP_WIDTH: f32 = 50.0;
-                let available_width = size.to_px();
-                // Don't wrap at absurdly small widths - use natural width instead
-                if available_width < MIN_WRAP_WIDTH {
-                    log::debug!(
-                        "measure_text: SMALL DEFINITE ({}px < {}px) for text='{}', metrics.width={}, using natural width",
-                        available_width,
-                        MIN_WRAP_WIDTH,
-                        text,
-                        metrics.width
-                    );
-                    // For non-wrapped text: use single_line_text_rect_height
-                    (
-                        metrics.width,
-                        metrics.height,
-                        metrics.glyph_height,
-                        metrics.ascent,
-                        metrics.height,
-                        single_line_text_rect_height,
-                    )
-                } else if metrics.width <= available_width {
-                    // Text fits on one line - use actual width
-                    // For non-wrapped text: use single_line_text_rect_height
-                    (
-                        metrics.width,
-                        metrics.height,
-                        metrics.glyph_height,
-                        metrics.ascent,
-                        metrics.height,
-                        single_line_text_rect_height,
-                    )
-                } else {
-                    // Text needs wrapping - measure wrapped height and use ACTUAL wrapped width
-                    let (
-                        total_height,
-                        _line_count,
-                        glyph_height,
-                        ascent,
-                        _descent,
-                        single_line_height,
-                        actual_width,
-                    ) = measure_text_wrapped(text, &style, available_width);
-                    // For wrapped text: text_rect_height = total_height (line_height × line_count)
-                    let text_rect_height = total_height;
-                    // Use actual_width from wrapped lines, not available_width
-                    // This prevents text from being clipped when it wraps to a narrower width
-                    (
-                        actual_width,
-                        total_height,
-                        glyph_height,
-                        ascent,
-                        single_line_height,
-                        text_rect_height,
-                    )
-                }
+                Self::measure_definite(text, &style, &metrics, size, single_line_text_rect_height)
+            }
+        }
+    }
+
+    /// Measure text with intrinsic sizing (no wrapping).
+    fn measure_intrinsic(
+        text: &str,
+        mode: AvailableSize,
+        metrics: &TextMetrics,
+        single_line_text_rect_height: f32,
+    ) -> TextMeasurement {
+        log::debug!(
+            "measure_text: INTRINSIC sizing for text='{}', mode={:?}, metrics.width={}, using natural width",
+            text,
+            mode,
+            metrics.width
+        );
+        TextMeasurement {
+            width: metrics.width,
+            _total_height: metrics.height,
+            glyph_height: metrics.glyph_height,
+            _ascent: metrics.ascent,
+            single_line_height: metrics.height,
+            text_rect_height: single_line_text_rect_height,
+        }
+    }
+
+    /// Measure text with definite sizing (may wrap).
+    fn measure_definite(
+        text: &str,
+        style: &ComputedStyle,
+        metrics: &TextMetrics,
+        size: LayoutUnit,
+        single_line_text_rect_height: f32,
+    ) -> TextMeasurement {
+        const MIN_WRAP_WIDTH: f32 = 50.0;
+        let available_width = size.to_px();
+
+        Self::debug_log_wrap_decision(text, available_width, metrics.width);
+
+        // Don't wrap at absurdly small widths - use natural width instead
+        if available_width < MIN_WRAP_WIDTH {
+            log::debug!(
+                "measure_text: SMALL DEFINITE ({}px < {}px) for text='{}', metrics.width={}, using natural width",
+                available_width,
+                MIN_WRAP_WIDTH,
+                text,
+                metrics.width
+            );
+            return TextMeasurement {
+                width: metrics.width,
+                _total_height: metrics.height,
+                glyph_height: metrics.glyph_height,
+                _ascent: metrics.ascent,
+                single_line_height: metrics.height,
+                text_rect_height: single_line_text_rect_height,
+            };
+        }
+
+        if metrics.width <= available_width {
+            // Text fits on one line - use actual width
+            TextMeasurement {
+                width: metrics.width,
+                _total_height: metrics.height,
+                glyph_height: metrics.glyph_height,
+                _ascent: metrics.ascent,
+                single_line_height: metrics.height,
+                text_rect_height: single_line_text_rect_height,
+            }
+        } else {
+            // Text needs wrapping - measure wrapped height and use ACTUAL wrapped width
+            let wrapped_metrics = measure_text_wrapped(text, style, available_width);
+            // For wrapped text: text_rect_height = total_height (line_height × line_count)
+            let text_rect_height = wrapped_metrics.total_height;
+            // Use actual_width from wrapped lines, not available_width
+            // This prevents text from being clipped when it wraps to a narrower width
+            TextMeasurement {
+                width: wrapped_metrics.actual_width,
+                _total_height: wrapped_metrics.total_height,
+                glyph_height: wrapped_metrics.glyph_height,
+                _ascent: wrapped_metrics.ascent,
+                single_line_height: wrapped_metrics.single_line_height,
+                text_rect_height,
+            }
+        }
+    }
+
+    /// Debug logging for text containing "Quoted".
+    fn debug_log_quoted_text(text: &str, style: &ComputedStyle, metrics: &TextMetrics) {
+        if text.contains("Quoted") {
+            log::debug!(
+                "measure_text [QUOTED TEXT]: unwrapped metrics.width={:.6}px, text={:?}",
+                metrics.width,
+                text
+            );
+
+            // Measure substring up to "Quoted"
+            if let Some(pos) = text.find("\"Quoted\"") {
+                let substring = &text[..pos + "\"Quoted\"".len()];
+                let substring_metrics = measure_text(substring, style);
+                log::debug!(
+                    "measure_text [UP TO QUOTED]: substring_width={:.6}px, substring={:?}",
+                    substring_metrics.width,
+                    substring
+                );
+            }
+        }
+    }
+
+    /// Debug logging for wrapping decision on text containing "Quoted".
+    fn debug_log_wrap_decision(text: &str, available_width: f32, metrics_width: f32) {
+        if text.contains("Quoted") {
+            use std::fs::OpenOptions;
+            use std::io::Write as _;
+            if let Ok(mut file) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("text_wrap_debug.log")
+            {
+                drop(writeln!(
+                    file,
+                    "measure_text [QUOTED WRAPPING DECISION]: available_width={available_width:.6}px, metrics.width={metrics_width:.6}px, will_wrap={}",
+                    metrics_width > available_width
+                ));
             }
         }
     }

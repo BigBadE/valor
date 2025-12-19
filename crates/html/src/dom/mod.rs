@@ -102,6 +102,7 @@ impl DOM {
             let mut insert_text_count = 0usize;
             let mut set_attr_count = 0usize;
             let mut remove_node_count = 0usize;
+            let mut update_text_count = 0usize;
             let mut end_of_document_count = 0usize;
             for update in &batch {
                 match update {
@@ -109,18 +110,20 @@ impl DOM {
                     DOMUpdate::InsertText { .. } => insert_text_count += 1,
                     DOMUpdate::SetAttr { .. } => set_attr_count += 1,
                     DOMUpdate::RemoveNode { .. } => remove_node_count += 1,
+                    DOMUpdate::UpdateText { .. } => update_text_count += 1,
                     DOMUpdate::EndOfDocument => end_of_document_count += 1,
                 }
                 self.apply_update(update);
             }
             // Test printing: summarize the batch we just applied
             info!(
-                "DOM.update: applied batch_size={} InsertElement={} InsertText={} SetAttr={} RemoveNode={} EndOfDocument={}",
+                "DOM.update: applied batch_size={} InsertElement={} InsertText={} SetAttr={} RemoveNode={} UpdateText={} EndOfDocument={}",
                 batch.len(),
                 insert_element_count,
                 insert_text_count,
                 set_attr_count,
                 remove_node_count,
+                update_text_count,
                 end_of_document_count
             );
             // Send update to mirrors, ignoring it if there's no listeners.
@@ -168,7 +171,7 @@ impl DOM {
 
     /// Apply a single DOM update to the tree.
     fn apply_update(&mut self, update: &DOMUpdate) {
-        use DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr};
+        use DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr, UpdateText};
 
         match update {
             InsertElement {
@@ -236,6 +239,15 @@ impl DOM {
                     // Detach from parent if attached
                     runtime_id.detach(&mut self.dom);
                     // Keep mapping for potential future references; minimal change.
+                }
+            }
+            UpdateText { node, text } => {
+                if let Some(&runtime_id) = self.id_map.get(node) {
+                    if let Some(node_ref) = self.dom.get_mut(runtime_id)
+                        && let NodeKind::Text { text: text_ref } = &mut node_ref.get_mut().kind
+                    {
+                        text_ref.clone_from(text);
+                    }
                 }
             }
             EndOfDocument => {

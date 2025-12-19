@@ -138,6 +138,10 @@ impl DOMSubscriber for CSSMirror {
                     self.rebuild_styles_from_style_nodes();
                 }
             }
+            DOMUpdate::UpdateText { .. } => {
+                // UpdateText doesn't affect CSS mirror since it only updates text nodes,
+                // and CSS is only collected from <style> element children via InsertText
+            }
             EndOfDocument => {
                 self.rebuild_styles_from_style_nodes();
             }

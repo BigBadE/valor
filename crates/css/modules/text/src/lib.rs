@@ -7,7 +7,8 @@ pub mod measurement;
 
 // Re-export commonly used measurement functions
 pub use measurement::{
-    TextMetrics, map_font_family, measure_text, measure_text_width, measure_text_wrapped,
+    TextMetrics, WrappedTextMetrics, map_font_family, measure_text, measure_text_width,
+    measure_text_wrapped,
 };
 
 /// Collapse ASCII whitespace runs to a single space and trim.

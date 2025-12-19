@@ -7,10 +7,6 @@ use cssparser::{ParseError, Parser, ParserInput, Token};
 use std::iter::repeat_n;
 
 /// Parse grid template (grid-template-columns or grid-template-rows).
-#[allow(
-    clippy::too_many_lines,
-    reason = "Grid template parsing requires handling many cases"
-)]
 pub fn parse_grid_template(template: &str, gap: f32) -> GridAxisTracks {
     let mut input = ParserInput::new(template.trim());
     let mut parser = Parser::new(&mut input);
@@ -19,12 +15,8 @@ pub fn parse_grid_template(template: &str, gap: f32) -> GridAxisTracks {
     let mut auto_repeat = None;
 
     loop {
-        // Skip whitespace
-        #[allow(
-            clippy::let_underscore_must_use,
-            reason = "Whitespace parsing is optional and failure is expected"
-        )]
-        let _ = parser.try_parse(cssparser::Parser::expect_whitespace);
+        // Skip whitespace - failures are expected and intentional
+        drop(parser.try_parse(cssparser::Parser::expect_whitespace));
 
         // Check if we've reached the end
         if parser.is_exhausted() {
@@ -32,117 +24,13 @@ pub fn parse_grid_template(template: &str, gap: f32) -> GridAxisTracks {
         }
 
         // Try to parse next track size
-        let Ok(token) = parser.next() else {
-            break;
+        let token = match parser.next() {
+            Ok(tok) => tok.clone(),
+            Err(_) => break,
         };
 
-        match token {
-            Token::Function(name) if name.eq_ignore_ascii_case("repeat") => {
-                match parser.parse_nested_block(|parser| {
-                    Ok::<Option<RepeatResult>, ParseError<'_, ()>>(parse_repeat(parser))
-                }) {
-                    Ok(Some(result)) => match result {
-                        RepeatResult::Explicit(count, track_size) => {
-                            tracks.extend(repeat_n(
-                                GridTrack {
-                                    size: track_size.clone(),
-                                    track_type: TrackListType::Explicit,
-                                },
-                                count,
-                            ));
-                        }
-                        RepeatResult::Auto(repeat) => {
-                            auto_repeat = Some(repeat);
-                        }
-                    },
-                    Ok(None) => {
-                        // Invalid repeat syntax, stop parsing
-                        break;
-                    }
-                    Err(_) => {
-                        // Parse error in repeat(), stop parsing
-                        break;
-                    }
-                }
-            }
-            Token::Function(name) if name.eq_ignore_ascii_case("minmax") => {
-                match parser.parse_nested_block(|parser| parse_minmax(parser)) {
-                    Ok(track_size) => {
-                        tracks.push(GridTrack {
-                            size: track_size,
-                            track_type: TrackListType::Explicit,
-                        });
-                    }
-                    Err(_) => {
-                        // Parse error in minmax(), stop parsing
-                        break;
-                    }
-                }
-            }
-            Token::Dimension { value, unit, .. } => {
-                let unit_lower = unit.as_ref().to_ascii_lowercase();
-                match unit_lower.as_str() {
-                    "px" => {
-                        tracks.push(GridTrack {
-                            size: GridTrackSize::Breadth(TrackBreadth::Length(*value)),
-                            track_type: TrackListType::Explicit,
-                        });
-                    }
-                    "fr" => {
-                        tracks.push(GridTrack {
-                            size: GridTrackSize::Breadth(TrackBreadth::Flex(*value)),
-                            track_type: TrackListType::Explicit,
-                        });
-                    }
-                    _ => {
-                        // Unknown unit, stop parsing
-                        break;
-                    }
-                }
-            }
-            Token::Percentage { unit_value, .. } => {
-                tracks.push(GridTrack {
-                    size: GridTrackSize::Breadth(TrackBreadth::Percentage(*unit_value)),
-                    track_type: TrackListType::Explicit,
-                });
-            }
-            Token::Number { value: 0.0, .. } => {
-                tracks.push(GridTrack {
-                    size: GridTrackSize::Breadth(TrackBreadth::Length(0.0)),
-                    track_type: TrackListType::Explicit,
-                });
-            }
-            Token::Ident(name) => {
-                let name_lower = name.as_ref().to_ascii_lowercase();
-                match name_lower.as_str() {
-                    "auto" => {
-                        tracks.push(GridTrack {
-                            size: GridTrackSize::Breadth(TrackBreadth::Auto),
-                            track_type: TrackListType::Explicit,
-                        });
-                    }
-                    "min-content" => {
-                        tracks.push(GridTrack {
-                            size: GridTrackSize::Breadth(TrackBreadth::MinContent),
-                            track_type: TrackListType::Explicit,
-                        });
-                    }
-                    "max-content" => {
-                        tracks.push(GridTrack {
-                            size: GridTrackSize::Breadth(TrackBreadth::MaxContent),
-                            track_type: TrackListType::Explicit,
-                        });
-                    }
-                    _ => {
-                        // Unknown identifier, stop parsing
-                        break;
-                    }
-                }
-            }
-            _ => {
-                // Unknown token, stop parsing
-                break;
-            }
+        if !parse_track_token(&mut parser, &token, &mut tracks, &mut auto_repeat) {
+            break;
         }
     }
 
@@ -150,6 +38,150 @@ pub fn parse_grid_template(template: &str, gap: f32) -> GridAxisTracks {
         GridAxisTracks::with_auto_repeat(tracks, gap, repeat)
     } else {
         GridAxisTracks::new(tracks, gap)
+    }
+}
+
+/// Parse a single track token and add it to the tracks list.
+/// Returns `false` if parsing should stop.
+fn parse_track_token<'input>(
+    parser: &mut Parser<'input, '_>,
+    token: &Token<'input>,
+    tracks: &mut Vec<GridTrack>,
+    auto_repeat: &mut Option<TrackRepeat>,
+) -> bool {
+    match token {
+        Token::Function(name) if name.eq_ignore_ascii_case("repeat") => {
+            parse_repeat_function(parser, tracks, auto_repeat)
+        }
+        Token::Function(name) if name.eq_ignore_ascii_case("minmax") => {
+            parse_minmax_function(parser, tracks)
+        }
+        Token::Dimension { value, unit, .. } => parse_dimension_token(*value, unit, tracks),
+        Token::Percentage { unit_value, .. } => {
+            tracks.push(GridTrack {
+                size: GridTrackSize::Breadth(TrackBreadth::Percentage(*unit_value)),
+                track_type: TrackListType::Explicit,
+            });
+            true
+        }
+        Token::Number { value: 0.0, .. } => {
+            tracks.push(GridTrack {
+                size: GridTrackSize::Breadth(TrackBreadth::Length(0.0)),
+                track_type: TrackListType::Explicit,
+            });
+            true
+        }
+        Token::Ident(name) => parse_ident_token(name, tracks),
+        _ => {
+            // Unknown token, stop parsing
+            false
+        }
+    }
+}
+
+/// Parse a `repeat()` function.
+/// Returns `false` if parsing should stop.
+fn parse_repeat_function(
+    parser: &mut Parser<'_, '_>,
+    tracks: &mut Vec<GridTrack>,
+    auto_repeat: &mut Option<TrackRepeat>,
+) -> bool {
+    match parser.parse_nested_block(|parser| {
+        Ok::<Option<RepeatResult>, ParseError<'_, ()>>(parse_repeat(parser))
+    }) {
+        Ok(Some(result)) => match result {
+            RepeatResult::Explicit(count, track_size) => {
+                tracks.extend(repeat_n(
+                    GridTrack {
+                        size: track_size,
+                        track_type: TrackListType::Explicit,
+                    },
+                    count,
+                ));
+                true
+            }
+            RepeatResult::Auto(repeat) => {
+                *auto_repeat = Some(repeat);
+                true
+            }
+        },
+        Ok(None) | Err(_) => {
+            // Invalid repeat syntax or parse error, stop parsing
+            false
+        }
+    }
+}
+
+/// Parse a `minmax()` function.
+/// Returns `false` if parsing should stop.
+fn parse_minmax_function(parser: &mut Parser<'_, '_>, tracks: &mut Vec<GridTrack>) -> bool {
+    parser
+        .parse_nested_block(|parser| parse_minmax(parser))
+        .is_ok_and(|track_size| {
+            tracks.push(GridTrack {
+                size: track_size,
+                track_type: TrackListType::Explicit,
+            });
+            true
+        })
+}
+
+/// Parse a dimension token (e.g., "200px" or "1fr").
+/// Returns `false` if parsing should stop.
+fn parse_dimension_token(value: f32, unit: &str, tracks: &mut Vec<GridTrack>) -> bool {
+    let unit_lower = unit.to_ascii_lowercase();
+    match unit_lower.as_str() {
+        "px" => {
+            tracks.push(GridTrack {
+                size: GridTrackSize::Breadth(TrackBreadth::Length(value)),
+                track_type: TrackListType::Explicit,
+            });
+            true
+        }
+        "fr" => {
+            tracks.push(GridTrack {
+                size: GridTrackSize::Breadth(TrackBreadth::Flex(value)),
+                track_type: TrackListType::Explicit,
+            });
+            true
+        }
+        _ => {
+            // Unknown unit, stop parsing
+            false
+        }
+    }
+}
+
+/// Parse an identifier token (e.g., "auto", "min-content", "max-content").
+/// Returns `false` if parsing should stop.
+fn parse_ident_token(name: &str, tracks: &mut Vec<GridTrack>) -> bool {
+    let name_lower = name.to_ascii_lowercase();
+    match name_lower.as_str() {
+        "auto" => {
+            tracks.push(GridTrack {
+                size: GridTrackSize::Breadth(TrackBreadth::Auto),
+                track_type: TrackListType::Explicit,
+            });
+            true
+        }
+        "min-content" => {
+            tracks.push(GridTrack {
+                size: GridTrackSize::Breadth(TrackBreadth::MinContent),
+                track_type: TrackListType::Explicit,
+            });
+            true
+        }
+        "max-content" => {
+            tracks.push(GridTrack {
+                size: GridTrackSize::Breadth(TrackBreadth::MaxContent),
+                track_type: TrackListType::Explicit,
+            });
+            true
+        }
+        _ => {
+            // Unknown identifier, stop parsing
+            false
+        }
     }
 }
 

@@ -249,8 +249,12 @@ pub async fn capture_screenshot_png(
 ) -> Result<Vec<u8>> {
     navigate_and_prepare_page(page, path).await?;
 
+    // Chrome subtracts scrollbar width (16px) from viewport in headless mode
+    // Add it back to match the requested viewport size exactly
+    let adjusted_width = i64::from(width) + 16;
+
     let viewport_params = SetDeviceMetricsOverrideParams::builder()
-        .width(i64::from(width))
+        .width(adjusted_width)
         .height(i64::from(height))
         .device_scale_factor(1.0)
         .mobile(false)
@@ -282,6 +286,12 @@ pub async fn capture_screenshot_rgba(
     height: u32,
 ) -> Result<RgbaImage> {
     let png_bytes = capture_screenshot_png(page, path, width, height).await?;
-    let img = load_from_memory(&png_bytes)?.to_rgba8();
+    let mut img = load_from_memory(&png_bytes)?.to_rgba8();
+
+    // Crop to exact requested dimensions (Chrome screenshot is 16px wider due to scrollbar compensation)
+    if img.width() > width || img.height() > height {
+        img = image::imageops::crop(&mut img, 0, 0, width, height).to_image();
+    }
+
     Ok(img)
 }

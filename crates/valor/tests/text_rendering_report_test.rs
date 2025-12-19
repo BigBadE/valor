@@ -98,7 +98,10 @@ async fn print_text_rendering_report(page: &Page) -> Result<()> {
     info!("  - test_cache/text_rendering/failing/*.metadata.json");
 
     // Assert that the test passed
-    let passed = results.get("passed").and_then(|v| v.as_bool()).unwrap_or(false);
+    let passed = results
+        .get("passed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if !passed {
         let error_msg = results
             .get("error")

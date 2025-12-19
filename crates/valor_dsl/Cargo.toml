@@ -48,29 +48,33 @@ bevy = { version = "0.15", optional = true, default-features = false, features =
     "bevy_text",
     "bevy_ui",
     "bevy_winit",
+    "bevy_window",
     "png",
     "x11",
 ] }
 
+# Image handling for rendering
+image = { version = "0.25", optional = true }
+
 [features]
 default = []
-bevy_integration = ["bevy"]
-
-[[example]]
-name = "counter"
-required-features = ["bevy_integration"]
-
-[[example]]
-name = "todo_list"
-required-features = ["bevy_integration"]
-
-[[example]]
-name = "styled_form"
-required-features = ["bevy_integration"]
+bevy_integration = ["bevy", "image"]
 
 [[example]]
 name = "simple_counter"
 
 [[example]]
+name = "bevy_counter"
+required-features = ["bevy_integration"]
+
+[[example]]
 name = "bevy_ui"
+required-features = ["bevy_integration"]
+
+[[example]]
+name = "reactive_counter"
+required-features = ["bevy_integration"]
+
+[[example]]
+name = "image_gallery"
 required-features = ["bevy_integration"]

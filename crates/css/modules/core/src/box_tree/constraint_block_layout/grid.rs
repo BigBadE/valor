@@ -2,13 +2,14 @@
 
 use super::super::grid_template_parser;
 use super::ConstraintLayoutTree;
-use css_box::{BoxSides, LayoutUnit};
+use css_box::{BoxSides, LayoutUnit, compute_box_sides};
 use css_display::normalize_children;
 use css_grid::{
     GridAlignment, GridAutoFlow, GridAxisTracks, GridContainerInputs, GridItem, GridLayoutResult,
     GridPlacedItem, GridTrack, GridTrackSize, TrackBreadth, TrackListType, layout_grid,
 };
 use css_orchestrator::style_model::{ComputedStyle, GridAutoFlow as StyleGridAutoFlow};
+use css_text::measure_text;
 use js::NodeKey;
 
 use super::super::constraint_space::{AvailableSize, BfcOffset, ConstraintSpace, LayoutResult};
@@ -81,47 +82,61 @@ impl ConstraintLayoutTree {
         // Items measured with indefinite block size to get column widths
         let mut grid_items = self.prepare_grid_items_for_columns(node);
 
-        tracing::debug!(
-            "Grid layout pass 1 (columns): items_count={}, is_final={}",
-            grid_items.len(),
-            is_final_layout
-        );
-
         let column_result = layout_grid(&grid_items, grid_inputs)?;
 
         // PASS 2: Size rows (only for final layout)
         // During measurement, we skip this to avoid exponential blowup from nested grids
         if is_final_layout {
-            tracing::info!("Grid layout PASS 2: Starting row sizing (is_final_layout=true)");
-
             // Re-measure items at their actual column widths to get correct heights
             self.remeasure_items_for_rows(&mut grid_items, &column_result.items);
-
-            tracing::info!(
-                "Grid layout pass 2 (rows): re-measured items, calling layout_grid again"
-            );
 
             // Run layout again with correct row heights
             let final_result = layout_grid(&grid_items, grid_inputs)?;
 
-            tracing::info!(
-                "Grid layout PASS 2 complete: total_height={:.1}px, row_count={}",
-                final_result.total_height,
-                final_result.row_sizes.base_sizes.len()
-            );
-            for (idx, &row_height) in final_result.row_sizes.base_sizes.iter().enumerate() {
-                tracing::info!("  Row {}: height={:.1}px", idx, row_height);
-            }
-
             Ok(final_result)
         } else {
-            tracing::info!(
-                "Grid layout: Skipping PASS 2 (is_final_layout=false, measurement mode)"
-            );
             // For measurement/nested grids, use column_result directly
             // Heights will be approximate but avoid infinite recursion
             Ok(column_result)
         }
+    }
+
+    /// Measure the max-content width of a grid item.
+    ///
+    /// For block containers, this recursively measures the widest child content.
+    /// This gives us the natural width of the content for grid auto-sizing.
+    fn measure_grid_item_content_width(&mut self, node: NodeKey) -> f32 {
+        // Get children of this node (clone to avoid borrow conflicts)
+        let children = self.children.get(&node).cloned();
+        let Some(children) = children else {
+            return 0.0;
+        };
+
+        let mut max_width = 0.0f32;
+
+        for child_key in children {
+            // If it's a text node, measure the text width
+            if let Some(text) = self.text_nodes.get(&child_key).cloned() {
+                if let Some(style) = self.styles.get(&node) {
+                    // Measure text at its natural (unwrapped) width
+                    let metrics = measure_text(&text, style);
+                    max_width = max_width.max(metrics.width);
+                }
+            } else {
+                // Recursively measure child elements
+                let child_width = self.measure_grid_item_content_width(child_key);
+                max_width = max_width.max(child_width);
+            }
+        }
+
+        // Add padding and borders from this node's style
+        if let Some(style) = self.styles.get(&node) {
+            let sides = compute_box_sides(style);
+            max_width += sides.padding_left.to_px() + sides.padding_right.to_px();
+            max_width += sides.border_left.to_px() + sides.border_right.to_px();
+        }
+
+        max_width
     }
 
     /// Prepare grid items for column sizing (pass 1).
@@ -152,28 +167,23 @@ impl ConstraintLayoutTree {
             .map(|&child| {
                 let mut item = GridItem::new(child);
 
-                // Measure at indefinite size for natural dimensions
-                // We use measure_item directly to get both width and height
+                // Measure content width for grid auto-sizing
+                // For block containers, we need to measure the max-content width of children
+                // rather than laying out at indefinite size (which gives container width)
+                let content_width = self.measure_grid_item_content_width(child);
+
+                // Measure height at indefinite size for initial estimate
                 let size =
                     self.measure_item(child, AvailableSize::Indefinite, AvailableSize::Indefinite);
 
-                // For column sizing, we use natural width as both min and max content
-                // This is a simplification - proper implementation would measure at
-                // different wrapping constraints
-                item.min_content_width = size.inline;
-                item.max_content_width = size.inline;
+                // For column sizing, use measured content width
+                item.min_content_width = content_width;
+                item.max_content_width = content_width;
 
                 // Heights here are from indefinite measurement and will be wrong for
                 // wrapping content at constrained widths. We'll re-measure in pass 2.
                 item.min_content_height = size.block;
                 item.max_content_height = size.block;
-
-                tracing::debug!(
-                    "Grid item {:?} (column sizing): w={}, h={}",
-                    child,
-                    item.max_content_width,
-                    item.max_content_height
-                );
 
                 item
             })
@@ -192,11 +202,7 @@ impl ConstraintLayoutTree {
         items: &mut [GridItem<NodeKey>],
         placements: &[GridPlacedItem<NodeKey>],
     ) {
-        tracing::info!("=== REMEASURE_ITEMS_FOR_ROWS: {} items ===", items.len());
-
         for (item, placement) in items.iter_mut().zip(placements.iter()) {
-            let old_height = item.max_content_height;
-
             // Measure height at the actual column width from pass 1
             let height = self.measure_block_at_inline(item.node_id, placement.width);
 
@@ -204,15 +210,6 @@ impl ConstraintLayoutTree {
             // (we're measuring at a definite width, so there's only one result)
             item.min_content_height = height;
             item.max_content_height = height;
-
-            tracing::info!(
-                "Grid item {:?} (row sizing): width={:.1}px, old_height={:.1}px, NEW_HEIGHT={:.1}px, delta={:.1}px",
-                item.node_id,
-                placement.width,
-                old_height,
-                height,
-                height - old_height
-            );
         }
     }
 
@@ -301,8 +298,6 @@ impl ConstraintLayoutTree {
         style: &ComputedStyle,
         sides: &BoxSides,
     ) -> LayoutResult {
-        tracing::debug!("layout_grid_container for node {:?}", node);
-
         // Compute container size
         let container_inline_size = self.compute_inline_size(node, constraint_space, style, sides);
 

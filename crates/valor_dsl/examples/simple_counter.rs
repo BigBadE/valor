@@ -1,4 +1,5 @@
 //! Simple counter example that actually runs and displays in Valor
+//! This example demonstrates the Rust-based DSL runtime without requiring JavaScript
 
 use anyhow::Result;
 use env_logger::init as env_logger_init;
@@ -7,9 +8,11 @@ use log::info;
 use page_handler::{HtmlPage, ValorConfig};
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Handle;
+use tokio::sync::mpsc;
 use url::Url;
 use valor_dsl::VirtualDom;
-use valor_dsl::events::EventCallbacks;
+use valor_dsl::events::{EventCallbacks, EventContext};
+use valor_dsl::runtime::RuntimeBuilder;
 
 /// Helper to truncate string with ellipsis
 fn truncate_string(text: &str, max_len: usize) -> String {
@@ -172,6 +175,8 @@ fn build_counter_html(current_count: i32) -> String {
 async fn main() -> Result<()> {
     env_logger_init();
 
+    info!("Starting Valor Counter Example (Rust-based DSL Runtime)");
+
     // Create Valor page
     let config = ValorConfig::from_env();
     let url = Url::parse("http://localhost/counter")?;
@@ -179,37 +184,73 @@ async fn main() -> Result<()> {
 
     let _page = HtmlPage::new(&handle, url, config).await?;
 
-    // Counter state (unused in this simplified example)
-    let _count = Arc::new(Mutex::new(0i32));
+    // Counter state
+    let count = Arc::new(Mutex::new(0i32));
+
+    // Create DOM update channel
+    let (dom_tx, mut dom_rx) = mpsc::channel::<Vec<DOMUpdate>>(100);
+
+    // Setup virtual DOM and event callbacks
+    let mut keyspace = KeySpace::new();
+    let key_manager = keyspace.register_manager();
+    let vdom = VirtualDom::new(key_manager);
+
+    let mut callbacks = EventCallbacks::new();
+
+    // Register event handlers
+    let increment_count = Arc::clone(&count);
+    callbacks.register("increment", move |_ctx: &EventContext| {
+        if let Ok(mut counter) = increment_count.lock() {
+            *counter += 1;
+            info!("Count incremented to: {counter}");
+        }
+    });
+
+    let decrement_count = Arc::clone(&count);
+    callbacks.register("decrement", move |_ctx: &EventContext| {
+        if let Ok(mut counter) = decrement_count.lock() {
+            *counter -= 1;
+            info!("Count decremented to: {counter}");
+        }
+    });
+
+    let reset_count = Arc::clone(&count);
+    callbacks.register("reset", move |_ctx: &EventContext| {
+        if let Ok(mut counter) = reset_count.lock() {
+            *counter = 0;
+            info!("Count reset to: 0");
+        }
+    });
+
+    // Build runtime
+    let mut runtime = RuntimeBuilder::new()
+        .vdom(vdom)
+        .callbacks(callbacks)
+        .dom_sender(dom_tx)
+        .build()?;
 
     // Initial render
     let html = build_counter_html(0);
-
-    info!("Starting Valor Counter Example");
     info!("HTML length: {} bytes", html.len());
     info!("Rendering UI...");
 
-    // For now, just parse and display the HTML
-    // In a full implementation, this would:
-    // 1. Send DOM updates to the page
-    // 2. Handle events from the page
-    // 3. Re-render on state changes
+    runtime.render(&html, NodeKey::ROOT).await?;
 
-    // Compile HTML to see what DOMUpdates are generated
-    let mut keyspace = KeySpace::new();
-    let key_manager = keyspace.register_manager();
-    let mut vdom = VirtualDom::new(key_manager);
-
-    let callbacks = EventCallbacks::new();
-
-    let updates = vdom.compile_html(&html, NodeKey::ROOT, &callbacks)?;
-    info!("Successfully compiled HTML");
-    info!("Generated {} DOM updates", updates.len());
-
-    print_sample_updates(&updates);
+    // Process DOM updates in the background
+    tokio::spawn(async move {
+        while let Some(updates) = dom_rx.recv().await {
+            info!("Received {} DOM updates", updates.len());
+            print_sample_updates(&updates);
+            // In a full implementation, these would be applied to the page
+        }
+    });
 
     info!("\nValor DSL Counter example completed successfully!");
+    info!("Runtime is now active and can handle events");
     info!("In a full implementation, this would open a window with the rendered UI");
+
+    // Keep the runtime alive for a bit to demonstrate
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     Ok(())
 }

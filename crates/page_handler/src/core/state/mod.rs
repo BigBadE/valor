@@ -399,6 +399,23 @@ impl HtmlPage {
         dom_index.get_element_by_id(id)
     }
 
+    /// Send DOM updates directly to the DOM, bypassing JavaScript.
+    /// This allows for instant DOM manipulation from Rust code.
+    ///
+    /// # Errors
+    /// Returns an error if the updates cannot be sent.
+    pub fn send_dom_updates(&mut self, updates: Vec<js::DOMUpdate>) -> Result<(), Error> {
+        self.in_updater
+            .try_send(updates)
+            .map_err(|e| anyhow::anyhow!("Failed to send DOM updates: {}", e))
+    }
+
+    /// Get a reference to the shared DOM index for querying DOM structure.
+    #[inline]
+    pub const fn dom_index_shared(&self) -> &js::SharedDomIndex {
+        &self.dom_index_shared
+    }
+
     /// Return the currently focused node, if any.
     #[inline]
     pub const fn focused_node(&self) -> Option<NodeKey> {

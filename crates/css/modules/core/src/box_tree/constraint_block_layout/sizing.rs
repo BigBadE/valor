@@ -152,7 +152,12 @@ impl ConstraintLayoutTree {
                     + sides.margin_right)
                     .to_px();
 
-                (available - horizontal_edges).max(0.0)
+                let result = (available - horizontal_edges).max(0.0);
+
+                // Debug: check if this is a grid item with ~272px available
+                Self::debug_log_grid_item(available, horizontal_edges, result, sides);
+
+                result
             },
             |width| {
                 // Check box-sizing property
@@ -185,5 +190,37 @@ impl ConstraintLayoutTree {
 
         // Convert back to content-box
         (constrained_border_box - padding_border).max(0.0)
+    }
+
+    /// Debug logging for grid items with specific width.
+    fn debug_log_grid_item(available: f32, horizontal_edges: f32, result: f32, sides: &BoxSides) {
+        if (available - 272.0).abs() < 0.1 {
+            use std::fs::OpenOptions;
+            use std::io::Write as _;
+            if let Ok(mut file) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("text_wrap_debug.log")
+            {
+                drop(writeln!(
+                    file,
+                    "compute_inline_size [272px GRID ITEM]: available={available:.6}, horizontal_edges={horizontal_edges:.6}, result={result:.6}"
+                ));
+                drop(writeln!(
+                    file,
+                    "  margin_left={:.6}, padding_left={:.6}, border_left={:.6}",
+                    sides.margin_left.to_px(),
+                    sides.padding_left.to_px(),
+                    sides.border_left.to_px()
+                ));
+                drop(writeln!(
+                    file,
+                    "  border_right={:.6}, padding_right={:.6}, margin_right={:.6}",
+                    sides.border_right.to_px(),
+                    sides.padding_right.to_px(),
+                    sides.margin_right.to_px()
+                ));
+            }
+        }
     }
 }

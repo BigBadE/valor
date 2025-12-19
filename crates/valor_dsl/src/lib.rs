@@ -8,10 +8,24 @@ use js::{DOMUpdate, NodeKey, NodeKeyManager};
 use std::collections::HashMap;
 
 pub mod events;
+pub mod macros;
 mod parser;
+pub mod runtime;
 
 #[cfg(feature = "bevy_integration")]
 pub mod bevy_integration;
+
+#[cfg(feature = "bevy_integration")]
+pub mod bevy_events;
+
+#[cfg(feature = "bevy_integration")]
+pub mod html_macro;
+
+#[cfg(feature = "bevy_integration")]
+pub mod reactive;
+
+#[cfg(feature = "bevy_integration")]
+pub mod reactive_html_macro;
 
 /// Virtual DOM that compiles HTML to `DOMUpdate` messages
 pub struct VirtualDom {

@@ -139,7 +139,7 @@ impl Renderer {
     /// # Errors
     /// Returns an error if the update fails.
     fn apply_update_impl(&mut self, update: DOMUpdate) {
-        use DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr};
+        use DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr, UpdateText};
         match update {
             InsertElement {
                 parent,
@@ -179,6 +179,14 @@ impl Renderer {
             }
             RemoveNode { node } => {
                 self.remove_node_recursive(node);
+            }
+            UpdateText { node, text } => {
+                // Update the text content of an existing text node in-place
+                if let Some(render_node) = self.nodes.get_mut(&node) {
+                    if let RenderNodeKind::Text { text: text_ref } = &mut render_node.kind {
+                        text_ref.clone_from(&text);
+                    }
+                }
             }
             EndOfDocument => {
                 // No-op for now; a backend could trigger finalize hooks here.

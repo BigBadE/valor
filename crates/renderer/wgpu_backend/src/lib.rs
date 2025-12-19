@@ -28,7 +28,10 @@ pub use new_pipelines::{
     build_border_pipeline, build_box_shadow_pipeline, build_gradient_pipeline,
     build_image_pipeline,
 };
-pub use offscreen::render_display_list_to_rgba;
+pub use offscreen::{
+    PersistentGpuContext, initialize_persistent_context, render_display_list_to_rgba,
+    render_display_list_with_context,
+};
 pub use pipelines::{Vertex, build_pipeline_and_buffers, build_texture_pipeline};
 pub use state::{GlyphBounds, Layer, RenderState};
 pub use texture_pool::TexturePool;

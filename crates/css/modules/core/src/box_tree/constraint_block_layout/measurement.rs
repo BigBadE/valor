@@ -105,18 +105,11 @@ impl ConstraintLayoutTree {
     /// let height = tree.measure_block_at_inline(item, column_width);
     /// ```
     pub fn measure_block_at_inline(&mut self, node: NodeKey, inline_size: f32) -> f32 {
-        tracing::debug!(
-            "measure_block_at_inline: node={:?}, inline_size={:.1}px",
-            node,
-            inline_size
-        );
-
         let size = self.measure_item(
             node,
             AvailableSize::Definite(LayoutUnit::from_px(inline_size)),
             AvailableSize::Indefinite,
         );
-
         size.block
     }
 

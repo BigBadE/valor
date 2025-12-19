@@ -15,6 +15,23 @@ pub struct OffscreenGpuContext {
     pub queue: Queue,
 }
 
+/// Persistent GPU context that can be reused across multiple renders.
+/// This includes all the expensive-to-create resources.
+pub struct PersistentGpuContext {
+    /// GPU device.
+    pub device: Device,
+    /// Command queue.
+    pub queue: Queue,
+    /// Render pipeline.
+    pub pipeline: wgpu::RenderPipeline,
+    /// Glyphon cache for text rendering.
+    pub glyphon_cache: GlyphonCache,
+    /// Glyphon state (font system, text atlas, renderer, viewport).
+    pub glyphon_state: GlyphonState,
+    /// Current render format.
+    pub render_format: TextureFormat,
+}
+
 /// Initialize GPU device and queue for offscreen rendering.
 ///
 /// # Errors
@@ -23,7 +40,11 @@ pub fn initialize_gpu() -> AnyhowResult<OffscreenGpuContext> {
     let instance = Instance::new(&InstanceDescriptor::default());
     let adapter = block_on(instance.request_adapter(&RequestAdapterOptions::default()))
         .map_err(|err| anyhow::anyhow!("wgpu adapter not found: {err}"))?;
-    let (device, queue) = block_on(adapter.request_device(&DeviceDescriptor::default()))?;
+    let (device, queue) = block_on(adapter.request_device(&DeviceDescriptor {
+        label: Some("offscreen-render-device"),
+        required_features: Features::DUAL_SOURCE_BLENDING,
+        ..Default::default()
+    }))?;
     Ok(OffscreenGpuContext { device, queue })
 }
 
@@ -114,4 +135,31 @@ pub fn initialize_glyphon(params: &GlyphonInitParams<'_>) -> GlyphonState {
         viewport,
         swash_cache,
     }
+}
+
+/// Initialize a persistent GPU context that can be reused across renders.
+///
+/// # Errors
+/// Returns an error if GPU initialization fails.
+pub fn initialize_persistent_context(width: u32, height: u32) -> AnyhowResult<PersistentGpuContext> {
+    let OffscreenGpuContext { device, queue } = initialize_gpu()?;
+    let render_format = TextureFormat::Rgba8UnormSrgb;
+    let pipeline = super::rendering::build_pipeline(&device, render_format);
+    let glyphon_cache = GlyphonCache::new(&device);
+    let glyphon_state = initialize_glyphon(&GlyphonInitParams {
+        device: &device,
+        queue: &queue,
+        glyphon_cache: &glyphon_cache,
+        render_format,
+        width,
+        height,
+    });
+    Ok(PersistentGpuContext {
+        device,
+        queue,
+        pipeline,
+        glyphon_cache,
+        glyphon_state,
+        render_format,
+    })
 }

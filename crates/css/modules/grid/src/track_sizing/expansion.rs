@@ -43,14 +43,6 @@ pub fn expand_auto_repeat_tracks<NodeId>(params: &TrackSizingParams<'_, NodeId>)
     }
     .max(1); // Ensure at least one repetition
 
-    tracing::debug!(
-        "expand_auto_repeat_tracks: available_size={}, min_repeat_size={}, gap={}, repetitions={}",
-        params.available_size,
-        min_repeat_size,
-        gap,
-        repetitions
-    );
-
     // Expand the repeat pattern
     for _ in 0..repetitions {
         for track_size in repeat_tracks {
@@ -121,8 +113,6 @@ pub fn collapse_auto_fit_tracks(
         return tracks;
     }
 
-    let original_count = tracks.len();
-
     // Filter out tracks that are:
     // 1. From auto-fit repetition (explicit tracks from auto-fit)
     // 2. Empty (no items placed in or spanning across them)
@@ -135,13 +125,6 @@ pub fn collapse_auto_fit_tracks(
         })
         .map(|(_idx, track)| track)
         .collect();
-
-    tracing::debug!(
-        "collapse_auto_fit_tracks: collapsed {} empty tracks (from {} to {})",
-        original_count - collapsed.len(),
-        original_count,
-        collapsed.len()
-    );
 
     // Ensure at least one track remains
     if collapsed.is_empty() {

@@ -199,6 +199,10 @@ pub enum DOMUpdate {
     RemoveNode {
         node: NodeKey,
     },
+    UpdateText {
+        node: NodeKey,
+        text: String,
+    },
     EndOfDocument,
 }
 

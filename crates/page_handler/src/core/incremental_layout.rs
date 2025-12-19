@@ -147,6 +147,13 @@ impl IncrementalLayoutEngine {
                     // Conservative: invalidate this node
                     self.invalidate_node(*node);
                 }
+                DOMUpdate::UpdateText { node, text } => {
+                    // Update existing text node content in-place
+                    self.text_nodes.insert(*node, text.clone());
+                    // Text content changed, so this node needs layout
+                    self.dirty_nodes.insert(*node);
+                    self.invalidate_dependency(&Dependency::TextContent(*node));
+                }
                 DOMUpdate::EndOfDocument => {}
             }
         }

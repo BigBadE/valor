@@ -10,6 +10,7 @@ use crate::bindings::{CreatedNodeInfo, CreatedNodeKind, HostContext, HostFnSync}
 use crate::{DOMUpdate, NodeKey};
 use core::sync::atomic::Ordering;
 use std::sync::Arc;
+
 /// Build createElement(tag) function.
 pub fn build_create_element() -> Arc<HostFnSync> {
     Arc::new(

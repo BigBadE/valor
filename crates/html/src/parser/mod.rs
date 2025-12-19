@@ -291,7 +291,7 @@ impl ParserDOMMirror {
 impl DOMSubscriber for ParserDOMMirror {
     #[inline]
     fn apply_update(&mut self, update: DOMUpdate) -> Result<(), Error> {
-        use DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr};
+        use DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr, UpdateText};
         match update {
             InsertElement {
                 parent,
@@ -358,6 +358,16 @@ impl DOMSubscriber for ParserDOMMirror {
             RemoveNode { node } => {
                 if let Some(&id) = self.id_map.get(&node) {
                     id.detach(&mut self.dom);
+                }
+            }
+            UpdateText { node, text } => {
+                // Update the text content of an existing text node in-place
+                if let Some(&id) = self.id_map.get(&node) {
+                    if let Some(dom_node) = self.dom.get_mut(id)
+                        && let ParserNodeKind::Text { text: text_ref } = &mut dom_node.get_mut().kind
+                    {
+                        text_ref.clone_from(&text);
+                    }
                 }
             }
             EndOfDocument => {}
