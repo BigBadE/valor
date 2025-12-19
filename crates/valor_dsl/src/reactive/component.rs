@@ -1,6 +1,7 @@
 //! Component trait and function wrapper
 
 use super::{Html, UiContext};
+use crate::styling::ComponentStyles;
 
 /// Trait for reactive components
 pub trait Component: bevy::prelude::Component {
@@ -8,6 +9,15 @@ pub trait Component: bevy::prelude::Component {
     fn render(ctx: &mut UiContext<Self>) -> Html
     where
         Self: Sized;
+
+    /// Optional: Define component-scoped styles
+    /// Returns None by default, override to provide custom styles
+    fn styles() -> Option<ComponentStyles>
+    where
+        Self: Sized,
+    {
+        None
+    }
 }
 
 /// Type alias for component functions

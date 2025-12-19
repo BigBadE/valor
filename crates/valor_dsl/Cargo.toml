@@ -15,6 +15,7 @@ css = { workspace = true }
 page_handler = { workspace = true }
 renderer = { workspace = true }
 wgpu_backend = { workspace = true }
+valor_dsl_macros = { path = "../valor_dsl_macros" }
 
 # HTML/CSS parsing
 html5ever = { workspace = true }
@@ -34,6 +35,9 @@ env_logger = { workspace = true }
 
 # Data structures
 indextree = { workspace = true }
+
+# Base64 encoding
+base64 = { workspace = true }
 
 # Windowing (for visual examples)
 winit = { workspace = true }

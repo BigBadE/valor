@@ -25,10 +25,11 @@ pub struct ValorUi {
 #[derive(Component)]
 pub struct ValorPageInitialized;
 
-/// Component holding the rendered texture for a ValorUi
+/// Component holding the rendered texture and display node for a ValorUi
 #[derive(Component)]
 pub struct ValorTexture {
     pub image_handle: bevy::asset::Handle<Image>,
+    pub display_node: Entity,
 }
 
 /// Persistent GPU rendering context to avoid recreating GPU resources on every render
@@ -158,6 +159,8 @@ impl Plugin for ValorUiPlugin {
                     extract_click_handlers,
                     render_valor_pages,
                     handle_mouse_clicks,
+                    handle_window_resize,
+                    test_any_input,
                     load_image_assets,
                 )
                     .chain(),
@@ -247,7 +250,8 @@ fn extract_click_handlers(
                 }
             }
 
-            info!("Extracted {} click handlers for entity {:?}", pages.click_handlers.len(), entity);
+            let handler_count = pages.click_handlers.iter().filter(|((e, _), _)| *e == entity).count();
+            info!("Extracted {} click handlers for entity {:?}", handler_count, entity);
 
             // Mark this entity as having handlers extracted
             commands.entity(entity).insert(ClickHandlersExtracted);
@@ -324,19 +328,24 @@ fn render_valor_pages(
             let image_handle = images.add(image);
 
             // Spawn a full-screen UI node with the rendered texture
-            commands.spawn((
+            // IMPORTANT: Don't add Interaction or any picking components - we want window-level mouse events
+            let display_node = commands.spawn((
                 Node {
                     width: Val::Percent(100.0),
                     height: Val::Percent(100.0),
                     ..Default::default()
                 },
                 ImageNode::new(image_handle.clone()),
-            ));
+                bevy::ui::FocusPolicy::Pass, // Allow mouse events to pass through to window
+            )).id();
 
             // Add the texture component to track it
-            commands.entity(entity).insert(ValorTexture { image_handle });
+            commands.entity(entity).insert(ValorTexture {
+                image_handle,
+                display_node,
+            });
 
-            info!("Created texture for ValorUi entity {:?} (size: {}x{})", entity, width, height);
+            info!("Created texture for ValorUi entity {:?} (size: {}x{}) with display node {:?}", entity, width, height, display_node);
         }
     }
 }
@@ -348,17 +357,16 @@ pub fn rerender_valor_ui(
     valor_ui_entity: Entity,
 ) {
     // Get the components we need
-    let (width, height) = {
+    let (width, height, display_node, html) = {
         let valor_ui = world.get::<ValorUi>(valor_ui_entity);
         let Some(ui) = valor_ui else { return };
-        (ui.width, ui.height)
-    };
-
-    let image_handle = {
         let texture = world.get::<ValorTexture>(valor_ui_entity);
         let Some(tex) = texture else { return };
-        tex.image_handle.clone()
+        (ui.width, ui.height, tex.display_node, ui.html.clone())
     };
+
+    // Get tokio handle before borrowing pages mutably
+    let tokio_handle = world.get_resource::<TokioHandle>().unwrap().0.clone();
 
     // Get or create persistent render context
     let mut pages = world.get_non_send_resource_mut::<ValorPages>().unwrap();
@@ -381,11 +389,58 @@ pub fn rerender_valor_ui(
         }
     }
 
-    // Get display list from page
-    let display_list = {
-        let Some(page) = pages.pages.get_mut(&valor_ui_entity) else { return };
-        page.display_list_retained_snapshot()
+    // For reactive components, we need to re-parse and update the entire page
+    // Write the new HTML to a temp file and reload the page
+
+    info!("🔄 Re-rendering reactive component (HTML length: {})", html.len());
+
+    // Write HTML to a temporary file
+    let temp_file_path = std::env::temp_dir().join(format!("valor_ui_rerender_{:?}.html", valor_ui_entity));
+    if let Err(err) = std::fs::write(&temp_file_path, &html) {
+        error!("Failed to write HTML to temp file: {}", err);
+        return;
+    }
+
+    info!("🔄 Wrote HTML to temp file: {:?}", temp_file_path);
+
+    // Drop the old page and create a new one with the updated HTML
+    pages.pages.remove(&valor_ui_entity);
+
+    let url = match Url::from_file_path(&temp_file_path) {
+        Ok(u) => u,
+        Err(()) => {
+            error!("Failed to create file URL from path: {:?}", temp_file_path);
+            return;
+        }
     };
+
+    // Create a new HtmlPage with the updated HTML
+    let page_result = tokio_handle.block_on(async {
+        let config = page_handler::utilities::config::ValorConfig::from_env();
+        HtmlPage::new(&tokio_handle, url, config).await
+    });
+
+    let mut new_page = match page_result {
+        Ok(page) => page,
+        Err(err) => {
+            error!("Failed to create new HtmlPage: {}", err);
+            return;
+        }
+    };
+
+    // Set viewport dimensions
+    new_page.set_viewport(width as i32, height as i32);
+
+    // Update the page
+    if let Err(err) = tokio_handle.block_on(async { new_page.update().await }) {
+        error!("Failed to update new HtmlPage: {}", err);
+        return;
+    }
+
+    // Store the new page
+    let page = pages.pages.entry(valor_ui_entity).or_insert(new_page);
+
+    let display_list = page.display_list_retained_snapshot();
 
     // Get mutable reference to render context
     let Some(render_ctx) = pages.render_contexts.get_mut(&valor_ui_entity) else { return };
@@ -407,11 +462,59 @@ pub fn rerender_valor_ui(
     // Drop the ValorPages borrow before accessing Assets
     drop(pages);
 
-    // Update the texture
+    // Create a new Image with the updated data
+    let new_image = Image::new(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        image_data,
+        TextureFormat::Rgba8UnormSrgb,
+        Default::default(),
+    );
+
+    // Add the new image to assets
     let mut images = world.get_resource_mut::<Assets<Image>>().unwrap();
-    if let Some(image) = images.get_mut(&image_handle) {
-        image.data = image_data;
-        info!("Re-rendered ValorUi entity {:?} (using persistent GPU context)", valor_ui_entity);
+    let new_handle = images.add(new_image);
+
+    // Update the ValorTexture component to track the new handle
+    if let Some(mut texture) = world.get_mut::<ValorTexture>(valor_ui_entity) {
+        texture.image_handle = new_handle.clone();
+    }
+
+    // Update the ImageNode component on the display node to use the new handle
+    if let Some(mut image_node) = world.get_mut::<ImageNode>(display_node) {
+        *image_node = ImageNode::new(new_handle);
+        info!("✅ Re-rendered ValorUi entity {:?} and updated display node {:?}", valor_ui_entity, display_node);
+    } else {
+        warn!("Failed to get ImageNode for display node {:?}", display_node);
+    }
+
+    // Re-extract click handlers after re-render since NodeKeys may have changed
+    {
+        let mut pages = world.get_non_send_resource_mut::<ValorPages>().unwrap();
+
+        // First, get the attrs map
+        let attrs_map = if let Some(page) = pages.pages.get_mut(&valor_ui_entity) {
+            page.layouter_attrs_map()
+        } else {
+            return;
+        };
+
+        // Clear existing handlers for this entity
+        pages.click_handlers.retain(|(e, _), _| *e != valor_ui_entity);
+
+        // Scan for onclick attributes
+        for (node_key, attrs) in &attrs_map {
+            if let Some(handler_name) = attrs.get("onclick") {
+                info!("🔄 Re-extracted onclick handler '{}' on node {:?}", handler_name, node_key);
+                pages
+                    .click_handlers
+                    .insert((valor_ui_entity, *node_key), handler_name.clone());
+            }
+        }
     }
 }
 
@@ -560,6 +663,31 @@ pub fn dispatch_click(world: &mut World, valor_ui_entity: Entity, x: f32, y: f32
     }
 }
 
+/// Debug system to test if ANY input is being received
+fn test_any_input(
+    keys: Res<bevy::input::ButtonInput<bevy::input::keyboard::KeyCode>>,
+    mouse: Res<bevy::input::ButtonInput<bevy::input::mouse::MouseButton>>,
+    windows: Query<&bevy::window::Window>,
+) {
+    use bevy::input::keyboard::KeyCode;
+    use bevy::input::mouse::MouseButton;
+
+    if keys.get_just_pressed().len() > 0 {
+        info!("⌨️ Key press detected!");
+    }
+
+    if mouse.get_just_pressed().len() > 0 {
+        info!("🖱️ Raw mouse button press detected in test_any_input!");
+        if let Ok(window) = windows.get_single() {
+            if let Some(pos) = window.cursor_position() {
+                info!("🖱️ Cursor position: ({}, {})", pos.x, pos.y);
+            } else {
+                warn!("🖱️ Cursor position is None!");
+            }
+        }
+    }
+}
+
 /// System that handles mouse button input and dispatches clicks to Valor UIs
 fn handle_mouse_clicks(
     mouse_button_input: Res<bevy::input::ButtonInput<bevy::input::mouse::MouseButton>>,
@@ -571,6 +699,7 @@ fn handle_mouse_clicks(
 
     // Check if left mouse button was just pressed
     if mouse_button_input.just_pressed(MouseButton::Left) {
+        info!("🖱️ Mouse click detected!");
         // Get the primary window's cursor position
         if let Ok(window) = windows.get_single() {
             if let Some(cursor_pos) = window.cursor_position() {
@@ -578,14 +707,98 @@ fn handle_mouse_clicks(
                 let x = cursor_pos.x;
                 let y = cursor_pos.y;
 
+                info!("🖱️ Click at position: ({}, {})", x, y);
+
                 // Dispatch click to all Valor UI entities
                 // In a real app, you'd do hit testing to find which UI was clicked
                 for valor_ui_entity in &valor_uis {
+                    info!("🖱️ Dispatching click to ValorUi entity {:?}", valor_ui_entity);
                     let button = 0; // Left button
                     commands.queue(move |world: &mut World| {
                         dispatch_click(world, valor_ui_entity, x, y, button);
                     });
                 }
+            } else {
+                warn!("🖱️ Click detected but no cursor position");
+            }
+        } else {
+            warn!("🖱️ Click detected but no window found");
+        }
+    }
+}
+
+/// System that handles window resize events and updates Valor page viewports
+fn handle_window_resize(
+    mut commands: Commands,
+    mut valor_query: Query<(&mut ValorUi, Entity), With<ValorPageInitialized>>,
+    windows: Query<&Window, Changed<Window>>,
+) {
+    for window in &windows {
+        let width = window.width() as u32;
+        let height = window.height() as u32;
+
+        for (mut valor_ui, entity) in &mut valor_query {
+            if valor_ui.width != width || valor_ui.height != height {
+                info!("🪟 Window resized: {}x{} -> {}x{}", valor_ui.width, valor_ui.height, width, height);
+
+                // Update ValorUi dimensions
+                valor_ui.width = width;
+                valor_ui.height = height;
+
+                // Queue a viewport update and re-render
+                commands.queue(move |world: &mut World| {
+                    // Get the tokio handle
+                    let tokio_handle = world.get_resource::<TokioHandle>().unwrap().0.clone();
+                    let mut pages = world.get_non_send_resource_mut::<ValorPages>().unwrap();
+
+                    // Update the HtmlPage viewport
+                    if let Some(page) = pages.pages.get_mut(&entity) {
+                        page.set_viewport(width as i32, height as i32);
+
+                        // Recompute layout with new viewport
+                        let update_result = tokio_handle.block_on(async { page.update().await });
+                        if let Err(err) = update_result {
+                            error!("Failed to update page after resize: {}", err);
+                            return;
+                        }
+
+                        info!("✅ Updated viewport and recomputed layout for entity {:?}", entity);
+
+                        // Get the new display list
+                        let display_list = page.display_list_retained_snapshot();
+
+                        // Don't recreate GPU context - just render with new dimensions
+                        // The render function will handle the resize internally
+                        match wgpu_backend::render_display_list_to_rgba(&display_list, width, height) {
+                            Ok(image_data) => {
+                                // Update the Image asset with new dimensions and data
+                                let image_handle = {
+                                    let Some(texture) = world.get::<ValorTexture>(entity) else {
+                                        warn!("No ValorTexture for entity {:?}", entity);
+                                        return;
+                                    };
+                                    texture.image_handle.clone()
+                                };
+
+                                if let Some(mut images) = world.get_resource_mut::<Assets<Image>>() {
+                                    if let Some(image) = images.get_mut(&image_handle) {
+                                        // Update texture size and data
+                                        image.resize(bevy::render::render_resource::Extent3d {
+                                            width,
+                                            height,
+                                            depth_or_array_layers: 1,
+                                        });
+                                        image.data = image_data;
+                                        info!("✅ Updated texture after window resize to {}x{}", width, height);
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                error!("Failed to render after resize: {}", err);
+                            }
+                        }
+                    }
+                });
             }
         }
     }

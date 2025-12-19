@@ -1,13 +1,11 @@
-//! Reactive counter example using the new component API
-//!
-//! This demonstrates the React-like DX with automatic reactivity and minimal boilerplate.
+//! Reactive counter example with JSX and auto re-rendering
 
 use bevy::prelude::*;
 use bevy::window::{Window, WindowPlugin};
 use valor_dsl::reactive::prelude::*;
 use valor_dsl::reactive::Component;
 use valor_dsl::reactive::runtime::ReactiveAppExt;
-use valor_dsl::reactive_html;
+use valor_dsl::jsx;
 
 // Define your state as a simple Bevy component
 #[derive(Component)]
@@ -15,12 +13,14 @@ struct Counter {
     value: i32,
 }
 
-// Implement the Component trait with a render function
+// Implement the Component trait
 impl valor_dsl::reactive::Component for Counter {
+
     fn render(ui: &mut UiContext<Self>) -> Html {
         let count = ui.use_state().value;
+        info!("🎨 Rendering Counter with value: {}", count);
 
-        // Register event handlers - they get mutable access to Counter
+        // Register event handlers
         let increment = ui.on_click("increment", |counter: &mut Counter| {
             counter.value += 1;
             info!("✨ Counter incremented to: {}", counter.value);
@@ -36,24 +36,20 @@ impl valor_dsl::reactive::Component for Counter {
             info!("✨ Counter reset to 0");
         });
 
-        // HTML with Rust interpolation
-        reactive_html! {
-            r#"
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Reactive Counter</title>
-                <style>
+        // JSX with inline styles for better Valor compatibility
+        jsx! {
+            <div>
+                <style>"
                     body {
                         font-family: Arial, sans-serif;
-                        padding: 40px;
                         text-align: center;
                         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                         color: white;
                         min-height: 100vh;
                         margin: 0;
+                        padding: 40px;
                     }
-                    .counter {
+                    .counter-display {
                         font-size: 72px;
                         margin: 40px 0;
                         font-weight: bold;
@@ -69,15 +65,11 @@ impl valor_dsl::reactive::Component for Counter {
                         color: #667eea;
                         border-radius: 8px;
                         font-weight: bold;
-                        transition: transform 0.1s, box-shadow 0.1s;
                         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
                     }
-                    button:hover {
-                        transform: translateY(-2px);
-                        box-shadow: 0 6px 12px rgba(0,0,0,0.15);
-                    }
-                    button:active {
-                        transform: translateY(0);
+                    .reset-btn {
+                        background: #ef4444;
+                        color: white;
                     }
                     h1 {
                         font-size: 48px;
@@ -87,23 +79,31 @@ impl valor_dsl::reactive::Component for Counter {
                     p {
                         font-size: 16px;
                         opacity: 0.9;
+                        margin-top: 20px;
                     }
-                </style>
-            </head>
-            <body>
-                <h1>🚀 Reactive Counter</h1>
-                <div class="counter">"#
+                "</style>
+                <h1>"🚀 Reactive Counter"</h1>
+
+                <div class="counter-display">
                     {count}
-                r#"</div>
-                <div>
-                    <button onclick=""# {&increment} r#"">➕ Increment</button>
-                    <button onclick=""# {&decrement} r#"">➖ Decrement</button>
-                    <button onclick=""# {&reset} r#"">🔄 Reset</button>
                 </div>
-                <p>✨ React-like components powered by Valor + Bevy!</p>
-            </body>
-            </html>
-            "#
+
+                <div>
+                    <button onclick={&increment}>"➕ Increment"</button>
+                    <button onclick={&decrement}>"➖ Decrement"</button>
+                    <button class="reset-btn" onclick={&reset}>"🔄 Reset"</button>
+                </div>
+
+                {
+                    if count > 10 {
+                        jsx!{ <p>"🔥 You're on fire!"</p> }
+                    } else if count < 0 {
+                        jsx!{ <p>"📉 Going negative!"</p> }
+                    } else {
+                        jsx!{ <p>"✨ Reactive JSX with auto re-rendering!"</p> }
+                    }
+                }
+            </div>
         }
     }
 }

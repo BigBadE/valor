@@ -37,18 +37,18 @@ macro_rules! __reactive_html_impl {
     // Base case: empty
     ($output:ident;) => {};
 
-    // String literal
-    ($output:ident; $lit:literal $($rest:tt)*) => {
-        $output.push_str($lit);
-        $crate::__reactive_html_impl!($output; $($rest)*);
-    };
-
-    // Rust expression interpolation: {expr}
+    // Rust expression interpolation: {expr} - must come before literal to match first
     ($output:ident; {$expr:expr} $($rest:tt)*) => {
         {
             use std::fmt::Write;
             let _ = write!($output, "{}", $expr);
         }
+        $crate::__reactive_html_impl!($output; $($rest)*);
+    };
+
+    // String literal (works for both r#"..."# and "...")
+    ($output:ident; $lit:tt $($rest:tt)*) => {
+        $output.push_str($lit);
         $crate::__reactive_html_impl!($output; $($rest)*);
     };
 }

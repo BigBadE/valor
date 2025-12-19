@@ -108,14 +108,15 @@ fn initialize_component<T: Component>(world: &mut World) {
         let html = T::render(&mut ctx);
 
         info!("Rendered HTML (length: {})", html.content.len());
+        info!("📄 HTML content preview: {}", &html.content[..html.content.len().min(500)]);
 
         // Extract callbacks from context
         let callbacks = ctx.take_callbacks();
 
         info!("Extracted {} callbacks", callbacks.len());
 
-        // Insert ValorUi component
-        world.entity_mut(entity).insert(ValorUi::new(html.content.clone()).with_width(800).with_height(600));
+        // Insert ValorUi component with the rendered HTML
+        world.entity_mut(entity).insert(ValorUi::new(html.content).with_width(800).with_height(600));
 
         // Store callbacks for event handling
         if !callbacks.is_empty() {
@@ -132,11 +133,17 @@ fn handle_click_events<T: Component>(
     handlers_query: Query<&ClickHandler>,
     mut commands: Commands,
 ) {
+    info!("🔔 handle_click_events<{}> triggered on entity {:?}",
+        std::any::type_name::<T>(), trigger.entity());
+
     // Get the handler that was clicked
-    let Ok(handler) = handlers_query.get(trigger.entity()) else { return };
+    let Ok(handler) = handlers_query.get(trigger.entity()) else {
+        warn!("❌ No ClickHandler component found on entity {:?}", trigger.entity());
+        return
+    };
     let handler_name = handler.name.clone();
 
-    info!("Click event on handler: {}", handler_name);
+    info!("✅ Click event on handler: {}", handler_name);
 
     // Queue callback execution
     commands.queue(move |world: &mut World| {
@@ -159,19 +166,31 @@ fn detect_changes<T: Component>(
 
 /// Re-render a reactive component after state change
 fn rerender_reactive_component<T: Component>(world: &mut World, entity: Entity) {
-    // Get the component state
-    let Some(state) = world.get::<T>(entity) else { return };
+    // Render with current state and extract HTML + callbacks
+    let (html_content, callbacks) = {
+        // Get the component state
+        let Some(state) = world.get::<T>(entity) else {
+            warn!("Failed to get component state for re-render");
+            return
+        };
 
-    // Create UiContext and call render function
-    let mut ctx = UiContext::new(state, entity, world);
-    let html = T::render(&mut ctx);
+        // Create UiContext and call render function
+        let mut ctx = UiContext::new(state, entity, world);
+        let html = T::render(&mut ctx);
 
-    // Extract callbacks from context
-    let callbacks = ctx.take_callbacks();
+        info!("🔄 Re-rendered component, HTML length: {}", html.content.len());
+        info!("🔄 HTML preview: {}", &html.content[..html.content.len().min(300)]);
+
+        // Extract callbacks from context
+        let callbacks = ctx.take_callbacks();
+
+        (html.content, callbacks)
+    };
 
     // Update the ValorUi component
     if let Some(mut valor_ui) = world.get_mut::<ValorUi>(entity) {
-        valor_ui.html = html.content;
+        info!("📝 Updating ValorUi HTML from {} to {} chars", valor_ui.html.len(), html_content.len());
+        valor_ui.html = html_content;
 
         // Update callbacks
         if !callbacks.is_empty() {
@@ -210,6 +229,15 @@ fn execute_callback<T: Component>(world: &mut World, callback_name: &str) {
     info!("execute_callback: Found {} entities with callbacks for '{}'", entities_with_callbacks.len(), callback_name);
 
     for entity in entities_with_callbacks {
+        // Debug: show what callbacks are registered
+        {
+            let callbacks = world.get::<super::context::ReactiveCallbacks<T>>(entity);
+            if let Some(cb) = callbacks {
+                let keys: Vec<&String> = cb.handlers.keys().collect();
+                info!("Available callbacks on entity {:?}: {:?}", entity, keys);
+            }
+        }
+
         // Get the callback function
         let callback_fn = {
             let callbacks = world.get::<super::context::ReactiveCallbacks<T>>(entity);
@@ -217,19 +245,39 @@ fn execute_callback<T: Component>(world: &mut World, callback_name: &str) {
         };
 
         if let Some(callback) = callback_fn {
-            info!("Executing callback '{}' on entity {:?}", callback_name, entity);
+            info!("✅ Executing callback '{}' on entity {:?}", callback_name, entity);
+
+            // Check if entity exists
+            if !world.entities().contains(entity) {
+                warn!("❌ Entity {:?} does not exist!", entity);
+                continue;
+            }
+
+            // Check if component exists on entity
+            if !world.entity(entity).contains::<T>() {
+                warn!("❌ Entity {:?} does not have component {}", entity, std::any::type_name::<T>());
+                continue;
+            }
 
             // Execute the callback with mutable access to the component
             if let Some(mut component) = world.get_mut::<T>(entity) {
-                info!("Got mutable component, calling callback...");
-                callback(&mut *component);
-                info!("Callback executed, marking as changed");
+                info!("✅ Got mutable component, calling callback...");
+
+                // Call the callback
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    callback(&mut *component);
+                })).unwrap_or_else(|e| {
+                    error!("❌ Callback panicked: {:?}", e);
+                });
+
+                info!("✅ Callback executed successfully, marking as changed");
                 component.set_changed();
             } else {
-                warn!("Failed to get mutable component for entity {:?}", entity);
+                warn!("❌ Failed to get mutable component for entity {:?} despite it existing", entity);
             }
         } else {
-            warn!("No callback found for '{}' on entity {:?}", callback_name, entity);
+            warn!("❌ No callback found for '{}' on entity {:?}", callback_name, entity);
         }
     }
 }
+

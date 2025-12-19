@@ -27,6 +27,13 @@ pub mod reactive;
 #[cfg(feature = "bevy_integration")]
 pub mod reactive_html_macro;
 
+#[cfg(feature = "bevy_integration")]
+pub mod styling;
+
+// Re-export the JSX-like jsx! macro
+#[cfg(feature = "bevy_integration")]
+pub use valor_dsl_macros::jsx;
+
 /// Virtual DOM that compiles HTML to `DOMUpdate` messages
 pub struct VirtualDom {
     key_manager: NodeKeyManager<usize>,
