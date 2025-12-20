@@ -5,7 +5,7 @@ use glyphon::{
     Cache as GlyphonCache, FontSystem, Resolution, SwashCache, TextAtlas, TextRenderer, Viewport,
 };
 use pollster::block_on;
-use wgpu::*;
+use wgpu::{RenderPipeline, *};
 
 /// GPU context for offscreen rendering.
 pub struct OffscreenGpuContext {
@@ -23,7 +23,7 @@ pub struct PersistentGpuContext {
     /// Command queue.
     pub queue: Queue,
     /// Render pipeline.
-    pub pipeline: wgpu::RenderPipeline,
+    pub pipeline: RenderPipeline,
     /// Glyphon cache for text rendering.
     pub glyphon_cache: GlyphonCache,
     /// Glyphon state (font system, text atlas, renderer, viewport).
@@ -141,7 +141,10 @@ pub fn initialize_glyphon(params: &GlyphonInitParams<'_>) -> GlyphonState {
 ///
 /// # Errors
 /// Returns an error if GPU initialization fails.
-pub fn initialize_persistent_context(width: u32, height: u32) -> AnyhowResult<PersistentGpuContext> {
+pub fn initialize_persistent_context(
+    width: u32,
+    height: u32,
+) -> AnyhowResult<PersistentGpuContext> {
     let OffscreenGpuContext { device, queue } = initialize_gpu()?;
     let render_format = TextureFormat::Rgba8UnormSrgb;
     let pipeline = super::rendering::build_pipeline(&device, render_format);

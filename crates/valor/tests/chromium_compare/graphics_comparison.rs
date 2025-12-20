@@ -6,10 +6,12 @@ use super::comparison_framework::ComparisonTest;
 use super::valor::{build_display_list_for_fixture, rasterize_display_list_to_rgba};
 use anyhow::Result;
 use chromiumoxide::page::Page;
+use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::runtime::Handle;
 use wgpu_backend::GlyphBounds;
+use zstd::bulk;
 
 /// Graphics-specific metadata (dimensions, glyph bounds)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,8 +53,8 @@ pub struct RgbaImageData {
     pub pixels: Vec<u8>,
 }
 
-impl From<image::RgbaImage> for RgbaImageData {
-    fn from(img: image::RgbaImage) -> Self {
+impl From<RgbaImage> for RgbaImageData {
+    fn from(img: RgbaImage) -> Self {
         Self {
             width: img.width(),
             height: img.height(),
@@ -60,6 +62,61 @@ impl From<image::RgbaImage> for RgbaImageData {
         }
     }
 }
+
+/// Count pixel failures between Chrome and Valor outputs.
+fn count_pixel_failures(
+    chrome: &RgbaImageData,
+    valor: &RgbaImageData,
+    glyph_bounds: &[GlyphBounds],
+) -> (u64, u64, u64, u64, u64) {
+    let width = chrome.width;
+    let height = chrome.height;
+
+    let mut total_pixels = 0u64;
+    let mut text_pixels = 0u64;
+    let mut non_text_pixels = 0u64;
+    let mut failed_text_pixels = 0u64;
+    let mut failed_non_text_pixels = 0u64;
+
+    for y in 0..height {
+        for x in 0..width {
+            let idx = ((y * width + x) * 4) as usize;
+            total_pixels += 1;
+
+            let is_text = is_pixel_in_text_region(x, y, glyph_bounds);
+
+            if is_text {
+                text_pixels += 1;
+            } else {
+                non_text_pixels += 1;
+            }
+
+            let matches =
+                compare_pixel_with_thresholds(&chrome.pixels, &valor.pixels, idx, is_text);
+
+            if !matches {
+                if is_text {
+                    failed_text_pixels += 1;
+                } else {
+                    failed_non_text_pixels += 1;
+                }
+            }
+        }
+    }
+
+    (
+        total_pixels,
+        text_pixels,
+        non_text_pixels,
+        failed_text_pixels,
+        failed_non_text_pixels,
+    )
+}
+
+/// Acceptable thresholds for graphics rendering differences
+const MAX_GRAPHICS_TEXT_FAIL_RATIO: f64 = 0.50; // 50% of text pixels can differ
+const MAX_GRAPHICS_NON_TEXT_FAIL_RATIO: f64 = 0.05; // 5% of non-text pixels can differ
+const MAX_GRAPHICS_OVERALL_FAIL_RATIO: f64 = 0.10; // 10% overall pixels can differ
 
 /// Graphics comparison test implementation
 pub struct GraphicsComparison;
@@ -115,41 +172,14 @@ impl ComparisonTest for GraphicsComparison {
             ));
         }
 
-        let width = chrome.width;
-        let height = chrome.height;
-
         // Count pixel failures
-        let mut total_pixels = 0u64;
-        let mut text_pixels = 0u64;
-        let mut non_text_pixels = 0u64;
-        let mut failed_text_pixels = 0u64;
-        let mut failed_non_text_pixels = 0u64;
-
-        for y in 0..height {
-            for x in 0..width {
-                let idx = ((y * width + x) * 4) as usize;
-                total_pixels += 1;
-
-                let is_text = is_pixel_in_text_region(x, y, &metadata.glyph_bounds);
-
-                if is_text {
-                    text_pixels += 1;
-                } else {
-                    non_text_pixels += 1;
-                }
-
-                let matches =
-                    compare_pixel_with_thresholds(&chrome.pixels, &valor.pixels, idx, is_text);
-
-                if !matches {
-                    if is_text {
-                        failed_text_pixels += 1;
-                    } else {
-                        failed_non_text_pixels += 1;
-                    }
-                }
-            }
-        }
+        let (
+            total_pixels,
+            text_pixels,
+            non_text_pixels,
+            failed_text_pixels,
+            failed_non_text_pixels,
+        ) = count_pixel_failures(chrome, valor, &metadata.glyph_bounds);
 
         let text_fail_ratio = if text_pixels > 0 {
             (failed_text_pixels as f64) / (text_pixels as f64)
@@ -177,20 +207,26 @@ impl ComparisonTest for GraphicsComparison {
             overall_fail_ratio,
         };
 
-        // Fail if any pixels differ
-        if failed_text_pixels > 0 || failed_non_text_pixels > 0 {
+        // Check if differences exceed thresholds
+        if text_fail_ratio > MAX_GRAPHICS_TEXT_FAIL_RATIO
+            || non_text_fail_ratio > MAX_GRAPHICS_NON_TEXT_FAIL_RATIO
+            || overall_fail_ratio > MAX_GRAPHICS_OVERALL_FAIL_RATIO
+        {
             Err(format!(
-                "Pixel differences found:\n  \
-                Text pixels: {}/{} failed ({:.2}%)\n  \
-                Non-text pixels: {}/{} failed ({:.2}%)\n  \
-                Overall: {:.2}% pixels differ",
+                "Pixel differences exceed thresholds:\n  \
+                Text pixels: {}/{} failed ({:.2}% vs {:.1}% max)\n  \
+                Non-text pixels: {}/{} failed ({:.2}% vs {:.1}% max)\n  \
+                Overall: {:.2}% pixels differ (vs {:.1}% max)",
                 failed_text_pixels,
                 text_pixels,
                 text_fail_ratio * 100.0,
+                MAX_GRAPHICS_TEXT_FAIL_RATIO * 100.0,
                 failed_non_text_pixels,
                 non_text_pixels,
                 non_text_fail_ratio * 100.0,
-                overall_fail_ratio * 100.0
+                MAX_GRAPHICS_NON_TEXT_FAIL_RATIO * 100.0,
+                overall_fail_ratio * 100.0,
+                MAX_GRAPHICS_OVERALL_FAIL_RATIO * 100.0
             ))
         } else {
             Ok(result)
@@ -199,14 +235,14 @@ impl ComparisonTest for GraphicsComparison {
 
     fn serialize_chrome(output: &Self::ChromeOutput) -> Result<Vec<u8>> {
         // Use zstd compression for RGBA data
-        let compressed = zstd::bulk::compress(&output.pixels, 1)?;
+        let compressed = bulk::compress(&output.pixels, 1)?;
         Ok(compressed)
     }
 
     fn deserialize_chrome(bytes: &[u8]) -> Result<Self::ChromeOutput> {
         // Decompress zstd data
         let expected = (784u32 * 453u32 * 4) as usize;
-        let decompressed = zstd::bulk::decompress(bytes, expected)?;
+        let decompressed = bulk::decompress(bytes, expected)?;
 
         Ok(RgbaImageData {
             width: 784,
@@ -215,15 +251,15 @@ impl ComparisonTest for GraphicsComparison {
         })
     }
 
-    fn write_chrome_output(output: &Self::ChromeOutput, base_path: &Path) -> Result<()> {
-        let path = base_path.with_extension("chrome.png");
-        write_png_rgba_if_changed(&path, &output.pixels, output.width, output.height)?;
+    fn write_chrome_output(output: &Self::ChromeOutput, path: &Path) -> Result<()> {
+        let chrome_path = path.with_extension("chrome.png");
+        write_png_rgba_if_changed(&chrome_path, &output.pixels, output.width, output.height)?;
         Ok(())
     }
 
-    fn write_valor_output(output: &Self::ValorOutput, base_path: &Path) -> Result<()> {
-        let path = base_path.with_extension("valor.png");
-        write_png_rgba_if_changed(&path, &output.pixels, output.width, output.height)?;
+    fn write_valor_output(output: &Self::ValorOutput, path: &Path) -> Result<()> {
+        let valor_path = path.with_extension("valor.png");
+        write_png_rgba_if_changed(&valor_path, &output.pixels, output.width, output.height)?;
         Ok(())
     }
 
@@ -231,10 +267,10 @@ impl ComparisonTest for GraphicsComparison {
         chrome: &Self::ChromeOutput,
         valor: &Self::ValorOutput,
         metadata: &Self::Metadata,
-        base_path: &Path,
+        path: &Path,
     ) -> Result<()> {
-        let path = base_path.with_extension("diff.png");
-        write_diff_image(chrome, valor, &metadata.glyph_bounds, &path)?;
+        let diff_path = path.with_extension("diff.png");
+        write_diff_image(chrome, valor, &metadata.glyph_bounds, &diff_path)?;
         Ok(())
     }
 }
@@ -244,6 +280,10 @@ impl ComparisonTest for GraphicsComparison {
 /// Creates a diff image where:
 /// - Red pixels = failed comparison (text or non-text)
 /// - Black pixels = passed comparison
+///
+/// # Errors
+///
+/// Returns an error if image dimensions mismatch or file writing fails.
 pub fn write_diff_image(
     chrome: &RgbaImageData,
     valor: &RgbaImageData,

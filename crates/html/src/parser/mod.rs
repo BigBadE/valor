@@ -286,90 +286,107 @@ impl ParserDOMMirror {
             self.root
         }
     }
+
+    /// Insert an element node into the parser DOM tree at the specified position.
+    fn apply_insert_element(&mut self, parent: NodeKey, node: NodeKey, tag: String, pos: usize) {
+        let parent_id = self.map_parent(parent);
+        let child_id = self.ensure_node(node, Some(ParserNodeKind::Element { tag }));
+        // Detach if attached
+        if self.dom.get(child_id).and_then(Node::parent).is_some() {
+            child_id.detach(&mut self.dom);
+        }
+        self.insert_child_at_position(parent_id, child_id, pos);
+    }
+
+    /// Insert a text node into the parser DOM tree at the specified position.
+    fn apply_insert_text(&mut self, parent: NodeKey, node: NodeKey, text: &str, pos: usize) {
+        let parent_id = self.map_parent(parent);
+        let child_id = self.ensure_node(
+            node,
+            Some(ParserNodeKind::Text {
+                text: text.to_owned(),
+            }),
+        );
+        if let Some(child_node) = self.dom.get_mut(child_id)
+            && let ParserNodeKind::Text { text: text_ref } = &mut child_node.get_mut().kind
+        {
+            text.clone_into(text_ref);
+        }
+        if self.dom.get(child_id).and_then(Node::parent).is_some() {
+            child_id.detach(&mut self.dom);
+        }
+        self.insert_child_at_position(parent_id, child_id, pos);
+    }
+
+    /// Insert a child node at a specific position among parent's children.
+    fn insert_child_at_position(&mut self, parent_id: NodeId, child_id: NodeId, pos: usize) {
+        let count = parent_id.children(&self.dom).count();
+        if pos >= count {
+            parent_id.append(child_id, &mut self.dom);
+        } else if let Some(sib) = parent_id.children(&self.dom).nth(pos) {
+            sib.insert_before(child_id, &mut self.dom);
+        } else {
+            parent_id.append(child_id, &mut self.dom);
+        }
+    }
+
+    /// Set an attribute on a parser node, updating or adding as needed.
+    fn apply_set_attr(&mut self, node: NodeKey, name: String, val: String) {
+        let id = self.ensure_node(node, None);
+        if let Some(dom_node) = self.dom.get_mut(id) {
+            let attrs = &mut dom_node.get_mut().attrs;
+            if let Some((_, value)) = attrs.iter_mut().find(|(key, _)| *key == name) {
+                *value = val;
+            } else {
+                attrs.push((name, val));
+            }
+        }
+    }
+
+    /// Remove a node from its parent in the parser DOM.
+    fn apply_remove_node(&mut self, node: NodeKey) {
+        if let Some(&id) = self.id_map.get(&node) {
+            id.detach(&mut self.dom);
+        }
+    }
+
+    /// Update the text content of an existing text node in the parser DOM.
+    fn apply_update_text(&mut self, node: NodeKey, text: &str) {
+        if let Some(&id) = self.id_map.get(&node)
+            && let Some(dom_node) = self.dom.get_mut(id)
+            && let ParserNodeKind::Text { text: text_ref } = &mut dom_node.get_mut().kind
+        {
+            text.clone_into(text_ref);
+        }
+    }
 }
 
 impl DOMSubscriber for ParserDOMMirror {
     #[inline]
     fn apply_update(&mut self, update: DOMUpdate) -> Result<(), Error> {
-        use DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr, UpdateText};
+        use DOMUpdate::{
+            EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr, UpdateText,
+        };
         match update {
             InsertElement {
                 parent,
                 node,
                 tag,
                 pos,
-            } => {
-                let parent_id = self.map_parent(parent);
-                let child_id = self.ensure_node(node, Some(ParserNodeKind::Element { tag }));
-                // Detach if attached
-                if self.dom.get(child_id).and_then(Node::parent).is_some() {
-                    child_id.detach(&mut self.dom);
-                }
-                let count = parent_id.children(&self.dom).count();
-                if pos >= count {
-                    parent_id.append(child_id, &mut self.dom);
-                } else if let Some(sib) = parent_id.children(&self.dom).nth(pos) {
-                    sib.insert_before(child_id, &mut self.dom);
-                } else {
-                    parent_id.append(child_id, &mut self.dom);
-                }
-            }
+            } => self.apply_insert_element(parent, node, tag, pos),
             InsertText {
                 parent,
                 node,
                 text,
                 pos,
-            } => {
-                let parent_id = self.map_parent(parent);
-                let child_id =
-                    self.ensure_node(node, Some(ParserNodeKind::Text { text: text.clone() }));
-                if let Some(child_node) = self.dom.get_mut(child_id)
-                    && let ParserNodeKind::Text { text: text_ref } = &mut child_node.get_mut().kind
-                {
-                    text_ref.clone_from(&text);
-                }
-                if self.dom.get(child_id).and_then(Node::parent).is_some() {
-                    child_id.detach(&mut self.dom);
-                }
-                let count = parent_id.children(&self.dom).count();
-                if pos >= count {
-                    parent_id.append(child_id, &mut self.dom);
-                } else if let Some(sib) = parent_id.children(&self.dom).nth(pos) {
-                    sib.insert_before(child_id, &mut self.dom);
-                } else {
-                    parent_id.append(child_id, &mut self.dom);
-                }
-            }
+            } => self.apply_insert_text(parent, node, &text, pos),
             SetAttr {
                 node,
                 name,
                 value: val,
-            } => {
-                let id = self.ensure_node(node, None);
-                if let Some(dom_node) = self.dom.get_mut(id) {
-                    let attrs = &mut dom_node.get_mut().attrs;
-                    if let Some((_, value)) = attrs.iter_mut().find(|(key, _)| *key == name) {
-                        *value = val;
-                    } else {
-                        attrs.push((name, val));
-                    }
-                }
-            }
-            RemoveNode { node } => {
-                if let Some(&id) = self.id_map.get(&node) {
-                    id.detach(&mut self.dom);
-                }
-            }
-            UpdateText { node, text } => {
-                // Update the text content of an existing text node in-place
-                if let Some(&id) = self.id_map.get(&node) {
-                    if let Some(dom_node) = self.dom.get_mut(id)
-                        && let ParserNodeKind::Text { text: text_ref } = &mut dom_node.get_mut().kind
-                    {
-                        text_ref.clone_from(&text);
-                    }
-                }
-            }
+            } => self.apply_set_attr(node, name, val),
+            RemoveNode { node } => self.apply_remove_node(node),
+            UpdateText { node, text } => self.apply_update_text(node, &text),
             EndOfDocument => {}
         }
         Ok(())

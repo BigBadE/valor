@@ -3,17 +3,39 @@
 
 use super::chrome::start_and_connect_chrome;
 use super::common::{init_test_logger, target_dir, test_cache_dir};
-use super::comparison_framework::run_comparison_test_simple;
+use super::comparison_framework::{ComparisonTest, run_comparison_test};
 use super::graphics_comparison::GraphicsComparison;
 use super::layout_comparison::LayoutComparison;
 use super::text_rendering_comparison::TextRenderingComparison;
 use anyhow::{Result, anyhow};
-use chromiumoxide::Browser;
+use chromiumoxide::{Browser, Page};
 use log::warn;
 use std::fs::remove_file;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
+
+/// Runs a comparison test and returns a simple pass/fail result.
+///
+/// # Errors
+///
+/// Returns an error if the test fails or infrastructure errors occur.
+async fn run_comparison_test_simple<T: ComparisonTest>(
+    page: &Page,
+    handle: &Handle,
+    fixture: &Path,
+) -> Result<()> {
+    let outcome = run_comparison_test::<T>(page, handle, fixture).await?;
+
+    if outcome.passed {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "Comparison test failed:\n{}",
+            outcome.error.unwrap_or_default()
+        ))
+    }
+}
 
 struct FixtureResult {
     path: PathBuf,
@@ -24,6 +46,78 @@ struct FixtureResult {
     _graphics_error: Option<String>,
     _text_rendering_error: Option<String>,
     _duration: Duration,
+}
+
+/// Creates a failure result for page creation errors.
+fn create_page_error_result(
+    fixture_path: &Path,
+    error_msg: String,
+    duration: Duration,
+) -> FixtureResult {
+    FixtureResult {
+        path: fixture_path.to_path_buf(),
+        layout_passed: false,
+        graphics_passed: false,
+        text_rendering_passed: false,
+        _layout_error: Some(error_msg.clone()),
+        _graphics_error: Some(error_msg.clone()),
+        _text_rendering_error: Some(error_msg),
+        _duration: duration,
+    }
+}
+
+/// Runs text rendering comparison test for a fixture.
+async fn run_text_rendering_test(
+    page: &Page,
+    fixture_path: &Path,
+    fixture_start: Instant,
+) -> FixtureResult {
+    let handle = Handle::current();
+    let text_rendering_result =
+        run_comparison_test_simple::<TextRenderingComparison>(page, &handle, fixture_path).await;
+    let text_rendering_passed = text_rendering_result.is_ok();
+    let text_rendering_error = text_rendering_result.err().map(|err| err.to_string());
+
+    FixtureResult {
+        path: fixture_path.to_path_buf(),
+        layout_passed: true,   // Not tested for text rendering fixtures
+        graphics_passed: true, // Not tested for text rendering fixtures
+        text_rendering_passed,
+        _layout_error: None,
+        _graphics_error: None,
+        _text_rendering_error: text_rendering_error,
+        _duration: fixture_start.elapsed(),
+    }
+}
+
+/// Runs layout and graphics comparison tests for a fixture.
+async fn run_layout_and_graphics_tests(
+    page: &Page,
+    fixture_path: &Path,
+    fixture_start: Instant,
+) -> FixtureResult {
+    let handle = Handle::current();
+
+    let layout_result =
+        run_comparison_test_simple::<LayoutComparison>(page, &handle, fixture_path).await;
+    let layout_passed = layout_result.is_ok();
+    let layout_error = layout_result.err().map(|err| err.to_string());
+
+    let graphics_result =
+        run_comparison_test_simple::<GraphicsComparison>(page, &handle, fixture_path).await;
+    let graphics_passed = graphics_result.is_ok();
+    let graphics_error = graphics_result.err().map(|err| err.to_string());
+
+    FixtureResult {
+        path: fixture_path.to_path_buf(),
+        layout_passed,
+        graphics_passed,
+        text_rendering_passed: true, // Not tested for regular fixtures
+        _layout_error: layout_error,
+        _graphics_error: graphics_error,
+        _text_rendering_error: None,
+        _duration: fixture_start.elapsed(),
+    }
 }
 
 /// Processes a single fixture test with both layout and graphics tests using the unified framework.
@@ -63,72 +157,16 @@ async fn process_fixture(
         Ok(page) => page,
         Err(err) => {
             let error_msg = format!("Failed to create page: {err}");
-            return FixtureResult {
-                path: fixture_path.to_path_buf(),
-                layout_passed: false,
-                graphics_passed: false,
-                text_rendering_passed: false,
-                _layout_error: Some(error_msg.clone()),
-                _graphics_error: Some(error_msg.clone()),
-                _text_rendering_error: Some(error_msg),
-                _duration: fixture_start.elapsed(),
-            };
+            return create_page_error_result(fixture_path, error_msg, fixture_start.elapsed());
         }
     };
 
     // Run tests and ensure page cleanup even on error
-    let result = async {
-        let handle = Handle::current();
-
-        // Run appropriate tests based on fixture type
-        if is_text_rendering_fixture {
-            // For text rendering fixtures, run only the text rendering test
-            let text_rendering_result =
-                run_comparison_test_simple::<TextRenderingComparison>(&page, &handle, fixture_path)
-                    .await;
-            let text_rendering_passed = text_rendering_result.is_ok();
-            let text_rendering_error = text_rendering_result.err().map(|err| err.to_string());
-
-            let duration = fixture_start.elapsed();
-
-            FixtureResult {
-                path: fixture_path.to_path_buf(),
-                layout_passed: true,   // Not tested for text rendering fixtures
-                graphics_passed: true, // Not tested for text rendering fixtures
-                text_rendering_passed,
-                _layout_error: None,
-                _graphics_error: None,
-                _text_rendering_error: text_rendering_error,
-                _duration: duration,
-            }
-        } else {
-            // For regular fixtures, run layout and graphics tests
-            let layout_result =
-                run_comparison_test_simple::<LayoutComparison>(&page, &handle, fixture_path).await;
-            let layout_passed = layout_result.is_ok();
-            let layout_error = layout_result.err().map(|err| err.to_string());
-
-            let graphics_result =
-                run_comparison_test_simple::<GraphicsComparison>(&page, &handle, fixture_path)
-                    .await;
-            let graphics_passed = graphics_result.is_ok();
-            let graphics_error = graphics_result.err().map(|err| err.to_string());
-
-            let duration = fixture_start.elapsed();
-
-            FixtureResult {
-                path: fixture_path.to_path_buf(),
-                layout_passed,
-                graphics_passed,
-                text_rendering_passed: true, // Not tested for regular fixtures
-                _layout_error: layout_error,
-                _graphics_error: graphics_error,
-                _text_rendering_error: None,
-                _duration: duration,
-            }
-        }
-    }
-    .await;
+    let result = if is_text_rendering_fixture {
+        run_text_rendering_test(&page, fixture_path, fixture_start).await
+    } else {
+        run_layout_and_graphics_tests(&page, fixture_path, fixture_start).await
+    };
 
     // Always close the page to prevent Chrome tab accumulation
     let _ignore_close_error = page.close().await;

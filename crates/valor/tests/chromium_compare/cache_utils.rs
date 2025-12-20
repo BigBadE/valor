@@ -2,7 +2,7 @@
 // Used by graphics_tests and layout_tests to cache Chrome screenshots and layout data
 
 use anyhow::Result;
-use std::fs::{create_dir_all, read, write};
+use std::fs::{read, write};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 
@@ -36,17 +36,6 @@ pub fn cache_file_path(test_name: &str, fixture_path: &Path, suffix: &str) -> Re
     let hash = checksum_u64(&path_str);
     let cache_file = dir.join(format!("{hash:016x}{suffix}"));
     Ok(cache_file)
-}
-
-/// Gets the directory for failing test artifacts.
-///
-/// # Errors
-///
-/// Returns an error if directory creation fails.
-pub fn test_failing_dir(test_name: &str) -> Result<PathBuf> {
-    let dir = test_cache_dir(test_name)?.join("failing");
-    create_dir_all(&dir)?;
-    Ok(dir)
 }
 
 type DeserializeFn<T> = fn(&[u8]) -> Result<T>;

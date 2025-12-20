@@ -211,10 +211,42 @@ pub fn create_ua_stylesheet() -> types::Stylesheet {
     source_order = next_order_after_forms;
 
     // Add heading styles to match browser defaults
-    for tag in &["h1", "h2", "h3", "h4", "h5", "h6"] {
-        rules.push(make_ua_rule(tag, source_order, &[("font-weight", "700")]));
-        source_order += 1;
-    }
+    // Font sizes based on Chrome/Firefox user-agent stylesheets
+    rules.push(make_ua_rule(
+        "h1",
+        source_order,
+        &[("font-weight", "700"), ("font-size", "2em")],
+    ));
+    source_order += 1;
+    rules.push(make_ua_rule(
+        "h2",
+        source_order,
+        &[("font-weight", "700"), ("font-size", "1.5em")],
+    ));
+    source_order += 1;
+    rules.push(make_ua_rule(
+        "h3",
+        source_order,
+        &[("font-weight", "700"), ("font-size", "1.17em")],
+    ));
+    source_order += 1;
+    rules.push(make_ua_rule(
+        "h4",
+        source_order,
+        &[("font-weight", "700"), ("font-size", "1em")],
+    ));
+    source_order += 1;
+    rules.push(make_ua_rule(
+        "h5",
+        source_order,
+        &[("font-weight", "700"), ("font-size", "0.83em")],
+    ));
+    source_order += 1;
+    rules.push(make_ua_rule(
+        "h6",
+        source_order,
+        &[("font-weight", "700"), ("font-size", "0.67em")],
+    ));
 
     types::Stylesheet {
         rules,

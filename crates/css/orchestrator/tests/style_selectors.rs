@@ -309,3 +309,51 @@ fn combinator_child_vs_descendant() -> Result<(), Box<dyn Error>> {
     }
     Ok(())
 }
+
+/// Test that em-based font-size values are computed correctly relative to parent font size.
+///
+/// # Errors
+/// Returns an error if DOM setup or style computation fails.
+#[test]
+fn font_size_em_units() -> Result<(), Box<dyn Error>> {
+    let sheet = sheet_for_selectors(vec![
+        (
+            "h1",
+            vec![("font-size", "2em", false)],
+            types::Origin::UserAgent,
+            0,
+        ),
+        (
+            "h2",
+            vec![("font-size", "1.5em", false)],
+            types::Origin::UserAgent,
+            1,
+        ),
+    ]);
+
+    let mut core = CoreEngine::new();
+    core.replace_stylesheet(sheet);
+
+    let h1_node = NodeKey(1);
+    let h2_node = NodeKey(2);
+
+    insert_element(&mut core, NodeKey::ROOT, h1_node, "h1", 0)?;
+    insert_element(&mut core, NodeKey::ROOT, h2_node, "h2", 1)?;
+    apply(&mut core, DOMUpdate::EndOfDocument)?;
+
+    let _changed = core.recompute_styles();
+
+    let comp_h1 = get_computed_for(&core, h1_node).unwrap_or_default();
+    let comp_h2 = get_computed_for(&core, h2_node).unwrap_or_default();
+
+    // Default root font size is 16px
+    // h1 with 2em should be 32px
+    // h2 with 1.5em should be 24px
+    if (comp_h1.font_size - 32.0).abs() >= 0.01 {
+        return Err(format!("h1 font-size should be 32px, got {}", comp_h1.font_size).into());
+    }
+    if (comp_h2.font_size - 24.0).abs() >= 0.01 {
+        return Err(format!("h2 font-size should be 24px, got {}", comp_h2.font_size).into());
+    }
+    Ok(())
+}

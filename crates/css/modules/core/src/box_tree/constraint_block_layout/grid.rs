@@ -290,6 +290,42 @@ impl ConstraintLayoutTree {
         }
     }
 
+    /// Compute grid container height from style, considering min-height for track sizing.
+    ///
+    /// Returns (content-box height, whether min-height constrains sizing).
+    fn compute_grid_container_height(
+        style: &ComputedStyle,
+        constraint_space: &ConstraintSpace,
+        block_pbsum: f32,
+    ) -> (f32, bool) {
+        style.height.map_or_else(
+            || {
+                style.min_height.map_or_else(
+                    || {
+                        // No height or min-height, use available space
+                        (
+                            constraint_space
+                                .available_block_size
+                                .resolve(LayoutUnit::from_px(10000.0))
+                                .to_px(),
+                            false,
+                        )
+                    },
+                    |min_height| {
+                        // No explicit height, but min-height acts as definite size for grid sizing
+                        // Per CSS Grid spec, min-height establishes definite size for track sizing
+                        // Convert from border-box to content-box
+                        (min_height - block_pbsum, true)
+                    },
+                )
+            },
+            |height| {
+                // Explicit height is set - convert from border-box to content-box
+                (height - block_pbsum, false)
+            },
+        )
+    }
+
     /// Layout a grid container.
     pub(super) fn layout_grid_container(
         &mut self,
@@ -313,14 +349,15 @@ impl ConstraintLayoutTree {
         // Parse grid properties
         let (col_tracks, row_tracks) = Self::parse_grid_tracks(style);
 
+        // Compute padding/border before grid sizing (grid expects content-box dimensions)
+        let padding_block_sum = sides.padding_top.to_px() + sides.padding_bottom.to_px();
+        let border_block_sum = sides.border_top.to_px() + sides.border_bottom.to_px();
+        let block_pbsum = padding_block_sum + border_block_sum;
+
         // Run grid layout
-        // Use explicit container height if specified, otherwise use available space
-        let container_block_size = style.height.unwrap_or_else(|| {
-            constraint_space
-                .available_block_size
-                .resolve(LayoutUnit::from_px(10000.0))
-                .to_px()
-        });
+        // Determine container height and whether it's explicit for grid track sizing
+        let (container_block_size, has_min_height_constraint) =
+            Self::compute_grid_container_height(style, constraint_space, block_pbsum);
 
         // Convert GridAutoFlow from style model to grid module type
         let grid_auto_flow = match style.grid_auto_flow {
@@ -332,8 +369,7 @@ impl ConstraintLayoutTree {
 
         let _padding_inline_sum = sides.padding_left.to_px() + sides.padding_right.to_px();
         let _border_inline_sum = sides.border_left.to_px() + sides.border_right.to_px();
-        let padding_block_sum = sides.padding_top.to_px() + sides.padding_bottom.to_px();
-        let border_block_sum = sides.border_top.to_px() + sides.border_bottom.to_px();
+        // padding_block_sum and border_block_sum already computed above for grid sizing
 
         // Run spec-compliant grid layout (column sizing, then row sizing)
         let grid_inputs = GridContainerInputs {
@@ -344,7 +380,8 @@ impl ConstraintLayoutTree {
             available_height: container_block_size,
             align_items: GridAlignment::default(),
             justify_items: GridAlignment::default(),
-            has_explicit_height: style.height.is_some(),
+            // Height is explicit if set directly or if min-height constrains the grid
+            has_explicit_height: style.height.is_some() || has_min_height_constraint,
         };
 
         // Use two-pass layout only for final layout, not during measurement
@@ -377,7 +414,15 @@ impl ConstraintLayoutTree {
         let padding_inline_sum = sides.padding_left.to_px() + sides.padding_right.to_px();
         let border_inline_sum = sides.border_left.to_px() + sides.border_right.to_px();
         let final_inline_size = container_inline_size + padding_inline_sum + border_inline_sum;
-        let final_block_size = content_block + padding_block_sum + border_block_sum;
+        let mut final_block_size = content_block + padding_block_sum + border_block_sum;
+
+        // Apply min-height and max-height constraints
+        if let Some(min_height) = style.min_height {
+            final_block_size = final_block_size.max(min_height);
+        }
+        if let Some(max_height) = style.max_height {
+            final_block_size = final_block_size.min(max_height);
+        }
 
         LayoutResult {
             inline_size: final_inline_size,

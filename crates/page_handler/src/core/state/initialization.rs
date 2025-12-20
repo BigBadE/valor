@@ -12,8 +12,8 @@ use html::dom::DOM;
 use html::parser::{HTMLParser, ParseInputs, ScriptJob};
 use js::bindings::{FetchRegistry, StorageRegistry};
 use js::{
-    ConsoleLogger, DOMMirror, DOMUpdate, DomIndex, HostContext, NodeKeyManager, SharedDomIndex,
-    build_default_bindings,
+    ConsoleLogger, DOMMirror, DOMUpdate, DomIndex, HostContext, NodeKey, NodeKeyManager,
+    SharedDomIndex, build_default_bindings,
 };
 use js_engine_v8::V8Engine;
 use renderer::Renderer;
@@ -131,6 +131,85 @@ pub(super) fn create_js_context(
     Ok(JsContext {
         js_engine,
         host_context,
+    })
+}
+
+/// Initialize a blank page without loading from a URL.
+/// This is useful for pages that will be populated entirely through `DOMUpdates`.
+///
+/// # Errors
+///
+/// Returns an error if page initialization fails.
+pub(super) fn initialize_blank_page(
+    handle: &Handle,
+    config: ValorConfig,
+) -> Result<PageComponents, Error> {
+    let (out_updater, _out_receiver) = broadcast::channel(128);
+    let (in_updater, in_receiver) = mpsc::channel(128);
+
+    let mut dom = DOM::new(out_updater, in_receiver);
+    let js_keyman = dom.register_manager::<u64>();
+
+    let (_script_tx, script_rx) = unbounded_channel::<ScriptJob>();
+
+    // Use a dummy file:// URL for blank pages
+    let blank_url =
+        Url::parse("file:///blank").map_err(|err| anyhow!("Failed to parse blank URL: {err}"))?;
+
+    let mirrors = create_dom_mirrors(&in_updater, &dom, &blank_url);
+    let js_ctx = create_js_context(
+        &in_updater,
+        js_keyman,
+        &mirrors.dom_index_shared,
+        handle,
+        &blank_url,
+    )?;
+    let frame_scheduler = FrameScheduler::new(config.frame_budget());
+
+    let pipeline = Pipeline::new(PipelineConfig::default());
+
+    // Create incremental layout engine with viewport dimensions from config
+    let incremental_layout =
+        IncrementalLayoutEngine::new(config.viewport_width, config.viewport_height);
+
+    // Create basic HTML document structure (html > body)
+    // This ensures body styles work correctly
+    // Use high NodeKey values to avoid collision with JSX-generated keys
+    // JSX starts from 1, so we use high numbers that won't collide
+    let html_node = NodeKey::pack(0, 0, 0xFFFF_FF00); // Very high ID
+    let body_node = NodeKey::pack(0, 0, 0xFFFF_FF01); // Very high ID
+
+    let structure_updates = vec![
+        DOMUpdate::InsertElement {
+            parent: NodeKey::ROOT,
+            node: html_node,
+            tag: "html".to_string(),
+            pos: 0,
+        },
+        DOMUpdate::InsertElement {
+            parent: html_node,
+            node: body_node,
+            tag: "body".to_string(),
+            pos: 0,
+        },
+    ];
+
+    // Apply the basic structure
+    if let Err(err) = in_updater.blocking_send(structure_updates) {
+        return Err(anyhow!("Failed to send initial document structure: {err}"));
+    }
+
+    Ok(PageComponents {
+        dom,
+        loader: None, // No HTML parser for blank pages
+        mirrors,
+        js_ctx,
+        in_updater,
+        script_rx,
+        frame_scheduler,
+        pipeline,
+        incremental_layout,
+        telemetry_enabled: config.telemetry_enabled,
     })
 }
 

@@ -70,6 +70,36 @@ pub fn parse_px(input: &str) -> Option<f32> {
     trimmed.parse::<f32>().ok()
 }
 
+/// Parse a font-size value with support for em units.
+/// Returns the computed pixel value or None if the value cannot be parsed.
+///
+/// Supported units:
+/// - px: absolute pixels
+/// - em: relative to parent font size (multiplier × `parent_font_size`)
+/// - unitless: treated as pixels for backward compatibility
+pub fn parse_font_size(input: &str, parent_font_size: f32) -> Option<f32> {
+    let trimmed = input.trim();
+    if trimmed.eq_ignore_ascii_case("auto") || trimmed.eq_ignore_ascii_case("none") {
+        return None;
+    }
+
+    // Handle em units
+    if let Some(em_suffix_str) = trimmed.strip_suffix("em") {
+        if let Ok(em_value) = em_suffix_str.trim().parse::<f32>() {
+            return Some(em_value * parent_font_size);
+        }
+        return None;
+    }
+
+    // Handle px units
+    if let Some(px_suffix_str) = trimmed.strip_suffix("px") {
+        return px_suffix_str.trim().parse::<f32>().ok();
+    }
+
+    // Handle unitless (treat as px for backward compatibility)
+    trimmed.parse::<f32>().ok()
+}
+
 /// Parse an integer value (used for z-index).
 pub fn parse_int(input: &str) -> Option<i32> {
     input.trim().parse::<i32>().ok()

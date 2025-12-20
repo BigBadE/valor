@@ -11,7 +11,7 @@ use std::env;
 ///
 /// Controls frame budget timing, layout debouncing, and feature flags for debugging
 /// and performance monitoring.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct ValorConfig {
     /// Frame budget in milliseconds for layout computation throttling
     pub frame_budget_ms: u64,

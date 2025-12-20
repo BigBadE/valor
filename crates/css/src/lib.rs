@@ -84,7 +84,18 @@ impl CSSMirror {
     fn rebuild_styles_from_style_nodes(&mut self) {
         let mut out = types::Stylesheet::default();
         let mut base: u32 = 0;
-        for node in &self.style_nodes_order {
+
+        // Sort nodes so injected nodes (with high NodeKey IDs) come LAST
+        // This ensures CSS reset injected via inject_css_sync comes after HTML styles
+        let mut sorted_nodes = self.style_nodes_order.clone();
+        sorted_nodes.sort_by_key(|node_key| {
+            // Injected nodes have IDs starting at 0xFFFF_0000
+            // Normal HTML nodes have lower IDs
+            // This sort puts HTML nodes first, injected nodes last
+            node_key.0
+        });
+
+        for node in &sorted_nodes {
             if let Some(text) = self.style_text_by_node.get(node) {
                 let parsed = parser::parse_stylesheet(text, out.origin, base);
 
@@ -138,14 +149,14 @@ impl DOMSubscriber for CSSMirror {
                     self.rebuild_styles_from_style_nodes();
                 }
             }
-            DOMUpdate::UpdateText { .. } => {
+            DOMUpdate::UpdateText { .. } | SetAttr { .. } => {
                 // UpdateText doesn't affect CSS mirror since it only updates text nodes,
                 // and CSS is only collected from <style> element children via InsertText
+                // SetAttr also doesn't affect CSS mirror
             }
             EndOfDocument => {
                 self.rebuild_styles_from_style_nodes();
             }
-            SetAttr { .. } => {}
         }
         Ok(())
     }

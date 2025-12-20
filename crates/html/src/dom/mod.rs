@@ -171,7 +171,9 @@ impl DOM {
 
     /// Apply a single DOM update to the tree.
     fn apply_update(&mut self, update: &DOMUpdate) {
-        use DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr, UpdateText};
+        use DOMUpdate::{
+            EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr, UpdateText,
+        };
 
         match update {
             InsertElement {
@@ -179,80 +181,100 @@ impl DOM {
                 node,
                 tag,
                 pos,
-            } => {
-                let parent_rt = self.map_parent(*parent);
-                let child_rt =
-                    self.ensure_node(*node, Some(NodeKind::Element { tag: tag.clone() }));
-                // If child is already attached somewhere, detach first
-                if self.dom.get(child_rt).and_then(Node::parent).is_some() {
-                    child_rt.detach(&mut self.dom);
-                }
-                // Insert at position among parent's children
-                let count = parent_rt.children(&self.dom).count();
-                if *pos >= count {
-                    parent_rt.append(child_rt, &mut self.dom);
-                } else if let Some(target_sibling) = parent_rt.children(&self.dom).nth(*pos) {
-                    target_sibling.insert_before(child_rt, &mut self.dom);
-                } else {
-                    parent_rt.append(child_rt, &mut self.dom);
-                }
-            }
+            } => self.apply_insert_element(*parent, *node, tag, *pos),
             InsertText {
                 parent,
                 node,
                 text,
                 pos,
-            } => {
-                let parent_rt = self.map_parent(*parent);
-                let child_rt = self.ensure_node(*node, Some(NodeKind::Text { text: text.clone() }));
-                // Update text content if node existed already
-                if let Some(node_ref) = self.dom.get_mut(child_rt)
-                    && let NodeKind::Text { text: text_ref } = &mut node_ref.get_mut().kind
-                {
-                    text_ref.clone_from(text);
-                }
-                if self.dom.get(child_rt).and_then(Node::parent).is_some() {
-                    child_rt.detach(&mut self.dom);
-                }
-                let count = parent_rt.children(&self.dom).count();
-                if *pos >= count {
-                    parent_rt.append(child_rt, &mut self.dom);
-                } else if let Some(target_sibling) = parent_rt.children(&self.dom).nth(*pos) {
-                    target_sibling.insert_before(child_rt, &mut self.dom);
-                } else {
-                    parent_rt.append(child_rt, &mut self.dom);
-                }
-            }
-            SetAttr { node, name, value } => {
-                let runtime_id = self.ensure_node(*node, None);
-                if let Some(node_ref) = self.dom.get_mut(runtime_id) {
-                    let attrs = &mut node_ref.get_mut().attrs;
-                    if let Some((_, val)) = attrs.iter_mut().find(|(key, _)| key == name) {
-                        val.clone_from(value);
-                    } else {
-                        attrs.push((name.clone(), value.clone()));
-                    }
-                }
-            }
-            RemoveNode { node } => {
-                if let Some(&runtime_id) = self.id_map.get(node) {
-                    // Detach from parent if attached
-                    runtime_id.detach(&mut self.dom);
-                    // Keep mapping for potential future references; minimal change.
-                }
-            }
-            UpdateText { node, text } => {
-                if let Some(&runtime_id) = self.id_map.get(node) {
-                    if let Some(node_ref) = self.dom.get_mut(runtime_id)
-                        && let NodeKind::Text { text: text_ref } = &mut node_ref.get_mut().kind
-                    {
-                        text_ref.clone_from(text);
-                    }
-                }
-            }
+            } => self.apply_insert_text(*parent, *node, text, *pos),
+            SetAttr { node, name, value } => self.apply_set_attr(*node, name, value),
+            RemoveNode { node } => self.apply_remove_node(*node),
+            UpdateText { node, text } => self.apply_update_text(*node, text),
             EndOfDocument => {
                 // No-op, mirrors should react to this if needed.
             }
+        }
+    }
+
+    /// Insert an element node into the DOM tree at the specified position.
+    fn apply_insert_element(&mut self, parent: NodeKey, node: NodeKey, tag: &str, pos: usize) {
+        let parent_rt = self.map_parent(parent);
+        let child_rt = self.ensure_node(
+            node,
+            Some(NodeKind::Element {
+                tag: tag.to_owned(),
+            }),
+        );
+        // If child is already attached somewhere, detach first
+        if self.dom.get(child_rt).and_then(Node::parent).is_some() {
+            child_rt.detach(&mut self.dom);
+        }
+        self.insert_child_at_position(parent_rt, child_rt, pos);
+    }
+
+    /// Insert a text node into the DOM tree at the specified position.
+    fn apply_insert_text(&mut self, parent: NodeKey, node: NodeKey, text: &str, pos: usize) {
+        let parent_rt = self.map_parent(parent);
+        let child_rt = self.ensure_node(
+            node,
+            Some(NodeKind::Text {
+                text: text.to_owned(),
+            }),
+        );
+        // Update text content if node existed already
+        if let Some(node_ref) = self.dom.get_mut(child_rt)
+            && let NodeKind::Text { text: text_ref } = &mut node_ref.get_mut().kind
+        {
+            text.clone_into(text_ref);
+        }
+        if self.dom.get(child_rt).and_then(Node::parent).is_some() {
+            child_rt.detach(&mut self.dom);
+        }
+        self.insert_child_at_position(parent_rt, child_rt, pos);
+    }
+
+    /// Insert a child node at a specific position among parent's children.
+    fn insert_child_at_position(&mut self, parent_rt: NodeId, child_rt: NodeId, pos: usize) {
+        let count = parent_rt.children(&self.dom).count();
+        if pos >= count {
+            parent_rt.append(child_rt, &mut self.dom);
+        } else if let Some(target_sibling) = parent_rt.children(&self.dom).nth(pos) {
+            target_sibling.insert_before(child_rt, &mut self.dom);
+        } else {
+            parent_rt.append(child_rt, &mut self.dom);
+        }
+    }
+
+    /// Set an attribute on a node, updating or adding as needed.
+    fn apply_set_attr(&mut self, node: NodeKey, name: &str, value: &str) {
+        let runtime_id = self.ensure_node(node, None);
+        if let Some(node_ref) = self.dom.get_mut(runtime_id) {
+            let attrs = &mut node_ref.get_mut().attrs;
+            if let Some((_, val)) = attrs.iter_mut().find(|(key, _)| key == name) {
+                value.clone_into(val);
+            } else {
+                attrs.push((name.to_owned(), value.to_owned()));
+            }
+        }
+    }
+
+    /// Remove a node from its parent without deleting it.
+    fn apply_remove_node(&mut self, node: NodeKey) {
+        if let Some(&runtime_id) = self.id_map.get(&node) {
+            // Detach from parent if attached
+            runtime_id.detach(&mut self.dom);
+            // Keep mapping for potential future references; minimal change.
+        }
+    }
+
+    /// Update the text content of an existing text node.
+    fn apply_update_text(&mut self, node: NodeKey, text: &str) {
+        if let Some(&runtime_id) = self.id_map.get(&node)
+            && let Some(node_ref) = self.dom.get_mut(runtime_id)
+            && let NodeKind::Text { text: text_ref } = &mut node_ref.get_mut().kind
+        {
+            text.clone_into(text_ref);
         }
     }
 }

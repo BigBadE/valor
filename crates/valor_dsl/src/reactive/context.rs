@@ -45,7 +45,11 @@ impl<'w, T: Component> UiContext<'w, T> {
     /// Register a callback that mutates the component state
     ///
     /// The callback receives mutable access to the component.
-    pub fn callback(&mut self, name: impl Into<String>, f: impl Fn(&mut T) + Send + Sync + 'static) -> String {
+    pub fn callback(
+        &mut self,
+        name: impl Into<String>,
+        f: impl Fn(&mut T) + Send + Sync + 'static,
+    ) -> String {
         let name = name.into();
         self.callbacks.insert(name.clone(), Arc::new(f));
         name
@@ -53,7 +57,11 @@ impl<'w, T: Component> UiContext<'w, T> {
 
     /// Register a click handler callback that mutates the component
     /// This is an alias for `callback` for better DX
-    pub fn on_click(&mut self, name: impl Into<String>, f: impl Fn(&mut T) + Send + Sync + 'static) -> String {
+    pub fn on_click(
+        &mut self,
+        name: impl Into<String>,
+        f: impl Fn(&mut T) + Send + Sync + 'static,
+    ) -> String {
         self.callback(name, f)
     }
 

@@ -2,10 +2,10 @@
 
 use bevy::prelude::*;
 use bevy::window::{Window, WindowPlugin};
-use valor_dsl::reactive::prelude::*;
-use valor_dsl::reactive::Component;
-use valor_dsl::reactive::runtime::ReactiveAppExt;
 use valor_dsl::jsx;
+use valor_dsl::reactive::Component;
+use valor_dsl::reactive::prelude::*;
+use valor_dsl::reactive::runtime::ReactiveAppExt;
 
 // Define your state as a simple Bevy component
 #[derive(Component)]
@@ -15,7 +15,6 @@ struct Counter {
 
 // Implement the Component trait
 impl valor_dsl::reactive::Component for Counter {
-
     fn render(ui: &mut UiContext<Self>) -> Html {
         let count = ui.use_state().value;
         info!("🎨 Rendering Counter with value: {}", count);
@@ -36,71 +35,54 @@ impl valor_dsl::reactive::Component for Counter {
             info!("✨ Counter reset to 0");
         });
 
-        // JSX with inline styles for better Valor compatibility
+        // JSX with Tailwind utilities and minimal custom styles
         jsx! {
-            <div>
+            <div class="flex flex-col items-center justify-center min-h-screen p-10 text-center text-white"
+                 style="background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);">
                 <style>"
-                    body {
-                        font-family: Arial, sans-serif;
-                        text-align: center;
+                    .gradient-text {
                         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                        color: white;
-                        min-height: 100vh;
-                        margin: 0;
-                        padding: 40px;
-                    }
-                    .counter-display {
-                        font-size: 72px;
-                        margin: 40px 0;
-                        font-weight: bold;
-                        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-                    }
-                    button {
-                        font-size: 18px;
-                        padding: 15px 30px;
-                        margin: 10px;
-                        cursor: pointer;
-                        border: none;
-                        background: white;
-                        color: #667eea;
-                        border-radius: 8px;
-                        font-weight: bold;
-                        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                    }
-                    .reset-btn {
-                        background: #ef4444;
-                        color: white;
-                    }
-                    h1 {
-                        font-size: 48px;
-                        margin-bottom: 20px;
-                        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-                    }
-                    p {
-                        font-size: 16px;
-                        opacity: 0.9;
-                        margin-top: 20px;
+                        -webkit-background-clip: text;
+                        -webkit-text-fill-color: transparent;
                     }
                 "</style>
-                <h1>"🚀 Reactive Counter"</h1>
 
-                <div class="counter-display">
+                <h1 class="text-5xl font-bold text-shadow mb-5">
+                    "🚀 Reactive Counter"
+                </h1>
+
+                <div class="text-7xl font-bold my-10 gradient-text">
                     {count}
                 </div>
 
-                <div>
-                    <button onclick={&increment}>"➕ Increment"</button>
-                    <button onclick={&decrement}>"➖ Decrement"</button>
-                    <button class="reset-btn" onclick={&reset}>"🔄 Reset"</button>
+                <div class="flex gap-3">
+                    <button class="px-6 py-4 text-lg font-bold bg-white rounded-lg shadow
+                                   hover:shadow-lg transition cursor-pointer"
+                            style="color: var(--color-primary);"
+                            onclick={&increment}>
+                        "➕ Increment"
+                    </button>
+                    <button class="px-6 py-4 text-lg font-bold bg-white rounded-lg shadow
+                                   hover:shadow-lg transition cursor-pointer"
+                            style="color: var(--color-primary);"
+                            onclick={&decrement}>
+                        "➖ Decrement"
+                    </button>
+                    <button class="px-6 py-4 text-lg font-bold rounded-lg shadow
+                                   hover:shadow-lg transition cursor-pointer"
+                            style="background: var(--color-error); color: white;"
+                            onclick={&reset}>
+                        "🔄 Reset"
+                    </button>
                 </div>
 
                 {
                     if count > 10 {
-                        jsx!{ <p>"🔥 You're on fire!"</p> }
+                        jsx!{ <p class="text-base opacity-90 mt-5">"🔥 You're on fire!"</p> }
                     } else if count < 0 {
-                        jsx!{ <p>"📉 Going negative!"</p> }
+                        jsx!{ <p class="text-base opacity-90 mt-5">"📉 Going negative!"</p> }
                     } else {
-                        jsx!{ <p>"✨ Reactive JSX with auto re-rendering!"</p> }
+                        jsx!{ <p class="text-base opacity-90 mt-5">"✨ Reactive JSX with auto re-rendering!"</p> }
                     }
                 }
             </div>

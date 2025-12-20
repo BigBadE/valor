@@ -5,7 +5,7 @@ use chromiumoxide::page::Page;
 use serde_json::{Value as JsonValue, from_str};
 use std::path::Path;
 
-use super::chrome::navigate_and_prepare_page;
+use super::super::chrome::navigate_and_prepare_page;
 
 /// JavaScript helpers for Chromium layout extraction.
 const CHROMIUM_SCRIPT_HELPERS: &str = "function shouldSkip(el) {

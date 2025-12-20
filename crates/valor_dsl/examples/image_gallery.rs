@@ -5,10 +5,9 @@
 
 use bevy::prelude::*;
 use bevy::window::{Window, WindowPlugin};
-use valor_dsl::reactive::prelude::*;
 use valor_dsl::reactive::Component;
+use valor_dsl::reactive::prelude::*;
 use valor_dsl::reactive::runtime::ReactiveAppExt;
-use valor_dsl::reactive_html;
 
 // Gallery component with reactive state
 #[derive(Component)]
@@ -26,7 +25,10 @@ impl ImageGallery {
     }
 
     fn current_image(&self) -> &str {
-        self.images.get(self.current_index).map(|s| s.as_str()).unwrap_or("")
+        self.images
+            .get(self.current_index)
+            .map(|s| s.as_str())
+            .unwrap_or("")
     }
 
     fn next(&mut self) {
@@ -56,23 +58,34 @@ impl valor_dsl::reactive::Component for ImageGallery {
         // Register event handlers
         let next = ui.on_click("next_image", |gallery: &mut ImageGallery| {
             gallery.next();
-            info!("📸 Next image: {}/{}", gallery.current_index + 1, gallery.images.len());
+            info!(
+                "📸 Next image: {}/{}",
+                gallery.current_index + 1,
+                gallery.images.len()
+            );
         });
 
         let previous = ui.on_click("prev_image", |gallery: &mut ImageGallery| {
             gallery.previous();
-            info!("📸 Previous image: {}/{}", gallery.current_index + 1, gallery.images.len());
+            info!(
+                "📸 Previous image: {}/{}",
+                gallery.current_index + 1,
+                gallery.images.len()
+            );
         });
 
         // HTML with image display
-        reactive_html! {
+        // Note: reactive_html! macro is not yet implemented for the new Html API
+        // Using Html::empty() as placeholder - proper implementation would parse
+        // this HTML string into DOMUpdate events
+        let _html_template = format!(
             r#"
             <!DOCTYPE html>
             <html>
             <head>
                 <title>Image Gallery</title>
                 <style>
-                    body {
+                    body {{
                         font-family: Arial, sans-serif;
                         padding: 20px;
                         text-align: center;
@@ -84,26 +97,26 @@ impl valor_dsl::reactive::Component for ImageGallery {
                         flex-direction: column;
                         justify-content: center;
                         align-items: center;
-                    }
-                    .gallery-container {
+                    }}
+                    .gallery-container {{
                         max-width: 800px;
                         margin: 0 auto;
-                    }
-                    .image-display {
+                    }}
+                    .image-display {{
                         background: white;
                         padding: 20px;
                         border-radius: 12px;
                         margin: 20px 0;
                         box-shadow: 0 8px 16px rgba(0,0,0,0.3);
-                    }
-                    .image-display img {
+                    }}
+                    .image-display img {{
                         max-width: 100%;
                         max-height: 400px;
                         border-radius: 8px;
                         display: block;
                         margin: 0 auto;
-                    }
-                    .image-placeholder {
+                    }}
+                    .image-placeholder {{
                         width: 400px;
                         height: 300px;
                         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -114,11 +127,11 @@ impl valor_dsl::reactive::Component for ImageGallery {
                         font-size: 24px;
                         color: white;
                         margin: 0 auto;
-                    }
-                    .controls {
+                    }}
+                    .controls {{
                         margin: 20px 0;
-                    }
-                    button {
+                    }}
+                    button {{
                         font-size: 18px;
                         padding: 12px 24px;
                         margin: 0 10px;
@@ -130,50 +143,40 @@ impl valor_dsl::reactive::Component for ImageGallery {
                         font-weight: bold;
                         transition: transform 0.1s, box-shadow 0.1s;
                         box-shadow: 0 4px 6px rgba(0,0,0,0.2);
-                    }
-                    button:hover {
+                    }}
+                    button:hover {{
                         transform: translateY(-2px);
                         box-shadow: 0 6px 12px rgba(0,0,0,0.3);
-                    }
-                    button:active {
+                    }}
+                    button:active {{
                         transform: translateY(0);
-                    }
-                    .counter {
+                    }}
+                    .counter {{
                         font-size: 20px;
                         margin: 10px 0;
                         opacity: 0.9;
-                    }
-                    h1 {
+                    }}
+                    h1 {{
                         font-size: 42px;
                         margin-bottom: 10px;
                         text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-                    }
+                    }}
                 </style>
             </head>
             <body>
                 <div class="gallery-container">
                     <h1>🖼️ Image Gallery</h1>
-                    <div class="counter">Image "#
-                        {current_index + 1}
-                    r#" of "#
-                        {total}
-                    r#"</div>
+                    <div class="counter">Image {} of {}</div>
 
                     <div class="image-display">
                         <div class="image-placeholder">
-                            🎨 Image: "#
-                            {current_image}
-                        r#"
+                            🎨 Image: {}
                         </div>
                     </div>
 
                     <div class="controls">
-                        <button onclick=""#
-                            {&previous}
-                        r#"">⬅️ Previous</button>
-                        <button onclick=""#
-                            {&next}
-                        r#"">Next ➡️</button>
+                        <button onclick="{}">⬅️ Previous</button>
+                        <button onclick="{}">Next ➡️</button>
                     </div>
 
                     <p style="font-size: 14px; opacity: 0.8;">
@@ -182,8 +185,16 @@ impl valor_dsl::reactive::Component for ImageGallery {
                 </div>
             </body>
             </html>
-            "#
-        }
+            "#,
+            current_index + 1,
+            total,
+            current_image,
+            previous,
+            next
+        );
+
+        // TODO: Parse _html_template into DOMUpdate events
+        Html::empty()
     }
 }
 

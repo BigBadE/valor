@@ -82,3 +82,11 @@ required-features = ["bevy_integration"]
 [[example]]
 name = "image_gallery"
 required-features = ["bevy_integration"]
+
+[[example]]
+name = "theme_switcher"
+required-features = ["bevy_integration"]
+
+[[example]]
+name = "styled_form"
+required-features = ["bevy_integration"]

@@ -1,4 +1,4 @@
-//! Bevy-integrated counter example using Valor DSL
+//! Bevy-integrated counter example using Valor DSL with Tailwind CSS
 //!
 //! This example shows how Valor UI events integrate with Bevy's ECS and observer system.
 
@@ -9,7 +9,7 @@ use valor_dsl::{bevy_events::*, bevy_integration::*, click_handler, jsx};
 #[derive(Component)]
 struct Counter(i32);
 
-fn setup(mut commands: Commands) {
+fn setup(mut commands: Commands, global_styles: Res<valor_dsl::bevy_integration::GlobalStyles>) {
     // Spawn a 2D camera to view the UI
     commands.spawn(Camera2d);
 
@@ -26,69 +26,46 @@ fn setup(mut commands: Commands) {
     click_handler!(commands, decrement_counter);
     click_handler!(commands, reset_counter);
 
-    // Create the UI with JSX syntax - showcasing dynamic attributes and expressions
-    let ui_html = jsx! {
-        <div>
-            <style>"
-                body {
-                    font-family: Arial, sans-serif;
-                    padding: 40px;
-                    text-align: center;
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    color: white;
-                    min-height: 100vh;
-                    margin: 0;
-                }
-                .counter {
-                    font-size: 72px;
-                    margin: 40px 0;
-                    font-weight: bold;
-                    text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-                }
-                button {
-                    font-size: 18px;
-                    padding: 15px 30px;
-                    margin: 10px;
-                    cursor: pointer;
-                    border: none;
-                    background: white;
-                    color: #667eea;
-                    border-radius: 8px;
-                    font-weight: bold;
-                    transition: transform 0.1s, box-shadow 0.1s;
-                    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                }
-                button:hover {
-                    transform: translateY(-2px);
-                    box-shadow: 0 6px 12px rgba(0,0,0,0.15);
-                }
-                button:active {
-                    transform: translateY(0);
-                }
-                h1 {
-                    font-size: 48px;
-                    margin-bottom: 20px;
-                    text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-                }
-                p {
-                    font-size: 16px;
-                    opacity: 0.9;
-                }
-            "</style>
-            <h1>"🚀 Bevy Counter (Observer Pattern)"</h1>
-            <div class="counter">
+    // Create the UI with JSX syntax using Tailwind utility classes
+    let mut ui_html = jsx! {
+        <div class="flex flex-col items-center justify-center min-h-screen p-10 text-center"
+             style="background: #667eea; color: white;">
+            <h1 class="text-5xl font-bold mb-5"
+                style="color: white;">
+                "🚀 Bevy Counter (Observer Pattern)"
+            </h1>
+            <div class="text-7xl font-bold my-10"
+                 style="color: white;">
                 <span id="count">{initial_count}</span>
             </div>
-            <div>
-                <button onclick={increment_handler}>"➕ Increment"</button>
-                <button onclick={decrement_handler}>"➖ Decrement"</button>
-                <button onclick={reset_handler}>"🔄 Reset"</button>
+            <div class="flex gap-3">
+                <button class="px-6 py-4 text-lg font-bold rounded-lg shadow cursor-pointer"
+                        style="background: white; color: #667eea;"
+                        onclick={increment_handler}>
+                    "➕ Increment"
+                </button>
+                <button class="px-6 py-4 text-lg font-bold rounded-lg shadow cursor-pointer"
+                        style="background: white; color: #667eea;"
+                        onclick={decrement_handler}>
+                    "➖ Decrement"
+                </button>
+                <button class="px-6 py-4 text-lg font-bold rounded-lg shadow cursor-pointer"
+                        style="background: #ef4444; color: white;"
+                        onclick={reset_handler}>
+                    "🔄 Reset"
+                </button>
             </div>
-            <p>"✨ Click events trigger Bevy observer systems!"</p>
+            <p class="text-base mt-5"
+               style="color: white; opacity: 0.9;">
+                "✨ Click events trigger Bevy observer systems!"
+            </p>
         </div>
     };
 
-    commands.spawn(ValorUi::new(ui_html.content).with_width(800).with_height(600));
+    // Inject global styles (theme + Tailwind CSS)
+    ui_html.prepend_global_styles(&global_styles.0);
+
+    commands.spawn(ValorUi::new(ui_html).with_width(800).with_height(600));
 
     info!("✅ Counter app initialized!");
     info!("   HTML onclick attributes are wired to Bevy observers");
@@ -102,7 +79,9 @@ fn increment_counter(
     mut commands: Commands,
 ) {
     // Only proceed if this observer was triggered on the correct handler entity
-    let Ok(handler) = click_handlers.get(trigger.entity()) else { return };
+    let Ok(handler) = click_handlers.get(trigger.entity()) else {
+        return;
+    };
     if handler.name != "increment_counter" {
         return;
     }
@@ -139,7 +118,9 @@ fn decrement_counter(
     mut commands: Commands,
 ) {
     // Only proceed if this observer was triggered on the correct handler entity
-    let Ok(handler) = click_handlers.get(trigger.entity()) else { return };
+    let Ok(handler) = click_handlers.get(trigger.entity()) else {
+        return;
+    };
     if handler.name != "decrement_counter" {
         return;
     }
@@ -174,7 +155,9 @@ fn reset_counter(
     mut commands: Commands,
 ) {
     // Only proceed if this observer was triggered on the correct handler entity
-    let Ok(handler) = click_handlers.get(trigger.entity()) else { return };
+    let Ok(handler) = click_handlers.get(trigger.entity()) else {
+        return;
+    };
     if handler.name != "reset_counter" {
         return;
     }

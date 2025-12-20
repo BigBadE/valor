@@ -195,8 +195,10 @@ fn apply_rule_to_props(
     props: &mut HashMap<String, CascadedDecl>,
 ) {
     let selector_list = selectors::parse_selector_list(&rule.prelude);
+
     for selector in selector_list {
-        if !matches_selector(node, &selector, style_comp) {
+        let matches = matches_selector(node, &selector, style_comp);
+        if !matches {
             continue;
         }
         let specificity = selectors::compute_specificity(&selector);
@@ -303,7 +305,9 @@ impl StyleComputer {
                 }
                 self.changed_nodes.push(node);
             }
-            DOMUpdate::InsertText { .. } | DOMUpdate::UpdateText { .. } | DOMUpdate::EndOfDocument => {}
+            DOMUpdate::InsertText { .. }
+            | DOMUpdate::UpdateText { .. }
+            | DOMUpdate::EndOfDocument => {}
             DOMUpdate::SetAttr { node, name, value } => {
                 // Store all attributes for attribute selector matching
                 self.attrs_by_node

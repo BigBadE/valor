@@ -1,9 +1,9 @@
 //! JSX parsing and code generation
 
 use proc_macro2::TokenStream;
-use quote::{quote, ToTokens};
+use quote::quote;
 use syn::parse::{Parse, ParseStream};
-use syn::{braced, Expr, Ident, LitStr, Result, Token};
+use syn::{Expr, Ident, LitStr, Result, Token, braced};
 
 /// Root JSX structure - can contain multiple children
 pub struct Jsx {
@@ -23,9 +23,11 @@ impl Parse for Jsx {
 }
 
 impl Jsx {
-    /// Convert JSX to code that builds an HTML string
-    pub fn to_html_string(&self) -> TokenStream {
-        let children_code = self.children.iter().map(|child| child.to_html_string());
+    /// Convert JSX to code that generates DOMUpdate operations
+    pub fn to_dom_updates(&self) -> TokenStream {
+        let children_code = self.children.iter().map(|child| {
+            child.to_dom_updates(quote! { NodeKey::ROOT }, quote! { __updates.len() })
+        });
 
         quote! {
             #(#children_code)*
@@ -60,21 +62,112 @@ impl Parse for JsxChild {
 }
 
 impl JsxChild {
-    fn to_html_string(&self) -> TokenStream {
+    fn to_dom_updates(&self, parent: TokenStream, pos: TokenStream) -> TokenStream {
         match self {
-            JsxChild::Element(el) => el.to_html_string(),
+            JsxChild::Element(el) => el.to_dom_updates(parent, pos),
             JsxChild::Text(text) => {
                 let text_val = text.value();
                 quote! {
-                    __html.push_str(#text_val);
+                    {
+                        let node_key = NodeKey::pack(__epoch, 0, __next_id as u64);
+                        __next_id += 1;
+                        __updates.push(DOMUpdate::InsertText {
+                            parent: #parent,
+                            node: node_key,
+                            text: #text_val.to_string(),
+                            pos: #pos,
+                        });
+                    }
                 }
             }
             JsxChild::Expression(expr) => {
-                // Expression blocks can return any Display type (including Html from nested jsx!)
+                // Expression blocks can return Html (from nested jsx!) or any Display type
                 quote! {
                     {
-                        use std::fmt::Write;
-                        let _ = write!(__html, "{}", #expr);
+                        let __expr_result = #expr;
+                        // If it's Html, merge it with proper node ID remapping
+                        if let Some(__html_result) = (|| -> Option<::valor_dsl::reactive::Html> {
+                            // Try to convert to Html
+                            use ::std::any::Any;
+                            if let Some(h) = (&__expr_result as &dyn Any).downcast_ref::<::valor_dsl::reactive::Html>() {
+                                Some(h.clone())
+                            } else {
+                                None
+                            }
+                        })() {
+                            // Remap all node IDs in the nested Html to avoid conflicts
+                            let __id_offset = __next_id as u64;
+
+                            for mut update in __html_result.updates {
+                                // Helper to remap a node key if it's not ROOT
+                                let remap = |key: NodeKey| -> NodeKey {
+                                    if key == NodeKey::ROOT {
+                                        #parent  // Keep ROOT as the actual parent
+                                    } else {
+                                        // Add offset to avoid ID collisions
+                                        NodeKey::pack(0, 0, key.0 + __id_offset)
+                                    }
+                                };
+
+                                // Remap all node references in the update
+                                match &mut update {
+                                    DOMUpdate::InsertElement { parent: p, node: n, pos: pos_ref, .. } => {
+                                        *p = remap(*p);
+                                        *n = remap(*n);
+                                        if *p == #parent {
+                                            *pos_ref = #pos;
+                                        }
+                                        // Track the highest ID we've seen
+                                        let unpacked = n.0;
+                                        if unpacked >= __next_id as u64 {
+                                            __next_id = (unpacked + 1) as usize;
+                                        }
+                                    }
+                                    DOMUpdate::InsertText { parent: p, node: n, pos: pos_ref, .. } => {
+                                        *p = remap(*p);
+                                        *n = remap(*n);
+                                        if *p == #parent {
+                                            *pos_ref = #pos;
+                                        }
+                                        let unpacked = n.0;
+                                        if unpacked >= __next_id as u64 {
+                                            __next_id = (unpacked + 1) as usize;
+                                        }
+                                    }
+                                    DOMUpdate::SetAttr { node: n, .. } => {
+                                        *n = remap(*n);
+                                    }
+                                    DOMUpdate::RemoveNode { node: n } => {
+                                        *n = remap(*n);
+                                    }
+                                    DOMUpdate::UpdateText { node: n, .. } => {
+                                        *n = remap(*n);
+                                    }
+                                    _ => {}
+                                }
+                                __updates.push(update);
+                            }
+
+                            // Remap event handler node keys too
+                            for (node, handlers) in __html_result.event_handlers {
+                                let remapped_node = if node == NodeKey::ROOT {
+                                    #parent
+                                } else {
+                                    NodeKey::pack(0, 0, node.0 + __id_offset)
+                                };
+                                __event_handlers.entry(remapped_node).or_default().extend(handlers);
+                            }
+                        } else {
+                            // Otherwise treat as text
+                            let node_key = NodeKey::pack(__epoch, 0, __next_id as u64);
+                            __next_id += 1;
+                            __updates.push(DOMUpdate::InsertText {
+                                parent: #parent,
+                                node: node_key,
+                                text: format!("{}", __expr_result),
+                                pos: #pos,
+                            });
+                        }
                     }
                 }
             }
@@ -87,7 +180,6 @@ pub struct JsxElement {
     pub tag: Ident,
     pub attributes: Vec<JsxAttribute>,
     pub children: Vec<JsxChild>,
-    pub self_closing: bool,
 }
 
 impl Parse for JsxElement {
@@ -152,30 +244,43 @@ impl Parse for JsxElement {
             tag,
             attributes,
             children,
-            self_closing,
         })
     }
 }
 
 impl JsxElement {
-    fn to_html_string(&self) -> TokenStream {
+    fn to_dom_updates(&self, parent: TokenStream, pos: TokenStream) -> TokenStream {
         let tag = self.tag.to_string();
-        let attrs_code = self.attributes.iter().map(|attr| attr.to_html_string());
-        let children_code = self.children.iter().map(|child| child.to_html_string());
 
-        if self.self_closing {
-            quote! {
-                __html.push_str(concat!("<", #tag));
+        // Generate code for attributes
+        let attrs_code = self.attributes.iter().map(|attr| attr.to_dom_updates());
+
+        // Generate code for children with incremental positions
+        let children_code = self
+            .children
+            .iter()
+            .enumerate()
+            .map(|(i, child)| child.to_dom_updates(quote! { __parent_key }, quote! { #i }));
+
+        quote! {
+            {
+                // Create node for this element with unique epoch
+                let __elem_key = NodeKey::pack(__epoch, 0, __next_id as u64);
+                __next_id += 1;
+
+                __updates.push(DOMUpdate::InsertElement {
+                    parent: #parent,
+                    node: __elem_key,
+                    tag: #tag.to_string(),
+                    pos: #pos,
+                });
+
+                // Apply attributes
                 #(#attrs_code)*
-                __html.push_str(" />");
-            }
-        } else {
-            quote! {
-                __html.push_str(concat!("<", #tag));
-                #(#attrs_code)*
-                __html.push_str(">");
+
+                // Add children (use __parent_key to refer to this element)
+                let __parent_key = __elem_key;
                 #(#children_code)*
-                __html.push_str(concat!("</", #tag, ">"));
             }
         }
     }
@@ -209,21 +314,63 @@ impl Parse for JsxAttribute {
 }
 
 impl JsxAttribute {
-    fn to_html_string(&self) -> TokenStream {
+    fn to_dom_updates(&self) -> TokenStream {
         match self {
             JsxAttribute::Static { name, value } => {
                 let name_str = name.to_string();
                 let value_str = value.value();
-                quote! {
-                    __html.push_str(concat!(" ", #name_str, "=\"", #value_str, "\""));
+
+                // Check if this is an onclick handler
+                if name_str.starts_with("onclick") {
+                    quote! {
+                        __event_handlers
+                            .entry(__elem_key)
+                            .or_default()
+                            .insert("click".to_string(), #value_str.to_string());
+
+                        __updates.push(DOMUpdate::SetAttr {
+                            node: __elem_key,
+                            name: #name_str.to_string(),
+                            value: #value_str.to_string(),
+                        });
+                    }
+                } else {
+                    quote! {
+                        __updates.push(DOMUpdate::SetAttr {
+                            node: __elem_key,
+                            name: #name_str.to_string(),
+                            value: #value_str.to_string(),
+                        });
+                    }
                 }
             }
             JsxAttribute::Dynamic { name, value } => {
                 let name_str = name.to_string();
-                quote! {
-                    {
-                        use std::fmt::Write;
-                        write!(__html, " {}=\"{}\"", #name_str, #value).unwrap();
+
+                // Check if this is an onclick handler
+                if name_str.starts_with("onclick") {
+                    quote! {
+                        {
+                            let __attr_value = format!("{}", #value);
+                            __event_handlers
+                                .entry(__elem_key)
+                                .or_default()
+                                .insert("click".to_string(), __attr_value.clone());
+
+                            __updates.push(DOMUpdate::SetAttr {
+                                node: __elem_key,
+                                name: #name_str.to_string(),
+                                value: __attr_value,
+                            });
+                        }
+                    }
+                } else {
+                    quote! {
+                        __updates.push(DOMUpdate::SetAttr {
+                            node: __elem_key,
+                            name: #name_str.to_string(),
+                            value: format!("{}", #value),
+                        });
                     }
                 }
             }

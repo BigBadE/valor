@@ -1,11 +1,12 @@
 //! Performance and telemetry helpers for `HtmlPage`.
 
 use super::*;
+use crate::utilities::telemetry;
 
 impl HtmlPage {
     /// Emit production-friendly telemetry (JSON) when enabled in `ValorConfig`.
     pub fn emit_perf_telemetry_if_enabled(&mut self) {
-        telemetry_mod::maybe_emit(
+        telemetry::maybe_emit(
             self.render.telemetry_enabled,
             &self.perf_counters_snapshot_string(),
         );

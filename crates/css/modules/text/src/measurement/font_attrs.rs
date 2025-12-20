@@ -37,36 +37,14 @@ pub fn prepare_font_attrs(style: &ComputedStyle) -> Attrs<'_> {
             }
 
             if !font_set {
-                // Fallback to Chrome's default serif font
-                #[cfg(target_os = "windows")]
-                {
-                    attrs = attrs.family(Family::Name("Times New Roman"));
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    attrs = attrs.family(Family::Name("Times"));
-                }
-                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-                {
-                    attrs = attrs.family(Family::Serif);
-                }
+                // Fallback to generic serif family (will use fontdb settings)
+                attrs = attrs.family(Family::Serif);
             }
         }
     } else {
-        // Default to browser default sans-serif font when no font family specified
+        // Default to generic sans-serif family when no font family specified (will use fontdb settings)
         // This matches Chrome's behavior for unstyled elements
-        #[cfg(target_os = "windows")]
-        {
-            attrs = attrs.family(Family::Name("Arial"));
-        }
-        #[cfg(target_os = "macos")]
-        {
-            attrs = attrs.family(Family::Name("Helvetica"));
-        }
-        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        {
-            attrs = attrs.family(Family::SansSerif);
-        }
+        attrs = attrs.family(Family::SansSerif);
     }
 
     attrs

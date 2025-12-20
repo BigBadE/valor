@@ -21,7 +21,77 @@ pub struct TextMeasurement {
     pub text_rect_height: f32,
 }
 
+/// Parameters for building text layout result.
+struct TextLayoutParams<'space> {
+    parent: NodeKey,
+    text_width: f32,
+    text_rect_height: f32,
+    resolved_offset: LayoutUnit,
+    single_line_height: f32,
+    glyph_height: f32,
+    child_space: &'space ConstraintSpace,
+}
+
 impl ConstraintLayoutTree {
+    /// Calculate horizontal alignment offset for text based on text-align property.
+    fn calculate_text_align_offset(
+        &self,
+        parent: NodeKey,
+        text_width: f32,
+        child_space: &ConstraintSpace,
+    ) -> f32 {
+        let available_width = match child_space.available_inline_size {
+            super::super::constraint_space::AvailableSize::Definite(width) => width.to_px(),
+            _ => 0.0,
+        };
+
+        // Only apply alignment if there's available space wider than the text
+        if available_width <= text_width {
+            return 0.0;
+        }
+
+        // Get parent's text-align property (text nodes inherit from parent)
+        self.styles.get(&parent).map_or(0.0, |style| {
+            use css_orchestrator::style_model::TextAlign;
+            match style.text_align {
+                TextAlign::Center => (available_width - text_width) / 2.0,
+                TextAlign::Right => available_width - text_width,
+                TextAlign::Left | TextAlign::Justify => 0.0,
+            }
+        })
+    }
+
+    /// Build text layout result with proper positioning.
+    fn build_text_result(&self, params: &TextLayoutParams<'_>) -> LayoutResult {
+        // Calculate text Y position within the line box (centering vertically)
+        // CRITICAL: Floor half_leading to match Chrome's behavior and avoid 0.5px offsets.
+        // For wrapped text (text_rect_height > single_line_height), don't apply half_leading
+        // because the text spans multiple lines and should start at the container's top edge.
+        let is_wrapped = params.text_rect_height > params.single_line_height;
+        let half_leading = if is_wrapped {
+            0.0
+        } else {
+            ((params.single_line_height - params.glyph_height) / 2.0).floor()
+        };
+        let text_y_offset = params.resolved_offset + LayoutUnit::from_px(half_leading);
+
+        // Calculate text X position based on text-align property
+        let text_align_offset =
+            self.calculate_text_align_offset(params.parent, params.text_width, params.child_space);
+        let text_x_offset =
+            params.child_space.bfc_offset.inline_offset + LayoutUnit::from_px(text_align_offset);
+
+        LayoutResult {
+            inline_size: params.text_width,
+            block_size: params.text_rect_height,
+            bfc_offset: BfcOffset::new(text_x_offset, Some(text_y_offset)),
+            exclusion_space: params.child_space.exclusion_space.clone(),
+            end_margin_strut: MarginStrut::default(),
+            baseline: None,
+            needs_relayout: false,
+        }
+    }
+
     pub(super) fn layout_text_child(
         &mut self,
         parent_child: (NodeKey, NodeKey),
@@ -106,22 +176,15 @@ impl ConstraintLayoutTree {
         let single_line_height = measurement.single_line_height;
         let text_rect_height = measurement.text_rect_height;
 
-        // Calculate text Y position within the line box (centering vertically)
-        // Use SINGLE-LINE height for half-leading calculation, not total height.
-        // The text baseline should be: container_y + (single_line_height - glyph_height) / 2 + ascent
-        // But since we're storing just the offset, we need: (single_line_height - glyph_height) / 2
-        let half_leading = (single_line_height - glyph_height) / 2.0;
-        let text_y_offset = resolved_offset + LayoutUnit::from_px(half_leading);
-
-        let text_result = LayoutResult {
-            inline_size: text_width,
-            block_size: text_rect_height, // Chrome: glyph_height for single-line, glyph_height * line_count for multi-line
-            bfc_offset: BfcOffset::new(child_space.bfc_offset.inline_offset, Some(text_y_offset)),
-            exclusion_space: child_space.exclusion_space.clone(),
-            end_margin_strut: MarginStrut::default(),
-            baseline: None,
-            needs_relayout: false,
-        };
+        let text_result = self.build_text_result(&TextLayoutParams {
+            parent,
+            text_width,
+            text_rect_height,
+            resolved_offset,
+            single_line_height,
+            glyph_height,
+            child_space,
+        });
 
         // Only store layout results during final layout, not during measurement passes.
         // During grid/flex sizing measurement, text gets laid out with intrinsic widths,
@@ -133,10 +196,12 @@ impl ConstraintLayoutTree {
         // Only advance BFC offset for the lead text node, not continuations
         if !is_continuation {
             child_space.margin_strut = MarginStrut::default();
-            // Advance BFC offset by the TEXT RECT HEIGHT (matches Chrome behavior)
-            // This ensures parent containers size correctly to contain the text
+            // Advance BFC offset based on whether text wrapped
+            // For single-line text: use single_line_height (CSS line-height, e.g. 19px)
+            // For wrapped text: use text_rect_height (total height across all lines)
+            let bfc_advance_height = if text_rect_height > single_line_height { text_rect_height } else { single_line_height };
             child_space.bfc_offset.block_offset =
-                Some(resolved_offset + LayoutUnit::from_px(text_rect_height));
+                Some(resolved_offset + LayoutUnit::from_px(bfc_advance_height));
         }
 
         !is_continuation
@@ -220,11 +285,11 @@ impl ConstraintLayoutTree {
         // Debug: Log for text containing "Quoted"
         Self::debug_log_quoted_text(text, &style, &metrics);
 
-        // CRITICAL: Use full line-height for text_rect_height
-        // Text is positioned with half_leading offset from top, so container must be
-        // tall enough to include: half_leading + glyph_height + half_leading = line_height
-        // Using glyph_height causes bottom clipping because text extends below container
-        let single_line_text_rect_height = metrics.height;
+        // CRITICAL: Use glyph_height for text_rect_height to match Chrome behavior
+        // Chrome's getBoundingClientRect() for text nodes returns the actual glyph bounding box
+        // (ascent + descent), NOT the CSS line-height value. CSS line-height affects line box
+        // spacing but not the text node's bounding box dimensions.
+        let single_line_text_rect_height = metrics.glyph_height;
 
         // For intrinsic sizing (Indefinite), always use the natural text width without wrapping
         // For definite sizes, check if wrapping is needed

@@ -8,7 +8,7 @@ use chromiumoxide::cdp::browser_protocol::page::{
 };
 use chromiumoxide::page::Page;
 use futures::StreamExt as _;
-use image::{RgbaImage, load_from_memory};
+use image::{RgbaImage, imageops, load_from_memory};
 use std::env;
 use std::fs::{create_dir_all, remove_dir_all};
 use std::net::TcpStream;
@@ -208,7 +208,7 @@ pub async fn start_and_connect_chrome() -> Result<BrowserWithHandler> {
                         }
                     }
                 }
-                _ = sleep(Duration::from_secs(5)) => {
+                () = sleep(Duration::from_secs(5)) => {
                     log::debug!("Browser handler timeout after 5s, stopping");
                     break;
                 }
@@ -290,7 +290,7 @@ pub async fn capture_screenshot_rgba(
 
     // Crop to exact requested dimensions (Chrome screenshot is 16px wider due to scrollbar compensation)
     if img.width() > width || img.height() > height {
-        img = image::imageops::crop(&mut img, 0, 0, width, height).to_image();
+        img = imageops::crop(&mut img, 0, 0, width, height).to_image();
     }
 
     Ok(img)

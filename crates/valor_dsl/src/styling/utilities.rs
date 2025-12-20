@@ -69,11 +69,27 @@ impl TailwindUtilities {
         let mut css = String::new();
 
         // Padding
-        for (name, val) in [("0", "0"), ("1", "4px"), ("2", "8px"), ("3", "12px"), ("4", "16px"),
-                            ("5", "20px"), ("6", "24px"), ("8", "32px"), ("10", "40px"), ("12", "48px")] {
+        for (name, val) in [
+            ("0", "0"),
+            ("1", "4px"),
+            ("2", "8px"),
+            ("3", "12px"),
+            ("4", "16px"),
+            ("5", "20px"),
+            ("6", "24px"),
+            ("8", "32px"),
+            ("10", "40px"),
+            ("12", "48px"),
+        ] {
             css.push_str(&format!(".p-{} {{ padding: {}; }}\n", name, val));
-            css.push_str(&format!(".px-{} {{ padding-left: {}; padding-right: {}; }}\n", name, val, val));
-            css.push_str(&format!(".py-{} {{ padding-top: {}; padding-bottom: {}; }}\n", name, val, val));
+            css.push_str(&format!(
+                ".px-{} {{ padding-left: {}; padding-right: {}; }}\n",
+                name, val, val
+            ));
+            css.push_str(&format!(
+                ".py-{} {{ padding-top: {}; padding-bottom: {}; }}\n",
+                name, val, val
+            ));
             css.push_str(&format!(".pt-{} {{ padding-top: {}; }}\n", name, val));
             css.push_str(&format!(".pr-{} {{ padding-right: {}; }}\n", name, val));
             css.push_str(&format!(".pb-{} {{ padding-bottom: {}; }}\n", name, val));
@@ -81,11 +97,27 @@ impl TailwindUtilities {
         }
 
         // Margin
-        for (name, val) in [("0", "0"), ("1", "4px"), ("2", "8px"), ("3", "12px"), ("4", "16px"),
-                            ("5", "20px"), ("6", "24px"), ("8", "32px"), ("10", "40px"), ("12", "48px")] {
+        for (name, val) in [
+            ("0", "0"),
+            ("1", "4px"),
+            ("2", "8px"),
+            ("3", "12px"),
+            ("4", "16px"),
+            ("5", "20px"),
+            ("6", "24px"),
+            ("8", "32px"),
+            ("10", "40px"),
+            ("12", "48px"),
+        ] {
             css.push_str(&format!(".m-{} {{ margin: {}; }}\n", name, val));
-            css.push_str(&format!(".mx-{} {{ margin-left: {}; margin-right: {}; }}\n", name, val, val));
-            css.push_str(&format!(".my-{} {{ margin-top: {}; margin-bottom: {}; }}\n", name, val, val));
+            css.push_str(&format!(
+                ".mx-{} {{ margin-left: {}; margin-right: {}; }}\n",
+                name, val, val
+            ));
+            css.push_str(&format!(
+                ".my-{} {{ margin-top: {}; margin-bottom: {}; }}\n",
+                name, val, val
+            ));
             css.push_str(&format!(".mt-{} {{ margin-top: {}; }}\n", name, val));
             css.push_str(&format!(".mr-{} {{ margin-right: {}; }}\n", name, val));
             css.push_str(&format!(".mb-{} {{ margin-bottom: {}; }}\n", name, val));
@@ -138,8 +170,7 @@ impl TailwindUtilities {
 .bg-transparent {{ background-color: transparent; }}
 .bg-gradient {{ background: {}; }}
 "#,
-            palette.text, palette.secondary,
-            palette.primary, palette.secondary, palette.background
+            palette.text, palette.secondary, palette.primary, palette.secondary, palette.background
         )
     }
 

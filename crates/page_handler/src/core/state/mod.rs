@@ -2,22 +2,22 @@
 
 mod accessors;
 mod dom_processing;
+mod events;
 mod initialization;
 mod js_execution;
+mod lifecycle;
 mod perf_helpers;
+mod rendering;
 mod style_layout;
 
 use crate::core::incremental_layout::{IncrementalLayoutEngine, LayoutTreeSnapshot};
 use crate::core::pipeline::Pipeline;
-use crate::input::{events::KeyMods, focus as focus_mod};
 use crate::internal::runtime::DefaultJsRuntime;
 use crate::internal::runtime::JsRuntime as _;
 use crate::utilities::config::ValorConfig;
 use crate::utilities::scheduler::FrameScheduler;
 use crate::utilities::snapshots::IRect;
-use crate::utilities::telemetry as telemetry_mod;
 use anyhow::Error;
-use core::mem::replace;
 use css::style_types::ComputedStyle;
 use css::types::Stylesheet;
 use css::{CSSMirror, Orchestrator};
@@ -29,9 +29,10 @@ use js::{
     ChromeHostCommand, DOMMirror, DOMSubscriber, DOMUpdate, DomIndex, HostContext, JsEngine as _,
     ModuleResolver, NodeKey, SharedDomIndex, SimpleFileModuleResolver, build_chrome_host_bindings,
 };
+type SharedDomIndexRef = SharedDomIndex;
 use js_engine_v8::V8Engine;
 use log::info;
-use renderer::{DisplayList, Renderer};
+use renderer::Renderer;
 use std::collections::HashMap;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender};
@@ -109,6 +110,46 @@ pub struct HtmlPage {
 }
 
 impl HtmlPage {
+    /// Create a blank `HtmlPage` that will be populated via `DOMUpdate`s.
+    /// This is useful for reactive components that generate their content programmatically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if page initialization fails.
+    pub fn new_blank(handle: &Handle, config: ValorConfig) -> Result<Self, Error> {
+        let components = initialization::initialize_blank_page(handle, config)?;
+        let blank_url = Url::parse("file:///blank")
+            .map_err(|err| anyhow::anyhow!("Failed to parse blank URL: {err}"))?;
+
+        Ok(Self {
+            focused_node: None,
+            selection_overlay: None,
+            loader: components.loader,
+            dom: components.dom,
+            css_mirror: components.mirrors.css_mirror,
+            orchestrator_mirror: components.mirrors.orchestrator_mirror,
+            renderer_mirror: components.mirrors.renderer_mirror,
+            dom_index_mirror: components.mirrors.dom_index_mirror,
+            dom_index_shared: components.mirrors.dom_index_shared,
+            in_updater: components.in_updater,
+            js_engine: components.js_ctx.js_engine,
+            host_context: components.js_ctx.host_context,
+            script_rx: components.script_rx,
+            script_counter: 0,
+            url: blank_url,
+            module_resolver: Box::new(SimpleFileModuleResolver::new()),
+            frame_scheduler: components.frame_scheduler,
+            last_style_restyled_nodes: 0,
+            lifecycle: LifecycleFlags::default(),
+            render: RenderFlags {
+                needs_redraw: false,
+                telemetry_enabled: components.telemetry_enabled,
+            },
+            _pipeline: components.pipeline,
+            incremental_layout: components.incremental_layout,
+        })
+    }
+
     /// Create a new `HtmlPage` by streaming content from the given URL.
     ///
     /// # Errors
@@ -146,13 +187,6 @@ impl HtmlPage {
         })
     }
 
-    /// Returns true once parsing has fully finalized and the loader has been consumed.
-    /// This becomes true only after an `update()` call has observed the parser finished
-    /// and awaited its completion.
-    pub const fn parsing_finished(&self) -> bool {
-        self.loader.is_none()
-    }
-
     /// Returns the current page URL.
     pub const fn url(&self) -> &Url {
         &self.url
@@ -179,20 +213,6 @@ impl HtmlPage {
     /// Synchronously fetch the textContent for an element by id using the `DomIndex` mirror.
     pub fn text_content_by_id_sync(&mut self, id: &str) -> Option<String> {
         accessors::text_content_by_id_sync(id, &mut self.dom_index_mirror, &self.dom_index_shared)
-    }
-
-    /// Handle `DOMContentLoaded` event if needed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if event handling fails.
-    pub(crate) fn handle_dom_content_loaded_if_needed(&mut self) -> Result<(), Error> {
-        dom_processing::handle_dom_content_loaded_if_needed(
-            self.loader.as_ref(),
-            &mut self.lifecycle.dom_content_loaded_fired,
-            &mut self.js_engine,
-            &mut self.dom_index_mirror,
-        )
     }
 
     /// Compute layout if needed.
@@ -279,11 +299,6 @@ impl HtmlPage {
 
     pub fn create_mirror<T: DOMSubscriber>(&self, mirror: T) -> DOMMirror<T> {
         DOMMirror::new(self.in_updater.clone(), self.dom.subscribe(), mirror)
-    }
-
-    /// Return whether a redraw is needed since the last call and clear the flag.
-    pub const fn take_needs_redraw(&mut self) -> bool {
-        replace(&mut self.render.needs_redraw, false)
     }
 
     /// Evaluate arbitrary JS in the page's engine (testing helper) and flush microtasks.
@@ -404,97 +419,70 @@ impl HtmlPage {
     ///
     /// # Errors
     /// Returns an error if the updates cannot be sent.
-    pub fn send_dom_updates(&mut self, updates: Vec<js::DOMUpdate>) -> Result<(), Error> {
+    pub fn send_dom_updates(&mut self, updates: Vec<DOMUpdate>) -> Result<(), Error> {
         self.in_updater
             .try_send(updates)
-            .map_err(|e| anyhow::anyhow!("Failed to send DOM updates: {}", e))
+            .map_err(|err| anyhow::anyhow!("Failed to send DOM updates: {err}"))
     }
 
     /// Get a reference to the shared DOM index for querying DOM structure.
     #[inline]
-    pub const fn dom_index_shared(&self) -> &js::SharedDomIndex {
+    pub const fn dom_index_shared(&self) -> &SharedDomIndexRef {
         &self.dom_index_shared
-    }
-
-    /// Return the currently focused node, if any.
-    #[inline]
-    pub const fn focused_node(&self) -> Option<NodeKey> {
-        self.focused_node
-    }
-
-    /// Set the focused node explicitly.
-    #[inline]
-    pub const fn focus_set(&mut self, node: Option<NodeKey>) {
-        self.focused_node = node;
-    }
-
-    /// Move focus to the next focusable element using a basic tabindex order, then natural order fallback.
-    #[inline]
-    pub fn focus_next(&mut self) -> Option<NodeKey> {
-        let snapshot = self.incremental_layout.snapshot();
-        let attrs = self.incremental_layout.attrs_map();
-        let next = focus_mod::next(&snapshot, attrs, self.focused_node);
-        self.focused_node = next;
-        next
-    }
-
-    /// Move focus to the previous focusable element.
-    #[inline]
-    pub fn focus_prev(&mut self) -> Option<NodeKey> {
-        let snapshot = self.incremental_layout.snapshot();
-        let attrs = self.incremental_layout.attrs_map();
-        let prev = focus_mod::prev(&snapshot, attrs, self.focused_node);
-        self.focused_node = prev;
-        prev
-    }
-
-    /// Get the background color from the page's computed styles.
-    pub const fn background_rgba(&self) -> [f32; 4] {
-        [1.0, 1.0, 1.0, 1.0]
-    }
-
-    /// Get a retained snapshot of the display list.
-    pub fn display_list_retained_snapshot(&mut self) -> DisplayList {
-        accessors::display_list_retained_snapshot(
-            &mut self.renderer_mirror,
-            &mut self.incremental_layout,
-        )
-    }
-
-    /// Dispatch event methods (stubs for now)
-    pub const fn dispatch_pointer_move(&mut self, _x: f64, _y: f64) {}
-    pub const fn dispatch_pointer_down(&mut self, _x: f64, _y: f64, _button: u32) {}
-    pub const fn dispatch_pointer_up(&mut self, _x: f64, _y: f64, _button: u32) {}
-    pub const fn dispatch_key_down(&mut self, _key: &str, _code: &str, _mods: KeyMods) {}
-    pub const fn dispatch_key_up(&mut self, _key: &str, _code: &str, _mods: KeyMods) {}
-
-    /// Set the current text selection overlay rectangle in viewport coordinates.
-    #[inline]
-    pub const fn selection_set(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) {
-        self.selection_overlay = Some((x0, y0, x1, y1));
-    }
-
-    /// Clear any active text selection overlay.
-    #[inline]
-    pub const fn selection_clear(&mut self) {
-        self.selection_overlay = None;
-    }
-
-    /// Return a list of selection rectangles by intersecting inline text boxes with a selection rect.
-    #[inline]
-    pub fn selection_rects(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<LayoutRect> {
-        accessors::selection_rects(&mut self.incremental_layout, x0, y0, x1, y1)
-    }
-
-    /// Compute a caret rectangle at the given point: a thin bar within the inline text box, if any.
-    #[inline]
-    pub fn caret_at(&mut self, x: i32, y: i32) -> Option<LayoutRect> {
-        accessors::caret_at(&mut self.incremental_layout, x, y)
     }
 
     /// Return a minimal Accessibility (AX) tree snapshot as JSON.
     #[inline]
     pub fn ax_tree_snapshot_string(&mut self) -> String {
         accessors::ax_tree_snapshot_string(&self.incremental_layout)
+    }
+
+    /// Synchronously inject CSS text directly into CSSMirror.
+    /// This bypasses the async DOMUpdate channel to ensure deterministic ordering.
+    ///
+    /// # Errors
+    /// Returns an error if CSS mirror update fails.
+    pub fn inject_css_sync(&mut self, css_text: String) -> Result<(), Error> {
+        // CRITICAL: Ensure CSSMirror has processed ALL pending updates from the channel
+        // before we inject directly. Otherwise our direct injection might be processed
+        // BEFORE the HTML's <style> elements, resulting in incorrect source order.
+        self.css_mirror.try_update_sync()?;
+
+        // Use sequential counter for unique IDs
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static INJECT_COUNTER: AtomicU32 = AtomicU32::new(0);
+        let counter = INJECT_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+        // Create unique node keys using very high IDs (0xFFFF_0000 + counter)
+        let style_key = NodeKey::pack(0, 0, 0xFFFF_0000_u64 + u64::from(counter) * 2);
+        let text_key = NodeKey::pack(0, 0, 0xFFFF_0000_u64 + u64::from(counter) * 2 + 1);
+
+        // Directly apply updates to CSSMirror synchronously
+        let updates = vec![
+            DOMUpdate::InsertElement {
+                parent: NodeKey::ROOT,
+                node: style_key,
+                tag: String::from("style"),
+                pos: usize::MAX,
+            },
+            DOMUpdate::SetAttr {
+                node: style_key,
+                name: String::from("data-valor-injected"),
+                value: String::from("1"),
+            },
+            DOMUpdate::InsertText {
+                parent: style_key,
+                node: text_key,
+                text: css_text,
+                pos: 0,
+            },
+        ];
+
+        // Apply directly to CSS mirror bypassing async channel
+        for update in &updates {
+            self.css_mirror.mirror_mut().apply_update(update.clone())?;
+        }
+
+        Ok(())
     }
 }

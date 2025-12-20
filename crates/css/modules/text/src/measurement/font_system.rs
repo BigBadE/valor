@@ -23,7 +23,8 @@ pub fn get_font_system() -> Arc<Mutex<FontSystem>> {
 
         // Set generic font families to match Chrome on Windows
         // cosmic-text defaults to "Noto Sans Mono" etc. which don't exist on Windows
-        font_system.db_mut().set_monospace_family("Courier New");
+        // Chrome uses Consolas as the default monospace font on Windows
+        font_system.db_mut().set_monospace_family("Consolas");
         font_system.db_mut().set_sans_serif_family("Arial");
         font_system.db_mut().set_serif_family("Times New Roman");
 
@@ -37,18 +38,18 @@ pub fn get_font_system() -> Arc<Mutex<FontSystem>> {
 /// Maps generic families to match Chrome's default font choices on each platform.
 ///
 /// This function ensures consistent font selection between layout (measurement) and rendering.
+/// We explicitly use Family::Name with the specific font we configured in fontdb to ensure
+/// consistent metrics. Using the generic Family::SansSerif etc. can sometimes pick different
+/// fonts depending on fontdb's internal logic.
 pub fn map_font_family(font_name: &str) -> Family<'_> {
     match font_name.to_lowercase().as_str() {
         "sans-serif" => {
+            // Use the explicit font we configured for sans-serif in fontdb
             #[cfg(target_os = "windows")]
             {
                 Family::Name("Arial")
             }
-            #[cfg(target_os = "macos")]
-            {
-                Family::Name("Helvetica")
-            }
-            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            #[cfg(not(target_os = "windows"))]
             {
                 Family::SansSerif
             }
@@ -113,9 +114,31 @@ pub fn get_font_metrics(font_sys: &mut FontSystem, attrs: &Attrs<'_>) -> Option<
     // Get font metrics directly from the font (NO SHAPING!)
     let metrics = font.metrics();
     let units_per_em = f32::from(metrics.units_per_em);
-    let ascent = metrics.ascent / units_per_em;
-    let descent = -metrics.descent / units_per_em; // Note: descent is negative in font metrics
-    let leading = metrics.leading / units_per_em; // Line-gap for "normal" line-height
+
+    // On Windows, Chrome uses OS/2 winAscent + winDescent for line-height calculation.
+    // On macOS/Linux, it uses hhea ascent + descent + leading.
+    // We need to match this platform-specific behavior for correct text layout.
+    #[cfg(target_os = "windows")]
+    let (ascent, descent, leading) = {
+        if let Some((win_ascent, win_descent)) = font.os2_metrics() {
+            // Use OS/2 table metrics (what Chrome uses on Windows)
+            (win_ascent, win_descent, 0.0)
+        } else {
+            // Fallback to hhea metrics if OS/2 table is missing
+            let ascent = metrics.ascent / units_per_em;
+            let descent = -metrics.descent / units_per_em;
+            let leading = metrics.leading / units_per_em;
+            (ascent, descent, leading)
+        }
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let (ascent, descent, leading) = {
+        let ascent = metrics.ascent / units_per_em;
+        let descent = -metrics.descent / units_per_em; // Note: descent is negative in font metrics
+        let leading = metrics.leading / units_per_em; // Line-gap for "normal" line-height
+        (ascent, descent, leading)
+    };
 
     Some(FontMetricsData {
         ascent,

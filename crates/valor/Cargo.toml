@@ -22,6 +22,8 @@ wgpu_backend.workspace = true
 js.workspace = true
 css_core.workspace = true
 css.workspace = true
+css_text.workspace = true
+glyphon.workspace = true
 
 # Needed by layout compare bin/core
 html.workspace = true

@@ -22,7 +22,7 @@ use chromium_compare::comparison_framework::run_comparison_test;
 use chromium_compare::text_rendering_comparison::TextRenderingComparison;
 use chromiumoxide::page::Page;
 use log::info;
-use serde_json::to_string_pretty;
+use serde_json::{Value as JsonValue, to_string_pretty, to_value};
 use std::env;
 use std::fs::write;
 use std::path::PathBuf;
@@ -33,7 +33,7 @@ use tokio::runtime::Handle;
 /// # Errors
 ///
 /// Returns an error if comparison or artifact generation fails.
-async fn run_text_rendering_comparison(page: &Page) -> Result<serde_json::Value> {
+async fn run_text_rendering_comparison(page: &Page) -> Result<JsonValue> {
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..");
@@ -73,7 +73,7 @@ async fn run_text_rendering_comparison(page: &Page) -> Result<serde_json::Value>
         info!("Comparison error: {error}");
     }
 
-    Ok(serde_json::to_value(&outcome)?)
+    Ok(to_value(&outcome)?)
 }
 
 /// Generates and logs a text rendering comparison report.
@@ -100,14 +100,14 @@ async fn print_text_rendering_report(page: &Page) -> Result<()> {
     // Assert that the test passed
     let passed = results
         .get("passed")
-        .and_then(|v| v.as_bool())
+        .and_then(JsonValue::as_bool)
         .unwrap_or(false);
     if !passed {
         let error_msg = results
             .get("error")
-            .and_then(|v| v.as_str())
+            .and_then(JsonValue::as_str)
             .unwrap_or("Unknown comparison error");
-        anyhow::bail!("Text rendering comparison failed:\n{}", error_msg);
+        anyhow::bail!("Text rendering comparison failed:\n{error_msg}");
     }
 
     Ok(())

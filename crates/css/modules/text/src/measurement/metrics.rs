@@ -162,6 +162,8 @@ pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
     let attrs = attrs.weight(Weight(matched_font_weight));
 
     let font_metrics = get_font_metrics(&mut font_sys, &attrs);
+
+
     let metrics = compute_line_height_metrics(font_metrics, font_size, style);
 
     if text.is_empty() {

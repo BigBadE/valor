@@ -34,7 +34,7 @@ pub trait ComparisonTest: Sized {
     /// The result type for comparison (e.g., diff percentage, pixel counts)
     type CompareResult: Debug + Serialize;
 
-    /// The name of this test type (e.g., "layout", "graphics", "text_rendering")
+    /// The name of this test type (e.g., "layout", "graphics", "text-rendering")
     fn test_name() -> &'static str;
 
     /// Fetches or generates Chrome output for the fixture.
@@ -212,7 +212,7 @@ pub async fn run_comparison_test<T: ComparisonTest>(
 ) -> Result<ComparisonOutcome<T::CompareResult>> {
     let fixture_name = fixture
         .file_stem()
-        .and_then(|s| s.to_str())
+        .and_then(|stem| stem.to_str())
         .unwrap_or("unknown")
         .to_string();
 
@@ -263,27 +263,5 @@ pub async fn run_comparison_test<T: ComparisonTest>(
                 error: Some(full_error),
             })
         }
-    }
-}
-
-/// Runs a comparison test and returns a simple pass/fail result.
-///
-/// # Errors
-///
-/// Returns an error if the test fails or infrastructure errors occur.
-pub async fn run_comparison_test_simple<T: ComparisonTest>(
-    page: &Page,
-    handle: &Handle,
-    fixture: &Path,
-) -> Result<()> {
-    let outcome = run_comparison_test::<T>(page, handle, fixture).await?;
-
-    if outcome.passed {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!(
-            "Comparison test failed:\n{}",
-            outcome.error.unwrap_or_default()
-        ))
     }
 }

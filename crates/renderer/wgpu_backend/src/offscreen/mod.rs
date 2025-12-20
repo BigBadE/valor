@@ -6,7 +6,7 @@ mod rendering;
 mod text_preparation;
 
 use anyhow::Result as AnyhowResult;
-use glyphon::Cache as GlyphonCache;
+use glyphon::{Cache as GlyphonCache, Resolution};
 use renderer::display_list::DisplayList;
 use wgpu::*;
 
@@ -85,13 +85,14 @@ pub fn render_display_list_with_context(
     // Update viewport if dimensions changed
     let current_res = context.glyphon_state.viewport.resolution();
     if current_res.width != width || current_res.height != height {
-        context.glyphon_state.viewport.update(
-            &context.queue,
-            glyphon::Resolution { width, height },
-        );
+        context
+            .glyphon_state
+            .viewport
+            .update(&context.queue, Resolution { width, height });
     }
 
-    let (texture, texture_view) = create_render_texture(&context.device, width, height, context.render_format);
+    let (texture, texture_view) =
+        create_render_texture(&context.device, width, height, context.render_format);
 
     let (_texts, _buffers) = prepare_text_items(&mut PrepareTextParams {
         display_list,
@@ -102,7 +103,9 @@ pub fn render_display_list_with_context(
         height,
     })?;
 
-    let mut encoder = context.device.create_command_encoder(&CommandEncoderDescriptor::default());
+    let mut encoder = context
+        .device
+        .create_command_encoder(&CommandEncoderDescriptor::default());
 
     render_rectangles_pass(&mut RenderRectsParams {
         encoder: &mut encoder,
@@ -114,7 +117,13 @@ pub fn render_display_list_with_context(
         height,
     });
 
-    render_text_pass(&mut encoder, &texture_view, &context.glyphon_state, width, height)?;
+    render_text_pass(
+        &mut encoder,
+        &texture_view,
+        &context.glyphon_state,
+        width,
+        height,
+    )?;
 
     readback_texture(ReadbackParams {
         encoder,

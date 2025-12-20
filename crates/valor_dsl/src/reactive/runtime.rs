@@ -3,6 +3,7 @@
 use super::{Component, ComponentFn, UiContext};
 use crate::bevy_events::*;
 use crate::bevy_integration::*;
+use crate::styling::{TailwindUtilities, Theme};
 use bevy::prelude::*;
 use std::any::TypeId;
 use std::collections::HashMap;
@@ -12,41 +13,29 @@ pub struct ReactiveUiPlugin;
 
 impl Plugin for ReactiveUiPlugin {
     fn build(&self, app: &mut App) {
+        // Generate global CSS from theme and Tailwind utilities
+        let theme = Theme::default();
+        let global_css = format!(
+            "{}\n{}",
+            theme.to_css(),
+            TailwindUtilities::generate(&theme.colors)
+        );
+
         app.add_plugins(ValorUiPlugin)
-            .insert_resource(ComponentRegistry::default());
+            .insert_resource(ComponentRegistry::default())
+            .insert_resource(GlobalStyles(global_css));
     }
 }
 
-/// Registry of component render functions
+/// Global styles resource (theme + Tailwind utilities)
+#[derive(Resource, Clone)]
+pub struct GlobalStyles(pub String);
+
+/// Registry of component render functions (unused, kept for compatibility)
 #[derive(Resource, Default)]
 pub struct ComponentRegistry {
     /// Map from TypeId to type-erased render function
-    renderers: HashMap<TypeId, Box<dyn Fn(Entity, &World) -> String + Send + Sync>>,
-}
-
-impl ComponentRegistry {
-    /// Register a component type with its render function
-    pub fn register<T: Component>(&mut self, render_fn: ComponentFn<T>) {
-        let type_id = TypeId::of::<T>();
-        let renderer = Box::new(move |entity: Entity, world: &World| {
-            // Get the component state
-            if let Some(state) = world.get::<T>(entity) {
-                // Create UiContext
-                let mut ctx = UiContext::new(state, entity, world);
-                // Call render function
-                let html = render_fn(&mut ctx);
-                html.content
-            } else {
-                String::new()
-            }
-        });
-        self.renderers.insert(type_id, renderer);
-    }
-
-    /// Get renderer for a type
-    pub fn get_renderer(&self, type_id: TypeId) -> Option<&(dyn Fn(Entity, &World) -> String + Send + Sync)> {
-        self.renderers.get(&type_id).map(|b| &**b)
-    }
+    _renderers: HashMap<TypeId, Box<dyn Fn(Entity, &World) -> String + Send + Sync>>,
 }
 
 /// Extension trait for App to add reactive components
@@ -56,19 +45,13 @@ pub trait ReactiveAppExt {
 }
 
 impl ReactiveAppExt for App {
-    fn add_reactive_component<T: Component>(&mut self, render_fn: ComponentFn<T>) -> &mut Self {
-        // Register the component type
-        {
-            let mut registry = self.world_mut().resource_mut::<ComponentRegistry>();
-            registry.register(render_fn);
-        }
+    fn add_reactive_component<T: Component>(&mut self, _render_fn: ComponentFn<T>) -> &mut Self {
+        // render_fn is captured by the Component trait implementation (T::render)
+        // No need to store it separately anymore
 
         // Add initialization system for this specific component type
         // Run in Update instead of Startup to ensure the component is added first
-        self.add_systems(
-            Update,
-            initialize_component::<T>
-        );
+        self.add_systems(Update, initialize_component::<T>);
 
         // Add observer for click events on this component type
         self.add_observer(handle_click_events::<T>);
@@ -91,24 +74,35 @@ fn initialize_component<T: Component>(world: &mut World) {
         query.iter(world).collect()
     };
 
-    info!("initialize_component: Found {} entities to initialize for type {}",
-        entities_to_init.len(), std::any::type_name::<T>());
+    info!(
+        "initialize_component: Found {} entities to initialize for type {}",
+        entities_to_init.len(),
+        std::any::type_name::<T>()
+    );
+
+    // Get global styles
+    let global_styles = world
+        .get_resource::<GlobalStyles>()
+        .map(|s| s.0.clone())
+        .unwrap_or_default();
 
     for entity in entities_to_init {
         // Get the component state
         let Some(state) = world.get::<T>(entity) else {
             warn!("Failed to get component state for entity {:?}", entity);
-            continue
+            continue;
         };
 
         info!("Rendering component for entity {:?}", entity);
 
         // Create UiContext and call render function
         let mut ctx = UiContext::new(state, entity, world);
-        let html = T::render(&mut ctx);
+        let mut html = T::render(&mut ctx);
 
-        info!("Rendered HTML (length: {})", html.content.len());
-        info!("📄 HTML content preview: {}", &html.content[..html.content.len().min(500)]);
+        info!("Rendered HTML ({} DOM updates)", html.updates.len());
+
+        // Prepend global styles
+        html.prepend_global_styles(&global_styles);
 
         // Extract callbacks from context
         let callbacks = ctx.take_callbacks();
@@ -116,11 +110,15 @@ fn initialize_component<T: Component>(world: &mut World) {
         info!("Extracted {} callbacks", callbacks.len());
 
         // Insert ValorUi component with the rendered HTML
-        world.entity_mut(entity).insert(ValorUi::new(html.content).with_width(800).with_height(600));
+        world
+            .entity_mut(entity)
+            .insert(ValorUi::new(html).with_width(800).with_height(600));
 
         // Store callbacks for event handling
         if !callbacks.is_empty() {
-            world.entity_mut(entity).insert(super::context::ReactiveCallbacks::new(callbacks));
+            world
+                .entity_mut(entity)
+                .insert(super::context::ReactiveCallbacks::new(callbacks));
         }
 
         info!("✅ Initialized reactive component for entity {:?}", entity);
@@ -133,13 +131,19 @@ fn handle_click_events<T: Component>(
     handlers_query: Query<&ClickHandler>,
     mut commands: Commands,
 ) {
-    info!("🔔 handle_click_events<{}> triggered on entity {:?}",
-        std::any::type_name::<T>(), trigger.entity());
+    info!(
+        "🔔 handle_click_events<{}> triggered on entity {:?}",
+        std::any::type_name::<T>(),
+        trigger.entity()
+    );
 
     // Get the handler that was clicked
     let Ok(handler) = handlers_query.get(trigger.entity()) else {
-        warn!("❌ No ClickHandler component found on entity {:?}", trigger.entity());
-        return
+        warn!(
+            "❌ No ClickHandler component found on entity {:?}",
+            trigger.entity()
+        );
+        return;
     };
     let handler_name = handler.name.clone();
 
@@ -152,10 +156,7 @@ fn handle_click_events<T: Component>(
 }
 
 /// Detect changes in component state and trigger re-renders
-fn detect_changes<T: Component>(
-    changed: Query<(Entity, &T), Changed<T>>,
-    mut commands: Commands,
-) {
+fn detect_changes<T: Component>(changed: Query<(Entity, &T), Changed<T>>, mut commands: Commands) {
     for (entity, _state) in &changed {
         // Queue a re-render
         commands.queue(move |world: &mut World| {
@@ -167,34 +168,44 @@ fn detect_changes<T: Component>(
 /// Re-render a reactive component after state change
 fn rerender_reactive_component<T: Component>(world: &mut World, entity: Entity) {
     // Render with current state and extract HTML + callbacks
-    let (html_content, callbacks) = {
+    let (html, callbacks) = {
         // Get the component state
         let Some(state) = world.get::<T>(entity) else {
             warn!("Failed to get component state for re-render");
-            return
+            return;
         };
 
         // Create UiContext and call render function
         let mut ctx = UiContext::new(state, entity, world);
         let html = T::render(&mut ctx);
 
-        info!("🔄 Re-rendered component, HTML length: {}", html.content.len());
-        info!("🔄 HTML preview: {}", &html.content[..html.content.len().min(300)]);
+        info!(
+            "🔄 Re-rendered component ({} DOM updates)",
+            html.updates.len()
+        );
 
         // Extract callbacks from context
         let callbacks = ctx.take_callbacks();
 
-        (html.content, callbacks)
+        (html, callbacks)
     };
 
     // Update the ValorUi component
     if let Some(mut valor_ui) = world.get_mut::<ValorUi>(entity) {
-        info!("📝 Updating ValorUi HTML from {} to {} chars", valor_ui.html.len(), html_content.len());
-        valor_ui.html = html_content;
+        info!(
+            "📝 Updating ValorUi HTML ({} updates -> {} updates)",
+            valor_ui.html.updates.len(),
+            html.updates.len()
+        );
+        valor_ui.html = html;
+        // Mark as no longer first render (so subsequent updates use UpdateText)
+        valor_ui.first_render = false;
 
         // Update callbacks
         if !callbacks.is_empty() {
-            world.entity_mut(entity).insert(super::context::ReactiveCallbacks::new(callbacks));
+            world
+                .entity_mut(entity)
+                .insert(super::context::ReactiveCallbacks::new(callbacks));
         }
 
         // Trigger a re-render in the valor integration
@@ -205,15 +216,19 @@ fn rerender_reactive_component<T: Component>(world: &mut World, entity: Entity) 
 /// Register click handlers from reactive callbacks
 fn register_click_handlers<T: Component>(
     mut commands: Commands,
-    query: Query<(Entity, &super::context::ReactiveCallbacks<T>), Added<super::context::ReactiveCallbacks<T>>>,
+    query: Query<
+        (Entity, &super::context::ReactiveCallbacks<T>),
+        Added<super::context::ReactiveCallbacks<T>>,
+    >,
 ) {
     for (entity, callbacks) in &query {
         // Register a ClickHandler for each callback name
         for name in callbacks.handlers.keys() {
-            info!("Registering click handler '{}' for reactive component entity {:?}", name, entity);
-            commands.spawn(ClickHandler {
-                name: name.clone(),
-            });
+            info!(
+                "Registering click handler '{}' for reactive component entity {:?}",
+                name, entity
+            );
+            commands.spawn(ClickHandler { name: name.clone() });
         }
     }
 }
@@ -222,11 +237,16 @@ fn register_click_handlers<T: Component>(
 fn execute_callback<T: Component>(world: &mut World, callback_name: &str) {
     // Find all entities with T component and ReactiveCallbacks
     let entities_with_callbacks: Vec<Entity> = {
-        let mut query = world.query_filtered::<Entity, (With<T>, With<super::context::ReactiveCallbacks<T>>)>();
+        let mut query =
+            world.query_filtered::<Entity, (With<T>, With<super::context::ReactiveCallbacks<T>>)>();
         query.iter(world).collect()
     };
 
-    info!("execute_callback: Found {} entities with callbacks for '{}'", entities_with_callbacks.len(), callback_name);
+    info!(
+        "execute_callback: Found {} entities with callbacks for '{}'",
+        entities_with_callbacks.len(),
+        callback_name
+    );
 
     for entity in entities_with_callbacks {
         // Debug: show what callbacks are registered
@@ -245,7 +265,10 @@ fn execute_callback<T: Component>(world: &mut World, callback_name: &str) {
         };
 
         if let Some(callback) = callback_fn {
-            info!("✅ Executing callback '{}' on entity {:?}", callback_name, entity);
+            info!(
+                "✅ Executing callback '{}' on entity {:?}",
+                callback_name, entity
+            );
 
             // Check if entity exists
             if !world.entities().contains(entity) {
@@ -255,7 +278,11 @@ fn execute_callback<T: Component>(world: &mut World, callback_name: &str) {
 
             // Check if component exists on entity
             if !world.entity(entity).contains::<T>() {
-                warn!("❌ Entity {:?} does not have component {}", entity, std::any::type_name::<T>());
+                warn!(
+                    "❌ Entity {:?} does not have component {}",
+                    entity,
+                    std::any::type_name::<T>()
+                );
                 continue;
             }
 
@@ -266,18 +293,24 @@ fn execute_callback<T: Component>(world: &mut World, callback_name: &str) {
                 // Call the callback
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     callback(&mut *component);
-                })).unwrap_or_else(|e| {
+                }))
+                .unwrap_or_else(|e| {
                     error!("❌ Callback panicked: {:?}", e);
                 });
 
                 info!("✅ Callback executed successfully, marking as changed");
                 component.set_changed();
             } else {
-                warn!("❌ Failed to get mutable component for entity {:?} despite it existing", entity);
+                warn!(
+                    "❌ Failed to get mutable component for entity {:?} despite it existing",
+                    entity
+                );
             }
         } else {
-            warn!("❌ No callback found for '{}' on entity {:?}", callback_name, entity);
+            warn!(
+                "❌ No callback found for '{}' on entity {:?}",
+                callback_name, entity
+            );
         }
     }
 }
-

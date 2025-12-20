@@ -4,13 +4,16 @@ use std::collections::HashMap;
 
 use crate::style_model;
 
-use super::super::{normalize_font_family, parse_px};
+use super::super::{normalize_font_family, parse_font_size};
 
-/// Parse a font-size/line-height pair from a string like "14px/1.4".
+/// Parse a font-size/line-height pair from a string like "14px/1.4" or "2em/1.4".
 fn parse_font_size_line_height(size_part: &str, computed: &mut style_model::ComputedStyle) {
+    // Store parent font size before we modify computed.font_size
+    let parent_font_size = computed.font_size;
+
     if let Some((size_str, line_str)) = size_part.split_once('/') {
-        // Has line-height: "14px/1.4"
-        if let Some(pixels) = parse_px(size_str) {
+        // Has line-height: "14px/1.4" or "2em/1.4"
+        if let Some(pixels) = parse_font_size(size_str, parent_font_size) {
             computed.font_size = pixels;
         }
         // Parse line-height
@@ -25,7 +28,7 @@ fn parse_font_size_line_height(size_part: &str, computed: &mut style_model::Comp
         }
     } else {
         // No line-height, just font-size
-        if let Some(pixels) = parse_px(size_part) {
+        if let Some(pixels) = parse_font_size(size_part, parent_font_size) {
             computed.font_size = pixels;
         }
     }
@@ -54,10 +57,13 @@ pub fn apply_typography(
         }
     }
     // Longhands override shorthand
-    if let Some(value) = decls.get("font-size")
-        && let Some(pixels) = parse_px(value)
-    {
-        computed.font_size = pixels;
+    // When parsing font-size with em units, use the current computed.font_size
+    // (which is the inherited parent font size) as the base for em calculation
+    if let Some(value) = decls.get("font-size") {
+        let parent_font_size = computed.font_size;
+        if let Some(pixels) = parse_font_size(value, parent_font_size) {
+            computed.font_size = pixels;
+        }
     }
     if let Some(value) = decls.get("font-family") {
         // Normalize font-family value: remove surrounding quotes from font names
@@ -76,6 +82,19 @@ pub fn apply_typography(
         } else if let Ok(weight) = trimmed.parse::<u16>() {
             // Clamp to valid range 100-900
             computed.font_weight = weight.clamp(100, 900);
+        }
+    }
+    // Parse text-align: left, right, center, justify (other values like start/end not supported yet)
+    if let Some(value) = decls.get("text-align") {
+        let trimmed = value.trim();
+        if trimmed.eq_ignore_ascii_case("left") {
+            computed.text_align = style_model::TextAlign::Left;
+        } else if trimmed.eq_ignore_ascii_case("right") {
+            computed.text_align = style_model::TextAlign::Right;
+        } else if trimmed.eq_ignore_ascii_case("center") {
+            computed.text_align = style_model::TextAlign::Center;
+        } else if trimmed.eq_ignore_ascii_case("justify") {
+            computed.text_align = style_model::TextAlign::Justify;
         }
     }
     // Compute line-height: 'normal' -> None; number -> number * font-size; percentage -> resolved;

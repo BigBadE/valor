@@ -19,13 +19,22 @@ impl ComponentStyles {
     }
 
     /// Add a style rule for a selector
-    pub fn rule(mut self, selector: impl Into<String>, properties: HashMap<String, String>) -> Self {
+    pub fn rule(
+        mut self,
+        selector: impl Into<String>,
+        properties: HashMap<String, String>,
+    ) -> Self {
         self.rules.insert(selector.into(), properties);
         self
     }
 
     /// Add a single property to a selector
-    pub fn add(mut self, selector: impl Into<String>, property: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn add(
+        mut self,
+        selector: impl Into<String>,
+        property: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         let selector = selector.into();
         self.rules
             .entry(selector)

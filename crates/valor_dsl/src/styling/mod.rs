@@ -6,15 +6,15 @@
 //! 3. CSS-in-Rust builder API
 //! 4. Global theme configuration
 
-pub mod theme;
-pub mod utilities;
 pub mod builder;
 pub mod scoped;
+pub mod theme;
+pub mod utilities;
 
-pub use theme::{ColorPalette, Theme, ThemeConfig};
-pub use utilities::TailwindUtilities;
 pub use builder::{Style, StyleBuilder};
 pub use scoped::ComponentStyles;
+pub use theme::{ColorPalette, Theme, ThemeConfig};
+pub use utilities::TailwindUtilities;
 
 /// Generate complete CSS from all styling sources
 pub fn generate_css(theme: &Theme, component_styles: &[ComponentStyles]) -> String {

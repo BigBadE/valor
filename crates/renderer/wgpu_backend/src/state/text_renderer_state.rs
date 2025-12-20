@@ -72,6 +72,12 @@ impl TextRendererState {
         let mut font_system = FontSystem::new();
         font_system.db_mut().load_system_fonts();
 
+        // Set generic font families to match Chrome on Windows
+        // This ensures consistency between text measurement and rendering
+        font_system.db_mut().set_monospace_family("Courier New");
+        font_system.db_mut().set_sans_serif_family("Arial");
+        font_system.db_mut().set_serif_family("Times New Roman");
+
         Self {
             font_system,
             swash_cache: SwashCache::new(),

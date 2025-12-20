@@ -2,6 +2,17 @@
 
 /// Macro for creating reactive HTML with Rust expression interpolation
 ///
+/// **NOTE**: This macro is currently unimplemented. The Html API changed from
+/// `Html::new(String)` to `Html::new(Vec<DOMUpdate>)`, which requires parsing
+/// the HTML string into DOMUpdate events.
+///
+/// To properly implement this macro, we need to:
+/// 1. Parse the HTML string using html5ever
+/// 2. Generate DOMUpdate events from the parsed tree
+/// 3. Handle string interpolation by generating text nodes
+///
+/// For now, this macro will panic if called.
+///
 /// # Examples
 ///
 /// ```ignore
@@ -17,79 +28,33 @@
 /// ```
 #[macro_export]
 macro_rules! reactive_html {
-    // Base case: just a string literal
-    ($html:literal) => {
-        $crate::reactive::Html::new($html)
-    };
-
-    // Handle HTML with interpolations
     ($($tokens:tt)*) => {{
-        let mut html_string = String::new();
-        $crate::__reactive_html_impl!(html_string; $($tokens)*);
-        $crate::reactive::Html::new(html_string)
+        compile_error!(
+            "reactive_html! macro is not yet implemented for the new Html API. \
+             The Html struct now requires Vec<DOMUpdate> instead of String. \
+             Please use the html! macro from valor_dsl_macros or construct \
+             Html::new() with DOMUpdate events directly."
+        )
     }};
-}
-
-/// Internal implementation macro for reactive_html
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __reactive_html_impl {
-    // Base case: empty
-    ($output:ident;) => {};
-
-    // Rust expression interpolation: {expr} - must come before literal to match first
-    ($output:ident; {$expr:expr} $($rest:tt)*) => {
-        {
-            use std::fmt::Write;
-            let _ = write!($output, "{}", $expr);
-        }
-        $crate::__reactive_html_impl!($output; $($rest)*);
-    };
-
-    // String literal (works for both r#"..."# and "...")
-    ($output:ident; $lit:tt $($rest:tt)*) => {
-        $output.push_str($lit);
-        $crate::__reactive_html_impl!($output; $($rest)*);
-    };
 }
 
 /// Simplified reactive_html! for full HTML documents (wraps in html! style)
 ///
-/// This is a convenience macro that works like the existing html! macro
-/// but supports the reactive_html! interpolation syntax
+/// **NOTE**: Also unimplemented, same as reactive_html!
 #[macro_export]
 macro_rules! rhtml {
     ($($tokens:tt)*) => {
-        $crate::reactive_html!($($tokens)*)
+        compile_error!(
+            "rhtml! macro is not yet implemented. Use html! from valor_dsl_macros instead."
+        )
     };
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::reactive::Html;
-
-    #[test]
-    fn test_reactive_html_literal() {
-        let html = reactive_html!("<div>Hello</div>");
-        assert_eq!(html.content, "<div>Hello</div>");
-    }
-
-    #[test]
-    fn test_reactive_html_interpolation() {
-        let name = "World";
-        let html = reactive_html! {
-            "<h1>Hello, " {name} "!</h1>"
-        };
-        assert_eq!(html.content, "<h1>Hello, World!</h1>");
-    }
-
-    #[test]
-    fn test_reactive_html_multiple_interpolations() {
-        let x = 10;
-        let y = 20;
-        let html = reactive_html! {
-            "<div>X: " {x} ", Y: " {y} "</div>"
-        };
-        assert_eq!(html.content, "<div>X: 10, Y: 20</div>");
-    }
+    // Tests disabled - reactive_html! macro needs to be rewritten
+    // to work with the new Html::new(Vec<DOMUpdate>) API instead of
+    // Html::new(String)
+    //
+    // TODO: Rewrite macro to generate DOMUpdate objects directly from HTML string
 }

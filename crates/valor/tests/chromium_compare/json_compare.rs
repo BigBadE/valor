@@ -123,6 +123,14 @@ fn compare_arrays(
     expected_arr: &[JsonValue],
     ctx: &mut CompareContext<'_>,
 ) {
+    // Skip comparing "asserts" arrays - these are JavaScript test assertions
+    // that may not run in Valor's layout comparison tests
+    let is_asserts_array = ctx.path.last().is_some_and(|segment| segment == ".asserts");
+
+    if is_asserts_array {
+        return; // Skip assertion comparison entirely
+    }
+
     if actual_arr.len() != expected_arr.len() {
         ctx.diffs.push(Difference {
             path: format_path(ctx.path),

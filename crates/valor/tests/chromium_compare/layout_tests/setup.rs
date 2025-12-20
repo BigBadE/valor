@@ -1,6 +1,6 @@
 //! Test setup helpers for layout testing.
 
-use super::common::{create_page, css_reset_injection_script, update_until_finished};
+use super::super::common::{create_page, css_reset_injection_script, update_until_finished};
 use anyhow::{Result, anyhow};
 use page_handler::HtmlPage;
 use std::path::Path;

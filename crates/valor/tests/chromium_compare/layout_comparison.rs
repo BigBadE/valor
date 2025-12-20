@@ -14,6 +14,9 @@ use std::fs::write;
 use std::path::Path;
 use tokio::runtime::Handle;
 
+// Import Value methods for use with method syntax
+use serde_json::Value;
+
 /// Layout-specific metadata (viewport dimensions, epsilon tolerance)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayoutMetadata {
@@ -60,6 +63,8 @@ impl ComparisonTest for LayoutComparison {
         _metadata: &mut Self::Metadata,
     ) -> Result<Self::ValorOutput> {
         let mut valor_page = setup_page_for_fixture(handle, fixture).await?;
+        // Inject CSS reset AFTER parsing completes to ensure correct source order
+        super::common::inject_css_reset_after_parsing(&mut valor_page).await?;
         serialize_valor_layout(&mut valor_page)
     }
 
@@ -72,11 +77,17 @@ impl ComparisonTest for LayoutComparison {
         let mut js_failed = Vec::new();
         let mut js_passed = 0usize;
 
-        if let Some(asserts) = chrome.get("asserts").and_then(|v| v.as_array()) {
+        if let Some(asserts) = chrome.get("asserts").and_then(|value| value.as_array()) {
             for entry in asserts {
-                let assert_name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let assertion_passed = entry.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-                let assert_details = entry.get("details").and_then(|v| v.as_str()).unwrap_or("");
+                let assert_name = entry
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                let assertion_passed = entry.get("ok").and_then(Value::as_bool).unwrap_or(false);
+                let assert_details = entry
+                    .get("details")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
 
                 if assertion_passed {
                     js_passed += 1;
@@ -86,8 +97,8 @@ impl ComparisonTest for LayoutComparison {
             }
         }
 
-        // Compare layout JSON
-        compare_json_with_epsilon(chrome, valor, metadata.epsilon)?;
+        // Compare layout JSON (actual=valor, expected=chrome)
+        compare_json_with_epsilon(valor, chrome, metadata.epsilon)?;
 
         Ok(LayoutCompareResult {
             js_assertions_passed: js_passed,
@@ -103,15 +114,15 @@ impl ComparisonTest for LayoutComparison {
         Ok(from_slice(bytes)?)
     }
 
-    fn write_chrome_output(output: &Self::ChromeOutput, base_path: &Path) -> Result<()> {
-        let path = base_path.with_extension("chrome.json");
-        write(path, to_string_pretty(output)?)?;
+    fn write_chrome_output(output: &Self::ChromeOutput, path: &Path) -> Result<()> {
+        let chrome_path = path.with_extension("chrome.json");
+        write(chrome_path, to_string_pretty(output)?)?;
         Ok(())
     }
 
-    fn write_valor_output(output: &Self::ValorOutput, base_path: &Path) -> Result<()> {
-        let path = base_path.with_extension("valor.json");
-        write(path, to_string_pretty(output)?)?;
+    fn write_valor_output(output: &Self::ValorOutput, path: &Path) -> Result<()> {
+        let valor_path = path.with_extension("valor.json");
+        write(valor_path, to_string_pretty(output)?)?;
         Ok(())
     }
 }

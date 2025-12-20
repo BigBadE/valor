@@ -150,6 +150,15 @@ pub enum GridAutoFlow {
     ColumnDense,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Right,
+    Center,
+    Justify,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ComputedStyle {
     pub color: Rgba,
@@ -208,6 +217,8 @@ pub struct ComputedStyle {
     pub font_family: Option<String>,
     /// Font weight (100-900, with 400=normal, 700=bold). Defaults to 400.
     pub font_weight: u16,
+    /// Text alignment (left, right, center, justify). Defaults to left.
+    pub text_align: TextAlign,
     // Flexbox
     pub flex_grow: f32,
     pub flex_shrink: f32,

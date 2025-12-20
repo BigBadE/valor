@@ -26,7 +26,7 @@ pub fn create_chrome_and_content(
     let mut chrome_page = runtime.block_on(HtmlPage::new(
         runtime.handle(),
         Url::parse("valor://chrome/index.html")?,
-        config.clone(),
+        config,
     ))?;
 
     // Create content page
