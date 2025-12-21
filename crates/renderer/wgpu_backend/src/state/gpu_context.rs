@@ -105,13 +105,13 @@ impl GpuContext {
             |surface| {
                 let capabilities = surface.get_capabilities(adapter);
                 if capabilities.formats.is_empty() {
-                    // CSS requires sRGB-space rendering - use Rgba8Unorm throughout
-                    (None, TextureFormat::Rgba8Unorm, TextureFormat::Rgba8Unorm)
+                    // Headless/software - use Bgra8Unorm (widely supported)
+                    (None, TextureFormat::Bgra8Unorm, TextureFormat::Bgra8Unorm)
                 } else {
-                    // CSS requires sRGB-space blending, so use Rgba8Unorm to prevent
-                    // GPU automatic sRGB conversions. We treat sRGB values as linear.
-                    let surface_fmt = TextureFormat::Rgba8Unorm;
-                    let render_fmt = TextureFormat::Rgba8Unorm;
+                    // Use Bgra8Unorm - widely supported and matches WSL surface capabilities
+                    // CSS requires sRGB-space blending, so use non-sRGB format
+                    let surface_fmt = TextureFormat::Bgra8Unorm;
+                    let render_fmt = TextureFormat::Bgra8Unorm;
                     let surface_config = SurfaceConfiguration {
                         usage: TextureUsages::RENDER_ATTACHMENT,
                         format: surface_fmt,

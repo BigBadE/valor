@@ -16,7 +16,7 @@ use super::super::common::to_file_url;
 pub async fn setup_page_for_fixture(handle: &Handle, input_path: &Path) -> Result<HtmlPage> {
     let url = to_file_url(input_path)?;
     let mut page = create_page(handle, url).await?;
-    page.eval_js(css_reset_injection_script())?;
+    page.eval_js(&css_reset_injection_script())?;
 
     let finished = update_until_finished(handle, &mut page, |_page| Ok(())).await?;
 

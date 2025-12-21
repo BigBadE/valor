@@ -21,12 +21,31 @@ pub fn get_font_system() -> Arc<Mutex<FontSystem>> {
         // Load system fonts
         font_system.db_mut().load_system_fonts();
 
-        // Set generic font families to match Chrome on Windows
-        // cosmic-text defaults to "Noto Sans Mono" etc. which don't exist on Windows
-        // Chrome uses Consolas as the default monospace font on Windows
-        font_system.db_mut().set_monospace_family("Consolas");
-        font_system.db_mut().set_sans_serif_family("Arial");
-        font_system.db_mut().set_serif_family("Times New Roman");
+        // Set generic font families to match Chrome's defaults on each platform
+        #[cfg(target_os = "windows")]
+        {
+            // Chrome uses these fonts as defaults on Windows
+            font_system.db_mut().set_monospace_family("Consolas");
+            font_system.db_mut().set_sans_serif_family("Arial");
+            font_system.db_mut().set_serif_family("Times New Roman");
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            // Chrome uses these fonts as defaults on macOS
+            font_system.db_mut().set_monospace_family("Menlo");
+            font_system.db_mut().set_sans_serif_family("Helvetica");
+            font_system.db_mut().set_serif_family("Times");
+        }
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            // Chrome uses these fonts as defaults on Linux
+            // DejaVu fonts are widely available and match Chrome's behavior
+            font_system.db_mut().set_monospace_family("DejaVu Sans Mono");
+            font_system.db_mut().set_sans_serif_family("DejaVu Sans");
+            font_system.db_mut().set_serif_family("DejaVu Serif");
+        }
 
         let arc = Arc::new(Mutex::new(font_system));
         *guard = Some(Arc::clone(&arc));
@@ -44,14 +63,17 @@ pub fn get_font_system() -> Arc<Mutex<FontSystem>> {
 pub fn map_font_family(font_name: &str) -> Family<'_> {
     match font_name.to_lowercase().as_str() {
         "sans-serif" => {
-            // Use the explicit font we configured for sans-serif in fontdb
             #[cfg(target_os = "windows")]
             {
                 Family::Name("Arial")
             }
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "macos")]
             {
-                Family::SansSerif
+                Family::Name("Helvetica")
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                Family::Name("DejaVu Sans")
             }
         }
         "serif" => {
@@ -59,9 +81,13 @@ pub fn map_font_family(font_name: &str) -> Family<'_> {
             {
                 Family::Name("Times New Roman")
             }
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "macos")]
             {
-                Family::Serif
+                Family::Name("Times")
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                Family::Name("DejaVu Serif")
             }
         }
         "monospace" => {
@@ -69,9 +95,13 @@ pub fn map_font_family(font_name: &str) -> Family<'_> {
             {
                 Family::Name("Consolas")
             }
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "macos")]
             {
-                Family::Monospace
+                Family::Name("Menlo")
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                Family::Name("DejaVu Sans Mono")
             }
         }
         "cursive" => Family::Cursive,

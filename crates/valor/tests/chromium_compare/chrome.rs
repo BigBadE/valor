@@ -49,23 +49,44 @@ impl Drop for BrowserWithHandler {
 ///
 /// Returns an error if Chrome cannot be found.
 fn find_chrome_executable() -> Result<PathBuf> {
-    let candidates = vec![
-        "google-chrome",
-        "chromium",
-        "chromium-browser",
+    // Check environment variable first
+    if let Ok(chrome_bin) = env::var("CHROME_BIN") {
+        let path = PathBuf::from(&chrome_bin);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    // Prioritize Linux/native executables over Windows executables in WSL
+    let path_candidates = vec!["google-chrome", "chromium", "chromium-browser"];
+
+    for candidate in path_candidates {
+        if let Ok(output) = Command::new(candidate).arg("--version").output() {
+            // Check if it's a real Chrome/Chromium (not a snap stub)
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            // Snap stubs don't output version info and may have snap messages
+            if (stdout.contains("Chrome") || stdout.contains("Chromium"))
+                && !stderr.contains("snap") {
+                return Ok(PathBuf::from(candidate));
+            }
+        }
+    }
+
+    // Fallback to Windows Chrome paths (less preferred due to WSL networking issues)
+    let file_paths = vec![
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         "/c/Program Files/Google/Chrome/Application/chrome.exe",
         "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
+        "/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe",
     ];
 
-    for candidate in candidates {
+    for candidate in file_paths {
         let path = PathBuf::from(candidate);
         if path.exists() {
             return Ok(path);
-        }
-        if Command::new(candidate).arg("--version").output().is_ok() {
-            return Ok(PathBuf::from(candidate));
         }
     }
 
@@ -79,28 +100,57 @@ fn is_chrome_running(port: u16) -> bool {
     TcpStream::connect(format!("127.0.0.1:{port}")).is_ok()
 }
 
+/// Checks if we're running in WSL.
+fn is_wsl() -> bool {
+    std::fs::read_to_string("/proc/version")
+        .map(|s| s.to_lowercase().contains("microsoft") || s.to_lowercase().contains("wsl"))
+        .unwrap_or(false)
+}
+
 /// Kills any existing Chrome processes on the specified port.
 ///
 /// # Errors
 ///
 /// Returns an error if process termination fails.
-async fn kill_existing_chrome(port: u16) -> Result<()> {
-    if is_chrome_running(port) {
-        log::info!("Found existing Chrome on port {port}, attempting graceful shutdown");
-        sleep(Duration::from_millis(500)).await;
-    }
-
+async fn kill_existing_chrome(_port: u16) -> Result<()> {
     if cfg!(target_os = "windows") {
         let _ignore_result = Command::new("taskkill")
             .args(["/F", "/IM", "chrome.exe"])
             .output();
+    } else if is_wsl() {
+        // In WSL, kill ALL Windows Chrome processes (user and test instances)
+        log::info!("WSL detected, killing all Windows Chrome processes");
+
+        // Try multiple times to ensure all processes are killed
+        for attempt in 1..=3 {
+            let output = Command::new("taskkill.exe")
+                .args(["/F", "/IM", "chrome.exe"])
+                .output();
+
+            if let Ok(output) = output {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // If no processes found, we're done
+                if stderr.contains("not found") || stderr.contains("Unable to enumerate") {
+                    break;
+                }
+                log::debug!("Kill attempt {attempt}/3");
+            }
+
+            sleep(Duration::from_millis(500)).await;
+        }
+
+        // Also kill any Linux Chrome processes
+        let _ignore_result = Command::new("pkill")
+            .args(["-9", "-f", "chrome"])
+            .output();
     } else {
         let _ignore_result = Command::new("pkill")
-            .args(["-f", &format!("remote-debugging-port={port}")])
+            .args(["-9", "-f", "chrome"])
             .output();
     }
 
-    sleep(Duration::from_secs(1)).await;
+    // Wait for processes to fully terminate
+    sleep(Duration::from_secs(3)).await;
     Ok(())
 }
 
@@ -142,6 +192,18 @@ async fn start_chrome_process() -> Result<(Child, PathBuf)> {
         "--allow-file-access-from-files".to_string(),
         "--force-color-profile=sRGB".to_string(),
         "--window-size=800,600".to_string(),
+        "--no-first-run".to_string(),
+        "--no-default-browser-check".to_string(),
+        "--disable-client-side-phishing-detection".to_string(),
+        "--disable-component-extensions-with-background-pages".to_string(),
+        "--disable-default-apps".to_string(),
+        "--disable-features=Translate".to_string(),
+        "--disable-popup-blocking".to_string(),
+        "--disable-prompt-on-repost".to_string(),
+        "--metrics-recording-only".to_string(),
+        "--mute-audio".to_string(),
+        "--disable-features=ProcessPerSiteUpToMainFrameThreshold".to_string(),
+        "--enable-automation".to_string(),
     ];
 
     log::info!(
@@ -152,6 +214,8 @@ async fn start_chrome_process() -> Result<(Child, PathBuf)> {
 
     let mut process = Command::new(&chrome_bin)
         .args(&chrome_args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|err| anyhow!("Failed to start Chrome: {err}"))?;
 
@@ -165,8 +229,23 @@ async fn start_chrome_process() -> Result<(Child, PathBuf)> {
         }
 
         if let Ok(Some(status)) = process.try_wait() {
+            let mut stdout_str = String::new();
+            let mut stderr_str = String::new();
+
+            if let Some(mut stdout) = process.stdout.take() {
+                use std::io::Read as _;
+                let _ignore = stdout.read_to_string(&mut stdout_str);
+            }
+            if let Some(mut stderr) = process.stderr.take() {
+                use std::io::Read as _;
+                let _ignore = stderr.read_to_string(&mut stderr_str);
+            }
+
+            log::error!("Chrome stdout: {}", stdout_str);
+            log::error!("Chrome stderr: {}", stderr_str);
+
             return Err(anyhow!(
-                "Chrome process exited unexpectedly with status: {status}"
+                "Chrome process exited unexpectedly with status: {status}\nStderr: {stderr_str}\nStdout: {stdout_str}"
             ));
         }
 

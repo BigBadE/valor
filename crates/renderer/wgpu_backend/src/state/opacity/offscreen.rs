@@ -43,7 +43,7 @@ impl OffscreenRenderer<'_> {
             TextureManager::create_offscreen_texture_static(self.gpu, tex_width, tex_height);
         let view = texture.create_view(&TextureViewDescriptor {
             label: Some("offscreen-opacity-view"),
-            format: Some(TextureFormat::Rgba8Unorm),
+            format: Some(TextureFormat::Bgra8Unorm),
             ..Default::default()
         });
 

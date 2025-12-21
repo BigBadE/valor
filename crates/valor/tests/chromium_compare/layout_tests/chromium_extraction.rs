@@ -142,7 +142,21 @@ fn chromium_layout_extraction_script() -> String {
 ///
 /// Returns an error if navigation, script evaluation, or JSON parsing fails.
 pub async fn chromium_layout_json_in_page(page: &Page, path: &Path) -> Result<JsonValue> {
+    use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+
     navigate_and_prepare_page(page, path).await?;
+
+    // Set viewport to 800x600 without scrollbar space being subtracted
+    // Chrome in headless mode reserves 16px for scrollbars even with --hide-scrollbars
+    let viewport_params = SetDeviceMetricsOverrideParams::builder()
+        .width(800)
+        .height(600)
+        .device_scale_factor(1.0)
+        .mobile(false)
+        .build()
+        .map_err(|err| anyhow!("Failed to build viewport params: {err}"))?;
+    page.execute(viewport_params).await?;
+
     let script = chromium_layout_extraction_script();
     let result = page.evaluate(script).await?;
     let value = result

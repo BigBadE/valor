@@ -93,12 +93,24 @@ fn compute_line_height_metrics(
             // Unrounded line height for cosmic-text internal calculations
             let line_h_unrounded = style.line_height.unwrap_or(normal_line_h);
 
-            // Chrome rounds each component individually, then sums them
-            let ascent_rounded = ascent_px.round();
-            let descent_rounded = descent_px.round();
+            // Platform-specific rounding strategy
+            // Windows: round components individually (matches GDI behavior)
+            // Non-Windows: floor total height (matches FreeType/Chrome on Linux)
+            #[cfg(target_os = "windows")]
+            let (glyph_h_rounded, ascent_rounded, descent_rounded) = {
+                let asc = ascent_px.round();
+                let desc = descent_px.round();
+                (asc + desc, asc, desc)
+            };
+
+            #[cfg(not(target_os = "windows"))]
+            let (glyph_h_rounded, ascent_rounded, descent_rounded) = {
+                let glyph_h = glyph_h.floor();
+                (glyph_h, ascent_px.round(), descent_px.round())
+            };
+
             let leading_rounded = leading_px.round();
-            let glyph_h_rounded = ascent_rounded + descent_rounded;
-            let normal_line_h_rounded = ascent_rounded + descent_rounded + leading_rounded;
+            let normal_line_h_rounded = glyph_h_rounded + leading_rounded;
             let line_h = style.line_height.unwrap_or(normal_line_h_rounded);
 
             LineHeightMetrics {
@@ -209,7 +221,8 @@ fn measure_text_width_internal(
     for line_idx in 0..buffer.lines.len() {
         if let Some(layout_lines) = buffer.line_layout(font_sys, line_idx) {
             for layout_line in layout_lines {
-                max_width = max_width.max(layout_line.w);
+                let width = layout_line.w;
+                max_width = max_width.max(width);
             }
         }
     }

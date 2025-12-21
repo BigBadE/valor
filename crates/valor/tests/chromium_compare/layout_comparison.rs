@@ -62,6 +62,15 @@ impl ComparisonTest for LayoutComparison {
         fixture: &Path,
         _metadata: &mut Self::Metadata,
     ) -> Result<Self::ValorOutput> {
+        use std::env::set_var;
+
+        // Set viewport to 800x600 to match Chrome
+        // Safety: Test environment where we control execution
+        unsafe {
+            set_var("VALOR_VIEWPORT_WIDTH", "800");
+            set_var("VALOR_VIEWPORT_HEIGHT", "600");
+        }
+
         let mut valor_page = setup_page_for_fixture(handle, fixture).await?;
         // Inject CSS reset AFTER parsing completes to ensure correct source order
         super::common::inject_css_reset_after_parsing(&mut valor_page).await?;

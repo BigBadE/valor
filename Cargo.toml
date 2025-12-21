@@ -113,7 +113,10 @@ css_core = { path = "crates/css/modules/core" }
 
 [profile.dev]
 opt-level = 1
+debug = 0
+strip = "debuginfo"
 lto = false
+codegen-backend = "cranelift"
 
 [profile.dev.package."*"]
 opt-level = 3

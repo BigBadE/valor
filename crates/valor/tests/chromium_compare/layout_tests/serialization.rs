@@ -308,7 +308,7 @@ fn serialize_element_recursive(
         }
         LayoutNodeKind::Block { tag } => {
             // Block elements need rect and computed style
-            let Some(rect) = ctx.rects.get(&key) else {
+            let Some(_rect) = ctx.rects.get(&key) else {
                 return Ok(());
             };
             let Some(computed) = ctx.styles.get(&key) else {

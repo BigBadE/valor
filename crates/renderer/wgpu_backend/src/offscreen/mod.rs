@@ -28,7 +28,7 @@ pub fn render_display_list_to_rgba(
     height: u32,
 ) -> AnyhowResult<Vec<u8>> {
     let OffscreenGpuContext { device, queue } = initialize_gpu()?;
-    let render_format = TextureFormat::Rgba8UnormSrgb;
+    let render_format = TextureFormat::Bgra8Unorm;
     let (texture, texture_view) = create_render_texture(&device, width, height, render_format);
     let pipeline = build_pipeline(&device, render_format);
     let glyphon_cache = GlyphonCache::new(&device);

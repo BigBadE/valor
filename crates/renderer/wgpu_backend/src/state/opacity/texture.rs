@@ -17,7 +17,7 @@ impl TextureManager {
         tex_width: u32,
         tex_height: u32,
     ) -> Texture {
-        let offscreen_format = TextureFormat::Rgba8Unorm;
+        let offscreen_format = TextureFormat::Bgra8Unorm;
         gpu.device().create_texture(&TextureDescriptor {
             label: Some("offscreen-opacity-texture"),
             size: Extent3d {

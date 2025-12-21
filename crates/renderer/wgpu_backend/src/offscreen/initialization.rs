@@ -146,7 +146,7 @@ pub fn initialize_persistent_context(
     height: u32,
 ) -> AnyhowResult<PersistentGpuContext> {
     let OffscreenGpuContext { device, queue } = initialize_gpu()?;
-    let render_format = TextureFormat::Rgba8UnormSrgb;
+    let render_format = TextureFormat::Bgra8Unorm;
     let pipeline = super::rendering::build_pipeline(&device, render_format);
     let glyphon_cache = GlyphonCache::new(&device);
     let glyphon_state = initialize_glyphon(&GlyphonInitParams {

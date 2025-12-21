@@ -83,11 +83,25 @@ impl ApplicationHandler for WindowCreator {
 
 /// Initializes the render state singleton with the given dimensions.
 fn initialize_render_state(width: u32, height: u32) -> &'static Mutex<RenderState> {
-    use winit::{event_loop::EventLoop, platform::windows::EventLoopBuilderExtWindows as _};
+    use winit::event_loop::EventLoop;
+
+    #[cfg(target_os = "windows")]
+    use winit::platform::windows::EventLoopBuilderExtWindows as _;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    use winit::platform::x11::EventLoopBuilderExtX11 as _;
+    #[cfg(target_os = "macos")]
+    use winit::platform::macos::EventLoopBuilderExtMacOS as _;
 
     RENDER_STATE.get_or_init(|| {
-        let event_loop = EventLoop::builder()
-            .with_any_thread(true)
+        let mut builder = EventLoop::builder();
+
+        // Allow running event loop on any thread for tests
+        #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
+        {
+            let _ignore = builder.with_any_thread(true);
+        }
+
+        let event_loop = builder
             .build()
             .unwrap_or_else(|err| {
                 log::error!("Failed to create event loop: {err}");
