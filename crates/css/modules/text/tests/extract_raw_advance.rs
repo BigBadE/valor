@@ -2,13 +2,15 @@
 
 #[test]
 fn extract_raw_glyph_advance() {
-    use glyphon::{FontSystem, Attrs, Family, Weight};
+    use glyphon::{Attrs, Family, FontSystem, Weight};
 
     let mut font_system = FontSystem::new();
     font_system.db_mut().load_system_fonts();
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    font_system.db_mut().set_monospace_family("DejaVu Sans Mono");
+    font_system
+        .db_mut()
+        .set_monospace_family("DejaVu Sans Mono");
 
     let attrs = Attrs::new()
         .family(Family::Name("DejaVu Sans Mono"))
@@ -19,7 +21,10 @@ fn extract_raw_glyph_advance() {
     eprintln!("\n=== EXTRACTING RAW GLYPH ADVANCES ===\n");
 
     if let Some(first_match) = font_matches.first() {
-        if let Some(font) = font_system.get_font(first_match.id, glyphon::fontdb::Weight(first_match.font_weight)) {
+        if let Some(font) = font_system.get_font(
+            first_match.id,
+            glyphon::fontdb::Weight(first_match.font_weight),
+        ) {
             let metrics = font.metrics();
             let units_per_em = metrics.units_per_em;
 

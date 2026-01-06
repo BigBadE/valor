@@ -1,0 +1,119 @@
+<!doctype html>
+<!-- VALOR fixture: Slider/Range -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Slider</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 24px; display: flex; flex-direction: column; gap: 24px; max-width: 360px; }
+    .slider-wrapper { position: relative; }
+    .slider-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+    .slider-label-text { color: #374151; font-weight: 500; }
+    .slider-label-value { color: #3b82f6; font-weight: 600; }
+    .slider-track {
+      position: relative;
+      height: 6px;
+      background: #e5e7eb;
+      border-radius: 9999px;
+    }
+    .slider-fill {
+      position: absolute;
+      left: 0;
+      top: 0;
+      height: 100%;
+      background: #3b82f6;
+      border-radius: 9999px;
+    }
+    .slider-thumb {
+      position: absolute;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 18px;
+      height: 18px;
+      background: white;
+      border: 2px solid #3b82f6;
+      border-radius: 50%;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .slider-lg .slider-track { height: 8px; }
+    .slider-lg .slider-thumb { width: 24px; height: 24px; }
+    .slider-marks {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 8px;
+      padding: 0 8px;
+    }
+    .slider-mark { font-size: 12px; color: #9ca3af; }
+    .range-track {
+      position: relative;
+      height: 6px;
+      background: #e5e7eb;
+      border-radius: 9999px;
+    }
+    .range-fill {
+      position: absolute;
+      top: 0;
+      height: 100%;
+      background: #3b82f6;
+      border-radius: 9999px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="slider-wrapper" id="basic">
+      <div class="slider-label">
+        <span class="slider-label-text">Volume</span>
+        <span class="slider-label-value">65%</span>
+      </div>
+      <div class="slider-track">
+        <div class="slider-fill" style="width: 65%;"></div>
+        <div class="slider-thumb" style="left: 65%;"></div>
+      </div>
+    </div>
+    <div class="slider-wrapper slider-lg" id="large">
+      <div class="slider-label">
+        <span class="slider-label-text">Brightness</span>
+        <span class="slider-label-value">80%</span>
+      </div>
+      <div class="slider-track">
+        <div class="slider-fill" style="width: 80%;"></div>
+        <div class="slider-thumb" style="left: 80%;"></div>
+      </div>
+    </div>
+    <div class="slider-wrapper" id="with-marks">
+      <div class="slider-label">
+        <span class="slider-label-text">Price Range</span>
+      </div>
+      <div class="slider-track">
+        <div class="slider-fill" style="width: 50%;"></div>
+        <div class="slider-thumb" style="left: 50%;"></div>
+      </div>
+      <div class="slider-marks">
+        <span class="slider-mark">/bin/bash</span>
+        <span class="slider-mark">5</span>
+        <span class="slider-mark">0</span>
+        <span class="slider-mark">5</span>
+        <span class="slider-mark">00</span>
+      </div>
+    </div>
+    <div class="slider-wrapper" id="range">
+      <div class="slider-label">
+        <span class="slider-label-text">Range Selection</span>
+        <span class="slider-label-value">5 - 5</span>
+      </div>
+      <div class="range-track">
+        <div class="range-fill" style="left: 25%; width: 50%;"></div>
+        <div class="slider-thumb" style="left: 25%;"></div>
+        <div class="slider-thumb" style="left: 75%;"></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -39,13 +39,9 @@ impl ConstraintLayoutTree {
     ) -> f32 {
         child_style.width.map_or_else(
             || {
-                // No explicit width: use intrinsic content-box size
+                // No explicit width: inline_size is already content-box size,
+                // use it directly as the flex basis
                 child_result.inline_size
-                    - (child_sides.padding_left
-                        + child_sides.padding_right
-                        + child_sides.border_left
-                        + child_sides.border_right)
-                        .to_px()
             },
             |width| {
                 // Explicit width: need to account for box-sizing
@@ -72,13 +68,9 @@ impl ConstraintLayoutTree {
     ) -> f32 {
         child_style.height.map_or_else(
             || {
-                // No explicit height: use intrinsic content-box size
+                // No explicit height: block_size is already content-box size,
+                // use it directly as the flex basis
                 child_result.block_size
-                    - (child_sides.padding_top
-                        + child_sides.padding_bottom
-                        + child_sides.border_top
-                        + child_sides.border_bottom)
-                        .to_px()
             },
             |height| {
                 // Explicit height: need to account for box-sizing
@@ -217,13 +209,17 @@ impl ConstraintLayoutTree {
         &mut self,
         node: NodeKey,
         children: &[NodeKey],
+        _container_inline_size: f32,
     ) -> FlexLayoutResult {
         let mut flex_items = Vec::new();
         let mut child_styles = Vec::new();
         let mut abspos_children = Vec::new();
 
+        // For flex items with flex-basis: auto and width: auto, we need to measure
+        // their intrinsic (max-content) size, not fill the container.
+        // Using MaxContent causes compute_inline_size to measure content width.
         let child_space = ConstraintSpace {
-            available_inline_size: AvailableSize::Indefinite,
+            available_inline_size: AvailableSize::MaxContent,
             available_block_size: AvailableSize::Indefinite,
             bfc_offset: BfcOffset::root(),
             exclusion_space: ExclusionSpace::new(),
@@ -233,6 +229,7 @@ impl ConstraintLayoutTree {
             fragmentainer_block_size: None,
             fragmentainer_offset: LayoutUnit::zero(),
             is_for_measurement_only: true, // Flexbox basis calculation is measurement
+            margins_already_applied: false,
         };
 
         for child in children {

@@ -4,6 +4,7 @@ use super::components::{PersistentRenderContext, ValorPages, ValorTexture, Valor
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use renderer::display_list::DisplayList;
+use log::{info, error};
 
 /// Internal: Unified function to render a display list to RGBA pixels using persistent GPU context
 pub(super) fn render_display_list_to_pixels(
@@ -13,41 +14,18 @@ pub(super) fn render_display_list_to_pixels(
     width: u32,
     height: u32,
 ) -> Vec<u8> {
-    // Initialize persistent render context if not present
-    if !pages.render_contexts.contains_key(&entity) {
-        match wgpu_backend::initialize_persistent_context(width, height) {
-            Ok(ctx) => {
-                pages.render_contexts.insert(
-                    entity,
-                    PersistentRenderContext {
-                        width,
-                        height,
-                        gpu_context: ctx,
-                    },
-                );
-                info!("Initialized persistent GPU context for entity {:?}", entity);
-            }
-            Err(err) => {
-                error!("Failed to initialize persistent GPU context: {}", err);
-                return create_fallback_image(width, height);
-            }
-        }
-    }
-
-    // Render using persistent context
-    let render_ctx = pages.render_contexts.get_mut(&entity).unwrap();
-    match wgpu_backend::render_display_list_with_context(
-        &mut render_ctx.gpu_context,
-        display_list,
-        width,
-        height,
-    ) {
-        Ok(data) => data,
-        Err(err) => {
-            error!("Failed to render display list: {}", err);
-            create_fallback_image(width, height)
-        }
-    }
+    // TEMPORARY: Use fallback rendering to avoid GPU context conflicts
+    // The renderer already has a WGPU device, and creating another one causes issues
+    // TODO: Integrate with the existing WGPU device instead of creating a new one
+    info!("Using fallback rendering for entity {:?} (size: {}x{})", entity, width, height);
+    create_fallback_image(width, height)
+    
+    // Original GPU rendering code (disabled):
+    // if !pages.render_contexts.contains_key(&entity) {
+    //     match wgpu_backend::initialize_persistent_context(width, height) {
+    //         Ok(ctx) => { ... }
+    //     }
+    // }
 }
 
 /// Create a fallback gray image

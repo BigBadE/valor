@@ -120,6 +120,7 @@ impl ConstraintLayoutTree {
             fragmentainer_block_size: None,
             fragmentainer_offset: LayoutUnit::zero(),
             is_for_measurement_only: false, // Abspos layout is final positioning
+            margins_already_applied: false,
         }
     }
 
@@ -229,7 +230,15 @@ impl ConstraintLayoutTree {
                 // Convert f32 coordinates to LayoutUnit to preserve sub-pixel precision
                 // Margins are already in LayoutUnit from BoxSides
                 let final_inline_offset = if params.is_row {
-                    params.content_base_inline + LayoutUnit::from_px(main_placement.main_offset)
+                    let offset = params.content_base_inline
+                        + LayoutUnit::from_px(main_placement.main_offset);
+                    log::debug!(
+                        "[FLEX-PLACEMENT] Row: content_base={:.2} main_offset={:.2} final={:.2}",
+                        params.content_base_inline.to_px(),
+                        main_placement.main_offset,
+                        offset.to_px()
+                    );
+                    offset
                 } else {
                     params.content_base_inline
                         + LayoutUnit::from_px(cross_placement.cross_offset)
@@ -252,15 +261,27 @@ impl ConstraintLayoutTree {
                     (cross_placement.cross_size, main_placement.main_size)
                 };
 
-                let final_child_result = LayoutResult {
-                    inline_size: final_inline_size,
-                    block_size: final_block_size,
+                // Actually lay out the flex child with final sizes so its descendants
+                // (like text nodes) get proper layout rects.
+                let child_constraint_space = ConstraintSpace {
+                    available_inline_size: AvailableSize::Definite(LayoutUnit::from_px(
+                        final_inline_size,
+                    )),
+                    available_block_size: AvailableSize::Definite(LayoutUnit::from_px(
+                        final_block_size,
+                    )),
                     bfc_offset: BfcOffset::new(final_inline_offset, final_block_offset),
+                    margin_strut: MarginStrut::default(),
                     exclusion_space: ExclusionSpace::new(),
-                    end_margin_strut: MarginStrut::default(),
-                    baseline: None,
-                    needs_relayout: false,
+                    is_new_formatting_context: false,
+                    percentage_resolution_block_size: Some(LayoutUnit::from_px(final_block_size)),
+                    fragmentainer_block_size: None,
+                    fragmentainer_offset: LayoutUnit::zero(),
+                    is_for_measurement_only: false, // Final layout, not measurement
+                    margins_already_applied: true, // Flex algorithm already positioned items with margins
                 };
+
+                let final_child_result = self.layout_block(*child, &child_constraint_space);
 
                 self.layout_results.insert(*child, final_child_result);
                 actual_cross_size = actual_cross_size

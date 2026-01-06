@@ -5,11 +5,13 @@
 
 #[test]
 fn compare_dejavu_metrics_with_chrome() {
-    use glyphon::{Attrs, Family, FontSystem, Metrics, Buffer, Shaping};
+    use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping};
 
     let mut font_system = FontSystem::new();
     font_system.db_mut().load_system_fonts();
-    font_system.db_mut().set_monospace_family("DejaVu Sans Mono");
+    font_system
+        .db_mut()
+        .set_monospace_family("DejaVu Sans Mono");
 
     let attrs = Attrs::new()
         .family(Family::Name("DejaVu Sans Mono"))
@@ -18,7 +20,10 @@ fn compare_dejavu_metrics_with_chrome() {
     let font_matches = font_system.get_font_matches(&attrs);
 
     if let Some(first_match) = font_matches.first() {
-        if let Some(font) = font_system.get_font(first_match.id, glyphon::fontdb::Weight(first_match.font_weight)) {
+        if let Some(font) = font_system.get_font(
+            first_match.id,
+            glyphon::fontdb::Weight(first_match.font_weight),
+        ) {
             let metrics = font.metrics();
             let units_per_em = f32::from(metrics.units_per_em);
 
@@ -28,9 +33,18 @@ fn compare_dejavu_metrics_with_chrome() {
             let leading_norm = metrics.leading / units_per_em;
 
             eprintln!("\n=== DejaVu Sans Mono Font Metrics (normalized) ===");
-            eprintln!("Ascent:  {:.10} ({}/{})", ascent_norm, metrics.ascent, units_per_em);
-            eprintln!("Descent: {:.10} ({}/{})", descent_norm, -metrics.descent, units_per_em);
-            eprintln!("Leading: {:.10} ({}/{})", leading_norm, metrics.leading, units_per_em);
+            eprintln!(
+                "Ascent:  {:.10} ({}/{})",
+                ascent_norm, metrics.ascent, units_per_em
+            );
+            eprintln!(
+                "Descent: {:.10} ({}/{})",
+                descent_norm, -metrics.descent, units_per_em
+            );
+            eprintln!(
+                "Leading: {:.10} ({}/{})",
+                leading_norm, metrics.leading, units_per_em
+            );
 
             // Test at different font sizes
             for font_size in [12.0, 14.0, 16.0, 18.0, 20.0, 24.0] {
@@ -99,7 +113,10 @@ fn compare_dejavu_metrics_with_chrome() {
                         eprintln!("Actual cosmic-text layout:");
                         eprintln!("  max_ascent:  {:.10}", layout_line.max_ascent);
                         eprintln!("  max_descent: {:.10}", layout_line.max_descent);
-                        eprintln!("  total:       {:.10}", layout_line.max_ascent + layout_line.max_descent);
+                        eprintln!(
+                            "  total:       {:.10}",
+                            layout_line.max_ascent + layout_line.max_descent
+                        );
                         eprintln!("  line_height_opt: {:?}", layout_line.line_height_opt);
                     }
                 }

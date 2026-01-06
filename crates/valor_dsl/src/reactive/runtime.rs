@@ -1,5 +1,6 @@
 //! Runtime system for reactive components
 
+use log::{info, error, warn};
 use super::{Component, ComponentFn, UiContext};
 use crate::bevy_events::*;
 use crate::bevy_integration::*;
@@ -41,11 +42,11 @@ pub struct ComponentRegistry {
 /// Extension trait for App to add reactive components
 pub trait ReactiveAppExt {
     /// Add a reactive component to the app
-    fn add_reactive_component<T: Component>(&mut self, render_fn: ComponentFn<T>) -> &mut Self;
+    fn add_reactive_component<T: Component<Mutability = bevy::ecs::component::Mutable>>(&mut self, render_fn: ComponentFn<T>) -> &mut Self;
 }
 
 impl ReactiveAppExt for App {
-    fn add_reactive_component<T: Component>(&mut self, _render_fn: ComponentFn<T>) -> &mut Self {
+    fn add_reactive_component<T: Component<Mutability = bevy::ecs::component::Mutable>>(&mut self, _render_fn: ComponentFn<T>) -> &mut Self {
         // render_fn is captured by the Component trait implementation (T::render)
         // No need to store it separately anymore
 
@@ -126,22 +127,22 @@ fn initialize_component<T: Component>(world: &mut World) {
 }
 
 /// Handle click events for reactive components
-fn handle_click_events<T: Component>(
-    trigger: Trigger<OnClick>,
+fn handle_click_events<T: Component<Mutability = bevy::ecs::component::Mutable>>(
+    trigger: bevy::ecs::observer::Trigger<OnClick>,
     handlers_query: Query<&ClickHandler>,
     mut commands: Commands,
 ) {
     info!(
         "🔔 handle_click_events<{}> triggered on entity {:?}",
         std::any::type_name::<T>(),
-        trigger.entity()
+        trigger.event().entity
     );
 
     // Get the handler that was clicked
-    let Ok(handler) = handlers_query.get(trigger.entity()) else {
+    let Ok(handler) = handlers_query.get(trigger.event().entity) else {
         warn!(
             "❌ No ClickHandler component found on entity {:?}",
-            trigger.entity()
+            trigger.event().entity
         );
         return;
     };
@@ -234,7 +235,7 @@ fn register_click_handlers<T: Component>(
 }
 
 /// Execute a callback by name on all components with that callback registered
-fn execute_callback<T: Component>(world: &mut World, callback_name: &str) {
+fn execute_callback<T: Component<Mutability = bevy::ecs::component::Mutable>>(world: &mut World, callback_name: &str) {
     // Find all entities with T component and ReactiveCallbacks
     let entities_with_callbacks: Vec<Entity> = {
         let mut query =

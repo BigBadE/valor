@@ -1,7 +1,7 @@
 //! Size computation and constraint application for block layout.
 
 use super::ConstraintLayoutTree;
-use css_box::BoxSides;
+use css_box::{BoxSides, compute_box_sides};
 use css_orchestrator::style_model::{BoxSizing, ComputedStyle};
 use js::NodeKey;
 
@@ -119,11 +119,69 @@ impl ConstraintLayoutTree {
         }
     }
 
+    /// Compute max-content width for a block by measuring its children.
+    ///
+    /// This is used for intrinsic sizing (e.g., flex-basis: auto with width: auto).
+    /// Returns the content-box width in pixels.
+    fn compute_max_content_width(&mut self, node: NodeKey) -> f32 {
+        // Collect children to avoid borrow checker issues when we recursively call compute_max_content_width
+        let children: Vec<NodeKey> = self.children.get(&node).map_or_else(Vec::new, Vec::clone);
+        let mut max_width = 0.0f32;
+
+        for child in &children {
+            if self.is_text_node(*child) {
+                // Measure text without wrapping (max-content means no line breaks)
+                let text_measurement =
+                    self.measure_text(*child, Some(node), AvailableSize::MaxContent);
+                max_width = max_width.max(text_measurement.width);
+            } else {
+                // For block children, recursively measure their intrinsic width
+                let Some(child_style) = self.styles.get(child).cloned() else {
+                    continue;
+                };
+
+                let child_sides = compute_box_sides(&child_style);
+
+                // Determine the content-box width of the child
+                let content_width = match child_style.width {
+                    Some(explicit_width)
+                        if matches!(child_style.box_sizing, BoxSizing::BorderBox) =>
+                    {
+                        // Border-box: subtract padding and border to get content-box
+                        let padding_border = child_sides.padding_left.to_px()
+                            + child_sides.padding_right.to_px()
+                            + child_sides.border_left.to_px()
+                            + child_sides.border_right.to_px();
+                        (explicit_width - padding_border).max(0.0)
+                    }
+                    Some(explicit_width) => explicit_width, // Content-box
+                    None => {
+                        // Child has auto width - recursively measure its content
+                        self.compute_max_content_width(*child)
+                    }
+                };
+
+                // For max-content measurement, we need the width of the child's border-box
+                // (content + padding + border). Margins are NOT included in max-content
+                // as they collapse in normal flow.
+                let child_border_box = content_width
+                    + child_sides.padding_left.to_px()
+                    + child_sides.padding_right.to_px()
+                    + child_sides.border_left.to_px()
+                    + child_sides.border_right.to_px();
+
+                max_width = max_width.max(child_border_box);
+            }
+        }
+
+        max_width
+    }
+
     /// Compute inline size (width) for a block.
     ///
     /// Returns the content-box width (not including padding/border).
     pub(super) fn compute_inline_size(
-        &self,
+        &mut self,
         node: NodeKey,
         constraint_space: &ConstraintSpace,
         style: &ComputedStyle,
@@ -137,27 +195,38 @@ impl ConstraintLayoutTree {
                     return intrinsic_width;
                 }
 
-                // Auto width: fill available space
-                let available = match constraint_space.available_inline_size {
-                    AvailableSize::Definite(size) => size.to_px(),
-                    _ => self.icb_width.to_px(),
-                };
-
-                // For block boxes, width is available minus horizontal margins/padding/border
-                let horizontal_edges = (sides.margin_left
-                    + sides.padding_left
-                    + sides.border_left
-                    + sides.border_right
-                    + sides.padding_right
-                    + sides.margin_right)
-                    .to_px();
-
-                let result = (available - horizontal_edges).max(0.0);
-
-                // Debug: check if this is a grid item with ~272px available
-                Self::debug_log_grid_item(available, horizontal_edges, result, sides);
-
-                result
+                // Auto width: behavior depends on available size
+                match constraint_space.available_inline_size {
+                    AvailableSize::MaxContent | AvailableSize::MinContent => {
+                        // Intrinsic sizing: measure content width
+                        // For flex basis calculation with auto, this gives us the content-based size
+                        self.compute_max_content_width(node)
+                    }
+                    AvailableSize::Definite(size) => {
+                        // Fill available space minus horizontal edges
+                        let horizontal_edges = (sides.margin_left
+                            + sides.padding_left
+                            + sides.border_left
+                            + sides.border_right
+                            + sides.padding_right
+                            + sides.margin_right)
+                            .to_px();
+                        let result = (size.to_px() - horizontal_edges).max(0.0);
+                        Self::debug_log_grid_item(size.to_px(), horizontal_edges, result, sides);
+                        result
+                    }
+                    AvailableSize::Indefinite => {
+                        // Use ICB width as available space
+                        let horizontal_edges = (sides.margin_left
+                            + sides.padding_left
+                            + sides.border_left
+                            + sides.border_right
+                            + sides.padding_right
+                            + sides.margin_right)
+                            .to_px();
+                        (self.icb_width.to_px() - horizontal_edges).max(0.0)
+                    }
+                }
             },
             |width| {
                 // Check box-sizing property

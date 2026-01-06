@@ -23,6 +23,7 @@ js.workspace = true
 css_core.workspace = true
 css.workspace = true
 css_text.workspace = true
+css_display.workspace = true
 glyphon.workspace = true
 
 # Needed by layout compare bin/core

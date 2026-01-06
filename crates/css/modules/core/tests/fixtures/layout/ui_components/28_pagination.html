@@ -1,0 +1,78 @@
+<!doctype html>
+<!-- VALOR fixture: Pagination -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Pagination</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 16px; display: flex; flex-direction: column; gap: 20px; }
+    .pagination {
+      display: flex;
+      gap: 4px;
+    }
+    .page-item {
+      min-width: 36px;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      color: #374151;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      background: white;
+    }
+    .page-item.active {
+      background: #3b82f6;
+      border-color: #3b82f6;
+      color: white;
+    }
+    .page-item.disabled {
+      color: #d1d5db;
+      cursor: not-allowed;
+    }
+    .pagination-simple .page-item {
+      border: none;
+      background: transparent;
+    }
+    .pagination-simple .page-item.active {
+      background: #3b82f6;
+      color: white;
+    }
+    .pagination-rounded .page-item {
+      border-radius: 50%;
+    }
+    .page-arrow { font-size: 18px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="pagination" id="default">
+      <div class="page-item page-arrow disabled">&lt;</div>
+      <div class="page-item active">1</div>
+      <div class="page-item">2</div>
+      <div class="page-item">3</div>
+      <div class="page-item">...</div>
+      <div class="page-item">10</div>
+      <div class="page-item page-arrow">&gt;</div>
+    </div>
+    <div class="pagination pagination-simple" id="simple">
+      <div class="page-item page-arrow">&lt;</div>
+      <div class="page-item">1</div>
+      <div class="page-item">2</div>
+      <div class="page-item active">3</div>
+      <div class="page-item">4</div>
+      <div class="page-item">5</div>
+      <div class="page-item page-arrow">&gt;</div>
+    </div>
+    <div class="pagination pagination-rounded" id="rounded">
+      <div class="page-item page-arrow">&lt;</div>
+      <div class="page-item">1</div>
+      <div class="page-item active">2</div>
+      <div class="page-item">3</div>
+      <div class="page-item page-arrow">&gt;</div>
+    </div>
+  </div>
+</body>
+</html>

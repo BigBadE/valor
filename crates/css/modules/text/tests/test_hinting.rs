@@ -2,14 +2,16 @@
 
 #[test]
 fn compare_hinting_modes() {
-    use glyphon::{Attrs, Family, FontSystem, Metrics, Buffer, Shaping};
     use glyphon::cosmic_text::Hinting;
+    use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping};
 
     let mut font_system = FontSystem::new();
     font_system.db_mut().load_system_fonts();
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    font_system.db_mut().set_monospace_family("DejaVu Sans Mono");
+    font_system
+        .db_mut()
+        .set_monospace_family("DejaVu Sans Mono");
 
     let attrs = Attrs::new()
         .family(Family::Name("DejaVu Sans Mono"))

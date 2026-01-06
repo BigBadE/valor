@@ -125,6 +125,7 @@ fn paint_node_content(
 
     // Begin clipping region if needed
     if needs_clip {
+        log::debug!("[CLIP] BeginClip at x={}, y={}, w={}, h={}", rect.x, rect.y, rect.width, rect.height);
         items.push(DisplayItem::BeginClip {
             x: rect.x,
             y: rect.y,

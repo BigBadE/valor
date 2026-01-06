@@ -98,15 +98,32 @@ impl ConstraintLayoutTree {
             StyleAlignContent::SpaceEvenly => FlexAlignContent::SpaceEvenly,
         };
 
+        // Per CSS Flexbox spec, align-items: stretch only applies to items with
+        // "auto" cross-size. Items with explicit cross-size keep their specified size.
+        // We signal "auto" by passing 0.0 for the cross_size, which triggers stretching.
         let cross_inputs: Vec<(f32, f32, f32)> = child_styles
             .iter()
-            .map(|(_child, _, result)| {
-                let cross_size = if params.is_row {
-                    result.block_size
+            .map(|(_child, child_style, result)| {
+                let has_explicit_cross_size = if params.is_row {
+                    // Row layout: cross axis is block (height)
+                    child_style.height.is_some()
                 } else {
-                    result.inline_size
+                    // Column layout: cross axis is inline (width)
+                    child_style.width.is_some()
                 };
-                (cross_size, 0.0, 1e9)
+
+                if has_explicit_cross_size {
+                    // Use the measured size (won't be stretched)
+                    let cross_size = if params.is_row {
+                        result.block_size
+                    } else {
+                        result.inline_size
+                    };
+                    (cross_size, 0.0, 1e9)
+                } else {
+                    // Auto cross-size: pass 0.0 to trigger stretch behavior
+                    (0.0, 0.0, 1e9)
+                }
             })
             .collect();
 
@@ -164,10 +181,10 @@ impl ConstraintLayoutTree {
         let container_cross_size =
             Self::compute_flex_container_cross_size(style, sides, constraint_space);
 
-        let bfc_offset = BfcOffset::new(
-            constraint_space.bfc_offset.inline_offset + sides.margin_left,
-            constraint_space.bfc_offset.block_offset,
-        );
+        // Resolve BFC offset properly to handle incoming margins
+        // Flex containers establish a new BFC, so we need to collapse incoming margin strut
+        let (bfc_offset, _can_collapse_with_children) =
+            Self::resolve_bfc_offset(constraint_space, style, sides, true);
 
         let flex_direction = match style.flex_direction {
             StyleFlexDirection::Row => FlexboxDirection::Row,
@@ -178,7 +195,7 @@ impl ConstraintLayoutTree {
         let children = normalize_children(&self.children, &self.styles, node);
 
         let (mut flex_items, child_styles, abspos_children) =
-            self.build_flex_items(node, &children);
+            self.build_flex_items(node, &children, container_inline_size);
 
         if flex_items.is_empty() {
             let result_params = FlexResultParams {

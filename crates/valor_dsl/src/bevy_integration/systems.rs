@@ -5,9 +5,10 @@ use super::rendering::render_display_list_to_pixels;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use page_handler::core::state::HtmlPage;
+use log::{info, error, warn};
 
 /// System that processes newly added ValorUi components and creates HtmlPage instances
-pub(super) fn process_new_valor_uis(
+pub fn process_new_valor_uis(
     mut commands: Commands,
     query: Query<(Entity, &ValorUi), (Added<ValorUi>, Without<ValorPageInitialized>)>,
     tokio_handle: Res<TokioHandle>,
@@ -32,6 +33,7 @@ pub(super) fn process_new_valor_uis(
         match page_result {
             Ok(mut page) => {
                 // Set viewport dimensions
+                info!("Setting viewport for entity {:?} to {}x{}", entity, width, height);
                 page.set_viewport(width as i32, height as i32);
 
                 // Let the page process the initial html/body structure first
@@ -54,25 +56,28 @@ pub(super) fn process_new_valor_uis(
                 };
 
                 // Apply initial DOMUpdates directly
-                info!("📝 Applying {} initial DOM updates", updates_for_body.len());
+                let update_count = updates_for_body.len();
+                info!("📝 Applying {} initial DOM updates", update_count);
                 if let Err(err) = page.send_dom_updates(updates_for_body) {
                     error!("Failed to send initial DOMUpdates: {}", err);
                     continue;
                 }
 
                 // Update the page to compute initial layout
+                info!("Calling page.update() to compute layout with {} DOM elements", update_count);
                 if let Err(err) = handle.block_on(async { page.update().await }) {
                     error!("Failed to update page for initial layout: {}", err);
                     continue;
                 }
+                info!("page.update() completed - layout should be recomputed now");
 
                 // Store the page in the non-send resource
                 pages.pages.insert(entity, page);
 
                 // Mark this entity as initialized
                 // Click handlers will be extracted by extract_click_handlers system
-                commands.entity(entity).insert(ValorPageInitialized);
-                info!("Successfully created HtmlPage for entity {:?}", entity);
+                commands.entity(entity).insert((ValorPageInitialized, NeedsRender));
+                info!("Successfully created HtmlPage for entity {:?} - marked with NeedsRender", entity);
             }
             Err(err) => {
                 error!("Failed to create blank HtmlPage: {}", err);
@@ -140,7 +145,7 @@ fn remap_dom_updates_to_body(updates: &[js::DOMUpdate], body: js::NodeKey) -> Ve
 }
 
 /// System that extracts onclick handlers from newly initialized pages
-pub(super) fn extract_click_handlers(
+pub fn extract_click_handlers(
     query: Query<Entity, (With<ValorPageInitialized>, Without<ClickHandlersExtracted>)>,
     mut commands: Commands,
     mut pages: NonSendMut<ValorPages>,
@@ -182,7 +187,7 @@ pub(super) fn extract_click_handlers(
 }
 
 /// System that updates all active Valor pages
-pub(super) fn update_valor_pages(
+pub fn update_valor_pages(
     mut pages: NonSendMut<ValorPages>,
     tokio_handle: Res<TokioHandle>,
 ) {
@@ -199,13 +204,16 @@ pub(super) fn update_valor_pages(
 }
 
 /// System that renders Valor pages to textures
-pub(super) fn render_valor_pages(
+pub fn render_valor_pages(
     mut commands: Commands,
-    query: Query<(Entity, &ValorUi), (With<ValorPageInitialized>, Without<ValorTexture>)>,
+    query: Query<(Entity, &ValorUi, Option<&ValorTexture>), (With<ValorPageInitialized>, With<NeedsRender>)>,
     mut pages: NonSendMut<ValorPages>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    for (entity, valor_ui) in &query {
+    let entities_to_render: Vec<_> = query.iter().map(|(e, _, _)| e).collect();
+    info!("render_valor_pages: Found {} entities with NeedsRender", entities_to_render.len());
+    for (entity, valor_ui, existing_texture) in &query {
+        info!("Attempting to render entity {:?}", entity);
         if let Some(page) = pages.pages.get_mut(&entity) {
             // Get the display list from the page
             let display_list = page.display_list_retained_snapshot();
@@ -219,59 +227,82 @@ pub(super) fn render_valor_pages(
             let height = valor_ui.height;
 
             // Render using unified rendering function
+            info!("Calling render_display_list_to_pixels for entity {:?} with {}x{}", entity, width, height);
             let image_data =
                 render_display_list_to_pixels(&mut pages, entity, &display_list, width, height);
+            info!("Rendered {} bytes of image data", image_data.len());
 
-            let image = Image::new(
-                Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                TextureDimension::D2,
-                image_data,
-                TextureFormat::Rgba8UnormSrgb,
-                Default::default(),
-            );
-
-            let image_handle = images.add(image);
-
-            // Spawn a full-screen UI node with the rendered texture
-            // IMPORTANT: Don't add Interaction or any picking components - we want window-level mouse events
-            let display_node = commands
-                .spawn((
-                    Node {
-                        width: Val::Percent(100.0),
-                        height: Val::Percent(100.0),
-                        position_type: PositionType::Absolute,
-                        left: Val::Px(0.0),
-                        top: Val::Px(0.0),
-                        ..Default::default()
+            if let Some(existing) = existing_texture {
+                // Update existing texture
+                if let Some(image) = images.get_mut(&existing.image_handle) {
+                    image.resize(Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    });
+                    image.data = Some(image_data);
+                }
+                info!(
+                    "Updated existing texture for ValorUi entity {:?} (size: {}x{})",
+                    entity, width, height
+                );
+            } else {
+                // Create new texture and display node
+                let image = Image::new(
+                    Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
                     },
-                    ImageNode::new(image_handle.clone()),
-                    bevy::ui::FocusPolicy::Pass, // Allow mouse events to pass through to window
-                    Visibility::Visible,
-                    ViewVisibility::default(),
-                    InheritedVisibility::default(),
-                ))
-                .id();
+                    TextureDimension::D2,
+                    image_data,
+                    TextureFormat::Rgba8UnormSrgb,
+                    Default::default(),
+                );
+                let image_handle = images.add(image);
 
-            // Add the texture component to track it
-            commands.entity(entity).insert(ValorTexture {
-                image_handle,
-                display_node,
-            });
+                // Spawn a full-screen UI node with the rendered texture
+                // IMPORTANT: Don't add Interaction or any picking components - we want window-level mouse events
+                info!("Creating display node with: width: {}px, height: {}px, position: Absolute, left: 0, top: 0", width, height);
+                let display_node = commands
+                    .spawn((
+                        Node {
+                            width: Val::Px(width as f32),
+                            height: Val::Px(height as f32),
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(0.0),
+                            top: Val::Px(0.0),
+                            ..Default::default()
+                        },
+                        ImageNode::new(image_handle.clone()),
+                        bevy::ui::FocusPolicy::Pass, // Allow mouse events to pass through to window
+                        Visibility::Visible,
+                        ViewVisibility::default(),
+                        InheritedVisibility::default(),
+                    ))
+                    .id();
 
-            info!(
-                "Created texture for ValorUi entity {:?} (size: {}x{}) with display node {:?}",
-                entity, width, height, display_node
-            );
+                // Add the texture component to track it
+                commands.entity(entity).insert(ValorTexture {
+                    image_handle,
+                    display_node,
+                });
+
+                info!(
+                    "Created texture for ValorUi entity {:?} (size: {}x{}) with display node {:?}",
+                    entity, width, height, display_node
+                );
+            }
         }
+        
+        // Remove NeedsRender marker after rendering
+        info!("Removing NeedsRender from entity {:?}", entity);
+        commands.entity(entity).remove::<NeedsRender>();
     }
 }
 
 /// Debug system to test if ANY input is being received
-pub(super) fn test_any_input(
+pub fn test_any_input(
     keys: Res<bevy::input::ButtonInput<bevy::input::keyboard::KeyCode>>,
     mouse: Res<bevy::input::ButtonInput<bevy::input::mouse::MouseButton>>,
     windows: Query<&bevy::window::Window>,
@@ -282,7 +313,7 @@ pub(super) fn test_any_input(
 
     if mouse.get_just_pressed().len() > 0 {
         info!("🖱️ Raw mouse button press detected in test_any_input!");
-        if let Ok(window) = windows.get_single() {
+        if let Ok(window) = windows.single() {
             if let Some(pos) = window.cursor_position() {
                 info!("🖱️ Cursor position: ({}, {})", pos.x, pos.y);
             } else {
@@ -293,7 +324,7 @@ pub(super) fn test_any_input(
 }
 
 /// System that handles mouse button input and dispatches clicks to Valor UIs
-pub(super) fn handle_mouse_clicks(
+pub fn handle_mouse_clicks(
     mouse_button_input: Res<bevy::input::ButtonInput<bevy::input::mouse::MouseButton>>,
     windows: Query<&bevy::window::Window>,
     valor_uis: Query<Entity, With<ValorUi>>,
@@ -305,7 +336,7 @@ pub(super) fn handle_mouse_clicks(
     if mouse_button_input.just_pressed(MouseButton::Left) {
         info!("🖱️ Mouse click detected!");
         // Get the primary window's cursor position
-        if let Ok(window) = windows.get_single() {
+        if let Ok(window) = windows.single() {
             if let Some(cursor_pos) = window.cursor_position() {
                 // Convert from window coordinates (origin top-left) to Valor coordinates
                 let x = cursor_pos.x;
@@ -335,7 +366,7 @@ pub(super) fn handle_mouse_clicks(
 }
 
 /// System that handles window resize events and updates Valor page viewports
-pub(super) fn handle_window_resize(
+pub fn handle_window_resize(
     mut commands: Commands,
     mut valor_query: Query<(&mut ValorUi, Entity), With<ValorPageInitialized>>,
     windows: Query<&Window, Changed<Window>>,
@@ -410,7 +441,7 @@ fn handle_resize_for_entity(world: &mut World, entity: Entity, width: u32, heigh
                             height,
                             depth_or_array_layers: 1,
                         });
-                        image.data = image_data;
+                        image.data = Some(image_data);
                         info!(
                             "✅ Updated texture after window resize to {}x{}",
                             width, height
@@ -426,7 +457,7 @@ fn handle_resize_for_entity(world: &mut World, entity: Entity, width: u32, heigh
 }
 
 /// System that loads image assets requested via ImageAssetRequest components
-pub(super) fn load_image_assets(
+pub fn load_image_assets(
     mut commands: Commands,
     requests: Query<(Entity, &ImageAssetRequest), Added<ImageAssetRequest>>,
     asset_server: Res<AssetServer>,

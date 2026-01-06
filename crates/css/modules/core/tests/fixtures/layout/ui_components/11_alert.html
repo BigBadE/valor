@@ -1,0 +1,76 @@
+<!doctype html>
+<!-- VALOR fixture: Alert/Notification boxes -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Alerts</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 16px; display: flex; flex-direction: column; gap: 12px; max-width: 480px; }
+    .alert {
+      padding: 12px 16px;
+      border-radius: 6px;
+      font-size: 14px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .alert-icon {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .alert-content { flex: 1; }
+    .alert-title { font-weight: 600; margin-bottom: 4px; }
+    .alert-info { background: #eff6ff; color: #1e40af; }
+    .alert-info .alert-icon { background: #3b82f6; }
+    .alert-success { background: #f0fdf4; color: #166534; }
+    .alert-success .alert-icon { background: #22c55e; }
+    .alert-warning { background: #fffbeb; color: #92400e; }
+    .alert-warning .alert-icon { background: #f59e0b; }
+    .alert-error { background: #fef2f2; color: #991b1b; }
+    .alert-error .alert-icon { background: #ef4444; }
+    .alert-close {
+      width: 20px;
+      height: 20px;
+      background: rgba(0,0,0,0.1);
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="alert alert-info" id="info">
+      <span class="alert-icon"></span>
+      <div class="alert-content">
+        <div class="alert-title">Information</div>
+        <div>This is an informational alert message.</div>
+      </div>
+      <span class="alert-close"></span>
+    </div>
+    <div class="alert alert-success" id="success">
+      <span class="alert-icon"></span>
+      <div class="alert-content">
+        <div class="alert-title">Success</div>
+        <div>Your changes have been saved successfully.</div>
+      </div>
+    </div>
+    <div class="alert alert-warning" id="warning">
+      <span class="alert-icon"></span>
+      <div class="alert-content">
+        <div class="alert-title">Warning</div>
+        <div>Please review your input before proceeding.</div>
+      </div>
+    </div>
+    <div class="alert alert-error" id="error">
+      <span class="alert-icon"></span>
+      <div class="alert-content">
+        <div class="alert-title">Error</div>
+        <div>An error occurred while processing your request.</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -5,6 +5,7 @@ use super::rendering::render_valor_ui_display_list;
 use bevy::asset::Handle;
 use bevy::prelude::*;
 use js::DOMUpdate;
+use log::{info, error, warn};
 
 /// Command to trigger a re-render of a ValorUi entity
 pub fn rerender_valor_ui(world: &mut World, valor_ui_entity: Entity) {
@@ -345,18 +346,19 @@ pub fn dispatch_click(world: &mut World, valor_ui_entity: Entity, x: f32, y: f32
             })
             .collect();
 
-        let event = crate::bevy_events::OnClick {
-            node: js::NodeKey::ROOT, // TODO: Use actual NodeKey
-            position: (x, y),
-            button,
-        };
 
         for handler_entity in handler_entities {
+            let event = crate::bevy_events::OnClick {
+                node: js::NodeKey::ROOT,
+                position: (x, y),
+                button,
+                entity: handler_entity,
+            };
             info!(
                 "Dispatching click event to handler '{}' (entity {:?})",
                 handler_name, handler_entity
             );
-            world.trigger_targets(event.clone(), handler_entity);
+            world.trigger(event.clone());
         }
     }
 }

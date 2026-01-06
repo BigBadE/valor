@@ -8,7 +8,9 @@ fn check_raw_font_advances() {
     font_system.db_mut().load_system_fonts();
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    font_system.db_mut().set_monospace_family("DejaVu Sans Mono");
+    font_system
+        .db_mut()
+        .set_monospace_family("DejaVu Sans Mono");
 
     let attrs = Attrs::new()
         .family(Family::Name("DejaVu Sans Mono"))
@@ -17,7 +19,10 @@ fn check_raw_font_advances() {
     let font_matches = font_system.get_font_matches(&attrs);
 
     if let Some(first_match) = font_matches.first() {
-        if let Some(font) = font_system.get_font(first_match.id, glyphon::fontdb::Weight(first_match.font_weight)) {
+        if let Some(font) = font_system.get_font(
+            first_match.id,
+            glyphon::fontdb::Weight(first_match.font_weight),
+        ) {
             eprintln!("\n=== RAW Font Advances ===");
 
             // Get the font's units_per_em
@@ -37,9 +42,17 @@ fn check_raw_font_advances() {
 
             eprintln!("\n16px scaling:");
             eprintln!("  If raw advance = 615 units:");
-            eprintln!("    615 / {} × 16 = {:.10}", units_per_em, 615.0 / units_per_em * 16.0);
+            eprintln!(
+                "    615 / {} × 16 = {:.10}",
+                units_per_em,
+                615.0 / units_per_em * 16.0
+            );
             eprintln!("  If raw advance = 616 units:");
-            eprintln!("    616 / {} × 16 = {:.10}", units_per_em, 616.0 / units_per_em * 16.0);
+            eprintln!(
+                "    616 / {} × 16 = {:.10}",
+                units_per_em,
+                616.0 / units_per_em * 16.0
+            );
 
             // Check what the actual advance is
             let scale = 16.0 / units_per_em;

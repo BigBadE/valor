@@ -1,0 +1,44 @@
+<!doctype html>
+<!-- VALOR fixture: Basic button styles -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Basic Buttons</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 16px;
+      border-radius: 4px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary { background: #3b82f6; color: white; }
+    .btn-secondary { background: #6b7280; color: white; }
+    .btn-outline { background: transparent; border: 1px solid #3b82f6; color: #3b82f6; }
+    .btn-ghost { background: transparent; color: #3b82f6; }
+    .btn-sm { padding: 4px 8px; font-size: 12px; }
+    .btn-lg { padding: 12px 24px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div style="display: flex; gap: 8px;">
+      <button class="btn btn-primary" id="primary">Primary</button>
+      <button class="btn btn-secondary" id="secondary">Secondary</button>
+      <button class="btn btn-outline" id="outline">Outline</button>
+      <button class="btn btn-ghost" id="ghost">Ghost</button>
+    </div>
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <button class="btn btn-primary btn-sm" id="small">Small</button>
+      <button class="btn btn-primary" id="medium">Medium</button>
+      <button class="btn btn-primary btn-lg" id="large">Large</button>
+    </div>
+  </div>
+</body>
+</html>

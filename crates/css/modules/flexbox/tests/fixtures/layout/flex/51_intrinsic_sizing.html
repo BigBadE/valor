@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            width: 800px;
+            height: 600px;
+            background: white;
+        }
+
+        /* Test 1: Basic horizontal flex with text content - should size to content */
+        .test1 {
+            display: flex;
+            background: #f0f0f0;
+            border: 2px solid red;
+            margin: 10px;
+        }
+
+        .test1 .item {
+            background: lightblue;
+            border: 1px solid blue;
+            padding: 5px 10px;
+        }
+
+        /* Test 2: Flex items should NOT distribute equally by default */
+        .test2 {
+            display: flex;
+            background: #e0e0e0;
+            border: 2px solid green;
+            margin: 10px;
+        }
+
+        .test2 div {
+            background: lightgreen;
+            border: 1px solid darkgreen;
+            padding: 5px;
+        }
+
+        /* Test 3: Explicit flex-grow should distribute space */
+        .test3 {
+            display: flex;
+            background: #d0d0d0;
+            border: 2px solid purple;
+            margin: 10px;
+        }
+
+        .test3 div {
+            background: plum;
+            border: 1px solid purple;
+            padding: 5px;
+            flex-grow: 1; /* This SHOULD make them equal width */
+        }
+    </style>
+</head>
+<body>
+    <h3>Test 1: Items should size to content (not equal 160px each)</h3>
+    <div class="test1">
+        <div class="item">Tab A</div>
+        <div class="item">Tab B</div>
+        <div class="item">Tab C</div>
+        <div class="item">Tab D</div>
+        <div class="item">Tab E</div>
+    </div>
+
+    <h3>Test 2: Divs with different text should have different widths</h3>
+    <div class="test2">
+        <div>Short</div>
+        <div>Medium Text</div>
+        <div>This is a much longer piece of text</div>
+        <div>X</div>
+    </div>
+
+    <h3>Test 3: With flex-grow:1, items SHOULD be equal width</h3>
+    <div class="test3">
+        <div>A</div>
+        <div>B</div>
+        <div>C</div>
+        <div>D</div>
+    </div>
+</body>
+</html>

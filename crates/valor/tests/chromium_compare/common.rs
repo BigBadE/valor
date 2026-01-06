@@ -194,7 +194,9 @@ pub fn css_reset_text() -> String {
     #[cfg(all(unix, not(target_os = "macos")))]
     let font_family = "\"DejaVu Sans Mono\",monospace";
 
-    format!("*,*::before,*::after{{box-sizing:border-box;margin:0;padding:0;}}body,html{{font-family:{font_family};}}html,body{{margin:0 !important;padding:0 !important;overflow:hidden;}}body{{margin:0 !important;}}h1,h2,h3,h4,h5,h6,p{{margin:0;padding:0;}}ul,ol{{margin:0;padding:0;list-style:none;}}")
+    format!(
+        "*,*::before,*::after{{box-sizing:border-box;margin:0;padding:0;}}body,html{{font-family:{font_family};}}html,body{{margin:0 !important;padding:0 !important;overflow:hidden;}}body{{margin:0 !important;}}h1,h2,h3,h4,h5,h6,p{{margin:0;padding:0;}}ul,ol{{margin:0;padding:0;list-style:none;}}"
+    )
 }
 
 pub fn css_reset_injection_script() -> String {

@@ -49,6 +49,16 @@ impl ValorUi {
 #[derive(Component)]
 pub struct ValorPageInitialized;
 
+/// Marker component indicating this ValorUi needs to be re-rendered
+/// This is added when:
+/// - The page is first initialized
+/// - The viewport dimensions change
+/// - The HTML content changes
+/// - Any other change that requires re-rendering
+#[derive(Component)]
+pub struct NeedsRender;
+
+
 /// Component holding the rendered texture and display node for a ValorUi
 #[derive(Component)]
 pub struct ValorTexture {
@@ -134,4 +144,4 @@ pub struct GlobalStyles(pub String);
 
 /// Marker component indicating click handlers have been extracted
 #[derive(Component)]
-pub(super) struct ClickHandlersExtracted;
+pub struct ClickHandlersExtracted;

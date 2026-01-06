@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            width: 800px;
+            height: 600px;
+            background: white;
+        }
+
+        /* Test vertical flex container */
+        .vertical-container {
+            display: flex;
+            flex-direction: column;
+            background: #f0f0f0;
+            border: 2px solid red;
+            margin: 10px;
+            padding: 10px;
+        }
+
+        .form-control {
+            background: lightblue;
+            border: 1px solid blue;
+            padding: 5px;
+            margin-bottom: 5px;
+        }
+
+        /* Test vertical spacing without explicit heights */
+        .test-compact {
+            display: flex;
+            flex-direction: column;
+            background: #e0e0e0;
+            border: 2px solid green;
+            margin: 10px;
+        }
+
+        .test-compact div {
+            background: lightgreen;
+            border: 1px solid darkgreen;
+            padding: 3px;
+        }
+    </style>
+</head>
+<body>
+    <h3>Test 1: Vertical flex - items should NOT have huge spacing</h3>
+    <div class="vertical-container">
+        <div class="form-control">Name: <input type="text" value="John"></div>
+        <div class="form-control">Email: <input type="text" value="john@example.com"></div>
+        <div class="form-control">Age: <input type="text" value="25"></div>
+    </div>
+
+    <h3>Test 2: Compact vertical - should stack tightly</h3>
+    <div class="test-compact">
+        <div>Item 1</div>
+        <div>Item 2</div>
+        <div>Item 3</div>
+        <div>Item 4</div>
+        <div>Item 5</div>
+    </div>
+</body>
+</html>

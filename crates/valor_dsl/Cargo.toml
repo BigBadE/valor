@@ -44,7 +44,7 @@ winit = { workspace = true }
 pollster = { workspace = true }
 
 # Bevy (optional)
-bevy = { version = "0.15", optional = true, default-features = false, features = [
+bevy = { version = "0.17", optional = true, default-features = false, features = [
     "bevy_asset",
     "bevy_core_pipeline",
     "bevy_render",

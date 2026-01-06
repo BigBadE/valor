@@ -216,7 +216,16 @@ impl ConstraintLayoutTree {
 /// Run layout on the entire tree starting from root.
 pub fn layout_tree(tree: &mut ConstraintLayoutTree, root: NodeKey) -> LayoutResult {
     let initial_space = ConstraintSpace::new_for_root(tree.icb_width, tree.icb_height);
-    let result = tree.layout_block(root, &initial_space);
+    let mut result = tree.layout_block(root, &initial_space);
+
+    // IMPORTANT: Force root element to fill viewport height
+    // The root html/body should always be at least viewport height, even if content is smaller
+    let viewport_height = tree.icb_height.to_px();
+    if result.block_size < viewport_height {
+        log::info!("layout_tree: Expanding root element from {}px to viewport height {}px", 
+            result.block_size, viewport_height);
+        result.block_size = viewport_height;
+    }
 
     // Store layout result for root element (html/body) so it gets proper rect
     tree.layout_results.insert(root, result.clone());

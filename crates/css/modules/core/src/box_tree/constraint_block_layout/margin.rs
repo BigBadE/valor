@@ -16,15 +16,26 @@ impl ConstraintLayoutTree {
         establishes_bfc: bool,
     ) -> (BfcOffset, bool) {
         // Inline offset always includes left margin (margins don't collapse in inline direction)
-        let inline_offset = constraint_space.bfc_offset.inline_offset + sides.margin_left;
+        // UNLESS margins have already been applied by the parent layout algorithm (flex/grid)
+        let inline_offset = if constraint_space.margins_already_applied {
+            constraint_space.bfc_offset.inline_offset
+        } else {
+            constraint_space.bfc_offset.inline_offset + sides.margin_left
+        };
 
         // If we establish a new BFC, we don't participate in parent's margin collapsing
         // Resolve any accumulated margins and add our own margin
         if establishes_bfc {
-            let block_offset = constraint_space
+            let base_offset = constraint_space
                 .bfc_offset
                 .block_offset
-                .map(|offset| offset + constraint_space.margin_strut.collapse() + sides.margin_top);
+                .unwrap_or(LayoutUnit::zero());
+            let block_offset = if constraint_space.margins_already_applied {
+                // Margins already in bfc_offset, don't add again
+                Some(base_offset + constraint_space.margin_strut.collapse())
+            } else {
+                Some(base_offset + constraint_space.margin_strut.collapse() + sides.margin_top)
+            };
 
             return (BfcOffset::new(inline_offset, block_offset), false);
         }
@@ -46,7 +57,11 @@ impl ConstraintLayoutTree {
             // Element's border-box top would naturally be at: base + margin_top
             // Clearance pushes it to at least clearance_floor
             // The final position is the max of these two
-            let block_offset = (base_offset + sides.margin_top).max(clearance_floor);
+            let block_offset = if constraint_space.margins_already_applied {
+                base_offset.max(clearance_floor)
+            } else {
+                (base_offset + sides.margin_top).max(clearance_floor)
+            };
 
             return (BfcOffset::new(inline_offset, Some(block_offset)), false);
         }
@@ -58,10 +73,14 @@ impl ConstraintLayoutTree {
         // If parent established a new BFC and there are no sibling margins to collapse with,
         // margins don't collapse - add them as spacing
         if constraint_space.is_new_formatting_context && constraint_space.margin_strut.is_empty() {
-            let block_offset = constraint_space
-                .bfc_offset
-                .block_offset
-                .map(|offset| offset + sides.margin_top);
+            let block_offset = if constraint_space.margins_already_applied {
+                constraint_space.bfc_offset.block_offset
+            } else {
+                constraint_space
+                    .bfc_offset
+                    .block_offset
+                    .map(|offset| offset + sides.margin_top)
+            };
             return (BfcOffset::new(inline_offset, block_offset), false);
         }
 
@@ -69,7 +88,9 @@ impl ConstraintLayoutTree {
             // We can collapse top margins (no border/padding at top)
             // Add our top margin to the strut and resolve to find our border-box position
             let mut strut = constraint_space.margin_strut;
-            strut.append(sides.margin_top);
+            if !constraint_space.margins_already_applied {
+                strut.append(sides.margin_top);
+            }
             let collapsed = strut.collapse();
             let block_offset = constraint_space
                 .bfc_offset
@@ -81,7 +102,9 @@ impl ConstraintLayoutTree {
         // Cannot collapse top margins with parent (have padding/border)
         // But we still need to collapse our top margin with any accumulated sibling margins
         let mut strut = constraint_space.margin_strut;
-        strut.append(sides.margin_top);
+        if !constraint_space.margins_already_applied {
+            strut.append(sides.margin_top);
+        }
         let collapsed = strut.collapse();
         let block_offset = constraint_space
             .bfc_offset

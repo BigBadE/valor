@@ -1,0 +1,10 @@
+// Implement EntityEvent for OnClick to work with Bevy 0.17 observers
+impl bevy::ecs::event::EntityEvent for OnClick {
+    fn target(&self) -> bevy::prelude::Entity {
+        self.entity
+    }
+    
+    fn event_target_mut(&mut self) -> &mut bevy::prelude::Entity {
+        &mut self.entity
+    }
+}

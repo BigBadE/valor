@@ -55,6 +55,13 @@ pub struct ConstraintSpace {
     /// (columns then rows) or use a single-pass approximation to avoid infinite recursion
     /// when measuring nested grids.
     pub is_for_measurement_only: bool,
+
+    /// Whether margins have already been applied to the `bfc_offset`.
+    ///
+    /// This is used by flex and grid layout where the layout algorithm has already positioned
+    /// items with their margins included in the `bfc_offset`. Setting this to `true` prevents
+    /// `layout_block` from adding margins again in `resolve_bfc_offset`.
+    pub margins_already_applied: bool,
 }
 
 /// Available size can be definite (fixed), indefinite (auto), or constrained by min/max.
@@ -142,6 +149,7 @@ impl ConstraintSpace {
             fragmentainer_block_size: None,
             fragmentainer_offset: LayoutUnit::zero(),
             is_for_measurement_only: false, // Root layout is final layout
+            margins_already_applied: false, // Standard margin handling
         }
     }
 
@@ -182,6 +190,7 @@ impl ConstraintSpace {
             fragmentainer_block_size: self.fragmentainer_block_size,
             fragmentainer_offset: self.fragmentainer_offset,
             is_for_measurement_only: self.is_for_measurement_only, // Propagate measurement flag
+            margins_already_applied: false, // Child spaces use standard margin handling
         }
     }
 }

@@ -4,22 +4,41 @@ fn debug_dejavu_font_metrics() {
 
     let mut font_system = FontSystem::new();
     font_system.db_mut().load_system_fonts();
-    font_system.db_mut().set_monospace_family("DejaVu Sans Mono");
+    font_system
+        .db_mut()
+        .set_monospace_family("DejaVu Sans Mono");
 
     let attrs = Attrs::new().family(Family::Name("DejaVu Sans Mono"));
     let font_matches = font_system.get_font_matches(&attrs);
 
     if let Some(first_match) = font_matches.first() {
-        eprintln!("Font matched: ID={:?}, Weight={}", first_match.id, first_match.font_weight);
+        eprintln!(
+            "Font matched: ID={:?}, Weight={}",
+            first_match.id, first_match.font_weight
+        );
 
-        if let Some(font) = font_system.get_font(first_match.id, fontdb::Weight(first_match.font_weight)) {
+        if let Some(font) =
+            font_system.get_font(first_match.id, fontdb::Weight(first_match.font_weight))
+        {
             let metrics = font.metrics();
             let units_per_em = f32::from(metrics.units_per_em);
 
             eprintln!("\nhhea metrics:");
-            eprintln!("  ascent: {} ({:.6})", metrics.ascent, metrics.ascent / units_per_em);
-            eprintln!("  descent: {} ({:.6})", metrics.descent, -metrics.descent / units_per_em);
-            eprintln!("  leading: {} ({:.6})", metrics.leading, metrics.leading / units_per_em);
+            eprintln!(
+                "  ascent: {} ({:.6})",
+                metrics.ascent,
+                metrics.ascent / units_per_em
+            );
+            eprintln!(
+                "  descent: {} ({:.6})",
+                metrics.descent,
+                -metrics.descent / units_per_em
+            );
+            eprintln!(
+                "  leading: {} ({:.6})",
+                metrics.leading,
+                metrics.leading / units_per_em
+            );
             eprintln!("  units_per_em: {}", units_per_em);
 
             if let Some((win_ascent, win_descent)) = font.os2_metrics() {
@@ -42,7 +61,10 @@ fn debug_dejavu_font_metrics() {
             eprintln!("  descent: {:.6}", descent_linux);
             eprintln!("  leading: {:.6}", leading_linux);
             eprintln!("  glyph_height: {:.6}", ascent_linux + descent_linux);
-            eprintln!("  line_height: {:.6}", ascent_linux + descent_linux + leading_linux);
+            eprintln!(
+                "  line_height: {:.6}",
+                ascent_linux + descent_linux + leading_linux
+            );
 
             if let Some((win_ascent, win_descent)) = font.os2_metrics() {
                 let win_asc_px = win_ascent * font_size;
@@ -62,7 +84,13 @@ fn debug_dejavu_font_metrics() {
                     .family(Family::Name("DejaVu Sans Mono"))
                     .weight(glyphon::Weight(400));
                 let mut buffer = Buffer::new(&mut font_system, Metrics::new(16.0, 16.0));
-                buffer.set_text(&mut font_system, &ch.to_string(), &test_attrs, Shaping::Advanced, None);
+                buffer.set_text(
+                    &mut font_system,
+                    &ch.to_string(),
+                    &test_attrs,
+                    Shaping::Advanced,
+                    None,
+                );
                 buffer.shape_until_scroll(&mut font_system, false);
 
                 if let Some(layout_lines) = buffer.line_layout(&mut font_system, 0) {

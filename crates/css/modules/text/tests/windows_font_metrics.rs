@@ -28,7 +28,10 @@ fn analyze_consolas_metrics() {
         }
 
         let first_match = &font_matches[0];
-        if let Some(font) = font_system.get_font(first_match.id, glyphon::fontdb::Weight(first_match.font_weight)) {
+        if let Some(font) = font_system.get_font(
+            first_match.id,
+            glyphon::fontdb::Weight(first_match.font_weight),
+        ) {
             let metrics = font.metrics();
             let units_per_em = f32::from(metrics.units_per_em);
             let ascent_norm = metrics.ascent / units_per_em;
@@ -56,13 +59,19 @@ fn analyze_consolas_metrics() {
             let floor_total = total.floor();
 
             eprintln!("\nRounding strategies:");
-            eprintln!("  round(asc) + round(desc) = {} + {} = {}", round_asc, round_desc, round_total);
+            eprintln!(
+                "  round(asc) + round(desc) = {} + {} = {}",
+                round_asc, round_desc, round_total
+            );
             eprintln!("  floor(total)             = {}", floor_total);
 
             if round_total == floor_total {
                 eprintln!("  ✓ BOTH STRATEGIES AGREE");
             } else {
-                eprintln!("  ✗ STRATEGIES DIFFER (round={}, floor={})", round_total, floor_total);
+                eprintln!(
+                    "  ✗ STRATEGIES DIFFER (round={}, floor={})",
+                    round_total, floor_total
+                );
             }
         }
     }

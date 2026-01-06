@@ -1,0 +1,83 @@
+<!doctype html>
+<!-- VALOR fixture: Accordion -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Accordion</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 16px; max-width: 480px; }
+    .accordion {
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .accordion-item { border-bottom: 1px solid #e5e7eb; }
+    .accordion-item:last-child { border-bottom: none; }
+    .accordion-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px;
+      background: #f9fafb;
+      font-weight: 500;
+      font-size: 14px;
+      color: #111827;
+      cursor: pointer;
+    }
+    .accordion-header.active { background: white; }
+    .accordion-arrow {
+      width: 0;
+      height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 5px solid #6b7280;
+      transition: transform 0.2s;
+    }
+    .accordion-header.active .accordion-arrow {
+      transform: rotate(180deg);
+    }
+    .accordion-body {
+      padding: 16px;
+      font-size: 14px;
+      color: #6b7280;
+      line-height: 1.6;
+      background: white;
+    }
+    .accordion-body.hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="accordion" id="accordion">
+      <div class="accordion-item">
+        <div class="accordion-header active">
+          <span>What is your refund policy?</span>
+          <span class="accordion-arrow"></span>
+        </div>
+        <div class="accordion-body">
+          We offer a 30-day money-back guarantee on all purchases. If you're not satisfied with your purchase, you can request a full refund within 30 days of your order date.
+        </div>
+      </div>
+      <div class="accordion-item">
+        <div class="accordion-header">
+          <span>How do I track my order?</span>
+          <span class="accordion-arrow"></span>
+        </div>
+        <div class="accordion-body hidden">
+          Once your order ships, you'll receive an email with a tracking number. You can use this number to track your package on our website or the carrier's site.
+        </div>
+      </div>
+      <div class="accordion-item">
+        <div class="accordion-header">
+          <span>Do you offer international shipping?</span>
+          <span class="accordion-arrow"></span>
+        </div>
+        <div class="accordion-body hidden">
+          Yes, we ship to over 100 countries worldwide. Shipping costs and delivery times vary by location. You can see the shipping options at checkout.
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

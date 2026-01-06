@@ -1,0 +1,97 @@
+<!doctype html>
+<!-- VALOR fixture: List group -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: List Group</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 16px; display: flex; gap: 24px; }
+    .list-group {
+      width: 280px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .list-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid #e5e7eb;
+      font-size: 14px;
+      color: #374151;
+    }
+    .list-item:last-child { border-bottom: none; }
+    .list-item.active { background: #3b82f6; color: white; }
+    .list-item-flex {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .list-badge {
+      background: #e5e7eb;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .list-item.active .list-badge { background: rgba(255,255,255,0.2); }
+    .list-item-complex {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .list-avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: #3b82f6;
+      flex-shrink: 0;
+    }
+    .list-content { flex: 1; }
+    .list-title { font-weight: 500; margin-bottom: 2px; }
+    .list-desc { font-size: 12px; color: #6b7280; }
+    .list-meta { font-size: 12px; color: #9ca3af; flex-shrink: 0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="list-group" id="simple">
+      <div class="list-item active">Inbox</div>
+      <div class="list-item">Sent</div>
+      <div class="list-item">Drafts</div>
+      <div class="list-item">Trash</div>
+    </div>
+    <div class="list-group" id="badges">
+      <div class="list-item list-item-flex active">
+        <span>Inbox</span>
+        <span class="list-badge">12</span>
+      </div>
+      <div class="list-item list-item-flex">
+        <span>Sent</span>
+        <span class="list-badge">3</span>
+      </div>
+      <div class="list-item list-item-flex">
+        <span>Drafts</span>
+        <span class="list-badge">1</span>
+      </div>
+    </div>
+    <div class="list-group" id="complex">
+      <div class="list-item list-item-complex">
+        <div class="list-avatar"></div>
+        <div class="list-content">
+          <div class="list-title">New message from John</div>
+          <div class="list-desc">Hey, just wanted to check in...</div>
+        </div>
+        <div class="list-meta">2m ago</div>
+      </div>
+      <div class="list-item list-item-complex">
+        <div class="list-avatar"></div>
+        <div class="list-content">
+          <div class="list-title">Meeting reminder</div>
+          <div class="list-desc">Team standup in 15 minutes</div>
+        </div>
+        <div class="list-meta">15m ago</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

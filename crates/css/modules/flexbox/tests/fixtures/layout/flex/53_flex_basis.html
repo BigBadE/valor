@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            width: 800px;
+            height: 600px;
+            background: white;
+        }
+
+        h3 {
+            margin: 10px 0 5px 10px;
+        }
+
+        /* Test 1: Default flex-basis (auto) - should use content size */
+        .test-auto-basis {
+            display: flex;
+            background: #f0f0f0;
+            border: 2px solid red;
+            margin: 10px;
+        }
+
+        .test-auto-basis div {
+            background: lightcoral;
+            border: 1px solid darkred;
+            padding: 5px;
+            /* flex-basis: auto (default) - should size to content */
+        }
+
+        /* Test 2: Explicit flex-basis */
+        .test-explicit-basis {
+            display: flex;
+            background: #e0e0e0;
+            border: 2px solid blue;
+            margin: 10px;
+        }
+
+        .test-explicit-basis .item-50 {
+            background: lightblue;
+            border: 1px solid darkblue;
+            padding: 5px;
+            flex-basis: 50px;
+        }
+
+        .test-explicit-basis .item-100 {
+            background: lightblue;
+            border: 1px solid darkblue;
+            padding: 5px;
+            flex-basis: 100px;
+        }
+
+        .test-explicit-basis .item-150 {
+            background: lightblue;
+            border: 1px solid darkblue;
+            padding: 5px;
+            flex-basis: 150px;
+        }
+
+        /* Test 3: flex-basis: 0 with flex-grow */
+        .test-zero-basis {
+            display: flex;
+            background: #d0d0d0;
+            border: 2px solid green;
+            margin: 10px;
+        }
+
+        .test-zero-basis div {
+            background: lightgreen;
+            border: 1px solid darkgreen;
+            padding: 5px;
+            flex-basis: 0;
+            flex-grow: 1;
+        }
+
+        /* Test 4: Mixed flex-basis values */
+        .test-mixed {
+            display: flex;
+            background: #c0c0c0;
+            border: 2px solid purple;
+            margin: 10px;
+        }
+
+        .test-mixed .auto {
+            background: plum;
+            border: 1px solid purple;
+            padding: 5px;
+            flex-basis: auto;
+        }
+
+        .test-mixed .fixed {
+            background: plum;
+            border: 1px solid purple;
+            padding: 5px;
+            flex-basis: 100px;
+        }
+
+        .test-mixed .grow {
+            background: plum;
+            border: 1px solid purple;
+            padding: 5px;
+            flex-basis: 0;
+            flex-grow: 1;
+        }
+    </style>
+</head>
+<body>
+    <h3>Test 1: flex-basis: auto (default) - should size to content</h3>
+    <div class="test-auto-basis">
+        <div>Short</div>
+        <div>Medium length text</div>
+        <div>This is a very long piece of text content</div>
+    </div>
+
+    <h3>Test 2: Explicit flex-basis values (50px, 100px, 150px)</h3>
+    <div class="test-explicit-basis">
+        <div class="item-50">50px basis</div>
+        <div class="item-100">100px basis</div>
+        <div class="item-150">150px basis</div>
+    </div>
+
+    <h3>Test 3: flex-basis: 0 + flex-grow: 1 (equal distribution)</h3>
+    <div class="test-zero-basis">
+        <div>A</div>
+        <div>B</div>
+        <div>C</div>
+        <div>D</div>
+    </div>
+
+    <h3>Test 4: Mixed basis - auto, 100px fixed, and grow</h3>
+    <div class="test-mixed">
+        <div class="auto">Auto content</div>
+        <div class="fixed">100px fixed</div>
+        <div class="grow">Grow to fill</div>
+    </div>
+</body>
+</html>

@@ -329,8 +329,8 @@ fn rect_to_scissor(rect: (f32, f32, f32, f32), framebuffer_size: (u32, u32)) -> 
     }
     let max_w = i32::try_from(framebuffer_w).unwrap_or(i32::MAX) - scissor_x;
     let max_h = i32::try_from(framebuffer_h).unwrap_or(i32::MAX) - scissor_y;
-    let final_width = u32::try_from(scissor_width.clamp(0i32, max_w)).unwrap_or(0);
-    let final_height = u32::try_from(scissor_height.clamp(0i32, max_h)).unwrap_or(0);
+    let final_width = if max_w <= 0 { 0 } else { u32::try_from(scissor_width.clamp(0i32, max_w)).unwrap_or(0) };
+    let final_height = if max_h <= 0 { 0 } else { u32::try_from(scissor_height.clamp(0i32, max_h)).unwrap_or(0) };
     (
         u32::try_from(scissor_x).unwrap_or(0),
         u32::try_from(scissor_y).unwrap_or(0),

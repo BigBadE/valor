@@ -1,0 +1,89 @@
+<!doctype html>
+<!-- VALOR fixture: Toggle/Switch -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Toggle Switch</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .toggle {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      background: #e5e7eb;
+      border-radius: 9999px;
+      cursor: pointer;
+    }
+    .toggle.active { background: #3b82f6; }
+    .toggle-thumb {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      background: white;
+      border-radius: 50%;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      transition: transform 0.2s;
+    }
+    .toggle.active .toggle-thumb {
+      transform: translateX(20px);
+    }
+    .toggle-sm { width: 36px; height: 20px; }
+    .toggle-sm .toggle-thumb { width: 16px; height: 16px; }
+    .toggle-sm.active .toggle-thumb { transform: translateX(16px); }
+    .toggle-lg { width: 56px; height: 30px; }
+    .toggle-lg .toggle-thumb { width: 26px; height: 26px; }
+    .toggle-lg.active .toggle-thumb { transform: translateX(26px); }
+    .toggle-success.active { background: #22c55e; }
+    .toggle-label { font-size: 14px; color: #374151; }
+    .toggle-disabled { opacity: 0.5; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="toggle-row">
+      <div class="toggle" id="off">
+        <div class="toggle-thumb"></div>
+      </div>
+      <span class="toggle-label">Off state</span>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle active" id="on">
+        <div class="toggle-thumb"></div>
+      </div>
+      <span class="toggle-label">On state</span>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle toggle-sm" id="small">
+        <div class="toggle-thumb"></div>
+      </div>
+      <span class="toggle-label">Small size</span>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle toggle-lg active" id="large">
+        <div class="toggle-thumb"></div>
+      </div>
+      <span class="toggle-label">Large size</span>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle toggle-success active" id="success">
+        <div class="toggle-thumb"></div>
+      </div>
+      <span class="toggle-label">Success color</span>
+    </div>
+    <div class="toggle-row">
+      <div class="toggle toggle-disabled" id="disabled">
+        <div class="toggle-thumb"></div>
+      </div>
+      <span class="toggle-label">Disabled</span>
+    </div>
+  </div>
+</body>
+</html>

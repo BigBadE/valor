@@ -1,0 +1,82 @@
+<!doctype html>
+<!-- VALOR fixture: Empty state -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Empty State</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 24px; display: flex; flex-direction: column; gap: 32px; }
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 24px;
+      text-align: center;
+      background: #f9fafb;
+      border-radius: 12px;
+      border: 2px dashed #e5e7eb;
+    }
+    .empty-icon {
+      width: 64px;
+      height: 64px;
+      background: #e5e7eb;
+      border-radius: 50%;
+      margin-bottom: 16px;
+    }
+    .empty-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #111827;
+      margin-bottom: 8px;
+    }
+    .empty-desc {
+      font-size: 14px;
+      color: #6b7280;
+      max-width: 320px;
+      line-height: 1.5;
+      margin-bottom: 20px;
+    }
+    .empty-actions { display: flex; gap: 12px; }
+    .btn {
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: 500;
+      border-radius: 6px;
+    }
+    .btn-primary { background: #3b82f6; color: white; }
+    .btn-secondary { background: white; border: 1px solid #d1d5db; color: #374151; }
+    .empty-state-compact {
+      padding: 32px 24px;
+      background: white;
+      border: 1px solid #e5e7eb;
+    }
+    .empty-state-compact .empty-icon {
+      width: 48px;
+      height: 48px;
+    }
+    .empty-state-compact .empty-title { font-size: 16px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="empty-state" id="default">
+      <div class="empty-icon"></div>
+      <div class="empty-title">No projects yet</div>
+      <div class="empty-desc">Get started by creating your first project. It only takes a few minutes.</div>
+      <div class="empty-actions">
+        <button class="btn btn-primary">Create Project</button>
+      </div>
+    </div>
+    <div class="empty-state empty-state-compact" id="compact">
+      <div class="empty-icon"></div>
+      <div class="empty-title">No results found</div>
+      <div class="empty-desc">Try adjusting your search or filter to find what you're looking for.</div>
+      <div class="empty-actions">
+        <button class="btn btn-secondary">Clear Filters</button>
+        <button class="btn btn-primary">New Search</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

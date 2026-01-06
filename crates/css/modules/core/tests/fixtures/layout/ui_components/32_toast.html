@@ -1,0 +1,97 @@
+<!doctype html>
+<!-- VALOR fixture: Toast notifications -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Toast</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 16px; display: flex; flex-direction: column; gap: 12px; max-width: 380px; }
+    .toast {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 14px 16px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    .toast-icon {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .toast-success .toast-icon { background: #22c55e; }
+    .toast-error .toast-icon { background: #ef4444; }
+    .toast-warning .toast-icon { background: #f59e0b; }
+    .toast-info .toast-icon { background: #3b82f6; }
+    .toast-content { flex: 1; }
+    .toast-title { font-size: 14px; font-weight: 600; color: #111827; margin-bottom: 2px; }
+    .toast-message { font-size: 13px; color: #6b7280; line-height: 1.4; }
+    .toast-close {
+      width: 18px;
+      height: 18px;
+      background: #f3f4f6;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .toast-dark {
+      background: #1f2937;
+    }
+    .toast-dark .toast-title { color: white; }
+    .toast-dark .toast-message { color: #9ca3af; }
+    .toast-dark .toast-close { background: #374151; }
+    .toast-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .toast-btn {
+      padding: 4px 10px;
+      font-size: 12px;
+      border-radius: 4px;
+    }
+    .toast-btn-primary { background: #3b82f6; color: white; }
+    .toast-btn-secondary { background: #f3f4f6; color: #374151; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="toast toast-success" id="success">
+      <div class="toast-icon"></div>
+      <div class="toast-content">
+        <div class="toast-title">Success!</div>
+        <div class="toast-message">Your changes have been saved.</div>
+      </div>
+      <div class="toast-close"></div>
+    </div>
+    <div class="toast toast-error" id="error">
+      <div class="toast-icon"></div>
+      <div class="toast-content">
+        <div class="toast-title">Error</div>
+        <div class="toast-message">Something went wrong. Please try again.</div>
+      </div>
+      <div class="toast-close"></div>
+    </div>
+    <div class="toast toast-warning" id="warning">
+      <div class="toast-icon"></div>
+      <div class="toast-content">
+        <div class="toast-title">Warning</div>
+        <div class="toast-message">Your session will expire in 5 minutes.</div>
+      </div>
+    </div>
+    <div class="toast toast-info toast-dark" id="dark">
+      <div class="toast-icon"></div>
+      <div class="toast-content">
+        <div class="toast-title">New update available</div>
+        <div class="toast-message">A new version is ready to install.</div>
+        <div class="toast-actions">
+          <button class="toast-btn toast-btn-secondary">Later</button>
+          <button class="toast-btn toast-btn-primary">Update</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

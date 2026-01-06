@@ -3,6 +3,26 @@
 
 use css_orchestrator::style_model::{ComputedStyle, Display, Float, Position};
 
+/// Blockify a display value according to CSS Display 3 §2.7.
+///
+/// Blockification converts the outer display type to block while preserving the inner display type:
+/// - inline → block
+/// - inline-block → block
+/// - inline-flex → flex
+/// - inline-grid → grid
+/// - Other values remain unchanged (they already have block outer display)
+const fn blockify(display: Display) -> Display {
+    match display {
+        Display::Inline | Display::InlineBlock => Display::Block,
+        Display::InlineFlex => Display::Flex,
+        Display::InlineGrid => Display::Grid,
+        // Already block-level or special values
+        Display::Block | Display::Flex | Display::Grid | Display::None | Display::Contents => {
+            display
+        }
+    }
+}
+
 /// Compute the used outer display value for a child box, applying blockification/inlinification
 /// rules relevant to our current layout engine. This is a pure function that does not mutate styles.
 ///
@@ -30,22 +50,25 @@ pub const fn used_display_for_child(
 
     // §2.8: Root element is always blockified and establishes an independent formatting context.
     if is_root {
-        return Display::Block;
+        return blockify(child.display);
     }
 
     // CSS2: Absolute positioning or floating blockifies the outer display type.
     if !matches!(child.position, Position::Static | Position::Relative) {
-        return Display::Block;
+        return blockify(child.display);
     }
     if !matches!(child.float, Float::None) {
-        return Display::Block;
+        return blockify(child.display);
     }
 
     // Flex/Grid containers make their children flex/grid items. Our engine exposes Flex/InlineFlex.
     if let Some(parent_style) = parent
-        && matches!(parent_style.display, Display::Flex | Display::InlineFlex)
+        && matches!(
+            parent_style.display,
+            Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
+        )
     {
-        return Display::Block;
+        return blockify(child.display);
     }
 
     // Default: keep specified display.

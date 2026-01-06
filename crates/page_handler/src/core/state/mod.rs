@@ -223,6 +223,7 @@ impl HtmlPage {
         let has_dirty = self.incremental_layout.has_dirty_nodes();
         let geometry_empty = self.incremental_layout.rects().is_empty();
         let should_layout = has_dirty || geometry_empty;
+        log::info!("compute_layout: has_dirty={}, geometry_empty={}, should_layout={}", has_dirty, geometry_empty, should_layout);
 
         if !should_layout && !self.frame_scheduler.allow() {
             self.frame_scheduler.incr_deferred();
@@ -230,7 +231,12 @@ impl HtmlPage {
             return;
         }
 
-        if should_layout && self.frame_scheduler.allow() {
+        let frame_allowed = self.frame_scheduler.allow();
+        log::info!("compute_layout: frame_scheduler.allow()={}", frame_allowed);
+        
+        // Always run layout if we have dirty nodes, bypass frame scheduler
+        // The frame scheduler is meant to prevent excessive polling, not to skip dirty work
+        if should_layout && (frame_allowed || has_dirty) {
             // Use incremental layout engine
             if let Ok(layout_results) = self.incremental_layout.compute_layouts() {
                 // Log layout performance metrics

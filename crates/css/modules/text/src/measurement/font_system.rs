@@ -42,7 +42,9 @@ pub fn get_font_system() -> Arc<Mutex<FontSystem>> {
         {
             // Chrome uses these fonts as defaults on Linux
             // DejaVu fonts are widely available and match Chrome's behavior
-            font_system.db_mut().set_monospace_family("DejaVu Sans Mono");
+            font_system
+                .db_mut()
+                .set_monospace_family("DejaVu Sans Mono");
             font_system.db_mut().set_sans_serif_family("DejaVu Sans");
             font_system.db_mut().set_serif_family("DejaVu Serif");
         }
@@ -57,8 +59,8 @@ pub fn get_font_system() -> Arc<Mutex<FontSystem>> {
 /// Maps generic families to match Chrome's default font choices on each platform.
 ///
 /// This function ensures consistent font selection between layout (measurement) and rendering.
-/// We explicitly use Family::Name with the specific font we configured in fontdb to ensure
-/// consistent metrics. Using the generic Family::SansSerif etc. can sometimes pick different
+/// We explicitly use `Family::Name` with the specific font we configured in fontdb to ensure
+/// consistent metrics. Using the generic `Family::SansSerif` etc. can sometimes pick different
 /// fonts depending on fontdb's internal logic.
 pub fn map_font_family(font_name: &str) -> Family<'_> {
     match font_name.to_lowercase().as_str() {

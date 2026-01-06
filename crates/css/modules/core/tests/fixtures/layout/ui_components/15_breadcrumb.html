@@ -1,0 +1,63 @@
+<!doctype html>
+<!-- VALOR fixture: Breadcrumbs -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Breadcrumbs</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+    .breadcrumb {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+    }
+    .breadcrumb-item { color: #6b7280; }
+    .breadcrumb-item.active { color: #111827; font-weight: 500; }
+    .breadcrumb-separator { color: #d1d5db; }
+    .breadcrumb-with-icons .breadcrumb-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .breadcrumb-icon {
+      width: 14px;
+      height: 14px;
+      background: currentColor;
+      border-radius: 2px;
+      opacity: 0.5;
+    }
+    .breadcrumb-bg {
+      background: #f3f4f6;
+      padding: 8px 16px;
+      border-radius: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <nav class="breadcrumb" id="simple">
+      <span class="breadcrumb-item">Home</span>
+      <span class="breadcrumb-separator">/</span>
+      <span class="breadcrumb-item">Products</span>
+      <span class="breadcrumb-separator">/</span>
+      <span class="breadcrumb-item active">Electronics</span>
+    </nav>
+    <nav class="breadcrumb breadcrumb-with-icons" id="icons">
+      <span class="breadcrumb-item"><span class="breadcrumb-icon"></span>Home</span>
+      <span class="breadcrumb-separator">&gt;</span>
+      <span class="breadcrumb-item"><span class="breadcrumb-icon"></span>Settings</span>
+      <span class="breadcrumb-separator">&gt;</span>
+      <span class="breadcrumb-item active"><span class="breadcrumb-icon"></span>Profile</span>
+    </nav>
+    <nav class="breadcrumb breadcrumb-bg" id="background">
+      <span class="breadcrumb-item">Dashboard</span>
+      <span class="breadcrumb-separator">/</span>
+      <span class="breadcrumb-item">Users</span>
+      <span class="breadcrumb-separator">/</span>
+      <span class="breadcrumb-item active">Edit User</span>
+    </nav>
+  </div>
+</body>
+</html>

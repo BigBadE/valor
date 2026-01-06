@@ -4,7 +4,7 @@ use super::ConstraintLayoutTree;
 use super::shared::{
     BlockLayoutParams, BlockSizeParams, ChildrenLayoutState, EndMarginStrutParams,
 };
-use css_box::{BoxSides, LayoutUnit};
+use css_box::{BoxSides, LayoutUnit, compute_box_sides};
 use css_display::normalize_children;
 use css_orchestrator::style_model::{BoxSizing, Clear, ComputedStyle, Float, Position};
 use js::NodeKey;
@@ -14,6 +14,23 @@ use super::super::exclusion_space::ExclusionSpace;
 use super::super::margin_strut::MarginStrut;
 
 impl ConstraintLayoutTree {
+    /// Compute the end position of a child, including BFC margins if applicable.
+    fn compute_child_end_with_bfc_margins(
+        child_border_box_end: LayoutUnit,
+        end_margin_strut: MarginStrut,
+        child_style: &ComputedStyle,
+    ) -> LayoutUnit {
+        // For BFC-establishing elements, their margins don't collapse with siblings
+        // If the end_margin_strut is empty, it means the element establishes a BFC
+        // and we need to add its bottom margin as actual spacing
+        if end_margin_strut.is_empty() {
+            let child_sides = compute_box_sides(child_style);
+            child_border_box_end + child_sides.margin_bottom
+        } else {
+            child_border_box_end
+        }
+    }
+
     pub(super) fn layout_block_first_pass(
         &mut self,
         node: NodeKey,
@@ -89,14 +106,18 @@ impl ConstraintLayoutTree {
                 let is_self_collapsing = child_result.block_size.abs() < 0.01
                     && child_result.end_margin_strut.positive_margin > LayoutUnit::zero();
 
-                if is_self_collapsing && can_collapse_with_children {
-                    // Self-collapsing element: next sibling starts where this element's incoming position was
-                    // This allows the next sibling's margin to collapse with all the accumulated margins
-                    // NOTE: child_space.bfc_offset.block_offset stays unchanged (not advanced)
-                } else {
+                // Self-collapsing element: next sibling starts where this element's incoming position was
+                // This allows the next sibling's margin to collapse with all the accumulated margins
+                // NOTE: child_space.bfc_offset.block_offset stays unchanged (not advanced)
+                let should_advance_offset = !(is_self_collapsing && can_collapse_with_children);
+
+                if should_advance_offset {
                     // Normal element: set next child's starting position to bottom of current child
-                    let child_end = child_border_box_end;
-                    // The margin strut will be carried forward for potential sibling collapse
+                    let child_end = Self::compute_child_end_with_bfc_margins(
+                        child_border_box_end,
+                        child_result.end_margin_strut,
+                        &child_style,
+                    );
                     child_space.bfc_offset.block_offset = Some(child_end);
                 }
             }
@@ -136,6 +157,7 @@ impl ConstraintLayoutTree {
             fragmentainer_block_size: constraint_space.fragmentainer_block_size,
             fragmentainer_offset: constraint_space.fragmentainer_offset,
             is_for_measurement_only: constraint_space.is_for_measurement_only, // Propagate measurement flag
+            margins_already_applied: false,
         }
     }
     pub(super) fn compute_block_size_from_children(

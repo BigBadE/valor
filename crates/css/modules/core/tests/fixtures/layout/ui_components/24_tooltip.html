@@ -1,0 +1,91 @@
+<!doctype html>
+<!-- VALOR fixture: Tooltip -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Tooltip</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 80px 40px; display: flex; flex-wrap: wrap; gap: 60px; }
+    .tooltip-wrapper { position: relative; display: inline-block; }
+    .trigger {
+      padding: 8px 16px;
+      background: #f3f4f6;
+      border-radius: 4px;
+      font-size: 14px;
+      color: #374151;
+    }
+    .tooltip {
+      position: absolute;
+      padding: 6px 10px;
+      background: #1f2937;
+      color: white;
+      font-size: 12px;
+      border-radius: 4px;
+      white-space: nowrap;
+      z-index: 10;
+    }
+    .tooltip-top {
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      margin-bottom: 8px;
+    }
+    .tooltip-bottom {
+      top: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      margin-top: 8px;
+    }
+    .tooltip-left {
+      right: 100%;
+      top: 50%;
+      transform: translateY(-50%);
+      margin-right: 8px;
+    }
+    .tooltip-right {
+      left: 100%;
+      top: 50%;
+      transform: translateY(-50%);
+      margin-left: 8px;
+    }
+    .tooltip::before {
+      content: '';
+      position: absolute;
+      border: 6px solid transparent;
+    }
+    .tooltip-top::before {
+      top: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      border-top-color: #1f2937;
+    }
+    .tooltip-bottom::before {
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      border-bottom-color: #1f2937;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="tooltip-wrapper" id="top">
+      <div class="tooltip tooltip-top">Tooltip on top</div>
+      <div class="trigger">Hover me (top)</div>
+    </div>
+    <div class="tooltip-wrapper" id="bottom">
+      <div class="trigger">Hover me (bottom)</div>
+      <div class="tooltip tooltip-bottom">Tooltip on bottom</div>
+    </div>
+    <div class="tooltip-wrapper" id="left">
+      <div class="tooltip tooltip-left">Left</div>
+      <div class="trigger">Hover me (left)</div>
+    </div>
+    <div class="tooltip-wrapper" id="right">
+      <div class="trigger">Hover me (right)</div>
+      <div class="tooltip tooltip-right">Right</div>
+    </div>
+  </div>
+</body>
+</html>

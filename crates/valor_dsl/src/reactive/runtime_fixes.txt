@@ -1,0 +1,17 @@
+# Add log imports at top
+use log::{info, error, warn};
+
+# Fix trait constraint for add_reactive_component
+Component -> Component<Mutability = bevy::ecs::component::Mutable>
+
+# Fix trait constraint for handle_click_events  
+Component -> Component<Mutability = bevy::ecs::component::Mutable>
+
+# Fix trait constraint for execute_callback
+Component -> Component<Mutability = bevy::ecs::component::Mutable>
+
+# Fix observer trigger type (Trigger is now On in 0.17)
+trigger: Trigger<OnClick> -> trigger: bevy::ecs::observer::On<OnClick>
+
+# Access entity from trigger
+trigger.entity() -> trigger.entity_id()

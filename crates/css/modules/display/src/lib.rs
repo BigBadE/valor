@@ -24,6 +24,9 @@ mod chapter3;
 #[path = "4_visibility/mod.rs"]
 mod chapter4;
 
+// Re-export §2.7 transformations for used display computation
+pub use chapter2::part_2_7_transformations::used_display_for_child;
+
 /// Normalize children for layout by applying a subset of CSS Display 3 box generation rules.
 ///
 /// Spec: CSS Display 3 — §2.5 Box Generation: the `none` and `contents` keywords

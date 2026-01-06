@@ -1,0 +1,86 @@
+<!doctype html>
+<!-- VALOR fixture: Tabs -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Tabs</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 16px; display: flex; flex-direction: column; gap: 24px; }
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .tab {
+      padding: 12px 16px;
+      font-size: 14px;
+      color: #6b7280;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+    }
+    .tab.active {
+      color: #3b82f6;
+      border-bottom-color: #3b82f6;
+      font-weight: 500;
+    }
+    .tabs-pill {
+      display: flex;
+      gap: 4px;
+      background: #f3f4f6;
+      padding: 4px;
+      border-radius: 8px;
+    }
+    .tab-pill {
+      padding: 8px 16px;
+      font-size: 14px;
+      color: #6b7280;
+      border-radius: 6px;
+    }
+    .tab-pill.active {
+      background: white;
+      color: #111827;
+      font-weight: 500;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+    .tabs-vertical {
+      display: flex;
+      flex-direction: column;
+      width: 200px;
+      border-right: 1px solid #e5e7eb;
+    }
+    .tab-vertical {
+      padding: 10px 16px;
+      font-size: 14px;
+      color: #6b7280;
+      border-left: 2px solid transparent;
+    }
+    .tab-vertical.active {
+      color: #3b82f6;
+      border-left-color: #3b82f6;
+      background: #eff6ff;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="tabs" id="underline">
+      <div class="tab active">Account</div>
+      <div class="tab">Security</div>
+      <div class="tab">Notifications</div>
+      <div class="tab">Billing</div>
+    </div>
+    <div class="tabs-pill" id="pill">
+      <div class="tab-pill active">All</div>
+      <div class="tab-pill">Active</div>
+      <div class="tab-pill">Completed</div>
+      <div class="tab-pill">Archived</div>
+    </div>
+    <div class="tabs-vertical" id="vertical">
+      <div class="tab-vertical active">General</div>
+      <div class="tab-vertical">Privacy</div>
+      <div class="tab-vertical">Integrations</div>
+      <div class="tab-vertical">Advanced</div>
+    </div>
+  </div>
+</body>
+</html>

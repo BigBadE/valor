@@ -91,6 +91,7 @@ impl IncrementalLayoutEngine {
 
     /// Apply DOM updates
     pub fn apply_dom_updates(&mut self, updates: &[DOMUpdate]) {
+        log::info!("apply_dom_updates: Applying {} updates, dirty_nodes before: {}", updates.len(), self.dirty_nodes.len());
         for update in updates {
             match update {
                 DOMUpdate::InsertElement {
@@ -157,6 +158,7 @@ impl IncrementalLayoutEngine {
                 DOMUpdate::EndOfDocument => {}
             }
         }
+    log::info!("apply_dom_updates: Done, dirty_nodes after: {}", self.dirty_nodes.len());
     }
 
     /// Invalidate a specific node

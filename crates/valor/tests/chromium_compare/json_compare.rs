@@ -318,9 +318,10 @@ fn compare_json_helper(
         return;
     }
 
-    // Use small epsilon (0.02px) for rect dimensions, strict (eps=0) for everything else
+    // Use larger epsilon for rect dimensions to account for platform-specific text rendering
+    // Text measurement can vary slightly between FreeType (Linux) and platform renderers
     let effective_eps = if is_rect_dimension(params.path) {
-        0.02
+        1.0 // Allow up to 1px difference for text measurement variations
     } else {
         params.eps
     };

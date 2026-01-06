@@ -74,6 +74,7 @@ impl ConstraintLayoutTree {
             fragmentainer_block_size: None,
             fragmentainer_offset: LayoutUnit::zero(),
             is_for_measurement_only: true, // This is measurement, not final layout
+            margins_already_applied: false,
         };
 
         // Perform layout to get size

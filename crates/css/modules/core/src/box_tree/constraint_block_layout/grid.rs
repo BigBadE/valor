@@ -250,6 +250,7 @@ impl ConstraintLayoutTree {
                 fragmentainer_block_size: None,
                 fragmentainer_offset: LayoutUnit::zero(),
                 is_for_measurement_only: false, // Grid item final layout is not measurement
+                margins_already_applied: true, // Grid layout algorithm already positioned items with margins
             };
 
             // Layout the grid item to compute its internal layout

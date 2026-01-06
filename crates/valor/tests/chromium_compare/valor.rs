@@ -85,12 +85,12 @@ impl ApplicationHandler for WindowCreator {
 fn initialize_render_state(width: u32, height: u32) -> &'static Mutex<RenderState> {
     use winit::event_loop::EventLoop;
 
+    #[cfg(target_os = "macos")]
+    use winit::platform::macos::EventLoopBuilderExtMacOS as _;
     #[cfg(target_os = "windows")]
     use winit::platform::windows::EventLoopBuilderExtWindows as _;
     #[cfg(all(unix, not(target_os = "macos")))]
     use winit::platform::x11::EventLoopBuilderExtX11 as _;
-    #[cfg(target_os = "macos")]
-    use winit::platform::macos::EventLoopBuilderExtMacOS as _;
 
     RENDER_STATE.get_or_init(|| {
         let mut builder = EventLoop::builder();
@@ -101,12 +101,10 @@ fn initialize_render_state(width: u32, height: u32) -> &'static Mutex<RenderStat
             let _ignore = builder.with_any_thread(true);
         }
 
-        let event_loop = builder
-            .build()
-            .unwrap_or_else(|err| {
-                log::error!("Failed to create event loop: {err}");
-                process::abort();
-            });
+        let event_loop = builder.build().unwrap_or_else(|err| {
+            log::error!("Failed to create event loop: {err}");
+            process::abort();
+        });
 
         let window = {
             let mut app = WindowCreator::new(width, height);

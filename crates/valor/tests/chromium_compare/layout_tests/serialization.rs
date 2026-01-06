@@ -5,6 +5,7 @@ use css::style_types::{
     AlignItems, BorderWidths, BoxSizing, ComputedStyle, Display, Edges, Overflow, Position,
 };
 use css_core::LayoutRect;
+use css_display::used_display_for_child;
 use js::NodeKey;
 use page_handler::HtmlPage;
 use page_handler::utilities::snapshots::LayoutNodeKind;
@@ -20,6 +21,14 @@ struct SerializationContext<'context> {
     rects: &'context HashMap<NodeKey, LayoutRect>,
     styles: &'context HashMap<NodeKey, ComputedStyle>,
     attrs: &'context HashMap<NodeKey, HashMap<String, String>>,
+}
+
+/// Find the parent key for a given node key in the snapshot.
+fn find_parent_key(snapshot: &LayoutSnapshot, key: NodeKey) -> Option<NodeKey> {
+    snapshot
+        .iter()
+        .find(|(_, _, children)| children.contains(&key))
+        .map(|(parent_key, _, _)| *parent_key)
 }
 
 /// Serialize a layout box's rect as JSON.
@@ -54,8 +63,18 @@ fn serialize_border_widths(widths: &BorderWidths) -> JsonValue {
 }
 
 /// Serialize computed style to JSON for comparison with Chromium.
-fn serialize_style(computed: &ComputedStyle) -> JsonValue {
-    let display_str = match computed.display {
+///
+/// `parent_style` is used to compute the used display value (blockification for flex/grid items).
+/// `is_root` should be true for the root element (body).
+fn serialize_style(
+    computed: &ComputedStyle,
+    parent_style: Option<&ComputedStyle>,
+    is_root: bool,
+) -> JsonValue {
+    // Compute the used display value with blockification rules applied
+    let used_display = used_display_for_child(computed, parent_style, is_root);
+
+    let display_str = match used_display {
         Display::Block => "block",
         Display::Flex => "flex",
         Display::InlineFlex => "inline-flex",
@@ -97,9 +116,18 @@ fn serialize_style(computed: &ComputedStyle) -> JsonValue {
         Position::Fixed => "fixed",
     };
 
-    let flex_basis_str = computed
-        .flex_basis
-        .map_or_else(|| "auto".to_string(), |val| format!("{val}px"));
+    let flex_basis_str = computed.flex_basis.map_or_else(
+        || "auto".to_string(),
+        |val| {
+            // When flex-basis is 0, serialize as "0%" to match Chrome's representation
+            // of the flex shorthand (e.g., flex: 1 → flex-grow: 1, flex-shrink: 1, flex-basis: 0%)
+            if val.abs() < 0.01 {
+                "0%".to_string()
+            } else {
+                format!("{val}px")
+            }
+        },
+    );
 
     json!({
         "display": display_str,
@@ -230,6 +258,13 @@ fn serialize_block_element(
         return Ok(());
     };
 
+    // Find parent style for used display computation
+    let parent_key = find_parent_key(ctx.snapshot, key);
+    let parent_style = parent_key.and_then(|pk| ctx.styles.get(&pk));
+
+    // Body element is the root for display blockification purposes
+    let is_root = tag == "body";
+
     let attrs_map = extract_element_attrs(key, ctx.attrs);
     let is_form_control = matches!(tag, "input" | "textarea" | "select" | "button");
     let child_json = serialize_block_children(children, is_form_control, ctx)?;
@@ -247,7 +282,7 @@ fn serialize_block_element(
         "id": id,
         "attrs": attrs_map,
         "rect": serialize_rect(rect),
-        "style": serialize_style(computed),
+        "style": serialize_style(computed, parent_style, is_root),
         "children": child_json
     }));
 

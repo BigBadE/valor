@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            width: 800px;
+            height: 600px;
+            background: white;
+        }
+
+        h3 {
+            margin: 10px 0 5px 10px;
+        }
+
+        /* Test 1: No flex-grow (default 0) - items should NOT grow */
+        .test-no-grow {
+            display: flex;
+            background: #f0f0f0;
+            border: 2px solid red;
+            margin: 10px;
+            width: 400px;
+        }
+
+        .test-no-grow div {
+            background: lightcoral;
+            border: 1px solid darkred;
+            padding: 5px;
+            flex-basis: 50px;
+            /* flex-grow: 0 (default) - should stay 50px, leaving empty space */
+        }
+
+        /* Test 2: Different flex-grow values */
+        .test-grow-ratios {
+            display: flex;
+            background: #e0e0e0;
+            border: 2px solid blue;
+            margin: 10px;
+        }
+
+        .test-grow-ratios .grow-1 {
+            background: lightblue;
+            border: 1px solid darkblue;
+            padding: 5px;
+            flex-grow: 1;
+        }
+
+        .test-grow-ratios .grow-2 {
+            background: skyblue;
+            border: 1px solid darkblue;
+            padding: 5px;
+            flex-grow: 2;
+        }
+
+        .test-grow-ratios .grow-3 {
+            background: deepskyblue;
+            border: 1px solid darkblue;
+            padding: 5px;
+            flex-grow: 3;
+        }
+
+        /* Test 3: flex-shrink when content overflows */
+        .test-shrink {
+            display: flex;
+            background: #d0d0d0;
+            border: 2px solid green;
+            margin: 10px;
+            width: 200px; /* Intentionally small */
+        }
+
+        .test-shrink .no-shrink {
+            background: lightgreen;
+            border: 1px solid darkgreen;
+            padding: 5px;
+            flex-basis: 100px;
+            flex-shrink: 0; /* Should stay 100px */
+        }
+
+        .test-shrink .can-shrink {
+            background: lightgreen;
+            border: 1px solid darkgreen;
+            padding: 5px;
+            flex-basis: 100px;
+            flex-shrink: 1; /* Should shrink */
+        }
+
+        /* Test 4: flex shorthand (grow shrink basis) */
+        .test-shorthand {
+            display: flex;
+            background: #c0c0c0;
+            border: 2px solid purple;
+            margin: 10px;
+        }
+
+        .test-shorthand .flex-1 {
+            background: plum;
+            border: 1px solid purple;
+            padding: 5px;
+            flex: 1; /* 1 1 0% */
+        }
+
+        .test-shorthand .flex-auto {
+            background: plum;
+            border: 1px solid purple;
+            padding: 5px;
+            flex: auto; /* 1 1 auto */
+        }
+
+        .test-shorthand .flex-none {
+            background: plum;
+            border: 1px solid purple;
+            padding: 5px;
+            flex: none; /* 0 0 auto */
+        }
+    </style>
+</head>
+<body>
+    <h3>Test 1: No flex-grow - items should stay 50px (empty space remains)</h3>
+    <div class="test-no-grow">
+        <div>A</div>
+        <div>B</div>
+        <div>C</div>
+    </div>
+
+    <h3>Test 2: flex-grow ratios (1:2:3) - different growth rates</h3>
+    <div class="test-grow-ratios">
+        <div class="grow-1">grow:1</div>
+        <div class="grow-2">grow:2 (2x wider)</div>
+        <div class="grow-3">grow:3 (3x wider)</div>
+    </div>
+
+    <h3>Test 3: flex-shrink - container 200px, items want 100px each</h3>
+    <div class="test-shrink">
+        <div class="no-shrink">No shrink</div>
+        <div class="can-shrink">Can shrink</div>
+    </div>
+
+    <h3>Test 4: flex shorthand (1, auto, none)</h3>
+    <div class="test-shorthand">
+        <div class="flex-1">flex: 1</div>
+        <div class="flex-auto">flex: auto</div>
+        <div class="flex-none">flex: none (content width)</div>
+    </div>
+</body>
+</html>

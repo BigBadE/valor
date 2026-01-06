@@ -117,6 +117,12 @@ pub(super) fn display_list_retained_snapshot(
 
     let display_list = paint::build_display_list(rects, &styles, &snapshot, attrs);
 
+    // Log the first few rects to see their dimensions
+    for (i, (node_key, rect)) in rects.iter().take(5).enumerate() {
+        log::info!("  Rect {}: node={:?}, x={}, y={}, width={}, height={}", 
+            i, node_key, rect.x, rect.y, rect.width, rect.height);
+    }
+    
     log::info!(
         "display_list_retained_snapshot: generated {} items from {} rects",
         display_list.items.len(),

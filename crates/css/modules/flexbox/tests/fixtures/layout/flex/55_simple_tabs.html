@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            width: 800px;
+            background: white;
+        }
+
+        /* Exact replica of the tab issue */
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid gray;
+        }
+
+        .tabs .tab {
+            padding: 5px 10px;
+            border: 1px solid gray;
+            background: lightgray;
+        }
+    </style>
+</head>
+<body>
+    <!-- This should show 5 items sized to content, NOT 160px each -->
+    <div class="tabs">
+        <div class="tab">Overview</div>
+        <div class="tab">Settings</div>
+        <div class="tab">Reports</div>
+        <div class="tab">Admin</div>
+        <div class="tab">Help</div>
+    </div>
+</body>
+</html>

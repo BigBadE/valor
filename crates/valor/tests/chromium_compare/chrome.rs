@@ -68,7 +68,8 @@ fn find_chrome_executable() -> Result<PathBuf> {
 
             // Snap stubs don't output version info and may have snap messages
             if (stdout.contains("Chrome") || stdout.contains("Chromium"))
-                && !stderr.contains("snap") {
+                && !stderr.contains("snap")
+            {
                 return Ok(PathBuf::from(candidate));
             }
         }
@@ -140,13 +141,9 @@ async fn kill_existing_chrome(_port: u16) -> Result<()> {
         }
 
         // Also kill any Linux Chrome processes
-        let _ignore_result = Command::new("pkill")
-            .args(["-9", "-f", "chrome"])
-            .output();
+        let _ignore_result = Command::new("pkill").args(["-9", "-f", "chrome"]).output();
     } else {
-        let _ignore_result = Command::new("pkill")
-            .args(["-9", "-f", "chrome"])
-            .output();
+        let _ignore_result = Command::new("pkill").args(["-9", "-f", "chrome"]).output();
     }
 
     // Wait for processes to fully terminate
@@ -273,26 +270,15 @@ pub async fn start_and_connect_chrome() -> Result<BrowserWithHandler> {
         .map_err(|err| anyhow!("Failed to connect to Chrome on {ws_url}: {err}"))?;
 
     let handler_task = spawn(async move {
-        loop {
-            tokio::select! {
-                event = handler.next() => {
-                    match event {
-                        Some(Ok(())) => {}
-                        Some(Err(err)) => {
-                            log::debug!("Browser handler error: {err}");
-                        }
-                        None => {
-                            log::debug!("Browser handler stream ended");
-                            break;
-                        }
-                    }
-                }
-                () = sleep(Duration::from_secs(5)) => {
-                    log::debug!("Browser handler timeout after 5s, stopping");
-                    break;
+        while let Some(event) = handler.next().await {
+            match event {
+                Ok(()) => {}
+                Err(err) => {
+                    log::debug!("Browser handler error: {err}");
                 }
             }
         }
+        log::debug!("Browser handler stream ended");
     });
 
     Ok(BrowserWithHandler {

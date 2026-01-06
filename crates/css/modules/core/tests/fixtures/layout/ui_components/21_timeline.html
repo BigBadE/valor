@@ -1,0 +1,82 @@
+<!doctype html>
+<!-- VALOR fixture: Timeline -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Timeline</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 24px; max-width: 480px; }
+    .timeline { position: relative; }
+    .timeline-item {
+      display: flex;
+      gap: 16px;
+      padding-bottom: 24px;
+      position: relative;
+    }
+    .timeline-item:last-child { padding-bottom: 0; }
+    .timeline-marker {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #3b82f6;
+      flex-shrink: 0;
+      margin-top: 4px;
+      z-index: 1;
+    }
+    .timeline-marker.success { background: #22c55e; }
+    .timeline-marker.warning { background: #f59e0b; }
+    .timeline-item:not(:last-child)::before {
+      content: '';
+      position: absolute;
+      left: 5px;
+      top: 20px;
+      bottom: 0;
+      width: 2px;
+      background: #e5e7eb;
+    }
+    .timeline-content { flex: 1; }
+    .timeline-title { font-weight: 500; font-size: 14px; color: #111827; margin-bottom: 4px; }
+    .timeline-desc { font-size: 14px; color: #6b7280; line-height: 1.5; }
+    .timeline-time { font-size: 12px; color: #9ca3af; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="timeline" id="timeline">
+      <div class="timeline-item">
+        <div class="timeline-marker success"></div>
+        <div class="timeline-content">
+          <div class="timeline-title">Order Delivered</div>
+          <div class="timeline-desc">Package was delivered to your address.</div>
+          <div class="timeline-time">Today, 2:30 PM</div>
+        </div>
+      </div>
+      <div class="timeline-item">
+        <div class="timeline-marker"></div>
+        <div class="timeline-content">
+          <div class="timeline-title">Out for Delivery</div>
+          <div class="timeline-desc">Package is on the delivery vehicle.</div>
+          <div class="timeline-time">Today, 9:00 AM</div>
+        </div>
+      </div>
+      <div class="timeline-item">
+        <div class="timeline-marker"></div>
+        <div class="timeline-content">
+          <div class="timeline-title">In Transit</div>
+          <div class="timeline-desc">Package arrived at local facility.</div>
+          <div class="timeline-time">Yesterday, 6:45 PM</div>
+        </div>
+      </div>
+      <div class="timeline-item">
+        <div class="timeline-marker warning"></div>
+        <div class="timeline-content">
+          <div class="timeline-title">Order Shipped</div>
+          <div class="timeline-desc">Package has been shipped from warehouse.</div>
+          <div class="timeline-time">Dec 28, 2024</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

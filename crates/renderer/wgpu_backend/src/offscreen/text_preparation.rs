@@ -48,6 +48,102 @@ fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
     }
 }
 
+
+/// Clip rectangle type: (x, y, width, height)
+type ClipRect = (f32, f32, f32, f32);
+
+/// Intersect two clip rectangles, returning the overlapping region.
+fn intersect_clip(a: ClipRect, b: ClipRect) -> ClipRect {
+    let (ax, ay, aw, ah) = a;
+    let (bx, by, bw, bh) = b;
+    
+    let x1 = ax.max(bx);
+    let y1 = ay.max(by);
+    let x2 = (ax + aw).min(bx + bw);
+    let y2 = (ay + ah).min(by + bh);
+    
+    let w = (x2 - x1).max(0.0);
+    let h = (y2 - y1).max(0.0);
+    
+    (x1, y1, w, h)
+}
+
+/// Collect text items from display list, applying clip regions from BeginClip/EndClip.
+fn collect_clipped_texts(display_list: &DisplayList, width: u32, height: u32) -> Vec<DrawText> {
+    let mut texts = Vec::new();
+    let mut clip_stack: Vec<ClipRect> = Vec::new();
+    
+    for item in &display_list.items {
+        match item {
+            DisplayItem::BeginClip { x, y, width: w, height: h } => {
+                let new_clip = (*x, *y, *w, *h);
+                // Intersect with current clip if any
+                let effective_clip = clip_stack.last()
+                    .map(|current| intersect_clip(*current, new_clip))
+                    .unwrap_or(new_clip);
+                clip_stack.push(effective_clip);
+            }
+            DisplayItem::EndClip => {
+                clip_stack.pop();
+            }
+            DisplayItem::Text { x, y, text, color, font_size, font_weight, matched_font_weight, 
+                               font_family, line_height, line_height_unrounded, bounds, measured_width } => {
+                // Apply current clip to text bounds
+                let clipped_bounds = if let Some(current_clip) = clip_stack.last() {
+                    log::info!("[TEXT-CLIP] Text '{}' bounds={:?}, clip={:?}", 
+                        &text[..text.len().min(20)], bounds, current_clip);
+                    let (clip_x, clip_y, clip_w, clip_h) = *current_clip;
+                    let clip_right = clip_x + clip_w;
+                    let clip_bottom = clip_y + clip_h;
+                    
+                    // Intersect text bounds with clip region
+                    if let Some((left, top, right, bottom)) = bounds {
+                        let new_left = (*left as f32).max(clip_x).floor() as i32;
+                        let new_top = (*top as f32).max(clip_y).floor() as i32;
+                        let new_right = (*right as f32).min(clip_right).ceil() as i32;
+                        let new_bottom = (*bottom as f32).min(clip_bottom).ceil() as i32;
+                        
+                        // Skip text entirely outside clip region
+                        if new_right <= new_left || new_bottom <= new_top {
+                            continue;
+                        }
+                        
+                        Some((new_left, new_top, new_right, new_bottom))
+                    } else {
+                        // No bounds specified, use clip as bounds
+                        Some((
+                            clip_x.floor() as i32,
+                            clip_y.floor() as i32,
+                            clip_right.ceil() as i32,
+                            clip_bottom.ceil() as i32,
+                        ))
+                    }
+                } else {
+                    *bounds
+                };
+                
+                texts.push(DrawText {
+                    x: *x,
+                    y: *y,
+                    text: text.clone(),
+                    color: *color,
+                    font_size: *font_size,
+                    font_weight: *font_weight,
+                    matched_font_weight: *matched_font_weight,
+                    font_family: font_family.clone(),
+                    line_height: *line_height,
+                    line_height_unrounded: *line_height_unrounded,
+                    bounds: clipped_bounds,
+                    measured_width: *measured_width,
+                });
+            }
+            _ => {}
+        }
+    }
+    
+    texts
+}
+
 pub type PreparedText = (Vec<DrawText>, Vec<GlyphonBuffer>);
 
 /// Parameters for preparing text items.
@@ -60,7 +156,7 @@ pub struct PrepareTextParams<'prepare> {
     pub height: u32,
 }
 
-/// Prepare text items for rendering.
+/// Prepare text items for rendering, respecting clip regions from BeginClip/EndClip.
 ///
 /// # Errors
 /// Returns an error if text preparation fails.
@@ -74,12 +170,8 @@ pub fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> AnyhowResult<Pr
 
     debug_log(&mut file, "=== PREPARE_TEXT_ITEMS CALLED ===");
 
-    let texts: Vec<DrawText> = params
-        .display_list
-        .items
-        .iter()
-        .filter_map(map_text_item)
-        .collect();
+    // Collect text items with their effective clip regions
+    let texts: Vec<DrawText> = collect_clipped_texts(params.display_list, params.width, params.height);
 
     debug_log(
         &mut file,
@@ -149,6 +241,11 @@ fn create_text_areas<'buffer>(
         // We need to expand the bottom bound to prevent clipping.
         let bounds = match item.bounds {
             Some((left, top, right, bottom)) => {
+                // Skip invalid bounds (can happen with aggressive clipping)
+                if right <= left || bottom <= top {
+                    continue;
+                }
+                
                 // Calculate the actual rendered height based on unrounded line_height
                 let rendered_height = layout_line_count as f32 * line_height_unrounded;
                 // Calculate the layout height based on rounded line_height (what the bounds currently represent)

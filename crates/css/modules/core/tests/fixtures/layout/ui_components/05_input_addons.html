@@ -1,0 +1,74 @@
+<!doctype html>
+<!-- VALOR fixture: Input with addons -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Input Addons</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 16px; display: flex; flex-direction: column; gap: 12px; max-width: 320px; }
+    .input-group {
+      display: flex;
+      align-items: stretch;
+    }
+    .input-group .input {
+      flex: 1;
+      border-radius: 0;
+    }
+    .input-group .input:first-child { border-radius: 4px 0 0 4px; }
+    .input-group .input:last-child { border-radius: 0 4px 4px 0; }
+    .input {
+      padding: 8px 12px;
+      font-size: 14px;
+      border: 1px solid #d1d5db;
+      box-sizing: border-box;
+    }
+    .addon {
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      background: #f3f4f6;
+      border: 1px solid #d1d5db;
+      font-size: 14px;
+      color: #6b7280;
+    }
+    .addon-left { border-right: none; border-radius: 4px 0 0 4px; }
+    .addon-right { border-left: none; border-radius: 0 4px 4px 0; }
+    .input-icon {
+      position: relative;
+    }
+    .input-icon .input { padding-left: 36px; width: 100%; border-radius: 4px; }
+    .input-icon .icon {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 14px;
+      height: 14px;
+      background: #9ca3af;
+      border-radius: 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="input-group" id="prefix">
+      <span class="addon addon-left">$</span>
+      <input type="text" class="input" placeholder="0.00">
+    </div>
+    <div class="input-group" id="suffix">
+      <input type="text" class="input" placeholder="username">
+      <span class="addon addon-right">@example.com</span>
+    </div>
+    <div class="input-group" id="both">
+      <span class="addon addon-left">https://</span>
+      <input type="text" class="input" placeholder="website">
+      <span class="addon addon-right">.com</span>
+    </div>
+    <div class="input-icon" id="icon-input">
+      <span class="icon"></span>
+      <input type="text" class="input" placeholder="Search...">
+    </div>
+  </div>
+</body>
+</html>

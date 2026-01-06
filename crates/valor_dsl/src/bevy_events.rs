@@ -12,10 +12,12 @@ pub struct OnClick {
     pub position: (f32, f32),
     /// Which mouse button was clicked (0=left, 1=middle, 2=right).
     pub button: u8,
+    /// The entity that was clicked.
+    pub entity: bevy::prelude::Entity,
 }
 
 /// Triggered when text input occurs.
-#[derive(Event)]
+#[derive(Event, Clone)]
 pub struct OnInput {
     /// The input element node.
     pub node: NodeKey,
@@ -24,7 +26,7 @@ pub struct OnInput {
 }
 
 /// Triggered when a form input value changes.
-#[derive(Event)]
+#[derive(Event, Clone)]
 pub struct OnChange {
     /// The element node.
     pub node: NodeKey,
@@ -33,28 +35,28 @@ pub struct OnChange {
 }
 
 /// Triggered when a form is submitted.
-#[derive(Event)]
+#[derive(Event, Clone)]
 pub struct OnSubmit {
     /// The form element node.
     pub node: NodeKey,
 }
 
 /// Triggered when an element gains focus.
-#[derive(Event)]
+#[derive(Event, Clone)]
 pub struct OnFocus {
     /// The focused element node.
     pub node: NodeKey,
 }
 
 /// Triggered when an element loses focus.
-#[derive(Event)]
+#[derive(Event, Clone)]
 pub struct OnBlur {
     /// The element node that lost focus.
     pub node: NodeKey,
 }
 
 /// Triggered when a key is pressed.
-#[derive(Event)]
+#[derive(Event, Clone)]
 pub struct OnKeyDown {
     /// The focused element node.
     pub node: NodeKey,
@@ -69,7 +71,7 @@ pub struct OnKeyDown {
 }
 
 /// Triggered when a key is released.
-#[derive(Event)]
+#[derive(Event, Clone)]
 pub struct OnKeyUp {
     /// The focused element node.
     pub node: NodeKey,
@@ -78,7 +80,7 @@ pub struct OnKeyUp {
 }
 
 /// Triggered when mouse enters an element.
-#[derive(Event)]
+#[derive(Event, Clone)]
 pub struct OnMouseEnter {
     /// The element node.
     pub node: NodeKey,
@@ -87,17 +89,28 @@ pub struct OnMouseEnter {
 }
 
 /// Triggered when mouse leaves an element.
-#[derive(Event)]
+#[derive(Event, Clone)]
 pub struct OnMouseLeave {
     /// The element node.
     pub node: NodeKey,
 }
 
 /// Triggered when mouse moves over an element.
-#[derive(Event)]
+#[derive(Event, Clone)]
 pub struct OnMouseMove {
     /// The element node.
     pub node: NodeKey,
     /// Mouse position.
     pub position: (f32, f32),
+}
+
+// Implement EntityEvent for OnClick to work with Bevy 0.17 observers
+impl bevy::ecs::event::EntityEvent for OnClick {
+    fn event_target(&self) -> bevy::prelude::Entity {
+        self.entity
+    }
+
+    fn event_target_mut(&mut self) -> &mut bevy::prelude::Entity {
+        &mut self.entity
+    }
 }

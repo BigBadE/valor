@@ -1,0 +1,94 @@
+<!doctype html>
+<!-- VALOR fixture: Dropdown menu -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Dropdown</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 16px; display: flex; gap: 100px; }
+    .dropdown-wrapper { position: relative; }
+    .dropdown-trigger {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      background: white;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .dropdown-arrow {
+      width: 0;
+      height: 0;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 4px solid #6b7280;
+    }
+    .dropdown-menu {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      margin-top: 4px;
+      min-width: 180px;
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      box-shadow: 0 10px 15px rgba(0,0,0,0.1);
+      padding: 4px 0;
+    }
+    .dropdown-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      font-size: 14px;
+      color: #374151;
+    }
+    .dropdown-item:hover { background: #f3f4f6; }
+    .dropdown-item.danger { color: #ef4444; }
+    .dropdown-icon {
+      width: 16px;
+      height: 16px;
+      background: currentColor;
+      border-radius: 2px;
+      opacity: 0.5;
+    }
+    .dropdown-divider {
+      height: 1px;
+      background: #e5e7eb;
+      margin: 4px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="dropdown-wrapper" id="dropdown1">
+      <button class="dropdown-trigger">
+        Options
+        <span class="dropdown-arrow"></span>
+      </button>
+      <div class="dropdown-menu">
+        <div class="dropdown-item"><span class="dropdown-icon"></span>Edit</div>
+        <div class="dropdown-item"><span class="dropdown-icon"></span>Duplicate</div>
+        <div class="dropdown-item"><span class="dropdown-icon"></span>Archive</div>
+        <div class="dropdown-divider"></div>
+        <div class="dropdown-item danger"><span class="dropdown-icon"></span>Delete</div>
+      </div>
+    </div>
+    <div class="dropdown-wrapper" id="dropdown2">
+      <button class="dropdown-trigger">
+        Account
+        <span class="dropdown-arrow"></span>
+      </button>
+      <div class="dropdown-menu">
+        <div class="dropdown-item">Profile</div>
+        <div class="dropdown-item">Settings</div>
+        <div class="dropdown-item">Billing</div>
+        <div class="dropdown-divider"></div>
+        <div class="dropdown-item">Sign out</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

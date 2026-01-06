@@ -1,0 +1,95 @@
+<!doctype html>
+<!-- VALOR fixture: Progress bar -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Progress Bar</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 16px; display: flex; flex-direction: column; gap: 16px; max-width: 400px; }
+    .progress {
+      height: 8px;
+      background: #e5e7eb;
+      border-radius: 9999px;
+      overflow: hidden;
+    }
+    .progress-bar {
+      height: 100%;
+      background: #3b82f6;
+      border-radius: 9999px;
+    }
+    .progress-sm { height: 4px; }
+    .progress-lg { height: 12px; }
+    .progress-bar-success { background: #22c55e; }
+    .progress-bar-warning { background: #f59e0b; }
+    .progress-bar-error { background: #ef4444; }
+    .progress-bar-striped {
+      background-image: linear-gradient(
+        45deg,
+        rgba(255,255,255,0.15) 25%,
+        transparent 25%,
+        transparent 50%,
+        rgba(255,255,255,0.15) 50%,
+        rgba(255,255,255,0.15) 75%,
+        transparent 75%,
+        transparent
+      );
+      background-size: 1rem 1rem;
+    }
+    .progress-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 14px;
+      margin-bottom: 6px;
+    }
+    .progress-label-text { color: #374151; font-weight: 500; }
+    .progress-label-value { color: #6b7280; }
+    .progress-with-text {
+      position: relative;
+      height: 20px;
+    }
+    .progress-with-text .progress-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      color: white;
+      font-weight: 500;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div>
+      <div class="progress-label">
+        <span class="progress-label-text">Upload Progress</span>
+        <span class="progress-label-value">75%</span>
+      </div>
+      <div class="progress" id="default">
+        <div class="progress-bar" style="width: 75%;"></div>
+      </div>
+    </div>
+    <div class="progress progress-sm" id="small">
+      <div class="progress-bar" style="width: 45%;"></div>
+    </div>
+    <div class="progress progress-lg" id="large">
+      <div class="progress-bar" style="width: 60%;"></div>
+    </div>
+    <div class="progress" id="success">
+      <div class="progress-bar progress-bar-success" style="width: 100%;"></div>
+    </div>
+    <div class="progress" id="warning">
+      <div class="progress-bar progress-bar-warning" style="width: 50%;"></div>
+    </div>
+    <div class="progress" id="error">
+      <div class="progress-bar progress-bar-error" style="width: 25%;"></div>
+    </div>
+    <div class="progress" id="striped">
+      <div class="progress-bar progress-bar-striped" style="width: 65%;"></div>
+    </div>
+    <div class="progress progress-with-text" id="with-text">
+      <div class="progress-bar" style="width: 80%;">80%</div>
+    </div>
+  </div>
+</body>
+</html>
