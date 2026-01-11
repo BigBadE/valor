@@ -370,11 +370,11 @@ impl ConstraintLayoutTree {
         // Debug: Log for text containing "Quoted"
         Self::debug_log_quoted_text(text, &style, &metrics);
 
-        // CRITICAL: Use glyph_height for text_rect_height to match Chrome behavior
-        // Chrome's getBoundingClientRect() for text nodes returns the actual glyph bounding box
-        // (ascent + descent), NOT the CSS line-height value. CSS line-height affects line box
-        // spacing but not the text node's bounding box dimensions.
-        let single_line_text_rect_height = metrics.glyph_height;
+        // CRITICAL: Use CSS line-height for text_rect_height to match Chrome's layout behavior.
+        // For layout purposes (container sizing), Chrome uses the CSS line-height value,
+        // not the glyph bounding box. The line-height includes font leading and determines
+        // how much vertical space the text occupies in its container.
+        let single_line_text_rect_height = metrics.height;
 
         // For intrinsic sizing (Indefinite), always use the natural text width without wrapping
         // For definite sizes, check if wrapping is needed

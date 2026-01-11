@@ -182,7 +182,7 @@ async fn main() -> Result<()> {
     let url = Url::parse("http://localhost/counter")?;
     let handle = Handle::current();
 
-    let _page = HtmlPage::new(&handle, url, config).await?;
+    let _page = HtmlPage::new(&handle, url, config, true).await?;
 
     // Counter state
     let count = Arc::new(Mutex::new(0i32));

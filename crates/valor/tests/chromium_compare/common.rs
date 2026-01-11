@@ -91,7 +91,7 @@ pub async fn create_page(handle: &Handle, url: Url) -> Result<HtmlPage> {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(config.viewport_height);
-    let page = HtmlPage::new(handle, url, config).await?;
+    let page = HtmlPage::new(handle, url, config, false).await?;
     Ok(page)
 }
 
@@ -112,8 +112,6 @@ pub async fn setup_page_for_fixture(handle: &Handle, path: &Path) -> Result<Html
         ));
     }
 
-    // Inject CSS reset is now done AFTER parsing completes
-    // See setup_page_with_css_reset() below
     Ok(page)
 }
 
@@ -131,8 +129,8 @@ where
     F: FnMut(&mut HtmlPage) -> Result<()>,
 {
     let start_time = Instant::now();
-    let max_total_time = Duration::from_secs(5);
-    let max_iterations = 100;
+    let max_total_time = Duration::from_secs(30);
+    let max_iterations = 1000;
 
     for iter in 0..max_iterations {
         if start_time.elapsed() > max_total_time {

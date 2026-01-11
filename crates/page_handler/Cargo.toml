@@ -6,7 +6,7 @@ edition.workspace = true
 workspace = true
 
 [features]
-default = ["js"]
+default = []
 js = ["dep:js_engine_v8"]
 
 [dependencies]

@@ -312,6 +312,7 @@ impl ConstraintLayoutTree {
         let container_inline_size = self.compute_inline_size(node, constraint_space, style, sides);
         let container_cross_size =
             Self::compute_flex_container_cross_size(style, sides, constraint_space);
+
         let (bfc_offset, _can_collapse_with_children) =
             Self::resolve_bfc_offset(constraint_space, style, sides, true);
         let flex_direction = match style.flex_direction {

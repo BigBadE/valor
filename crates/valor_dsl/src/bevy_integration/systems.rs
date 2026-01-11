@@ -25,7 +25,7 @@ pub fn process_new_valor_uis(
         let handle = tokio_handle.0.clone();
         let (width, height) = (valor_ui.width, valor_ui.height);
         let config = page_handler::utilities::config::ValorConfig::from_env();
-        let page_result = HtmlPage::new_blank(&handle, config);
+        let page_result = HtmlPage::new_blank(&handle, config, true);
 
         match page_result {
             Ok(mut page) => {

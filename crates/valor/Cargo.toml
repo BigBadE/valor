@@ -7,7 +7,7 @@ default-run = "valor"
 workspace = true
 
 [features]
-default = ["js"]
+default = []
 js = ["page_handler/js"]
 
 [dependencies]

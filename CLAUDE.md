@@ -16,13 +16,17 @@ DO NOT USE CARGO CLEAN WITHOUT EXPLICIT PERMISSION. REBUILDS TAKE FOREVER.
   - **IMPORTANT**: Always run this before finishing work on any changes
 - **Build the project**: `cargo build`
 - **Run the browser**: `cargo run`
-- **Run specific test suite**: `cargo test --all --all-features --test layouter_chromium_compare`
-- **Run tests for specific package**: `cargo test --all --all-features --package valor`
+- **Run fixture tests**: `cargo test --test chromium_tests`
+  - **CRITICAL**: Do NOT use `--all-features` with fixture tests - this enables the `js` feature and causes V8 isolate errors
+  - Fixture tests are designed to run WITHOUT JavaScript
+  - Tests compare Valor's layout and graphics output against Chromium
+- **Run tests for specific package**: `cargo test --package valor`
 
 ### JavaScript Engine Features
-The project supports both V8 and stub JavaScript engines via cargo features:
-- **Build with V8 (default)**: `cargo build` or `cargo build --features js_v8`
-- **Build without V8 (stub)**: `cargo build --no-default-features --features js_stub`
+The project supports JavaScript execution via an optional feature flag:
+- **Default (no JS)**: `cargo build` - No JavaScript engine included
+- **With JS feature**: `cargo build --features js` - Enables V8 JavaScript engine via `page_handler/js` feature
+- The `js` crate (DOM types, mirrors) is always available, but `js_engine_v8` is optional
 
 ## Architecture
 
@@ -100,8 +104,25 @@ The `HtmlPage::update()` method coordinates all subsystems:
 
 ### Testing Strategy
 
-- **Layout comparison tests**: `layouter_chromium_compare.rs` compares layout output against Chromium using headless Chrome
-- **Graphics comparison tests**: `graphics_chromium_compare.rs` does pixel-level screenshot comparisons
+#### Fixture Tests (Chromium Comparison)
+Located in `crates/valor/tests/chromium_compare/`:
+- **Run command**: `cargo test --test chromium_tests` (no `--all-features`!)
+- **Total fixtures**: 139 HTML test files across CSS modules and application tests
+- **Test types**:
+  - **Layout comparison**: Compares JSON layout tree (rect positions, dimensions, styles) with 0.6px epsilon
+  - **Graphics comparison**: Pixel-level screenshot comparison with region-aware thresholds
+- **Caching**: Chrome reference outputs cached in `target/test_cache/{layout,graphics}/` using FNV-1a hash
+- **Failure artifacts**: Saved to `target/test_cache/{layout,graphics}/failing/` with:
+  - `.error.txt` - Detailed diff of all mismatches
+  - `.chrome.json` / `.valor.json` - Reference and actual outputs
+  - `.diff.png` - Visual diff (graphics only)
+
+**Current Status (as of Jan 2026)**:
+- 81/139 passing (58% pass rate)
+- 58/139 failing (42% failure rate)
+- Main issues: Text height 3px too short (affects 90% of failures), table display mode not applied
+
+#### Other Tests
 - Integration tests in `crates/css/tests/` verify CSS mirror behavior
 - Unit tests in CSS modules validate property computation
 

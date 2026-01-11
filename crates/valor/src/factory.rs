@@ -30,11 +30,16 @@ pub fn create_chrome_and_content(
         runtime.handle(),
         Url::parse("valor://chrome/index.html")?,
         config,
+        true,
     ))?;
 
     // Create content page
-    let content_page =
-        runtime.block_on(HtmlPage::new(runtime.handle(), initial_content_url, config))?;
+    let content_page = runtime.block_on(HtmlPage::new(
+        runtime.handle(),
+        initial_content_url,
+        config,
+        true,
+    ))?;
 
     // Wire privileged chromeHost channel for the chrome page
     #[cfg(feature = "js")]

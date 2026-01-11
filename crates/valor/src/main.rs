@@ -208,10 +208,12 @@ impl App {
             return;
         };
         let config = ValorConfig::from_env();
-        match state
-            .runtime
-            .block_on(HtmlPage::new(state.runtime.handle(), target_url, config))
-        {
+        match state.runtime.block_on(HtmlPage::new(
+            state.runtime.handle(),
+            target_url,
+            config,
+            true,
+        )) {
             Ok(new_page) => {
                 if state.pages.len() >= 2 {
                     state.pages[1] = new_page;

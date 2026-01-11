@@ -65,27 +65,47 @@ async fn run_layout_and_graphics_tests(
     page: Option<&Page>,
     fixture_path: &Path,
     fixture_start: Instant,
-) -> FixtureResult {
+) -> Result<FixtureResult> {
     let handle = Handle::current();
 
     let layout_result =
         run_comparison_test_simple::<LayoutComparison>(page, &handle, fixture_path).await;
     let layout_passed = layout_result.is_ok();
-    let layout_error = layout_result.err().map(|err| err.to_string());
+    let layout_error = layout_result.as_ref().err().map(|err| err.to_string());
+
+    // If layout hit an infrastructure error, fail immediately
+    if let Err(e) = layout_result {
+        if !e.to_string().contains("Debug artifacts saved to:") {
+            return Err(e.context(format!(
+                "Layout infrastructure error for {}",
+                fixture_path.display()
+            )));
+        }
+    }
 
     let graphics_result =
         run_comparison_test_simple::<GraphicsComparison>(page, &handle, fixture_path).await;
     let graphics_passed = graphics_result.is_ok();
-    let graphics_error = graphics_result.err().map(|err| err.to_string());
+    let graphics_error = graphics_result.as_ref().err().map(|err| err.to_string());
 
-    FixtureResult {
+    // If graphics hit an infrastructure error, fail immediately
+    if let Err(e) = graphics_result {
+        if !e.to_string().contains("Debug artifacts saved to:") {
+            return Err(e.context(format!(
+                "Graphics infrastructure error for {}",
+                fixture_path.display()
+            )));
+        }
+    }
+
+    Ok(FixtureResult {
         path: fixture_path.to_path_buf(),
         layout_passed,
         graphics_passed,
         layout_error,
         graphics_error,
         _duration: fixture_start.elapsed(),
-    }
+    })
 }
 
 /// Processes a single fixture test with both layout and graphics tests using the unified framework.
@@ -98,19 +118,19 @@ async fn process_fixture(
     _total_fixtures: usize,
     fixture_path: &Path,
     browser: Option<&Browser>,
-) -> FixtureResult {
+) -> Result<FixtureResult> {
     let fixture_start = Instant::now();
 
     // Skip known-failing fixtures
     if should_skip_fixture(fixture_path) {
-        return FixtureResult {
+        return Ok(FixtureResult {
             path: fixture_path.to_path_buf(),
             layout_passed: true,
             graphics_passed: true,
             layout_error: None,
             graphics_error: None,
             _duration: fixture_start.elapsed(),
-        };
+        });
     }
 
     // Create a new page for this fixture (if browser is available)
@@ -119,7 +139,11 @@ async fn process_fixture(
             Ok(page) => Some(page),
             Err(err) => {
                 let error_msg = format!("Failed to create page: {err}");
-                return create_page_error_result(fixture_path, error_msg, fixture_start.elapsed());
+                return Ok(create_page_error_result(
+                    fixture_path,
+                    error_msg,
+                    fixture_start.elapsed(),
+                ));
             }
         }
     } else {
@@ -266,7 +290,9 @@ pub async fn run_all_fixtures(fixtures: &[PathBuf]) -> Result<()> {
 
     let mut results = Vec::with_capacity(total_fixtures);
     while let Some(result) = futures.next().await {
-        results.push(result);
+        // Fail immediately on infrastructure errors
+        let fixture_result = result?;
+        results.push(fixture_result);
     }
 
     let total_duration = total_start.elapsed();

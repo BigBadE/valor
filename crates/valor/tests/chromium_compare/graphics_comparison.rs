@@ -114,9 +114,9 @@ fn count_pixel_failures(
 }
 
 /// Acceptable thresholds for graphics rendering differences
-const MAX_GRAPHICS_TEXT_FAIL_RATIO: f64 = 0.50; // 50% of text pixels can differ
-const MAX_GRAPHICS_NON_TEXT_FAIL_RATIO: f64 = 0.05; // 5% of non-text pixels can differ
-const MAX_GRAPHICS_OVERALL_FAIL_RATIO: f64 = 0.10; // 10% overall pixels can differ
+const MAX_GRAPHICS_TEXT_FAIL_RATIO: f64 = 0.01; // 1% of text pixels can differ (reduced to catch font differences)
+const MAX_GRAPHICS_NON_TEXT_FAIL_RATIO: f64 = 0.01; // 1% of non-text pixels can differ
+const MAX_GRAPHICS_OVERALL_FAIL_RATIO: f64 = 0.01; // 1% overall pixels can differ
 
 /// Graphics comparison test implementation
 pub struct GraphicsComparison;

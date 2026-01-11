@@ -4,9 +4,11 @@ fn main() {
     let mut font_system = FontSystem::new();
     font_system.db_mut().load_system_fonts();
 
+    // Test with Liberation Serif (Times New Roman equivalent on Linux)
+    // This is what the basic_text.html fixture uses (default serif font)
     let attrs = Attrs::new()
-        .family(Family::Name("Liberation Sans"))
-        .weight(Weight(500));
+        .family(Family::Name("Liberation Serif"))
+        .weight(Weight(400));
 
     let font_matches = font_system.get_font_matches(&attrs);
     let first_match = font_matches.first().unwrap();
@@ -20,7 +22,7 @@ fn main() {
     let metrics = font.metrics();
     let units_per_em = f32::from(metrics.units_per_em);
 
-    println!("=== Liberation Sans Font Metrics (weight 500) ===\n");
+    println!("=== Liberation Serif Font Metrics (Times New Roman equivalent, weight 400) ===\n");
     println!("units_per_em: {}\n", units_per_em);
 
     // hhea table metrics
@@ -60,7 +62,7 @@ fn main() {
 
     println!("\n=== Line-height calculations for common font sizes ===\n");
 
-    for font_size in [12.0, 14.0, 16.0] {
+    for font_size in [12.0, 14.0, 16.0, 18.0, 20.0, 24.0] {
         println!("Font size: {}px", font_size);
 
         // hhea calculation
@@ -79,11 +81,14 @@ fn main() {
             println!("  win:  {:.2} (rounded: {})", win_lh, win_lh.round());
         }
 
-        // Chrome observed values
+        // Chrome observed values from basic_text.html fixture
         let chrome_expected = match font_size as i32 {
             12 => 17,
             14 => 21,
-            16 => 22,
+            16 => 24,
+            18 => 27,
+            20 => 30,
+            24 => 27, // From the failing test - container height for 24px font
             _ => 0,
         };
 

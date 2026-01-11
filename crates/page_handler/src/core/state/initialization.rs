@@ -149,6 +149,7 @@ pub(super) fn create_js_context(
 pub(super) fn initialize_blank_page(
     handle: &Handle,
     config: ValorConfig,
+    enable_js: bool,
 ) -> Result<PageComponents, Error> {
     let (out_updater, _out_receiver) = broadcast::channel(128);
     let (in_updater, in_receiver) = mpsc::channel(128);
@@ -157,7 +158,11 @@ pub(super) fn initialize_blank_page(
     let js_keyman = dom.register_manager::<u64>();
 
     #[cfg(feature = "js")]
-    let (_script_tx, script_rx) = unbounded_channel::<ScriptJob>();
+    let script_rx = if enable_js {
+        Some(unbounded_channel::<ScriptJob>().1)
+    } else {
+        None
+    };
 
     // Use a dummy file:// URL for blank pages
     let blank_url =
@@ -166,13 +171,17 @@ pub(super) fn initialize_blank_page(
     let mirrors = create_dom_mirrors(&in_updater, &dom, &blank_url);
 
     #[cfg(feature = "js")]
-    let js_ctx = create_js_context(
-        &in_updater,
-        js_keyman,
-        &mirrors.dom_index_shared,
-        handle,
-        &blank_url,
-    )?;
+    let js_ctx = if enable_js {
+        Some(create_js_context(
+            &in_updater,
+            js_keyman,
+            &mirrors.dom_index_shared,
+            handle,
+            &blank_url,
+        )?)
+    } else {
+        None
+    };
     let frame_scheduler = FrameScheduler::new(config.frame_budget());
 
     let pipeline = Pipeline::new(PipelineConfig::default());
@@ -233,6 +242,7 @@ pub(super) async fn initialize_page(
     handle: &Handle,
     url: Url,
     config: ValorConfig,
+    enable_js: bool,
 ) -> Result<PageComponents, Error> {
     let (out_updater, out_receiver) = broadcast::channel(128);
     let (in_updater, in_receiver) = mpsc::channel(128);
@@ -242,8 +252,15 @@ pub(super) async fn initialize_page(
     let js_keyman = dom.register_manager::<u64>();
 
     #[cfg(feature = "js")]
-    let (script_tx, script_rx) = unbounded_channel::<ScriptJob>();
-    #[cfg(feature = "js")]
+    let (script_tx, script_rx) = if enable_js {
+        let (tx, rx) = unbounded_channel::<ScriptJob>();
+        (tx, Some(rx))
+    } else {
+        (unbounded_channel::<ScriptJob>().0, None)
+    };
+    #[cfg(not(feature = "js"))]
+    let script_tx = unbounded_channel::<ScriptJob>().0;
+
     let inputs = ParseInputs {
         in_updater: in_updater.clone(),
         keyman,
@@ -252,27 +269,22 @@ pub(super) async fn initialize_page(
         script_tx,
         base_url: url.clone(),
     };
-    #[cfg(not(feature = "js"))]
-    let inputs = ParseInputs {
-        in_updater: in_updater.clone(),
-        keyman,
-        byte_stream: stream_url(&url).await?,
-        dom_updates: out_receiver,
-        script_tx: unbounded_channel::<ScriptJob>().0, // Dummy sender when JS disabled
-        base_url: url.clone(),
-    };
     let loader = HTMLParser::parse(handle, inputs);
 
     let mirrors = create_dom_mirrors(&in_updater, &dom, &url);
 
     #[cfg(feature = "js")]
-    let js_ctx = create_js_context(
-        &in_updater,
-        js_keyman,
-        &mirrors.dom_index_shared,
-        handle,
-        &url,
-    )?;
+    let js_ctx = if enable_js {
+        Some(create_js_context(
+            &in_updater,
+            js_keyman,
+            &mirrors.dom_index_shared,
+            handle,
+            &url,
+        )?)
+    } else {
+        None
+    };
     let frame_scheduler = FrameScheduler::new(config.frame_budget());
 
     let pipeline = Pipeline::new(PipelineConfig::default());
@@ -304,10 +316,10 @@ pub(super) struct PageComponents {
     pub loader: Option<HTMLParser>,
     pub mirrors: DomMirrors,
     #[cfg(feature = "js")]
-    pub js_ctx: JsContext,
+    pub js_ctx: Option<JsContext>,
     pub in_updater: mpsc::Sender<Vec<DOMUpdate>>,
     #[cfg(feature = "js")]
-    pub script_rx: UnboundedReceiver<ScriptJob>,
+    pub script_rx: Option<UnboundedReceiver<ScriptJob>>,
     pub frame_scheduler: FrameScheduler,
     pub pipeline: Pipeline,
     pub incremental_layout: IncrementalLayoutEngine,

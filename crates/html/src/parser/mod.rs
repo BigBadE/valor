@@ -501,9 +501,15 @@ impl HTMLParser {
             let tx_stream = sender.clone();
             while let Some(item) = byte_stream.next().await {
                 if tx_stream.send(item).await.is_err() {
+                    trace!("Send failed, breaking");
                     break;
                 }
             }
+            trace!("Byte stream exhausted, dropping senders");
+            // Drop the sender to close the channel and allow parser_worker to finish
+            drop(sender);
+            drop(tx_stream);
+            trace!("Senders dropped, returning parser_worker");
             parser_worker
         };
         trace!("Done reading content in parser");

@@ -95,13 +95,13 @@ pub struct HtmlPage {
     in_updater: Sender<Vec<DOMUpdate>>,
     /// JavaScript engine and script queue.
     #[cfg(feature = "js")]
-    js_engine: V8Engine,
+    js_engine: Option<V8Engine>,
     /// Host context for privileged binding decisions and shared registries.
     #[cfg(feature = "js")]
-    host_context: HostContext,
+    host_context: Option<HostContext>,
     /// Script receiver for processing script jobs.
     #[cfg(feature = "js")]
-    script_rx: UnboundedReceiver<ScriptJob>,
+    script_rx: Option<UnboundedReceiver<ScriptJob>>,
     /// Counter for tracking script execution.
     #[cfg(feature = "js")]
     script_counter: u64,
@@ -109,7 +109,7 @@ pub struct HtmlPage {
     url: Url,
     /// ES module resolver/bundler adapter (JS crate) for side-effect modules.
     #[cfg(feature = "js")]
-    module_resolver: Box<dyn ModuleResolver>,
+    module_resolver: Option<Box<dyn ModuleResolver>>,
     /// Frame scheduler to coalesce layout per frame with a budget (Phase 5).
     frame_scheduler: FrameScheduler,
     /// Diagnostics: number of nodes restyled in the last tick.
@@ -131,10 +131,17 @@ impl HtmlPage {
     /// # Errors
     ///
     /// Returns an error if page initialization fails.
-    pub fn new_blank(handle: &Handle, config: ValorConfig) -> Result<Self, Error> {
-        let components = initialization::initialize_blank_page(handle, config)?;
+    pub fn new_blank(handle: &Handle, config: ValorConfig, enable_js: bool) -> Result<Self, Error> {
+        let components = initialization::initialize_blank_page(handle, config, enable_js)?;
         let blank_url = Url::parse("file:///blank")
             .map_err(|err| anyhow::anyhow!("Failed to parse blank URL: {err}"))?;
+
+        #[cfg(feature = "js")]
+        let (js_engine, host_context) = if let Some(ctx) = components.js_ctx {
+            (Some(ctx.js_engine), Some(ctx.host_context))
+        } else {
+            (None, None)
+        };
 
         Ok(Self {
             focused_node: None,
@@ -148,16 +155,20 @@ impl HtmlPage {
             dom_index_shared: components.mirrors.dom_index_shared,
             in_updater: components.in_updater,
             #[cfg(feature = "js")]
-            js_engine: components.js_ctx.js_engine,
+            js_engine,
             #[cfg(feature = "js")]
-            host_context: components.js_ctx.host_context,
+            host_context,
             #[cfg(feature = "js")]
             script_rx: components.script_rx,
             #[cfg(feature = "js")]
             script_counter: 0,
             url: blank_url,
             #[cfg(feature = "js")]
-            module_resolver: Box::new(SimpleFileModuleResolver::new()),
+            module_resolver: if enable_js {
+                Some(Box::new(SimpleFileModuleResolver::new()))
+            } else {
+                None
+            },
             frame_scheduler: components.frame_scheduler,
             last_style_restyled_nodes: 0,
             lifecycle: LifecycleFlags::default(),
@@ -175,8 +186,21 @@ impl HtmlPage {
     /// # Errors
     ///
     /// Returns an error if page initialization fails.
-    pub async fn new(handle: &Handle, url: Url, config: ValorConfig) -> Result<Self, Error> {
-        let components = initialization::initialize_page(handle, url.clone(), config).await?;
+    pub async fn new(
+        handle: &Handle,
+        url: Url,
+        config: ValorConfig,
+        enable_js: bool,
+    ) -> Result<Self, Error> {
+        let components =
+            initialization::initialize_page(handle, url.clone(), config, enable_js).await?;
+
+        #[cfg(feature = "js")]
+        let (js_engine, host_context) = if let Some(ctx) = components.js_ctx {
+            (Some(ctx.js_engine), Some(ctx.host_context))
+        } else {
+            (None, None)
+        };
 
         Ok(Self {
             focused_node: None,
@@ -190,16 +214,20 @@ impl HtmlPage {
             dom_index_shared: components.mirrors.dom_index_shared,
             in_updater: components.in_updater,
             #[cfg(feature = "js")]
-            js_engine: components.js_ctx.js_engine,
+            js_engine,
             #[cfg(feature = "js")]
-            host_context: components.js_ctx.host_context,
+            host_context,
             #[cfg(feature = "js")]
             script_rx: components.script_rx,
             #[cfg(feature = "js")]
             script_counter: 0,
             url,
             #[cfg(feature = "js")]
-            module_resolver: Box::new(SimpleFileModuleResolver::new()),
+            module_resolver: if enable_js {
+                Some(Box::new(SimpleFileModuleResolver::new()))
+            } else {
+                None
+            },
             frame_scheduler: components.frame_scheduler,
             last_style_restyled_nodes: 0,
             lifecycle: LifecycleFlags::default(),
@@ -220,21 +248,30 @@ impl HtmlPage {
     /// Execute any pending inline scripts from the parser
     #[cfg(feature = "js")]
     pub(crate) fn execute_pending_scripts(&mut self) {
-        let mut params = js_execution::ExecuteScriptsParams {
-            script_rx: &mut self.script_rx,
-            script_counter: &mut self.script_counter,
-            js_engine: &mut self.js_engine,
-            module_resolver: &mut self.module_resolver,
-            url: &self.url,
-            host_context: &self.host_context,
-        };
-        js_execution::execute_pending_scripts(&mut params);
+        if let (Some(script_rx), Some(js_engine), Some(module_resolver), Some(host_context)) = (
+            self.script_rx.as_mut(),
+            self.js_engine.as_mut(),
+            self.module_resolver.as_mut(),
+            self.host_context.as_ref(),
+        ) {
+            let mut params = js_execution::ExecuteScriptsParams {
+                script_rx,
+                script_counter: &mut self.script_counter,
+                js_engine,
+                module_resolver,
+                url: &self.url,
+                host_context,
+            };
+            js_execution::execute_pending_scripts(&mut params);
+        }
     }
 
     /// Execute at most one due JavaScript timer callback.
     #[cfg(feature = "js")]
     pub(crate) fn tick_js_timers_once(&mut self) {
-        js_execution::tick_js_timers_once(&mut self.js_engine);
+        if let Some(js_engine) = self.js_engine.as_mut() {
+            js_execution::tick_js_timers_once(js_engine);
+        }
     }
 
     /// Synchronously fetch the textContent for an element by id using the `DomIndex` mirror.
@@ -343,8 +380,10 @@ impl HtmlPage {
     /// Returns an error if JavaScript evaluation or job execution fails.
     #[cfg(feature = "js")]
     pub fn eval_js(&mut self, source: &str) -> Result<(), Error> {
-        self.js_engine.eval_script(source, "valor://eval_js_test")?;
-        self.js_engine.run_jobs()?;
+        if let Some(js_engine) = self.js_engine.as_mut() {
+            js_engine.eval_script(source, "valor://eval_js_test")?;
+            js_engine.run_jobs()?;
+        }
         Ok(())
     }
 
@@ -434,13 +473,15 @@ impl HtmlPage {
         &mut self,
         sender: UnboundedSender<ChromeHostCommand>,
     ) -> Result<(), Error> {
-        self.host_context.chrome_host_tx = Some(sender);
-        // Install the chromeHost namespace now that a channel is available
-        let bindings = build_chrome_host_bindings();
-        let _unused = self
-            .js_engine
-            .install_bindings(&self.host_context, &bindings);
-        let _unused2 = self.js_engine.run_jobs();
+        if let (Some(host_context), Some(js_engine)) =
+            (self.host_context.as_mut(), self.js_engine.as_mut())
+        {
+            host_context.chrome_host_tx = Some(sender);
+            // Install the chromeHost namespace now that a channel is available
+            let bindings = build_chrome_host_bindings();
+            let _unused = js_engine.install_bindings(host_context, &bindings);
+            let _unused2 = js_engine.run_jobs();
+        }
         Ok(())
     }
 

@@ -210,11 +210,52 @@ pub async fn run_comparison_test<T: ComparisonTest>(
     handle: &Handle,
     fixture: &Path,
 ) -> Result<ComparisonOutcome<T::CompareResult>> {
-    let fixture_name = fixture
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("unknown")
-        .to_string();
+    // Create unique fixture name from path components to avoid collisions
+    // Extract meaningful path components after "crates" or use full relative path
+    let fixture_name = {
+        let canonical = fixture
+            .canonicalize()
+            .unwrap_or_else(|_| fixture.to_path_buf());
+        let path_str = canonical.display().to_string();
+        let components: Vec<&str> = path_str.split(&['/', '\\'][..]).collect();
+
+        // Find "crates" index and build name from there
+        if let Some(crates_idx) = components.iter().position(|&c| c == "crates") {
+            // Take everything after "crates", excluding "tests" and "fixtures" dirs
+            let relevant: Vec<&str> = components[crates_idx + 1..]
+                .iter()
+                .filter(|&&part| {
+                    part != "tests"
+                        && part != "fixtures"
+                        && !part.is_empty()
+                        && part != ".."
+                        && part != "."
+                })
+                .copied()
+                .collect();
+
+            if !relevant.is_empty() {
+                // Join with underscore and remove .html extension
+                let mut name = relevant.join("_");
+                if name.ends_with(".html") {
+                    name.truncate(name.len() - 5);
+                }
+                name
+            } else {
+                fixture
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            }
+        } else {
+            fixture
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        }
+    };
 
     let mut metadata = T::Metadata::default();
 

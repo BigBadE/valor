@@ -18,11 +18,15 @@ impl HtmlPage {
     /// Returns an error if event handling fails.
     #[cfg(feature = "js")]
     pub(crate) fn handle_dom_content_loaded_if_needed(&mut self) -> Result<(), Error> {
-        super::dom_processing::handle_dom_content_loaded_if_needed(
-            self.loader.as_ref(),
-            &mut self.lifecycle.dom_content_loaded_fired,
-            &mut self.js_engine,
-            &mut self.dom_index_mirror,
-        )
+        if let Some(js_engine) = self.js_engine.as_mut() {
+            super::dom_processing::handle_dom_content_loaded_if_needed(
+                self.loader.as_ref(),
+                &mut self.lifecycle.dom_content_loaded_fired,
+                js_engine,
+                &mut self.dom_index_mirror,
+            )
+        } else {
+            Ok(())
+        }
     }
 }

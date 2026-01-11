@@ -90,35 +90,43 @@ fn compute_line_height_metrics(
             let descent_px = metrics.descent * font_size;
             let leading_px = metrics.leading * font_size;
 
-            // Chrome's "normal" line-height calculation (reverse-engineered from actual behavior):
-            // 1. Round ascent, descent, and leading individually
-            // 2. Sum the rounded values
-            // 3. Multiply by 1.2 (or 1.3 for 14px - special case for default font size)
-            // 4. Round the final result
+            // Chrome's actual "normal" line-height calculation:
+            // Use the font's embedded metrics directly without artificial multipliers.
+            // The font designer already specified the intended line-height via the OS/2 table.
             //
-            // This matches Chrome's exact behavior for Liberation Sans on Linux.
-            // See: https://developer.mozilla.org/en-US/docs/Web/CSS/line-height
+            // Platform-specific behavior (handled in font_system.rs):
+            // - Windows: Uses OS/2 winAscent + winDescent (no line gap)
+            // - Linux/macOS: Uses hhea ascent + descent + leading
+            //
+            // CRITICAL: Chrome rounds the TOTAL line-height, not individual components.
+            // For Liberation Serif 24px: ascent=21.387 + descent=5.191 = 26.578 → round to 27px
+            // If we rounded individually: round(21.387)=21 + round(5.191)=5 = 26px ❌
+            //
+            // However, we do round individual ascent/descent for glyph positioning.
             let ascent_rounded = ascent_px.round();
             let descent_rounded = descent_px.round();
-            let leading_rounded = leading_px.round();
-            let base_height = ascent_rounded + descent_rounded + leading_rounded;
 
-            // Chrome uses 1.3x multiplier for 14px (better readability at default size)
-            // and 1.2x for other font sizes
-            let multiplier = if (font_size - 14.0).abs() < 0.1 {
-                1.3
-            } else {
-                1.2
-            };
-            let normal_line_h = (base_height * multiplier).round();
+            // Normal line-height = round(ascent + descent + leading)
+            let normal_line_h = (ascent_px + descent_px + leading_px).round();
+
+            // Debug output for Liberation Sans at 14px
+            #[cfg(all(unix, not(target_os = "macos")))]
+            if (font_size - 14.0).abs() < 0.01 {
+                eprintln!(
+                    "LINE-HEIGHT CALC at font_size={:.1}px: ascent_px={:.2} + descent_px={:.2} + leading_px={:.2} = {:.2} → normal_line_h={}",
+                    font_size, ascent_px, descent_px, leading_px,
+                    ascent_px + descent_px + leading_px,
+                    normal_line_h
+                );
+            }
 
             // Unrounded line height for cosmic-text internal calculations
             let line_h_unrounded = style.line_height.unwrap_or(normal_line_h);
 
-            // Glyph height for rendering (already calculated ascent_rounded and descent_rounded above)
+            // Glyph height for rendering (ascent + descent only, no leading)
             let glyph_h_rounded = ascent_rounded + descent_rounded;
 
-            // Line height is already rounded from the calculation above
+            // Use explicit line-height from style, or computed normal line-height
             let line_h = style.line_height.unwrap_or(normal_line_h);
 
             LineHeightMetrics {

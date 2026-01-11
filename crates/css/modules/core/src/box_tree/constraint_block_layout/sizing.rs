@@ -106,16 +106,16 @@ impl ConstraintLayoutTree {
                 }
                 // Text inputs have intrinsic height equal to one line of text.
                 // Chrome uses the computed line-height for the content-box height.
-                // For line-height: normal, typical fonts use approximately font-size * 1.2-1.4
-                // System UI fonts typically use ~1.357 (e.g., 19px for 14px font)
                 let font_size = style.font_size;
-                let line_height = style
-                    .line_height
-                    .unwrap_or_else(|| (font_size * 1.357).round());
+                let line_height = style.line_height.unwrap_or_else(|| {
+                    // Use actual font metrics for line-height: normal
+                    self.measure_text_line_height(node, style)
+                });
                 Some(line_height)
             }
             "button" => {
-                // Buttons don't have intrinsic height - they size based on their content
+                // TODO: Implement exact Chrome button intrinsic sizing behavior
+                // Chrome's behavior is context-dependent and not yet fully understood
                 None
             }
             "textarea" => {
@@ -124,6 +124,17 @@ impl ConstraintLayoutTree {
             }
             _ => None,
         }
+    }
+
+    /// Measure line-height for text using actual font metrics.
+    ///
+    /// This is a helper for form controls that need accurate line-height measurements.
+    fn measure_text_line_height(&self, _node: NodeKey, style: &ComputedStyle) -> f32 {
+        // Use text measurement system to get accurate line-height
+        // For a single character, the height will be the line-height
+        use css_text::measurement::measure_text;
+        let metrics = measure_text("X", style);
+        metrics.height
     }
 
     /// Compute max-content width for a block by measuring its children.

@@ -40,19 +40,13 @@ pub fn get_font_system() -> Arc<Mutex<FontSystem>> {
 
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            // Chrome uses Liberation Sans as the default sans-serif font on Linux
-            // (not Noto Sans, despite fontconfig defaulting to Noto Sans)
-            // Liberation Sans metrics: ascent=0.905, descent=0.212, total=1.150
-            // This produces line-heights that match Chrome exactly:
-            //   8px font → 9px height, 10px font → 11px height, etc.
-            // Note: DejaVu Sans has identical metrics but different glyphs (Q tail differs)
-            font_system
-                .db_mut()
-                .set_monospace_family("DejaVu Sans Mono");
-            font_system
-                .db_mut()
-                .set_sans_serif_family("Liberation Sans");
-            font_system.db_mut().set_serif_family("Liberation Serif");
+            // On Linux, we rely on fontconfig to resolve generic families
+            // This matches Chrome's behavior which uses fontconfig for font resolution
+            // Typically fontconfig maps:
+            // - sans-serif → Noto Sans (most modern Linux distributions)
+            // - serif → Liberation Serif or Noto Serif
+            // - monospace → DejaVu Sans Mono or Noto Sans Mono
+            // We don't override these - let fontconfig do its job
         }
 
         let arc = Arc::new(Mutex::new(font_system));
@@ -62,12 +56,15 @@ pub fn get_font_system() -> Arc<Mutex<FontSystem>> {
 }
 
 /// Map a font family name to a glyphon Family enum.
-/// Maps generic families to match Chrome's default font choices on each platform.
+/// Maps CSS generic font families to cosmic-text Family enum.
 ///
-/// This function ensures consistent font selection between layout (measurement) and rendering.
-/// We explicitly use `Family::Name` with the specific font we configured in fontdb to ensure
-/// consistent metrics. Using the generic `Family::SansSerif` etc. can sometimes pick different
-/// fonts depending on fontdb's internal logic.
+/// This uses the generic Family variants (SansSerif, Serif, Monospace) to allow fontconfig
+/// to resolve fonts on Linux, matching Chrome's behavior. On Linux, fontconfig typically maps:
+/// - sans-serif/system-ui → Noto Sans (or other configured sans-serif font)
+/// - serif → Liberation Serif or Noto Serif
+/// - monospace → DejaVu Sans Mono or Noto Sans Mono
+///
+/// This ensures we use the same fonts that Chrome uses via fontconfig.
 pub fn map_font_family(font_name: &str) -> Family<'_> {
     match font_name.to_lowercase().as_str() {
         "system-ui" | "-apple-system" | "blinkmacsystemfont" | "sans-serif" => {
@@ -81,38 +78,24 @@ pub fn map_font_family(font_name: &str) -> Family<'_> {
             }
             #[cfg(all(unix, not(target_os = "macos")))]
             {
-                // Chrome uses Liberation Sans as the default sans-serif font on Linux
-                Family::Name("Liberation Sans")
+                // Chrome uses Noto Sans as the default sans-serif font on Linux
+                // (via fontconfig resolution, which typically maps sans-serif to Noto Sans)
+                Family::Name("Noto Sans")
             }
         }
         "serif" => {
-            #[cfg(target_os = "windows")]
-            {
-                Family::Name("Times New Roman")
-            }
-            #[cfg(target_os = "macos")]
-            {
-                Family::Name("Times")
-            }
-            #[cfg(all(unix, not(target_os = "macos")))]
-            {
-                // Liberation Serif is a metrically-compatible Times New Roman clone
-                Family::Name("Liberation Serif")
-            }
+            // Use Family::Serif to let fontconfig resolve the actual font
+            // On Linux, this typically resolves to Liberation Serif or Noto Serif
+            // On Windows, this resolves to Times New Roman
+            // On macOS, this resolves to Times
+            Family::Serif
         }
         "monospace" => {
-            #[cfg(target_os = "windows")]
-            {
-                Family::Name("Consolas")
-            }
-            #[cfg(target_os = "macos")]
-            {
-                Family::Name("Menlo")
-            }
-            #[cfg(all(unix, not(target_os = "macos")))]
-            {
-                Family::Name("DejaVu Sans Mono")
-            }
+            // Use Family::Monospace to let fontconfig resolve the actual font
+            // On Linux, this typically resolves to DejaVu Sans Mono or Noto Sans Mono
+            // On Windows, this resolves to Courier New
+            // On macOS, this resolves to Courier or Menlo
+            Family::Monospace
         }
         "cursive" => Family::Cursive,
         "fantasy" => Family::Fantasy,
@@ -158,6 +141,23 @@ pub fn get_font_metrics(font_sys: &mut FontSystem, attrs: &Attrs<'_>) -> Option<
     let metrics = font.metrics();
     let units_per_em = f32::from(metrics.units_per_em);
 
+    // Debug: Print raw metrics
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let family_name = match &attrs.family {
+            Family::Name(name) => *name,
+            Family::Serif => "serif",
+            Family::SansSerif => "sans-serif",
+            Family::Monospace => "monospace",
+            Family::Cursive => "cursive",
+            Family::Fantasy => "fantasy",
+        };
+        eprintln!(
+            "FONT METRICS for '{}': ascent={}, descent={}, leading={}, units_per_em={}",
+            family_name, metrics.ascent, metrics.descent, metrics.leading, metrics.units_per_em
+        );
+    }
+
     // Chrome uses different font metric tables depending on the platform:
     // - Windows: OS/2 winAscent + winDescent (no line gap)
     // - Linux: OS/2 typo metrics if USE_TYPO_METRICS flag is set, otherwise hhea metrics
@@ -165,8 +165,27 @@ pub fn get_font_metrics(font_sys: &mut FontSystem, attrs: &Attrs<'_>) -> Option<
     // We need to match this platform-specific behavior for correct text layout.
     #[cfg(target_os = "windows")]
     let (ascent, descent, leading) = {
-        if let Some((win_ascent, win_descent)) = font.os2_metrics() {
-            // Use OS/2 table metrics (what Chrome uses on Windows)
+        // Chrome on Windows uses OS/2 typo metrics when USE_TYPO_METRICS flag is set,
+        // otherwise falls back to win metrics (no line gap).
+        // This matches Skia's behavior in SkFontHost_FreeType.cpp.
+        if let Some((typo_ascent, typo_descent, typo_line_gap, use_typo_metrics)) =
+            font.os2_typo_metrics()
+        {
+            if use_typo_metrics {
+                // Use OS/2 typo metrics with line gap
+                (typo_ascent, typo_descent, typo_line_gap)
+            } else if let Some((win_ascent, win_descent)) = font.os2_metrics() {
+                // Use OS/2 win metrics (no line gap) - traditional Windows behavior
+                (win_ascent, win_descent, 0.0)
+            } else {
+                // Fallback to hhea metrics if OS/2 table is missing
+                let ascent = metrics.ascent / units_per_em;
+                let descent = -metrics.descent / units_per_em;
+                let leading = metrics.leading / units_per_em;
+                (ascent, descent, leading)
+            }
+        } else if let Some((win_ascent, win_descent)) = font.os2_metrics() {
+            // Use OS/2 win metrics (no line gap) if typo metrics not available
             (win_ascent, win_descent, 0.0)
         } else {
             // Fallback to hhea metrics if OS/2 table is missing
@@ -179,10 +198,32 @@ pub fn get_font_metrics(font_sys: &mut FontSystem, attrs: &Attrs<'_>) -> Option<
 
     #[cfg(all(unix, not(target_os = "macos")))]
     let (ascent, descent, leading) = {
-        let ascent = metrics.ascent / units_per_em;
-        let descent = -metrics.descent / units_per_em; // Note: descent is negative in font metrics
-        let leading = metrics.leading / units_per_em; // Line-gap for "normal" line-height
-        (ascent, descent, leading)
+        // Chrome on Linux uses OS/2 typo metrics when USE_TYPO_METRICS flag is set,
+        // otherwise uses hhea metrics. This matches Skia's behavior in
+        // SkFontHost_FreeType.cpp lines 1605-1611.
+        if let Some((typo_ascent, typo_descent, typo_line_gap, use_typo_metrics)) =
+            font.os2_typo_metrics()
+        {
+            if use_typo_metrics {
+                // Use OS/2 typo metrics with line gap (matches Chrome/Skia on Linux)
+                (typo_ascent, typo_descent, typo_line_gap)
+            } else {
+                // When USE_TYPO_METRICS is not set, Chrome uses hhea metrics
+                // This matches: ascent = face->ascender, descent = face->descender,
+                // leading = face->height + (face->descender - face->ascender)
+                // where face->height = ascender - descender + lineGap
+                let ascent = metrics.ascent / units_per_em;
+                let descent = -metrics.descent / units_per_em;
+                let leading = metrics.leading / units_per_em;
+                (ascent, descent, leading)
+            }
+        } else {
+            // Fallback to hhea metrics if OS/2 table is missing
+            let ascent = metrics.ascent / units_per_em;
+            let descent = -metrics.descent / units_per_em;
+            let leading = metrics.leading / units_per_em;
+            (ascent, descent, leading)
+        }
     };
 
     #[cfg(target_os = "macos")]
@@ -192,6 +233,34 @@ pub fn get_font_metrics(font_sys: &mut FontSystem, attrs: &Attrs<'_>) -> Option<
         let leading = metrics.leading / units_per_em; // Line-gap for "normal" line-height
         (ascent, descent, leading)
     };
+
+    // Debug logging to verify final normalized metrics
+    #[cfg(all(unix, not(target_os = "macos")))]
+    // Debug logging for sans-serif fonts (useful for comparing with Chrome)
+    if matches!(attrs.family, Family::SansSerif | Family::Name("Noto Sans")) {
+        let font_name = match attrs.family {
+            Family::SansSerif => "sans-serif",
+            Family::Serif => "serif",
+            Family::Monospace => "monospace",
+            Family::Name(name) => name,
+            _ => "unknown",
+        };
+        eprintln!(
+            "NORMALIZED {}: ascent={:.6}, descent={:.6}, leading={:.6}, total={:.6}",
+            font_name,
+            ascent,
+            descent,
+            leading,
+            ascent + descent + leading
+        );
+        eprintln!(
+            "For 14px font: line-height = ({:.6} + {:.6} + {:.6}) * 14 = {:.2}px",
+            ascent,
+            descent,
+            leading,
+            (ascent + descent + leading) * 14.0
+        );
+    }
 
     Some(FontMetricsData {
         ascent,

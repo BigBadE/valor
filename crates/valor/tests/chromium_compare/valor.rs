@@ -14,7 +14,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 
-use super::common::setup_page_for_fixture;
+use super::layout_tests::setup::setup_page_for_fixture;
 
 static RENDER_COUNTER: AtomicUsize = AtomicUsize::new(0);
 static RENDER_STATE: OnceLock<Mutex<RenderState>> = OnceLock::new();

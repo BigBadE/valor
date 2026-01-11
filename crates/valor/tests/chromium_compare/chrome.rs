@@ -186,6 +186,12 @@ fn build_chrome_args(user_data_dir: &Path) -> Vec<String> {
         "--mute-audio".to_string(),
         "--disable-features=ProcessPerSiteUpToMainFrameThreshold".to_string(),
         "--enable-automation".to_string(),
+        // Fix font rendering to match headed Chrome
+        // See: https://github.com/puppeteer/puppeteer/issues/2410
+        "--font-render-hinting=none".to_string(),
+        // Force headless Chrome to use the same fonts as headed Chrome
+        // Headless mode sometimes falls back to different fonts
+        "--disable-font-subpixel-positioning".to_string(),
     ]
 }
 
