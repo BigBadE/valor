@@ -10,12 +10,16 @@ use core::sync::atomic::AtomicU64;
 use css::{CSSMirror, Orchestrator};
 use html::dom::DOM;
 use html::parser::{HTMLParser, ParseInputs, ScriptJob};
+
+use js::{DOMMirror, DOMUpdate, DomIndex, NodeKey, NodeKeyManager, SharedDomIndex};
+
+#[cfg(feature = "js")]
 use js::bindings::{FetchRegistry, StorageRegistry};
-use js::{
-    ConsoleLogger, DOMMirror, DOMUpdate, DomIndex, HostContext, NodeKey, NodeKeyManager,
-    SharedDomIndex, build_default_bindings,
-};
+#[cfg(feature = "js")]
+use js::{ConsoleLogger, HostContext, build_default_bindings};
+#[cfg(feature = "js")]
 use js_engine_v8::V8Engine;
+
 use renderer::Renderer;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -40,6 +44,7 @@ pub(super) struct DomMirrors {
 }
 
 /// Helper to create JS engine context.
+#[cfg(feature = "js")]
 pub(super) struct JsContext {
     /// JavaScript engine instance.
     pub js_engine: V8Engine,
@@ -92,6 +97,7 @@ pub(super) fn build_page_origin(url: &Url) -> String {
 /// # Errors
 ///
 /// Returns an error if JS engine initialization fails.
+#[cfg(feature = "js")]
 pub(super) fn create_js_context(
     in_updater: &mpsc::Sender<Vec<DOMUpdate>>,
     js_keyman: NodeKeyManager<u64>,
@@ -150,6 +156,7 @@ pub(super) fn initialize_blank_page(
     let mut dom = DOM::new(out_updater, in_receiver);
     let js_keyman = dom.register_manager::<u64>();
 
+    #[cfg(feature = "js")]
     let (_script_tx, script_rx) = unbounded_channel::<ScriptJob>();
 
     // Use a dummy file:// URL for blank pages
@@ -157,6 +164,8 @@ pub(super) fn initialize_blank_page(
         Url::parse("file:///blank").map_err(|err| anyhow!("Failed to parse blank URL: {err}"))?;
 
     let mirrors = create_dom_mirrors(&in_updater, &dom, &blank_url);
+
+    #[cfg(feature = "js")]
     let js_ctx = create_js_context(
         &in_updater,
         js_keyman,
@@ -203,8 +212,10 @@ pub(super) fn initialize_blank_page(
         dom,
         loader: None, // No HTML parser for blank pages
         mirrors,
+        #[cfg(feature = "js")]
         js_ctx,
         in_updater,
+        #[cfg(feature = "js")]
         script_rx,
         frame_scheduler,
         pipeline,
@@ -230,7 +241,9 @@ pub(super) async fn initialize_page(
     let keyman = dom.register_parser_manager();
     let js_keyman = dom.register_manager::<u64>();
 
+    #[cfg(feature = "js")]
     let (script_tx, script_rx) = unbounded_channel::<ScriptJob>();
+    #[cfg(feature = "js")]
     let inputs = ParseInputs {
         in_updater: in_updater.clone(),
         keyman,
@@ -239,9 +252,20 @@ pub(super) async fn initialize_page(
         script_tx,
         base_url: url.clone(),
     };
+    #[cfg(not(feature = "js"))]
+    let inputs = ParseInputs {
+        in_updater: in_updater.clone(),
+        keyman,
+        byte_stream: stream_url(&url).await?,
+        dom_updates: out_receiver,
+        script_tx: unbounded_channel::<ScriptJob>().0, // Dummy sender when JS disabled
+        base_url: url.clone(),
+    };
     let loader = HTMLParser::parse(handle, inputs);
 
     let mirrors = create_dom_mirrors(&in_updater, &dom, &url);
+
+    #[cfg(feature = "js")]
     let js_ctx = create_js_context(
         &in_updater,
         js_keyman,
@@ -262,8 +286,10 @@ pub(super) async fn initialize_page(
         dom,
         loader: Some(loader),
         mirrors,
+        #[cfg(feature = "js")]
         js_ctx,
         in_updater,
+        #[cfg(feature = "js")]
         script_rx,
         frame_scheduler,
         pipeline,
@@ -277,8 +303,10 @@ pub(super) struct PageComponents {
     pub dom: DOM,
     pub loader: Option<HTMLParser>,
     pub mirrors: DomMirrors,
+    #[cfg(feature = "js")]
     pub js_ctx: JsContext,
     pub in_updater: mpsc::Sender<Vec<DOMUpdate>>,
+    #[cfg(feature = "js")]
     pub script_rx: UnboundedReceiver<ScriptJob>,
     pub frame_scheduler: FrameScheduler,
     pub pipeline: Pipeline,

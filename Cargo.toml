@@ -76,7 +76,7 @@ v8 = "142.1.0"
 # Our crates
 css = { path = "crates/css" }
 html = { path = "crates/html" }
-page_handler = { path = "crates/page_handler" }
+page_handler = { path = "crates/page_handler", default-features = false }
 renderer = { path = "crates/renderer" }
 wgpu_backend = { path = "crates/renderer/wgpu_backend" }
 js = { path = "crates/js" }

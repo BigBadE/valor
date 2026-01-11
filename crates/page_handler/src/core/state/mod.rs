@@ -25,12 +25,19 @@ use css_core::LayoutRect;
 use html::dom::DOM;
 use html::parser::HTMLParser;
 use html::parser::ScriptJob;
+
+use js::{DOMMirror, DOMSubscriber, DOMUpdate, DomIndex, NodeKey, SharedDomIndex};
+
+#[cfg(feature = "js")]
 use js::{
-    ChromeHostCommand, DOMMirror, DOMSubscriber, DOMUpdate, DomIndex, HostContext, JsEngine as _,
-    ModuleResolver, NodeKey, SharedDomIndex, SimpleFileModuleResolver, build_chrome_host_bindings,
+    ChromeHostCommand, HostContext, JsEngine as _, ModuleResolver, SimpleFileModuleResolver,
+    build_chrome_host_bindings,
 };
-type SharedDomIndexRef = SharedDomIndex;
+#[cfg(feature = "js")]
 use js_engine_v8::V8Engine;
+
+use std::sync::atomic::{AtomicU32, Ordering};
+type SharedDomIndexRef = SharedDomIndex;
 use log::info;
 use renderer::Renderer;
 use std::collections::HashMap;
@@ -38,6 +45,9 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender};
 use tracing::info_span;
 use url::Url;
+
+/// Counter for generating unique CSS injection IDs
+static INJECT_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// Structured outcome of a single `update()` tick. Extend as needed.
 pub struct UpdateOutcome {
@@ -84,16 +94,21 @@ pub struct HtmlPage {
     /// For sending updates to the DOM.
     in_updater: Sender<Vec<DOMUpdate>>,
     /// JavaScript engine and script queue.
+    #[cfg(feature = "js")]
     js_engine: V8Engine,
     /// Host context for privileged binding decisions and shared registries.
+    #[cfg(feature = "js")]
     host_context: HostContext,
     /// Script receiver for processing script jobs.
+    #[cfg(feature = "js")]
     script_rx: UnboundedReceiver<ScriptJob>,
     /// Counter for tracking script execution.
+    #[cfg(feature = "js")]
     script_counter: u64,
     /// Current page URL.
     url: Url,
     /// ES module resolver/bundler adapter (JS crate) for side-effect modules.
+    #[cfg(feature = "js")]
     module_resolver: Box<dyn ModuleResolver>,
     /// Frame scheduler to coalesce layout per frame with a budget (Phase 5).
     frame_scheduler: FrameScheduler,
@@ -132,11 +147,16 @@ impl HtmlPage {
             dom_index_mirror: components.mirrors.dom_index_mirror,
             dom_index_shared: components.mirrors.dom_index_shared,
             in_updater: components.in_updater,
+            #[cfg(feature = "js")]
             js_engine: components.js_ctx.js_engine,
+            #[cfg(feature = "js")]
             host_context: components.js_ctx.host_context,
+            #[cfg(feature = "js")]
             script_rx: components.script_rx,
+            #[cfg(feature = "js")]
             script_counter: 0,
             url: blank_url,
+            #[cfg(feature = "js")]
             module_resolver: Box::new(SimpleFileModuleResolver::new()),
             frame_scheduler: components.frame_scheduler,
             last_style_restyled_nodes: 0,
@@ -169,11 +189,16 @@ impl HtmlPage {
             dom_index_mirror: components.mirrors.dom_index_mirror,
             dom_index_shared: components.mirrors.dom_index_shared,
             in_updater: components.in_updater,
+            #[cfg(feature = "js")]
             js_engine: components.js_ctx.js_engine,
+            #[cfg(feature = "js")]
             host_context: components.js_ctx.host_context,
+            #[cfg(feature = "js")]
             script_rx: components.script_rx,
+            #[cfg(feature = "js")]
             script_counter: 0,
             url,
+            #[cfg(feature = "js")]
             module_resolver: Box::new(SimpleFileModuleResolver::new()),
             frame_scheduler: components.frame_scheduler,
             last_style_restyled_nodes: 0,
@@ -193,6 +218,7 @@ impl HtmlPage {
     }
 
     /// Execute any pending inline scripts from the parser
+    #[cfg(feature = "js")]
     pub(crate) fn execute_pending_scripts(&mut self) {
         let mut params = js_execution::ExecuteScriptsParams {
             script_rx: &mut self.script_rx,
@@ -206,6 +232,7 @@ impl HtmlPage {
     }
 
     /// Execute at most one due JavaScript timer callback.
+    #[cfg(feature = "js")]
     pub(crate) fn tick_js_timers_once(&mut self) {
         js_execution::tick_js_timers_once(&mut self.js_engine);
     }
@@ -223,7 +250,9 @@ impl HtmlPage {
         let has_dirty = self.incremental_layout.has_dirty_nodes();
         let geometry_empty = self.incremental_layout.rects().is_empty();
         let should_layout = has_dirty || geometry_empty;
-        log::info!("compute_layout: has_dirty={}, geometry_empty={}, should_layout={}", has_dirty, geometry_empty, should_layout);
+        log::info!(
+            "compute_layout: has_dirty={has_dirty}, geometry_empty={geometry_empty}, should_layout={should_layout}"
+        );
 
         if !should_layout && !self.frame_scheduler.allow() {
             self.frame_scheduler.incr_deferred();
@@ -232,8 +261,8 @@ impl HtmlPage {
         }
 
         let frame_allowed = self.frame_scheduler.allow();
-        log::info!("compute_layout: frame_scheduler.allow()={}", frame_allowed);
-        
+        log::info!("compute_layout: frame_scheduler.allow()={frame_allowed}");
+
         // Always run layout if we have dirty nodes, bypass frame scheduler
         // The frame scheduler is meant to prevent excessive polling, not to skip dirty work
         if should_layout && (frame_allowed || has_dirty) {
@@ -312,6 +341,7 @@ impl HtmlPage {
     /// # Errors
     ///
     /// Returns an error if JavaScript evaluation or job execution fails.
+    #[cfg(feature = "js")]
     pub fn eval_js(&mut self, source: &str) -> Result<(), Error> {
         self.js_engine.eval_script(source, "valor://eval_js_test")?;
         self.js_engine.run_jobs()?;
@@ -399,6 +429,7 @@ impl HtmlPage {
     /// # Errors
     ///
     /// Returns an error if binding installation fails.
+    #[cfg(feature = "js")]
     pub fn attach_chrome_host(
         &mut self,
         sender: UnboundedSender<ChromeHostCommand>,
@@ -443,8 +474,8 @@ impl HtmlPage {
         accessors::ax_tree_snapshot_string(&self.incremental_layout)
     }
 
-    /// Synchronously inject CSS text directly into CSSMirror.
-    /// This bypasses the async DOMUpdate channel to ensure deterministic ordering.
+    /// Synchronously inject CSS text directly into `CSSMirror`.
+    /// This bypasses the async `DOMUpdate` channel to ensure deterministic ordering.
     ///
     /// # Errors
     /// Returns an error if CSS mirror update fails.
@@ -455,13 +486,11 @@ impl HtmlPage {
         self.css_mirror.try_update_sync()?;
 
         // Use sequential counter for unique IDs
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static INJECT_COUNTER: AtomicU32 = AtomicU32::new(0);
         let counter = INJECT_COUNTER.fetch_add(1, Ordering::Relaxed);
 
         // Create unique node keys using very high IDs (0xFFFF_0000 + counter)
-        let style_key = NodeKey::pack(0, 0, 0xFFFF_0000_u64 + u64::from(counter) * 2);
-        let text_key = NodeKey::pack(0, 0, 0xFFFF_0000_u64 + u64::from(counter) * 2 + 1);
+        let style_key = NodeKey::pack(0, 0, 0xFFFF_0000u64 + u64::from(counter) * 2);
+        let text_key = NodeKey::pack(0, 0, 0xFFFF_0000u64 + u64::from(counter) * 2 + 1);
 
         // Directly apply updates to CSSMirror synchronously
         let updates = vec![

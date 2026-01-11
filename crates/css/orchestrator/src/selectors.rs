@@ -11,6 +11,19 @@ pub(crate) enum Combinator {
     Child,
 }
 
+/// Pseudo-class selectors for structural matching.
+/// Spec: Selectors Level 3 — 6.6. Structural pseudo-classes
+/// <https://www.w3.org/TR/selectors-3/#structural-pseudos>
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum StructuralPseudo {
+    /// :first-child - matches an element that is the first child of its parent
+    First,
+    /// :last-child - matches an element that is the last child of its parent
+    Last,
+    /// :only-child - matches an element that is the only child of its parent
+    Only,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 /// A simple selector consisting of a tag name, an element id, a list of classes, attribute selectors, or the universal selector.
 ///
@@ -29,6 +42,8 @@ pub(crate) struct SimpleSelector {
     attr_equals: Vec<(String, String)>,
     /// Whether this selector is the universal selector ('*').
     universal: bool,
+    /// Pseudo-class selectors.
+    pseudo_classes: Vec<StructuralPseudo>,
 }
 
 impl SimpleSelector {
@@ -56,6 +71,11 @@ impl SimpleSelector {
     /// True if this simple selector is the universal selector ('*').
     pub(crate) const fn is_universal(&self) -> bool {
         self.universal
+    }
+    #[inline]
+    /// Pseudo-class selectors.
+    pub(crate) fn pseudo_classes(&self) -> &[StructuralPseudo] {
+        &self.pseudo_classes
     }
 }
 
@@ -134,13 +154,14 @@ fn commit_current_part(
             classes: take(&mut current.classes),
             attr_equals: take(&mut current.attr_equals),
             universal: take(&mut current.universal),
+            pseudo_classes: take(&mut current.pseudo_classes),
         },
         combinator_to_next: Some(combinator),
     });
 }
 
 /// Compute the specificity (ids, classes, tags) for a parsed selector.
-/// Per CSS Selectors Level 3 §9: Attribute selectors count as classes
+/// Per CSS Selectors Level 3 §9: Attribute selectors and pseudo-classes count as classes
 pub(crate) fn compute_specificity(selector: &Selector) -> Specificity {
     let mut ids = 0u32;
     let mut classes = 0u32;
@@ -158,6 +179,11 @@ pub(crate) fn compute_specificity(selector: &Selector) -> Specificity {
             let len_u32 = u32::try_from(part.sel.attr_equals.len()).unwrap_or(u32::MAX);
             classes = classes.saturating_add(len_u32);
         }
+        // Pseudo-classes count as classes per spec
+        if !part.sel.pseudo_classes.is_empty() {
+            let len_u32 = u32::try_from(part.sel.pseudo_classes.len()).unwrap_or(u32::MAX);
+            classes = classes.saturating_add(len_u32);
+        }
         if part.sel.tag.is_some() {
             tags = tags.saturating_add(1);
         }
@@ -172,6 +198,7 @@ fn has_content(sel: &SimpleSelector) -> bool {
         || sel.element_id.is_some()
         || !sel.classes.is_empty()
         || !sel.attr_equals.is_empty()
+        || !sel.pseudo_classes.is_empty()
 }
 
 /// Skip over balanced parentheses in a character iterator.
@@ -259,15 +286,13 @@ where
 }
 
 /// Process a single character in selector parsing.
-/// Returns `None` if the selector should be discarded (e.g., pseudo-classes).
 fn process_selector_char<I>(
     character: char,
     chars: &mut Peekable<I>,
     current: &mut SimpleSelector,
     parts: &mut Vec<SelectorPart>,
     next_combinator: &mut Option<Combinator>,
-) -> Option<()>
-where
+) where
     I: Iterator<Item = char>,
 {
     match character {
@@ -285,16 +310,33 @@ where
             current.universal = true;
         }
         ':' => {
-            // Pseudo-class or pseudo-element - discard selector
             chars.next();
+            // Check for pseudo-element (::) - those we skip for now
             if chars.peek().copied() == Some(':') {
                 chars.next();
+                let _pseudo_name = consume_ident(chars, true);
+                if chars.peek().copied() == Some('(') {
+                    skip_balanced_parens(chars);
+                }
+                // Skip pseudo-elements, don't discard the whole selector
+                return;
             }
-            let _pseudo_name = consume_ident(chars, true);
+            // Parse pseudo-class name
+            let pseudo_name = consume_ident(chars, true);
+            // Handle functional pseudo-classes with arguments
             if chars.peek().copied() == Some('(') {
                 skip_balanced_parens(chars);
+                // For now, skip functional pseudo-classes like :nth-child(n)
+                return;
             }
-            return None;
+            // Match known pseudo-classes
+            match pseudo_name.as_str() {
+                "first-child" => current.pseudo_classes.push(StructuralPseudo::First),
+                "last-child" => current.pseudo_classes.push(StructuralPseudo::Last),
+                "only-child" => current.pseudo_classes.push(StructuralPseudo::Only),
+                // Skip unknown pseudo-classes (hover, focus, etc.) - don't discard selector
+                _ => {}
+            }
         }
         '#' => {
             chars.next();
@@ -316,7 +358,6 @@ where
             chars.next();
         }
     }
-    Some(())
 }
 
 /// Parse a single selector string into a `Selector`.
@@ -340,6 +381,7 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
             } else {
                 next_combinator = Some(Combinator::Descendant);
             }
+            saw_whitespace = false; // Reset after handling
         }
         let Some(character) = chars.peek().copied() else {
             break;
@@ -350,7 +392,7 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
             &mut current,
             &mut parts,
             &mut next_combinator,
-        )?;
+        );
     }
     if has_content(&current) {
         parts.push(SelectorPart {
@@ -371,4 +413,48 @@ fn parse_single_selector(selector_str: &str) -> Option<Selector> {
 /// Parse a selector list separated by commas into a vector of `Selector`s.
 pub(crate) fn parse_selector_list(input: &str) -> Vec<Selector> {
     input.split(',').filter_map(parse_single_selector).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// # Panics
+    /// Panics if parsing fails or selector structure is unexpected.
+    #[test]
+    fn test_parse_last_child() {
+        let selectors = parse_selector_list(".btn-group .btn:last-child");
+        assert_eq!(selectors.len(), 1);
+        let sel = &selectors[0];
+        assert_eq!(sel.len(), 2);
+
+        // First part: .btn-group
+        assert!(sel.part(0).is_some(), "part 0 missing");
+        if let Some(part0) = sel.part(0) {
+            assert_eq!(part0.sel().classes(), &["btn-group".to_string()]);
+            assert!(part0.sel().pseudo_classes().is_empty());
+            assert_eq!(part0.combinator_to_next(), Some(Combinator::Descendant));
+        }
+
+        // Second part: .btn:last-child
+        assert!(sel.part(1).is_some(), "part 1 missing");
+        if let Some(part1) = sel.part(1) {
+            assert_eq!(part1.sel().classes(), &["btn".to_string()]);
+            assert_eq!(part1.sel().pseudo_classes(), &[StructuralPseudo::Last]);
+            assert!(part1.combinator_to_next().is_none());
+        }
+    }
+
+    /// # Panics
+    /// Panics if parsing fails or selector structure is unexpected.
+    #[test]
+    fn test_parse_first_child() {
+        let selectors = parse_selector_list(".btn-group .btn:first-child");
+        assert_eq!(selectors.len(), 1);
+        let sel = &selectors[0];
+        assert!(sel.part(1).is_some(), "part 1 missing");
+        if let Some(part1) = sel.part(1) {
+            assert_eq!(part1.sel().pseudo_classes(), &[StructuralPseudo::First]);
+        }
+    }
 }

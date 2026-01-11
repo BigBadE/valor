@@ -1,25 +1,28 @@
 //! Rendering functions for Valor UI
 
-use super::components::{PersistentRenderContext, ValorPages, ValorTexture, ValorUi};
+use super::components::{ValorPages, ValorTexture, ValorUi};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use log::{error, info};
 use renderer::display_list::DisplayList;
-use log::{info, error};
 
 /// Internal: Unified function to render a display list to RGBA pixels using persistent GPU context
 pub(super) fn render_display_list_to_pixels(
-    pages: &mut ValorPages,
+    _pages: &mut ValorPages,
     entity: Entity,
-    display_list: &DisplayList,
+    _display_list: &DisplayList,
     width: u32,
     height: u32,
 ) -> Vec<u8> {
     // TEMPORARY: Use fallback rendering to avoid GPU context conflicts
     // The renderer already has a WGPU device, and creating another one causes issues
     // TODO: Integrate with the existing WGPU device instead of creating a new one
-    info!("Using fallback rendering for entity {:?} (size: {}x{})", entity, width, height);
+    info!(
+        "Using fallback rendering for entity {:?} (size: {}x{})",
+        entity, width, height
+    );
     create_fallback_image(width, height)
-    
+
     // Original GPU rendering code (disabled):
     // if !pages.render_contexts.contains_key(&entity) {
     //     match wgpu_backend::initialize_persistent_context(width, height) {

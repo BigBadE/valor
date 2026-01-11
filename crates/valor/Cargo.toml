@@ -6,6 +6,10 @@ default-run = "valor"
 [lints]
 workspace = true
 
+[features]
+default = ["js"]
+js = ["page_handler/js"]
+
 [dependencies]
 tokio.workspace = true
 winit.workspace = true
@@ -35,7 +39,6 @@ serde.workspace = true
 serde_json.workspace = true
 urlencoding.workspace = true
 once_cell.workspace = true
-js_engine_v8.workspace = true
 image.workspace = true
 
 [dev-dependencies]

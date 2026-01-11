@@ -12,116 +12,115 @@ use renderer::renderer::DrawText;
 use std::fs::File;
 use wgpu::{Device, Queue};
 
-/// Map a display item to text if it's a text item, otherwise return None.
-fn map_text_item(item: &DisplayItem) -> Option<DrawText> {
-    if let DisplayItem::Text {
-        x,
-        y,
-        text,
-        color,
-        font_size,
-        font_weight,
-        matched_font_weight,
-        font_family,
-        line_height,
-        line_height_unrounded,
-        bounds,
-        measured_width,
-    } = item
-    {
-        Some(DrawText {
-            x: *x,
-            y: *y,
-            text: text.clone(),
-            color: *color,
-            font_size: *font_size,
-            font_weight: *font_weight,
-            matched_font_weight: *matched_font_weight,
-            font_family: font_family.clone(),
-            line_height: *line_height,
-            line_height_unrounded: *line_height_unrounded,
-            bounds: *bounds,
-            measured_width: *measured_width,
-        })
-    } else {
-        None
-    }
-}
-
-
 /// Clip rectangle type: (x, y, width, height)
 type ClipRect = (f32, f32, f32, f32);
 
+/// Text bounds tuple type: (left, top, right, bottom)
+type BoundsTuple = (i32, i32, i32, i32);
+
 /// Intersect two clip rectangles, returning the overlapping region.
-fn intersect_clip(a: ClipRect, b: ClipRect) -> ClipRect {
-    let (ax, ay, aw, ah) = a;
-    let (bx, by, bw, bh) = b;
-    
-    let x1 = ax.max(bx);
-    let y1 = ay.max(by);
-    let x2 = (ax + aw).min(bx + bw);
-    let y2 = (ay + ah).min(by + bh);
-    
-    let w = (x2 - x1).max(0.0);
-    let h = (y2 - y1).max(0.0);
-    
-    (x1, y1, w, h)
+fn intersect_clip(rect_a: ClipRect, rect_b: ClipRect) -> ClipRect {
+    let (a_x, a_y, a_w, a_h) = rect_a;
+    let (b_x, b_y, b_w, b_h) = rect_b;
+
+    let min_x = a_x.max(b_x);
+    let min_y = a_y.max(b_y);
+    let max_x = (a_x + a_w).min(b_x + b_w);
+    let max_y = (a_y + a_h).min(b_y + b_h);
+
+    let width = (max_x - min_x).max(0.0);
+    let height = (max_y - min_y).max(0.0);
+
+    (min_x, min_y, width, height)
+}
+
+/// Apply clip region to text bounds, returning None if text is completely clipped.
+fn apply_clip_to_bounds(
+    bounds: Option<BoundsTuple>,
+    clip: ClipRect,
+    text: &str,
+) -> Option<BoundsTuple> {
+    log::info!(
+        "[TEXT-CLIP] Text '{}' bounds={:?}, clip={:?}",
+        &text[..text.len().min(20)],
+        bounds,
+        clip
+    );
+    let (clip_x, clip_y, clip_w, clip_h) = clip;
+    let clip_right = clip_x + clip_w;
+    let clip_bottom = clip_y + clip_h;
+
+    // Intersect text bounds with clip region
+    if let Some((left, top, right, bottom)) = bounds {
+        let new_left = (left as f32).max(clip_x).floor() as i32;
+        let new_top = (top as f32).max(clip_y).floor() as i32;
+        let new_right = (right as f32).min(clip_right).ceil() as i32;
+        let new_bottom = (bottom as f32).min(clip_bottom).ceil() as i32;
+
+        // Skip text entirely outside clip region
+        if new_right <= new_left || new_bottom <= new_top {
+            return None;
+        }
+
+        Some((new_left, new_top, new_right, new_bottom))
+    } else {
+        // No bounds specified, use clip as bounds
+        Some((
+            clip_x.floor() as i32,
+            clip_y.floor() as i32,
+            clip_right.ceil() as i32,
+            clip_bottom.ceil() as i32,
+        ))
+    }
 }
 
 /// Collect text items from display list, applying clip regions from BeginClip/EndClip.
-fn collect_clipped_texts(display_list: &DisplayList, width: u32, height: u32) -> Vec<DrawText> {
+fn collect_clipped_texts(display_list: &DisplayList, _width: u32, _height: u32) -> Vec<DrawText> {
     let mut texts = Vec::new();
     let mut clip_stack: Vec<ClipRect> = Vec::new();
-    
+
     for item in &display_list.items {
         match item {
-            DisplayItem::BeginClip { x, y, width: w, height: h } => {
-                let new_clip = (*x, *y, *w, *h);
+            DisplayItem::BeginClip {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let new_clip = (*x, *y, *width, *height);
                 // Intersect with current clip if any
-                let effective_clip = clip_stack.last()
-                    .map(|current| intersect_clip(*current, new_clip))
-                    .unwrap_or(new_clip);
+                let effective_clip = clip_stack
+                    .last()
+                    .map_or(new_clip, |current| intersect_clip(*current, new_clip));
                 clip_stack.push(effective_clip);
             }
             DisplayItem::EndClip => {
                 clip_stack.pop();
             }
-            DisplayItem::Text { x, y, text, color, font_size, font_weight, matched_font_weight, 
-                               font_family, line_height, line_height_unrounded, bounds, measured_width } => {
+            DisplayItem::Text {
+                x,
+                y,
+                text,
+                color,
+                font_size,
+                font_weight,
+                matched_font_weight,
+                font_family,
+                line_height,
+                line_height_unrounded,
+                bounds,
+                measured_width,
+            } => {
                 // Apply current clip to text bounds
                 let clipped_bounds = if let Some(current_clip) = clip_stack.last() {
-                    log::info!("[TEXT-CLIP] Text '{}' bounds={:?}, clip={:?}", 
-                        &text[..text.len().min(20)], bounds, current_clip);
-                    let (clip_x, clip_y, clip_w, clip_h) = *current_clip;
-                    let clip_right = clip_x + clip_w;
-                    let clip_bottom = clip_y + clip_h;
-                    
-                    // Intersect text bounds with clip region
-                    if let Some((left, top, right, bottom)) = bounds {
-                        let new_left = (*left as f32).max(clip_x).floor() as i32;
-                        let new_top = (*top as f32).max(clip_y).floor() as i32;
-                        let new_right = (*right as f32).min(clip_right).ceil() as i32;
-                        let new_bottom = (*bottom as f32).min(clip_bottom).ceil() as i32;
-                        
-                        // Skip text entirely outside clip region
-                        if new_right <= new_left || new_bottom <= new_top {
-                            continue;
-                        }
-                        
-                        Some((new_left, new_top, new_right, new_bottom))
-                    } else {
-                        // No bounds specified, use clip as bounds
-                        Some((
-                            clip_x.floor() as i32,
-                            clip_y.floor() as i32,
-                            clip_right.ceil() as i32,
-                            clip_bottom.ceil() as i32,
-                        ))
+                    match apply_clip_to_bounds(*bounds, *current_clip, text) {
+                        Some(clipped) => Some(clipped),
+                        None => continue, // Text completely clipped
                     }
                 } else {
                     *bounds
                 };
-                
+
                 texts.push(DrawText {
                     x: *x,
                     y: *y,
@@ -140,7 +139,7 @@ fn collect_clipped_texts(display_list: &DisplayList, width: u32, height: u32) ->
             _ => {}
         }
     }
-    
+
     texts
 }
 
@@ -171,7 +170,8 @@ pub fn prepare_text_items(params: &mut PrepareTextParams<'_>) -> AnyhowResult<Pr
     debug_log(&mut file, "=== PREPARE_TEXT_ITEMS CALLED ===");
 
     // Collect text items with their effective clip regions
-    let texts: Vec<DrawText> = collect_clipped_texts(params.display_list, params.width, params.height);
+    let texts: Vec<DrawText> =
+        collect_clipped_texts(params.display_list, params.width, params.height);
 
     debug_log(
         &mut file,
@@ -245,7 +245,7 @@ fn create_text_areas<'buffer>(
                 if right <= left || bottom <= top {
                     continue;
                 }
-                
+
                 // Calculate the actual rendered height based on unrounded line_height
                 let rendered_height = layout_line_count as f32 * line_height_unrounded;
                 // Calculate the layout height based on rounded line_height (what the bounds currently represent)
@@ -268,6 +268,7 @@ fn create_text_areas<'buffer>(
                 bottom: i32::try_from(height).unwrap_or(i32::MAX),
             },
         };
+
         areas.push(TextArea {
             buffer: &buffers[index],
             left: item.x,

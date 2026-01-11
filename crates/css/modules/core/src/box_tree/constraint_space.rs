@@ -62,6 +62,21 @@ pub struct ConstraintSpace {
     /// items with their margins included in the `bfc_offset`. Setting this to `true` prevents
     /// `layout_block` from adding margins again in `resolve_bfc_offset`.
     pub margins_already_applied: bool,
+
+    /// Whether the available block size should be used as the actual block size.
+    ///
+    /// This is set to true when a flex item is being stretched to fill the cross axis.
+    /// When true, elements with auto height should use `available_block_size` instead
+    /// of computing their intrinsic height.
+    pub is_block_size_forced: bool,
+
+    /// Whether the available inline size should be used as the actual inline size.
+    ///
+    /// This is set to true when a flex item's final size has been determined by the
+    /// flex algorithm (after grow/shrink distribution). When true, elements should
+    /// use `available_inline_size` as their border-box width instead of recalculating
+    /// from their CSS width property.
+    pub is_inline_size_forced: bool,
 }
 
 /// Available size can be definite (fixed), indefinite (auto), or constrained by min/max.
@@ -150,6 +165,8 @@ impl ConstraintSpace {
             fragmentainer_offset: LayoutUnit::zero(),
             is_for_measurement_only: false, // Root layout is final layout
             margins_already_applied: false, // Standard margin handling
+            is_block_size_forced: false,
+            is_inline_size_forced: false,
         }
     }
 
@@ -191,6 +208,8 @@ impl ConstraintSpace {
             fragmentainer_offset: self.fragmentainer_offset,
             is_for_measurement_only: self.is_for_measurement_only, // Propagate measurement flag
             margins_already_applied: false, // Child spaces use standard margin handling
+            is_block_size_forced: false,    // Child doesn't inherit forced size
+            is_inline_size_forced: false,   // Child doesn't inherit forced size
         }
     }
 }

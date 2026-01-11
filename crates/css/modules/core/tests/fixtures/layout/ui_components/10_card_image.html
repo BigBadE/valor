@@ -1,58 +1,90 @@
 <!doctype html>
 <!-- VALOR fixture: Card with image -->
 <html>
-<head>
-  <meta charset="utf-8">
-  <title>UI Components: Image Cards</title>
-  <style>
-    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; background: #f3f4f6; }
-    .container { padding: 16px; display: flex; flex-wrap: wrap; gap: 16px; }
-    .card {
-      background: white;
-      border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-      overflow: hidden;
-      width: 280px;
-    }
-    .card-image {
-      width: 100%;
-      height: 160px;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    }
-    .card-body { padding: 16px; }
-    .card-title { font-size: 18px; font-weight: 600; margin: 0 0 8px 0; }
-    .card-text { font-size: 14px; color: #6b7280; margin: 0; line-height: 1.5; }
-    .card-horizontal { display: flex; width: 400px; }
-    .card-horizontal .card-image { width: 140px; height: auto; min-height: 120px; }
-    .card-horizontal .card-body { flex: 1; }
-    .btn {
-      display: inline-block;
-      padding: 8px 16px;
-      background: #3b82f6;
-      color: white;
-      border-radius: 4px;
-      font-size: 14px;
-      margin-top: 12px;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="card" id="image-top">
-      <div class="card-image"></div>
-      <div class="card-body">
-        <h3 class="card-title">Image Card</h3>
-        <p class="card-text">Card with image at the top.</p>
-        <span class="btn">Learn More</span>
-      </div>
-    </div>
-    <div class="card card-horizontal" id="horizontal">
-      <div class="card-image"></div>
-      <div class="card-body">
-        <h3 class="card-title">Horizontal Card</h3>
-        <p class="card-text">Image on the side.</p>
-      </div>
-    </div>
-  </div>
-</body>
+    <head>
+        <meta charset="utf-8" />
+        <title>UI Components: Image Cards</title>
+        <style>
+            html,
+            body {
+                margin: 0;
+                padding: 0;
+                font-family: system-ui, sans-serif;
+                background: #f3f4f6;
+            }
+            .container {
+                padding: 16px;
+                display: flex;
+                flex-wrap: wrap;
+                gap: 16px;
+            }
+            .card {
+                background: white;
+                border-radius: 8px;
+                box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+                overflow: hidden;
+                width: 280px;
+            }
+            .card-image {
+                width: 100%;
+                height: 160px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            }
+            .card-body {
+                padding: 16px;
+            }
+            .card-title {
+                font-size: 18px;
+                font-weight: 600;
+                margin: 0 0 8px 0;
+            }
+            .card-text {
+                font-size: 14px;
+                color: #6b7280;
+                margin: 0;
+                line-height: 1.5;
+            }
+            .card-horizontal {
+                display: flex;
+                width: 400px;
+            }
+            .card-horizontal .card-image {
+                width: 140px;
+                height: auto;
+                min-height: 120px;
+            }
+            .card-horizontal .card-body {
+                flex: 1;
+            }
+            .btn {
+                font-family: inherit;
+                display: inline-block;
+                padding: 8px 16px;
+                background: #3b82f6;
+                color: white;
+                border-radius: 4px;
+                font-size: 14px;
+                margin-top: 12px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="card" id="image-top">
+                <div class="card-image"></div>
+                <div class="card-body">
+                    <h3 class="card-title">Image Card</h3>
+                    <p class="card-text">Card with image at the top.</p>
+                    <span class="btn">Learn More</span>
+                </div>
+            </div>
+            <div class="card card-horizontal" id="horizontal">
+                <div class="card-image"></div>
+                <div class="card-body">
+                    <h3 class="card-title">Horizontal Card</h3>
+                    <p class="card-text">Image on the side.</p>
+                </div>
+            </div>
+        </div>
+    </body>
 </html>

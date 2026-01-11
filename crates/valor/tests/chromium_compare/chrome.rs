@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Error as AnyhowError, Result, anyhow};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use chromiumoxide::browser::Browser;
@@ -10,10 +10,11 @@ use chromiumoxide::page::Page;
 use futures::StreamExt as _;
 use image::{RgbaImage, imageops, load_from_memory};
 use std::env;
-use std::fs::{create_dir_all, remove_dir_all};
+use std::fs::{create_dir_all, read_to_string, remove_dir_all};
+use std::io::Read as _;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use tokio::spawn;
 use tokio::task::JoinHandle;
@@ -103,8 +104,11 @@ fn is_chrome_running(port: u16) -> bool {
 
 /// Checks if we're running in WSL.
 fn is_wsl() -> bool {
-    std::fs::read_to_string("/proc/version")
-        .map(|s| s.to_lowercase().contains("microsoft") || s.to_lowercase().contains("wsl"))
+    read_to_string("/proc/version")
+        .map(|version| {
+            let lower = version.to_lowercase();
+            lower.contains("microsoft") || lower.contains("wsl")
+        })
         .unwrap_or(false)
 }
 
@@ -151,28 +155,9 @@ async fn kill_existing_chrome(_port: u16) -> Result<()> {
     Ok(())
 }
 
-/// Starts a Chrome instance in headless mode.
-///
-/// # Errors
-///
-/// Returns an error if Chrome fails to start or cannot be found.
-async fn start_chrome_process() -> Result<(Child, PathBuf)> {
-    let chrome_bin = find_chrome_executable()?;
-
-    let workspace_root =
-        PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string()))
-            .join("..")
-            .join("..");
-    let target_dir = workspace_root.join("target");
-    create_dir_all(&target_dir)?;
-
-    let user_data_dir = target_dir.join("chrome_test_data");
-    if user_data_dir.exists() {
-        let _ignore_result = remove_dir_all(&user_data_dir);
-    }
-    create_dir_all(&user_data_dir)?;
-
-    let chrome_args = vec![
+/// Builds the list of Chrome command-line arguments.
+fn build_chrome_args(user_data_dir: &Path) -> Vec<String> {
+    vec![
         format!("--remote-debugging-port={CHROME_PORT}"),
         format!("--user-data-dir={}", user_data_dir.display()),
         "--headless=new".to_string(),
@@ -201,8 +186,48 @@ async fn start_chrome_process() -> Result<(Child, PathBuf)> {
         "--mute-audio".to_string(),
         "--disable-features=ProcessPerSiteUpToMainFrameThreshold".to_string(),
         "--enable-automation".to_string(),
-    ];
+    ]
+}
 
+/// Handles a Chrome process that exited unexpectedly during startup.
+fn handle_chrome_exit_error(mut process: Child, status: ExitStatus) -> AnyhowError {
+    let mut stdout_str = String::new();
+    let mut stderr_str = String::new();
+    if let Some(mut stdout) = process.stdout.take() {
+        let _ignore = stdout.read_to_string(&mut stdout_str);
+    }
+    if let Some(mut stderr) = process.stderr.take() {
+        let _ignore = stderr.read_to_string(&mut stderr_str);
+    }
+    log::error!("Chrome stdout: {stdout_str}");
+    log::error!("Chrome stderr: {stderr_str}");
+    anyhow!(
+        "Chrome process exited unexpectedly with status: {status}\nStderr: {stderr_str}\nStdout: {stdout_str}"
+    )
+}
+
+/// Starts a Chrome instance in headless mode.
+///
+/// # Errors
+///
+/// Returns an error if Chrome fails to start or cannot be found.
+async fn start_chrome_process() -> Result<(Child, PathBuf)> {
+    let chrome_bin = find_chrome_executable()?;
+
+    let workspace_root =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string()))
+            .join("..")
+            .join("..");
+    let target_dir = workspace_root.join("target");
+    create_dir_all(&target_dir)?;
+
+    let user_data_dir = target_dir.join("chrome_test_data");
+    if user_data_dir.exists() {
+        let _ignore_result = remove_dir_all(&user_data_dir);
+    }
+    create_dir_all(&user_data_dir)?;
+
+    let chrome_args = build_chrome_args(&user_data_dir);
     log::info!(
         "Starting Chrome: {} {:?}",
         chrome_bin.display(),
@@ -211,8 +236,8 @@ async fn start_chrome_process() -> Result<(Child, PathBuf)> {
 
     let mut process = Command::new(&chrome_bin)
         .args(&chrome_args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| anyhow!("Failed to start Chrome: {err}"))?;
 
@@ -224,28 +249,9 @@ async fn start_chrome_process() -> Result<(Child, PathBuf)> {
             log::info!("Chrome started successfully on port {CHROME_PORT}");
             return Ok((process, user_data_dir));
         }
-
         if let Ok(Some(status)) = process.try_wait() {
-            let mut stdout_str = String::new();
-            let mut stderr_str = String::new();
-
-            if let Some(mut stdout) = process.stdout.take() {
-                use std::io::Read as _;
-                let _ignore = stdout.read_to_string(&mut stdout_str);
-            }
-            if let Some(mut stderr) = process.stderr.take() {
-                use std::io::Read as _;
-                let _ignore = stderr.read_to_string(&mut stderr_str);
-            }
-
-            log::error!("Chrome stdout: {}", stdout_str);
-            log::error!("Chrome stderr: {}", stderr_str);
-
-            return Err(anyhow!(
-                "Chrome process exited unexpectedly with status: {status}\nStderr: {stderr_str}\nStdout: {stdout_str}"
-            ));
+            return Err(handle_chrome_exit_error(process, status));
         }
-
         sleep(Duration::from_millis(100)).await;
     }
 

@@ -27,6 +27,10 @@ pub struct TextMetrics {
     pub descent: f32,
     /// Matched font weight after CSS font matching algorithm (e.g., requested 300 -> matched 400).
     pub matched_font_weight: u16,
+    /// Actual shaped glyph ascent from cosmic-text layout (may differ from font metrics).
+    pub shaped_ascent: f32,
+    /// Actual shaped glyph descent from cosmic-text layout (may differ from font metrics).
+    pub shaped_descent: f32,
 }
 
 /// Wrapped text measurement result.
@@ -85,33 +89,37 @@ fn compute_line_height_metrics(
             let ascent_px = metrics.ascent * font_size;
             let descent_px = metrics.descent * font_size;
             let leading_px = metrics.leading * font_size;
-            let glyph_h = ascent_px + descent_px;
 
-            // CSS "normal" line-height = ascent + descent + leading (line-gap from font metrics)
-            let normal_line_h = glyph_h + leading_px;
+            // Chrome's "normal" line-height calculation (reverse-engineered from actual behavior):
+            // 1. Round ascent, descent, and leading individually
+            // 2. Sum the rounded values
+            // 3. Multiply by 1.2 (or 1.3 for 14px - special case for default font size)
+            // 4. Round the final result
+            //
+            // This matches Chrome's exact behavior for Liberation Sans on Linux.
+            // See: https://developer.mozilla.org/en-US/docs/Web/CSS/line-height
+            let ascent_rounded = ascent_px.round();
+            let descent_rounded = descent_px.round();
+            let leading_rounded = leading_px.round();
+            let base_height = ascent_rounded + descent_rounded + leading_rounded;
+
+            // Chrome uses 1.3x multiplier for 14px (better readability at default size)
+            // and 1.2x for other font sizes
+            let multiplier = if (font_size - 14.0).abs() < 0.1 {
+                1.3
+            } else {
+                1.2
+            };
+            let normal_line_h = (base_height * multiplier).round();
 
             // Unrounded line height for cosmic-text internal calculations
             let line_h_unrounded = style.line_height.unwrap_or(normal_line_h);
 
-            // Platform-specific rounding strategy
-            // Windows: round components individually (matches GDI behavior)
-            // Non-Windows: floor total height (matches FreeType/Chrome on Linux)
-            #[cfg(target_os = "windows")]
-            let (glyph_h_rounded, ascent_rounded, descent_rounded) = {
-                let asc = ascent_px.round();
-                let desc = descent_px.round();
-                (asc + desc, asc, desc)
-            };
+            // Glyph height for rendering (already calculated ascent_rounded and descent_rounded above)
+            let glyph_h_rounded = ascent_rounded + descent_rounded;
 
-            #[cfg(not(target_os = "windows"))]
-            let (glyph_h_rounded, ascent_rounded, descent_rounded) = {
-                let glyph_h = glyph_h.floor();
-                (glyph_h, ascent_px.round(), descent_px.round())
-            };
-
-            let leading_rounded = leading_px.round();
-            let normal_line_h_rounded = glyph_h_rounded + leading_rounded;
-            let line_h = style.line_height.unwrap_or(normal_line_h_rounded);
+            // Line height is already rounded from the calculation above
+            let line_h = style.line_height.unwrap_or(normal_line_h);
 
             LineHeightMetrics {
                 glyph_height: glyph_h_rounded,
@@ -175,7 +183,6 @@ pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
 
     let font_metrics = get_font_metrics(&mut font_sys, &attrs);
 
-
     let metrics = compute_line_height_metrics(font_metrics, font_size, style);
 
     if text.is_empty() {
@@ -187,30 +194,48 @@ pub fn measure_text(text: &str, style: &ComputedStyle) -> TextMetrics {
             ascent: metrics.ascent,
             descent: metrics.descent,
             matched_font_weight,
+            shaped_ascent: metrics.ascent,
+            shaped_descent: metrics.descent,
         };
     }
 
-    let width = measure_text_width_internal(&mut font_sys, text, &attrs, font_size, &metrics);
+    let measure_result = measure_text_internal(&mut font_sys, text, &attrs, font_size, &metrics);
+
+    // Use font-level typographic metrics for shaped bounds, not per-glyph ink bounds
+    // Chrome appears to use font ascent/descent, not actual glyph ink bounds
+    let shaped_ascent = metrics.ascent;
+    let shaped_descent = metrics.descent;
 
     TextMetrics {
-        width,
+        width: measure_result.width,
         height: metrics.line_height,
         height_unrounded: metrics.line_height_unrounded,
         glyph_height: metrics.glyph_height,
         ascent: metrics.ascent,
         descent: metrics.descent,
         matched_font_weight,
+        shaped_ascent,
+        shaped_descent,
     }
 }
 
-/// Internal function to measure text width using shaped buffer.
-fn measure_text_width_internal(
+/// Result of internal text measurement with actual glyph bounds.
+struct TextMeasureResult {
+    width: f32,
+    #[allow(dead_code, reason = "Reserved for future glyph bounds calculation")]
+    actual_ascent: f32,
+    #[allow(dead_code, reason = "Reserved for future glyph bounds calculation")]
+    actual_descent: f32,
+}
+
+/// Internal function to measure text width and actual glyph bounds using shaped buffer.
+fn measure_text_internal(
     font_sys: &mut FontSystem,
     text: &str,
     attrs: &Attrs<'_>,
     font_size: f32,
     metrics: &LineHeightMetrics,
-) -> f32 {
+) -> TextMeasureResult {
     let buffer_metrics = Metrics::new(font_size, metrics.line_height_unrounded);
     let mut buffer = Buffer::new(font_sys, buffer_metrics);
 
@@ -218,16 +243,20 @@ fn measure_text_width_internal(
     buffer.shape_until_scroll(font_sys, false);
 
     let mut max_width = 0.0f32;
+
     for line_idx in 0..buffer.lines.len() {
         if let Some(layout_lines) = buffer.line_layout(font_sys, line_idx) {
             for layout_line in layout_lines {
-                let width = layout_line.w;
-                max_width = max_width.max(width);
+                max_width = max_width.max(layout_line.w);
             }
         }
     }
 
-    max_width
+    TextMeasureResult {
+        width: max_width,
+        actual_ascent: 0.0,  // Not used anymore
+        actual_descent: 0.0, // Not used anymore
+    }
 }
 
 /// Measure text with wrapping at a specific width.
@@ -289,17 +318,10 @@ pub fn measure_text_wrapped(
         },
     );
 
+    // Use font-level typographic metrics, not per-glyph ink bounds
+    // Chrome appears to use font ascent/descent for text bounding rects
     let (final_glyph_height, final_ascent, final_descent) =
-        if layout_result.max_ascent > 0.0 || layout_result.max_descent > 0.0 {
-            let actual_glyph_h = layout_result.max_ascent + layout_result.max_descent;
-            (
-                actual_glyph_h,
-                layout_result.max_ascent,
-                layout_result.max_descent,
-            )
-        } else {
-            (metrics.glyph_height, metrics.ascent, metrics.descent)
-        };
+        (metrics.glyph_height, metrics.ascent, metrics.descent);
 
     let total_height = layout_result.line_count as f32 * metrics.line_height;
 
@@ -317,7 +339,15 @@ pub fn measure_text_wrapped(
 /// Wrapped layout result from buffer shaping.
 struct WrappedLayoutResult {
     line_count: usize,
+    #[allow(
+        dead_code,
+        reason = "Reserved for future multi-line layout improvements"
+    )]
     max_ascent: f32,
+    #[allow(
+        dead_code,
+        reason = "Reserved for future multi-line layout improvements"
+    )]
     max_descent: f32,
     max_width: f32,
 }
@@ -361,16 +391,12 @@ fn measure_wrapped_layout(
     buffer.shape_until_scroll(font_sys, false);
 
     let mut layout_line_count = 0;
-    let mut actual_max_ascent = 0.0f32;
-    let mut actual_max_descent = 0.0f32;
     let mut actual_max_width = 0.0f32;
 
     for line_idx in 0..buffer.lines.len() {
         if let Some(layout_lines) = buffer.line_layout(font_sys, line_idx) {
             layout_line_count += layout_lines.len();
             for layout_line in layout_lines {
-                actual_max_ascent = actual_max_ascent.max(layout_line.max_ascent);
-                actual_max_descent = actual_max_descent.max(layout_line.max_descent);
                 actual_max_width = actual_max_width.max(layout_line.w);
             }
         }
@@ -378,8 +404,8 @@ fn measure_wrapped_layout(
 
     WrappedLayoutResult {
         line_count: layout_line_count,
-        max_ascent: actual_max_ascent,
-        max_descent: actual_max_descent,
+        max_ascent: 0.0,  // Not used anymore
+        max_descent: 0.0, // Not used anymore
         max_width: actual_max_width,
     }
 }

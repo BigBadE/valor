@@ -1,59 +1,65 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-    <title>Input Test</title>
-    <style>
-        body {
-            margin: 0;
-            padding: 20px;
-            background-color: white;
-            font-family: sans-serif;
-        }
-        .form-group {
-            margin-bottom: 15px;
-        }
-        label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
-            color: #333;
-        }
-        input[type="text"],
-        input[type="password"],
-        input[type="email"] {
-            width: 300px;
-            padding: 8px 12px;
-            font-size: 14px;
-            border: 2px solid #ccc;
-            border-radius: 4px;
-            background: white;
-        }
-        input[type="text"]:focus {
-            border-color: #007bff;
-            outline: none;
-        }
-        .placeholder-test::placeholder {
-            color: #999;
-            font-style: italic;
-        }
-    </style>
-</head>
-<body>
-    <div class="form-group">
-        <label for="text-input">Text Input:</label>
-        <input type="text" id="text-input" value="Hello World" />
-    </div>
-    <div class="form-group">
-        <label for="placeholder-input">With Placeholder:</label>
-        <input type="text" id="placeholder-input" class="placeholder-test" placeholder="Enter text here..." />
-    </div>
-    <div class="form-group">
-        <label for="password-input">Password Input:</label>
-        <input type="password" id="password-input" value="secret123" />
-    </div>
-    <div class="form-group">
-        <label for="email-input">Email Input:</label>
-        <input type="email" id="email-input" value="test@example.com" />
-    </div>
-</body>
+    <head>
+        <title>Input Test</title>
+        <style>
+            body {
+                margin: 0;
+                padding: 20px;
+                background-color: white;
+                font-family: sans-serif;
+            }
+            .form-group {
+                margin-bottom: 15px;
+            }
+            label {
+                display: block;
+                margin-bottom: 5px;
+                font-weight: bold;
+                color: #333;
+            }
+            input[type="text"],
+            input[type="password"],
+            input[type="email"] {
+                width: 300px;
+                padding: 8px 12px;
+                font-family: inherit;
+                font-size: 14px;
+                border: 2px solid #ccc;
+                border-radius: 4px;
+                background: white;
+            }
+            input[type="text"]:focus {
+                border-color: #007bff;
+                outline: none;
+            }
+            .placeholder-test::placeholder {
+                color: #999;
+                font-style: italic;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="form-group">
+            <label for="text-input">Text Input:</label>
+            <input type="text" id="text-input" value="Hello World" />
+        </div>
+        <div class="form-group">
+            <label for="placeholder-input">With Placeholder:</label>
+            <input
+                type="text"
+                id="placeholder-input"
+                class="placeholder-test"
+                placeholder="Enter text here..."
+            />
+        </div>
+        <div class="form-group">
+            <label for="password-input">Password Input:</label>
+            <input type="password" id="password-input" value="secret123" />
+        </div>
+        <div class="form-group">
+            <label for="email-input">Email Input:</label>
+            <input type="email" id="email-input" value="test@example.com" />
+        </div>
+    </body>
 </html>

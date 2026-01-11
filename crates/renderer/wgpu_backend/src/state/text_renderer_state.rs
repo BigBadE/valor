@@ -321,10 +321,13 @@ impl TextRendererState {
                     bottom: i32::try_from(framebuffer_height).unwrap_or(i32::MAX),
                 },
             };
+            let left_pos = item.x * scale;
+            let top_pos = item.y * scale;
+
             areas.push(TextArea {
                 buffer: &buffers[index],
-                left: item.x * scale,
-                top: item.y * scale,
+                left: left_pos,
+                top: top_pos,
                 scale: 1.0,
                 bounds,
                 default_color: color,

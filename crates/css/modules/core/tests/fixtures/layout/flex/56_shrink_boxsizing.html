@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- VALOR fixture: Flex shrink with box-sizing border-box -->
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Flex shrink box-sizing</title>
+<style>
+html, body { margin: 0; padding: 0; }
+.container {
+    width: 280px;
+    display: flex;
+    gap: 8px;
+}
+.item {
+    width: 100%;
+    box-sizing: border-box;
+    flex-shrink: 1;
+    height: 20px;
+}
+.small { padding: 0 8px; border: 1px solid red; }
+.large { padding: 0 16px; border: 1px solid blue; }
+</style>
+</head>
+<body>
+<div class="container">
+    <div class="item small" id="small"></div>
+    <div class="item large" id="large"></div>
+</div>
+</body>
+</html>

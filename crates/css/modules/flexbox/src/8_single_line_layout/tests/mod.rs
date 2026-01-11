@@ -25,6 +25,7 @@ pub fn item_zero_margins(handle: u64, basis: f32) -> FlexChild {
         margin_bottom: 0.0,
         margin_left_auto: false,
         margin_right_auto: false,
+        main_padding_border: 0.0,
     }
 }
 

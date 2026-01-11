@@ -143,7 +143,15 @@ impl ConstraintLayoutTree {
         can_collapse_with_children: bool,
     ) -> BfcOffset {
         if establishes_bfc {
-            BfcOffset::root()
+            // When a new BFC is established, we still need to position children
+            // relative to the document (ICB), not relative to this BFC.
+            // The BFC isolation only affects margin collapsing, not positioning.
+            BfcOffset::new(
+                bfc_offset.inline_offset + sides.padding_left + sides.border_left,
+                bfc_offset
+                    .block_offset
+                    .map(|offset| offset + sides.padding_top + sides.border_top),
+            )
         } else if can_collapse_with_children {
             // When parent can collapse with children, the parent's bfc_offset includes
             // the parent's collapsed margin. To allow children to re-collapse with the

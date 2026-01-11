@@ -45,6 +45,7 @@ pub trait JsRuntime {
 #[derive(Default)]
 pub struct DefaultJsRuntime;
 
+#[cfg(feature = "js")]
 impl JsRuntime for DefaultJsRuntime {
     #[inline]
     fn _name(&self) -> &'static str {
@@ -65,5 +66,26 @@ impl JsRuntime for DefaultJsRuntime {
             page.execute_pending_scripts();
             page.handle_dom_content_loaded_if_needed()
         })
+    }
+}
+
+#[cfg(not(feature = "js"))]
+impl JsRuntime for DefaultJsRuntime {
+    #[inline]
+    fn _name(&self) -> &'static str {
+        "stub"
+    }
+
+    #[inline]
+    fn tick_timers_once(&mut self, _page: &mut HtmlPage) {
+        // No-op when JS is disabled
+    }
+
+    #[inline]
+    fn drive_after_dom_update<'driver>(
+        &'driver mut self,
+        _page: &'driver mut HtmlPage,
+    ) -> ExecFuture<'driver> {
+        Box::pin(async move { Ok(()) })
     }
 }

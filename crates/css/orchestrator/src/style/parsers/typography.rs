@@ -66,11 +66,17 @@ pub fn apply_typography(
         }
     }
     if let Some(value) = decls.get("font-family") {
-        // Normalize font-family value: remove surrounding quotes from font names
-        // CSS allows 'Courier New', "Arial", or unquoted names
-        // We store the normalized form for consistent matching
-        let normalized = normalize_font_family(value);
-        computed.font_family = Some(normalized);
+        let trimmed = value.trim();
+        // CSS 'inherit' keyword means keep the parent's value (already set in computed)
+        // Don't overwrite if the value is literally "inherit"
+        if !trimmed.eq_ignore_ascii_case("inherit") {
+            // Normalize font-family value: remove surrounding quotes from font names
+            // CSS allows 'Courier New', "Arial", or unquoted names
+            // We store the normalized form for consistent matching
+            let normalized = normalize_font_family(value);
+            computed.font_family = Some(normalized);
+        }
+        // If value is "inherit", font_family keeps its inherited value from parent
     }
     // Parse font-weight: numeric values (100-900), keywords (normal=400, bold=700)
     if let Some(value) = decls.get("font-weight") {

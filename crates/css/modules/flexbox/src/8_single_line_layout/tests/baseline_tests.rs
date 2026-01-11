@@ -20,9 +20,9 @@ fn baseline_alignment_single_line_first() {
         item_zero_margins(3, 50.0),
     ];
     let cross_inputs = vec![
-        (30.0, 0.0, 1000.0),
-        (40.0, 0.0, 1000.0),
-        (20.0, 0.0, 1000.0),
+        (CrossSize::Explicit(30.0), 0.0, 1000.0),
+        (CrossSize::Explicit(40.0), 0.0, 1000.0),
+        (CrossSize::Explicit(20.0), 0.0, 1000.0),
     ];
     let baseline_inputs = vec![Some((10.0, 25.0)), Some((15.0, 35.0)), Some((5.0, 10.0))];
     let cab = CrossAndBaseline {
@@ -62,7 +62,10 @@ fn baseline_alignment_single_line_last() {
         main_gap: 0.0,
     };
     let items = vec![item_zero_margins(1, 60.0), item_zero_margins(2, 60.0)];
-    let cross_inputs = vec![(32.0, 0.0, 1000.0), (28.0, 0.0, 1000.0)];
+    let cross_inputs = vec![
+        (CrossSize::Explicit(32.0), 0.0, 1000.0),
+        (CrossSize::Explicit(28.0), 0.0, 1000.0),
+    ];
     let baseline_inputs = vec![Some((8.0, 28.0)), Some((6.0, 22.0))];
     let cab = CrossAndBaseline {
         cross_inputs: &cross_inputs,
@@ -108,10 +111,10 @@ fn baseline_alignment_multi_line() {
         item_zero_margins(4, 80.0),
     ];
     let cross_inputs = vec![
-        (24.0, 0.0, 1000.0),
-        (30.0, 0.0, 1000.0),
-        (18.0, 0.0, 1000.0),
-        (26.0, 0.0, 1000.0),
+        (CrossSize::Explicit(24.0), 0.0, 1000.0),
+        (CrossSize::Explicit(30.0), 0.0, 1000.0),
+        (CrossSize::Explicit(18.0), 0.0, 1000.0),
+        (CrossSize::Explicit(26.0), 0.0, 1000.0),
     ];
     let baseline_inputs = vec![
         Some((6.0, 20.0)),

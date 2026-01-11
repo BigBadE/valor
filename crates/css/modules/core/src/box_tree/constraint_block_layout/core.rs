@@ -133,8 +133,46 @@ impl ConstraintLayoutTree {
         }
 
         state.max_block_size = state.max_block_size.max(child_result.block_size);
+
+        // Debug logging for flex containers
+        if let Some(style) = self.styles.get(&child) {
+            if matches!(
+                style.display,
+                css_orchestrator::style_model::Display::Flex
+                    | css_orchestrator::style_model::Display::InlineFlex
+            ) {
+                log::warn!(
+                    "INSERTING FLEX CONTAINER RESULT: node={:?}, inline_size={}",
+                    child,
+                    child_result.inline_size
+                );
+            }
+        }
+
         self.layout_results.insert(child, child_result);
     }
+
+    /// Compute definite block size from constraint space if applicable.
+    ///
+    /// This is used when a flex item is being stretched - the available block size
+    /// is the stretched size from the flex algorithm, not intrinsic sizing.
+    /// Only applies when `is_block_size_forced` is true (explicitly set by flex stretch).
+    fn compute_definite_block_size(
+        constraint_space: &ConstraintSpace,
+        sides: &BoxSides,
+    ) -> Option<f32> {
+        if constraint_space.is_block_size_forced
+            && let AvailableSize::Definite(size) = constraint_space.available_block_size
+        {
+            // Convert to content-box by subtracting padding and border
+            let padding_border =
+                (sides.padding_top + sides.padding_bottom + sides.border_top + sides.border_bottom)
+                    .to_px();
+            return Some((size.to_px() - padding_border).max(0.0));
+        }
+        None
+    }
+
     pub(super) fn create_block_child_space(
         constraint_space: &ConstraintSpace,
         inline_size: f32,
@@ -158,6 +196,8 @@ impl ConstraintLayoutTree {
             fragmentainer_offset: constraint_space.fragmentainer_offset,
             is_for_measurement_only: constraint_space.is_for_measurement_only, // Propagate measurement flag
             margins_already_applied: false,
+            is_block_size_forced: false,
+            is_inline_size_forced: false,
         }
     }
     pub(super) fn compute_block_size_from_children(
@@ -170,7 +210,17 @@ impl ConstraintLayoutTree {
         // Compute border-box height
         let border_box_height = params.style_height.map_or_else(
             || {
-                // Check for form control intrinsic height first
+                // If we have a definite block size from parent (e.g., flex stretch),
+                // use it instead of intrinsic sizing. This is the stretched size.
+                if let Some(definite_content_height) = params.definite_block_size {
+                    let padding_border = sides.padding_top.to_px()
+                        + sides.padding_bottom.to_px()
+                        + sides.border_top.to_px()
+                        + sides.border_bottom.to_px();
+                    return definite_content_height + padding_border;
+                }
+
+                // Check for form control intrinsic height
                 if let Some(intrinsic_height) =
                     self.compute_form_control_intrinsic_height(node, style)
                 {
@@ -371,8 +421,12 @@ impl ConstraintLayoutTree {
             can_collapse_with_children,
         );
 
+        let definite_block_size =
+            Self::compute_definite_block_size(params.constraint_space, params.sides);
+
         let block_size_params = BlockSizeParams {
             style_height: params.style.height,
+            definite_block_size,
             can_collapse_with_children,
             establishes_bfc: params.establishes_bfc,
             resolved_bfc_offset: state.resolved_bfc_offset,

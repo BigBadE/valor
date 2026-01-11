@@ -42,9 +42,9 @@ pub fn prepare_font_attrs(style: &ComputedStyle) -> Attrs<'_> {
             }
         }
     } else {
-        // Default to generic sans-serif family when no font family specified (will use fontdb settings)
-        // This matches Chrome's behavior for unstyled elements
-        attrs = attrs.family(Family::SansSerif);
+        // Default to generic serif family when no font family specified (will use fontdb settings)
+        // This matches browser default behavior - CSS spec defines serif as the initial value
+        attrs = attrs.family(Family::Serif);
     }
 
     attrs

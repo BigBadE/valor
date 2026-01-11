@@ -38,6 +38,16 @@ pub fn cache_file_path(test_name: &str, fixture_path: &Path, suffix: &str) -> Re
     Ok(cache_file)
 }
 
+/// Checks if a cache entry exists for the given fixture and test.
+///
+/// # Errors
+///
+/// Returns an error if directory creation fails.
+pub fn cache_exists(test_name: &str, fixture_path: &Path, suffix: &str) -> Result<bool> {
+    let cache_path = cache_file_path(test_name, fixture_path, suffix)?;
+    Ok(cache_path.exists())
+}
+
 type DeserializeFn<T> = fn(&[u8]) -> Result<T>;
 type SerializeFn<T> = fn(&T) -> Result<Vec<u8>>;
 

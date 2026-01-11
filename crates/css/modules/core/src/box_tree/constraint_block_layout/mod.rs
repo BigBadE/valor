@@ -92,7 +92,10 @@ impl ConstraintLayoutTree {
         }
 
         // Flex/grid containers establish BFC
-        if matches!(style.display, Display::Flex | Display::Grid) {
+        if matches!(
+            style.display,
+            Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
+        ) {
             return true;
         }
 
@@ -112,6 +115,8 @@ impl ConstraintLayoutTree {
         node: NodeKey,
         constraint_space: &ConstraintSpace,
     ) -> LayoutResult {
+        log::error!("layout_block ENTRY: node={:?}", node);
+
         // Skip text nodes - they don't have boxes
         if self.is_text_node(node) {
             return LayoutResult {
@@ -161,22 +166,42 @@ impl ConstraintLayoutTree {
 
         // Handle floats
         if !matches!(style.float, Float::None) {
-            return self.layout_float(node, constraint_space, &style, &sides);
+            let result = self.layout_float(node, constraint_space, &style, &sides);
+            self.layout_results.insert(node, result.clone());
+            return result;
         }
 
-        // Handle flex containers
-        if matches!(style.display, Display::Flex) {
-            return self.layout_flex(node, constraint_space, &style, &sides);
+        // Handle flex containers (both block and inline)
+        log::error!(
+            "Checking flex: node={:?}, display={:?}",
+            node,
+            style.display
+        );
+        if matches!(style.display, Display::Flex | Display::InlineFlex) {
+            log::error!("IS FLEX!");
+            let result = self.layout_flex(node, constraint_space, &style, &sides);
+            log::error!(
+                "INSERTING FLEX CONTAINER in layout_block: node={:?}, inline_size={}, is_measurement={}",
+                node,
+                result.inline_size,
+                constraint_space.is_for_measurement_only
+            );
+            self.layout_results.insert(node, result.clone());
+            return result;
         }
 
-        // Handle grid containers
-        if matches!(style.display, Display::Grid) {
-            return self.layout_grid_container(node, constraint_space, &style, &sides);
+        // Handle grid containers (both block and inline)
+        if matches!(style.display, Display::Grid | Display::InlineGrid) {
+            let result = self.layout_grid_container(node, constraint_space, &style, &sides);
+            self.layout_results.insert(node, result.clone());
+            return result;
         }
 
         // Handle absolutely positioned
         if matches!(style.position, Position::Absolute | Position::Fixed) {
-            return self.layout_absolute(node, constraint_space, &style, &sides);
+            let result = self.layout_absolute(node, constraint_space, &style, &sides);
+            self.layout_results.insert(node, result.clone());
+            return result;
         }
 
         // Compute inline size (width)
@@ -197,7 +222,9 @@ impl ConstraintLayoutTree {
                 bfc_offset,
                 establishes_bfc,
             };
-            return self.layout_block_first_pass(node, &params);
+            let result = self.layout_block_first_pass(node, &params);
+            self.layout_results.insert(node, result.clone());
+            return result;
         }
 
         // Single-pass or second-pass layout
@@ -209,25 +236,21 @@ impl ConstraintLayoutTree {
             bfc_offset,
             establishes_bfc,
         };
-        self.layout_block_children(node, &params)
+        let result = self.layout_block_children(node, &params);
+        self.layout_results.insert(node, result.clone());
+        result
     }
 }
 
 /// Run layout on the entire tree starting from root.
 pub fn layout_tree(tree: &mut ConstraintLayoutTree, root: NodeKey) -> LayoutResult {
     let initial_space = ConstraintSpace::new_for_root(tree.icb_width, tree.icb_height);
-    let mut result = tree.layout_block(root, &initial_space);
-
-    // IMPORTANT: Force root element to fill viewport height
-    // The root html/body should always be at least viewport height, even if content is smaller
-    let viewport_height = tree.icb_height.to_px();
-    if result.block_size < viewport_height {
-        log::info!("layout_tree: Expanding root element from {}px to viewport height {}px", 
-            result.block_size, viewport_height);
-        result.block_size = viewport_height;
-    }
+    let result = tree.layout_block(root, &initial_space);
 
     // Store layout result for root element (html/body) so it gets proper rect
+    // Note: We don't force viewport height - the root element should size to content
+    // unless explicitly given height:100% or similar. This matches Chrome's behavior
+    // where getBoundingClientRect() returns actual content size.
     tree.layout_results.insert(root, result.clone());
 
     result

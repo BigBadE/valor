@@ -1,6 +1,8 @@
+#[cfg(feature = "js")]
 use js::ChromeHostCommand;
 use page_handler::HtmlPage;
 use tokio::runtime::Runtime;
+#[cfg(feature = "js")]
 use tokio::sync::mpsc::UnboundedReceiver;
 use wgpu_backend::RenderState;
 
@@ -16,6 +18,7 @@ pub struct AppState {
     /// Active HTML pages (index 0 = chrome, 1 = content).
     pub pages: Vec<HtmlPage>,
     /// Receiver for privileged chromeHost commands.
+    #[cfg(feature = "js")]
     pub chrome_host_rx: UnboundedReceiver<ChromeHostCommand>,
     /// Index of the page currently receiving keyboard input (focus owner).
     pub focused_page_index: usize,

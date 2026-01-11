@@ -1,6 +1,6 @@
 //! Test setup helpers for layout testing.
 
-use super::super::common::{create_page, css_reset_injection_script, update_until_finished};
+use super::super::common::{create_page, css_reset_string, update_until_finished};
 use anyhow::{Result, anyhow};
 use page_handler::HtmlPage;
 use std::path::Path;
@@ -16,7 +16,7 @@ use super::super::common::to_file_url;
 pub async fn setup_page_for_fixture(handle: &Handle, input_path: &Path) -> Result<HtmlPage> {
     let url = to_file_url(input_path)?;
     let mut page = create_page(handle, url).await?;
-    page.eval_js(&css_reset_injection_script())?;
+    page.inject_css_sync(css_reset_string())?;
 
     let finished = update_until_finished(handle, &mut page, |_page| Ok(())).await?;
 
@@ -24,10 +24,8 @@ pub async fn setup_page_for_fixture(handle: &Handle, input_path: &Path) -> Resul
         return Err(anyhow!("Parsing did not finish"));
     }
 
-    page.update().await?;
-
-    // Ensure layout is computed
-    page.ensure_layout_now();
+    // update_until_finished already ran layout in its final iteration
+    // No need to call update() or ensure_layout_now() again
 
     Ok(page)
 }

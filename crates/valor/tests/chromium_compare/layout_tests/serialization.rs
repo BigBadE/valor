@@ -6,6 +6,7 @@ use css::style_types::{
 };
 use css_core::LayoutRect;
 use css_display::used_display_for_child;
+use css_text::measurement::measure_text;
 use js::NodeKey;
 use page_handler::HtmlPage;
 use page_handler::utilities::snapshots::LayoutNodeKind;
@@ -116,18 +117,16 @@ fn serialize_style(
         Position::Fixed => "fixed",
     };
 
-    let flex_basis_str = computed.flex_basis.map_or_else(
-        || "auto".to_string(),
-        |val| {
-            // When flex-basis is 0, serialize as "0%" to match Chrome's representation
-            // of the flex shorthand (e.g., flex: 1 → flex-grow: 1, flex-shrink: 1, flex-basis: 0%)
-            if val.abs() < 0.01 {
-                "0%".to_string()
-            } else {
-                format!("{val}px")
-            }
-        },
-    );
+    let flex_basis_str = if let Some(percent) = computed.flex_basis_percent {
+        // Percentage flex-basis (from flex shorthand or explicit percentage)
+        format!("{}%", (percent * 100.0).round() as i32)
+    } else if let Some(val) = computed.flex_basis {
+        // Pixel flex-basis
+        format!("{val}px")
+    } else {
+        // Auto (default)
+        "auto".to_string()
+    };
 
     json!({
         "display": display_str,
@@ -160,7 +159,7 @@ fn serialize_style(
     })
 }
 
-/// Helper to serialize a child node (both Block and InlineText nodes).
+/// Helper to serialize a child node (both Block and `InlineText` nodes).
 ///
 /// # Errors
 ///
@@ -177,11 +176,53 @@ fn serialize_block_child(
 }
 
 /// Serialize a text node to JSON.
-fn serialize_text_node(text: &str, rect: &LayoutRect, computed: &ComputedStyle) -> JsonValue {
+/// Uses the layout rect height which already accounts for text wrapping.
+/// For wrapped text, the height includes all lines.
+fn serialize_text_node(
+    text: &str,
+    rect: &LayoutRect,
+    computed: &ComputedStyle,
+    _parent_width: f32,
+) -> JsonValue {
+    // The rect passed in from layout already has the correct height accounting for:
+    // - Single line: glyph_height (shaped bounds)
+    // - Wrapped text: total_height (line_height × line_count)
+    //
+    // Chrome's getBoundingClientRect() for text nodes returns the ink bounds,
+    // which for wrapped text is the total height of all lines. Our layout engine
+    // computes this correctly in text.rs, so we just use rect.height directly.
+    //
+    // Floor the height to match Chrome's pixel rounding behavior.
+    let text_height = rect.height.floor();
+
+    // Chrome's Range.getBoundingClientRect() returns the CONTENT AREA height
+    // (font ascent + descent), NOT the line-height or ink bounds.
+    // This is the em-box height from the font metrics.
+    let metrics = measure_text(text, computed);
+    let single_line_height = metrics.height; // CSS line-height
+    let is_single_line = rect.height <= single_line_height * 1.5;
+
+    let final_height = if is_single_line {
+        // Single line: use font content area (ascent + descent)
+        let content_height = metrics.shaped_ascent + metrics.shaped_descent;
+        content_height.floor()
+    } else {
+        // Wrapped text: use layout-computed height (line_height × line_count)
+        text_height
+    };
+
+    // Create rect with appropriate height
+    let text_rect = json!({
+        "x": f64::from(rect.x),
+        "y": f64::from(rect.y),
+        "width": f64::from(rect.width),
+        "height": f64::from(final_height)
+    });
+
     json!({
         "type": "text",
         "text": text,
-        "rect": serialize_rect(rect),
+        "rect": text_rect,
         "style": {
             "fontSize": format!("{font_size}px", font_size = computed.font_size),
             "fontWeight": computed.font_weight.to_string(),
@@ -260,7 +301,7 @@ fn serialize_block_element(
 
     // Find parent style for used display computation
     let parent_key = find_parent_key(ctx.snapshot, key);
-    let parent_style = parent_key.and_then(|pk| ctx.styles.get(&pk));
+    let parent_style = parent_key.and_then(|parent| ctx.styles.get(&parent));
 
     // Body element is the root for display blockification purposes
     let is_root = tag == "body";
@@ -327,19 +368,26 @@ fn serialize_element_recursive(
                 .snapshot
                 .iter()
                 .find(|(_, _, child_keys)| child_keys.contains(&key))
-                .map(|(parent_key, _, _)| parent_key);
+                .map(|(parent_key, _, _)| *parent_key);
 
-            let computed = parent_key.and_then(|pk| ctx.styles.get(pk)).or_else(|| {
-                // Fallback: try to get style from the text node itself
-                // (in case the engine set it, though it normally doesn't)
-                ctx.styles.get(&key)
-            });
+            let computed = parent_key
+                .and_then(|parent| ctx.styles.get(&parent))
+                .or_else(|| {
+                    // Fallback: try to get style from the text node itself
+                    // (in case the engine set it, though it normally doesn't)
+                    ctx.styles.get(&key)
+                });
 
             let Some(computed) = computed else {
                 return Ok(());
             };
 
-            parent_children.push(serialize_text_node(text, rect, computed));
+            // Get parent width for text wrapping calculation
+            let parent_width = parent_key
+                .and_then(|parent| ctx.rects.get(&parent))
+                .map_or(800.0, |parent_rect| parent_rect.width); // Fallback to viewport width
+
+            parent_children.push(serialize_text_node(text, rect, computed, parent_width));
         }
         LayoutNodeKind::Block { tag } => {
             // Block elements need rect and computed style

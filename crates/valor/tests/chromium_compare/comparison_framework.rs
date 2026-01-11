@@ -206,7 +206,7 @@ impl<T: ComparisonTest> FailureArtifacts<T> {
 ///
 /// Returns an error if test infrastructure fails (not if comparison fails).
 pub async fn run_comparison_test<T: ComparisonTest>(
-    page: &Page,
+    page: Option<&Page>,
     handle: &Handle,
     fixture: &Path,
 ) -> Result<ComparisonOutcome<T::CompareResult>> {
@@ -223,13 +223,17 @@ pub async fn run_comparison_test<T: ComparisonTest>(
         test_name: T::test_name(),
         fixture_path: fixture,
         cache_suffix: "_chrome.cache",
-        fetch_fn: || T::fetch_chrome_output(page, fixture, &metadata),
+        fetch_fn: || async {
+            let page = page
+                .ok_or_else(|| anyhow::anyhow!("Chrome not available but cache miss occurred"))?;
+            T::fetch_chrome_output(page, fixture, &metadata).await
+        },
         deserialize_fn: T::deserialize_chrome,
         serialize_fn: T::serialize_chrome,
     })
     .await?;
 
-    // Generate Valor output
+    // Generate Valor output (no mutex needed - V8 LIFO is satisfied with 4 concurrent tasks)
     let valor_output = T::generate_valor_output(handle, fixture, &mut metadata).await?;
 
     // Compare outputs

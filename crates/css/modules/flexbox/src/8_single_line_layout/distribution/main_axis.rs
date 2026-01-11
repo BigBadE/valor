@@ -41,6 +41,9 @@ pub fn justify_params(
 
 /// Build main-axis placements from inner sizes and outer starts (margin-aware starts) with
 /// the resolved effective left margins (includes auto margin absorption).
+///
+/// Per CSS Flexbox spec 9.7, returns content-box sizes (same as flex-basis).
+/// The caller is responsible for converting to border-box if needed for layout.
 pub fn build_main_placements(
     items: &[FlexChild],
     inner_sizes: &[f32],
@@ -52,10 +55,13 @@ pub fn build_main_placements(
         .zip(inner_sizes.iter())
         .zip(outer_starts.iter())
         .zip(effective_left_margins.iter())
-        .map(|(((child, size), outer_start), eff_left)| FlexPlacement {
-            handle: child.handle,
-            main_size: *size,
-            main_offset: *outer_start + *eff_left,
+        .map(|(((child, inner_size), outer_start), eff_left)| {
+            FlexPlacement {
+                handle: child.handle,
+                // Per spec 9.7, used main size is content-box (same as flex base size)
+                main_size: *inner_size,
+                main_offset: *outer_start + *eff_left,
+            }
         })
         .collect()
 }

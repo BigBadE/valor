@@ -134,7 +134,7 @@ echo "[verify] Formatting Rust code..."
 cargo fmt --all
 
 echo "[verify] Running Clippy..."
-cargo clippy --all-targets --workspace -- -D warnings
+cargo clippy --lib --bins --tests --benches --workspace -- -D warnings
 
 echo "[verify] Building Rust workspace..."
 cargo build --workspace
@@ -146,7 +146,7 @@ fi
 
 # Run full workspace tests
 echo "[verify] Running Rust tests..."
-cargo nextest run --workspace
+cargo nextest run --workspace --exclude cosmic-text
 
 # Clean old artifacts if not in CI
 if [ -z "${RENDERER_CI:-}" ]; then

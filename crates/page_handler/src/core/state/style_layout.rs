@@ -106,11 +106,11 @@ pub(super) fn process_css_and_styles(
 
     // Apply computed styles to incremental engine
     for (node, style) in &computed_styles {
-        incremental_layout.apply_style_change(*node, style.clone());
+        incremental_layout.apply_style_change(*node, style);
     }
 
     // Styles come from orchestrator via set_computed_styles
-    incremental_layout.set_computed_styles(computed_styles);
+    incremental_layout.set_computed_styles(&computed_styles);
 
     // Mark dirty nodes for reflow if styles changed
     let style_changed = artifacts.styles_changed;

@@ -58,7 +58,6 @@ pub struct ValorPageInitialized;
 #[derive(Component)]
 pub struct NeedsRender;
 
-
 /// Component holding the rendered texture and display node for a ValorUi
 #[derive(Component)]
 pub struct ValorTexture {

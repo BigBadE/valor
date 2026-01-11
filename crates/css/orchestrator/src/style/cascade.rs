@@ -40,27 +40,44 @@ const fn origin_weight(origin: types::Origin) -> u8 {
 }
 
 /// Return true if `candidate` wins over `previous` according to CSS cascade rules.
+///
+/// Per CSS Cascade spec, the precedence order is:
+/// 1. !important flag (important declarations beat non-important)
+/// 2. Origin (author > user > UA, reversed for important)
+/// 3. Specificity (inline styles have very high specificity)
+/// 4. Source order (later declarations win)
 fn wins_over(candidate: &CascadedDecl, previous: &CascadedDecl) -> bool {
+    // Step 1: Check !important flag first
+    // Important declarations always beat non-important, regardless of inline styles
+    if candidate.important != previous.important {
+        return candidate.important;
+    }
+
+    // Step 2: For same importance level, inline styles beat stylesheet rules
     if candidate.inline_boost && !previous.inline_boost {
         return true;
     }
     if previous.inline_boost && !candidate.inline_boost {
         return false;
     }
-    if candidate.important != previous.important {
-        return candidate.important;
-    }
+
+    // Step 3: Check origin
     let ow_c = origin_weight(candidate.origin);
     let ow_p = origin_weight(previous.origin);
     if ow_c != ow_p {
         return ow_c > ow_p;
     }
+
+    // Step 4: Check specificity
     if candidate.specificity != previous.specificity {
         return candidate.specificity > previous.specificity;
     }
+
+    // Step 5: Check source order (tie-breaker)
     if candidate.source_order != previous.source_order {
         return candidate.source_order > previous.source_order;
     }
+
     false
 }
 
@@ -69,18 +86,19 @@ fn cascade_put(props: &mut HashMap<String, CascadedDecl>, name: &str, entry: Cas
     let should_insert = props
         .get(name)
         .is_none_or(|previous| wins_over(&entry, previous));
+
     if should_insert {
         props.insert(name.to_owned(), entry);
     }
 }
 
-/// Check if `node` matches a simple selector (tag/id/classes).
+/// Check if `node` matches a simple selector (tag/id/classes/pseudo-classes).
 fn matches_simple_selector(
     node: NodeKey,
     sel: &selectors::SimpleSelector,
     style_comp: &StyleComputer,
 ) -> bool {
-    if sel.is_universal() {
+    if sel.is_universal() && sel.pseudo_classes().is_empty() {
         return true;
     }
     if let Some(tag) = sel.tag() {
@@ -109,7 +127,47 @@ fn matches_simple_selector(
             return false;
         }
     }
+    // Check pseudo-classes
+    for pseudo in sel.pseudo_classes() {
+        if !matches_pseudo_class(node, pseudo, style_comp) {
+            return false;
+        }
+    }
     true
+}
+
+/// Check if `node` matches a pseudo-class selector.
+fn matches_pseudo_class(
+    node: NodeKey,
+    pseudo: &selectors::StructuralPseudo,
+    style_comp: &StyleComputer,
+) -> bool {
+    // Get the parent of this node
+    let Some(parent) = style_comp.parent_by_node.get(&node).copied() else {
+        // No parent means we can't determine sibling position
+        // Root element could be considered :first-child and :last-child
+        return false;
+    };
+
+    // Get the list of children for this parent
+    let Some(siblings) = style_comp.children_by_node.get(&parent) else {
+        return false;
+    };
+
+    match pseudo {
+        selectors::StructuralPseudo::First => {
+            // Node is first child if it's the first element in the siblings list
+            siblings.first() == Some(&node)
+        }
+        selectors::StructuralPseudo::Last => {
+            // Node is last child if it's the last element in the siblings list
+            siblings.last() == Some(&node)
+        }
+        selectors::StructuralPseudo::Only => {
+            // Node is only child if siblings list has exactly one element
+            siblings.len() == 1 && siblings.first() == Some(&node)
+        }
+    }
 }
 
 /// Check whether a node matches the given parsed selector using ancestor traversal.
@@ -202,6 +260,7 @@ fn apply_rule_to_props(
             continue;
         }
         let specificity = selectors::compute_specificity(&selector);
+
         for decl in &rule.declarations {
             let entry = CascadedDecl {
                 value: decl.value.clone(),
@@ -242,6 +301,8 @@ pub struct StyleComputer {
     type_by_node: HashMap<NodeKey, String>,
     /// All element attributes by node (used for attribute selectors).
     attrs_by_node: HashMap<NodeKey, HashMap<String, String>>,
+    /// Children lists by parent node (used for :first-child, :last-child).
+    children_by_node: HashMap<NodeKey, Vec<NodeKey>>,
 }
 
 impl StyleComputer {
@@ -260,6 +321,7 @@ impl StyleComputer {
             parent_by_node: HashMap::new(),
             type_by_node: HashMap::new(),
             attrs_by_node: HashMap::new(),
+            children_by_node: HashMap::new(),
         }
     }
 
@@ -302,6 +364,8 @@ impl StyleComputer {
                     self.parent_by_node.remove(&node);
                 } else {
                     self.parent_by_node.insert(node, parent);
+                    // Track children for :first-child/:last-child matching
+                    self.children_by_node.entry(parent).or_default().push(node);
                 }
                 self.changed_nodes.push(node);
             }
@@ -336,6 +400,12 @@ impl StyleComputer {
                 self.changed_nodes.push(node);
             }
             DOMUpdate::RemoveNode { node } => {
+                // Remove from parent's children list
+                if let Some(parent) = self.parent_by_node.get(&node).copied()
+                    && let Some(children) = self.children_by_node.get_mut(&parent)
+                {
+                    children.retain(|&child| child != node);
+                }
                 self.tag_by_node.remove(&node);
                 self.id_by_node.remove(&node);
                 self.classes_by_node.remove(&node);
@@ -344,6 +414,7 @@ impl StyleComputer {
                 self.parent_by_node.remove(&node);
                 self.type_by_node.remove(&node);
                 self.attrs_by_node.remove(&node);
+                self.children_by_node.remove(&node);
                 self.computed.remove(&node);
                 self.style_changed = true;
             }
@@ -385,7 +456,6 @@ impl StyleComputer {
         for node in nodes {
             let mut props: HashMap<String, CascadedDecl> = HashMap::new();
 
-            // DEBUG: Log stylesheet rules for first few nodes
             for rule in &self.sheet.rules {
                 apply_rule_to_props(rule, node, self, &mut props);
             }
@@ -408,6 +478,7 @@ impl StyleComputer {
             let mut decls: HashMap<String, String> = HashMap::new();
             let mut pairs: Vec<(String, CascadedDecl)> = props.into_iter().collect();
             pairs.sort_by(|left, right| left.0.cmp(&right.0));
+
             for (name, entry) in pairs {
                 decls.insert(name, entry.value);
             }

@@ -48,6 +48,9 @@ pub(super) type FlexLayoutResult = (Vec<FlexChild>, Vec<ChildStyleInfo>, Vec<Nod
 /// Parameters for computing block size from children.
 pub(super) struct BlockSizeParams<'exclusion> {
     pub(super) style_height: Option<f32>,
+    /// Definite block size from parent (e.g., flex stretch), in content-box px.
+    /// Takes precedence over intrinsic sizing for form controls.
+    pub(super) definite_block_size: Option<f32>,
     pub(super) can_collapse_with_children: bool,
     pub(super) establishes_bfc: bool,
     pub(super) resolved_bfc_offset: BfcOffset,

@@ -23,7 +23,8 @@ pub mod html_macro;
 
 #[cfg(feature = "bevy_integration")]
 pub mod reactive;
-#[cfg(feature = "bevy_integration")]pub mod standalone;
+#[cfg(feature = "bevy_integration")]
+pub mod standalone;
 
 #[cfg(feature = "bevy_integration")]
 pub mod reactive_html_macro;

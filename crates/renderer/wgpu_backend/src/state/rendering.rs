@@ -55,6 +55,9 @@ impl RenderState {
     /// # Panics
     /// Panics if pixel chunks are not exactly 4 bytes.
     pub fn render_to_rgba(&mut self) -> Result<Vec<u8>, AnyhowError> {
+        use std::time::Instant;
+        let start = Instant::now();
+
         self.resources.clear();
 
         let validation_scope = ErrorScopeGuard::push(self.gpu.device(), "pre-render-validation");
@@ -62,7 +65,12 @@ impl RenderState {
 
         self.offscreen
             .ensure_texture(self.gpu.device(), self.gpu.size(), self.gpu.render_format());
+        eprintln!("[GPU_TIMING] render_to_offscreen START");
         self.render_to_offscreen()?;
+        eprintln!(
+            "[GPU_TIMING] render_to_offscreen took: {:?}",
+            start.elapsed()
+        );
 
         let mut copy_encoder =
             self.gpu
@@ -89,12 +97,19 @@ impl RenderState {
             scope.check()?;
             buffer
         };
+        eprintln!("[GPU_TIMING] submit_with_validation START");
         submit_with_validation(self.gpu.device(), self.gpu.queue(), [copy_command_buffer])?;
+        eprintln!("[GPU_TIMING] submit_with_validation took: {:?}", start.elapsed());
 
+        eprintln!("[GPU_TIMING] read_pixels START");
         let mut out = self
             .offscreen
             .read_pixels(self.gpu.device(), (width, height, bpp, padded_bpr))?;
+        eprintln!("[GPU_TIMING] read_pixels took: {:?}", start.elapsed());
+
+        eprintln!("[GPU_TIMING] convert_bgra_to_rgba START");
         self.convert_bgra_to_rgba(&mut out);
+        eprintln!("[GPU_TIMING] convert_bgra_to_rgba took: {:?}", start.elapsed());
         Ok(out)
     }
 

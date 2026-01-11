@@ -117,26 +117,6 @@ pub async fn setup_page_for_fixture(handle: &Handle, path: &Path) -> Result<Html
     Ok(page)
 }
 
-/// Inject CSS reset AFTER HTML parsing completes to ensure correct source order
-pub async fn inject_css_reset_after_parsing(page: &mut HtmlPage) -> Result<()> {
-    // Ensure all pending DOMUpdates from parsing are fully processed
-    // This prevents race conditions where CSS reset might be processed before HTML styles
-    // Call update() multiple times to ensure the async channel is fully drained
-    page.update().await?;
-    page.update().await?;
-    page.update().await?;
-
-    // Inject CSS reset synchronously to ensure it comes AFTER HTML styles
-    // This directly adds to CSSMirror, guaranteeing it's added after HTML styles
-    let css_reset = css_reset_text();
-    page.inject_css_sync(css_reset)?;
-
-    // Update to process the injected styles
-    page.update().await?;
-
-    Ok(())
-}
-
 /// Updates the page until parsing finishes, calling a callback per tick.
 ///
 /// # Errors
@@ -185,52 +165,36 @@ pub async fn update_until_finished_simple(handle: &Handle, page: &mut HtmlPage) 
 
 // ===== CSS reset for consistent test baseline =====
 
-pub fn css_reset_text() -> String {
-    // Use platform-appropriate monospace fonts to match Chrome's defaults
-    #[cfg(target_os = "windows")]
-    let font_family = "\"Courier New\",Courier,monospace";
-    #[cfg(target_os = "macos")]
-    let font_family = "\"Courier\",monospace";
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let font_family = "\"DejaVu Sans Mono\",monospace";
-
-    format!(
-        "*,*::before,*::after{{box-sizing:border-box;margin:0;padding:0;}}body,html{{font-family:{font_family};}}html,body{{margin:0 !important;padding:0 !important;overflow:hidden;}}body{{margin:0 !important;}}h1,h2,h3,h4,h5,h6,p{{margin:0;padding:0;}}ul,ol{{margin:0;padding:0;list-style:none;}}"
-    )
-}
-
 pub fn css_reset_injection_script() -> String {
-    // Use platform-appropriate monospace fonts to match Chrome's defaults
-    #[cfg(target_os = "windows")]
-    let font_family = "\\\"Courier New\\\",Courier,monospace";
-    #[cfg(target_os = "macos")]
-    let font_family = "\\\"Courier\\\",monospace";
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let font_family = "\\\"DejaVu Sans Mono\\\",monospace";
-
-    format!("(function(){{
-        try {{
-            var css = '*,*::before,*::after{{box-sizing:border-box;margin:0;padding:0;}}body,html{{font-family:{};}}html,body{{margin:0 !important;padding:0 !important;overflow:hidden;}}body{{margin:0 !important;}}h1,h2,h3,h4,h5,h6,p{{margin:0;padding:0;}}ul,ol{{margin:0;padding:0;list-style:none;}}';
+    // Don't force a specific font-family - let fixtures define their own fonts
+    "(function(){
+        try {
+            var css = '*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}html,body{margin:0 !important;padding:0 !important;overflow:hidden;}h1,h2,h3,h4,h5,h6,p{margin:0;padding:0;}ul,ol{margin:0;padding:0;list-style:none;}';
             var existing = (typeof document.querySelector === 'function') ? document.querySelector('style[data-valor-test-reset=\\'1\\']') : null;
-            if (existing) {{ return true; }}
-            if (document && typeof document.appendStyleText === 'function') {{
+            if (existing) { return true; }
+            if (document && typeof document.appendStyleText === 'function') {
                 document.appendStyleText(css);
-            }} else {{
+            } else {
                 var style = document.createElement('style');
                 style.setAttribute('data-valor-test-reset','1');
                 style.type = 'text/css';
                 style.appendChild(document.createTextNode(css));
                 var head = document.head || document.getElementsByTagName('head')[0] || document.documentElement;
                 head.appendChild(style);
-            }}
-            var de = document.documentElement; if (de && de.style){{ de.style.margin='0'; de.style.padding='0'; }}
-            var b = document.body; if (b && b.style){{ b.style.margin='0'; b.style.padding='0'; }}
+            }
+            var de = document.documentElement; if (de && de.style){ de.style.margin='0'; de.style.padding='0'; }
+            var b = document.body; if (b && b.style){ b.style.margin='0'; b.style.padding='0'; }
             void (document.body && document.body.offsetWidth);
             return true;
-        }} catch (e) {{
+        } catch (e) {
             return false;
-        }}
-    }})()", font_family)
+        }
+    })()".to_string()
+}
+
+/// Returns the CSS reset string for direct injection (without JS wrapper)
+pub fn css_reset_string() -> String {
+    "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}html,body{margin:0 !important;padding:0 !important;overflow:hidden;}h1,h2,h3,h4,h5,h6,p{margin:0;padding:0;}ul,ol{margin:0;padding:0;list-style:none;}".to_string()
 }
 
 // ===== Unified test runner framework =====

@@ -1,49 +1,72 @@
 <!doctype html>
 <!-- VALOR fixture: Button with icons -->
 <html>
-<head>
-  <meta charset="utf-8">
-  <title>UI Components: Icon Buttons</title>
-  <style>
-    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
-    .container { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      padding: 8px 16px;
-      border-radius: 4px;
-      font-size: 14px;
-      background: #3b82f6;
-      color: white;
-      border: none;
-    }
-    .icon {
-      width: 16px;
-      height: 16px;
-      background: currentColor;
-      border-radius: 2px;
-    }
-    .btn-icon-only {
-      padding: 8px;
-      width: 36px;
-      height: 36px;
-    }
-    .btn-rounded { border-radius: 9999px; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div style="display: flex; gap: 8px;">
-      <button class="btn" id="icon-left"><span class="icon"></span>Left Icon</button>
-      <button class="btn" id="icon-right">Right Icon<span class="icon"></span></button>
-      <button class="btn" id="icon-both"><span class="icon"></span>Both<span class="icon"></span></button>
-    </div>
-    <div style="display: flex; gap: 8px;">
-      <button class="btn btn-icon-only" id="icon-only"><span class="icon"></span></button>
-      <button class="btn btn-icon-only btn-rounded" id="icon-rounded"><span class="icon"></span></button>
-    </div>
-  </div>
-</body>
+    <head>
+        <meta charset="utf-8" />
+        <title>UI Components: Icon Buttons</title>
+        <style>
+            html,
+            body {
+                margin: 0;
+                padding: 0;
+                font-family: system-ui, sans-serif;
+            }
+            .container {
+                padding: 16px;
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+            }
+            .btn {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-family: inherit;
+                font-size: 14px;
+                background: #3b82f6;
+                color: white;
+                border: none;
+            }
+            .icon {
+                width: 16px;
+                height: 16px;
+                background: currentColor;
+                border-radius: 2px;
+            }
+            .btn-icon-only {
+                padding: 8px;
+                width: 36px;
+                height: 36px;
+            }
+            .btn-rounded {
+                border-radius: 9999px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div style="display: flex; gap: 8px">
+                <button class="btn" id="icon-left">
+                    <span class="icon"></span>Left Icon
+                </button>
+                <button class="btn" id="icon-right">
+                    Right Icon<span class="icon"></span>
+                </button>
+                <button class="btn" id="icon-both">
+                    <span class="icon"></span>Both<span class="icon"></span>
+                </button>
+            </div>
+            <div style="display: flex; gap: 8px">
+                <button class="btn btn-icon-only" id="icon-only">
+                    <span class="icon"></span>
+                </button>
+                <button class="btn btn-icon-only btn-rounded" id="icon-rounded">
+                    <span class="icon"></span>
+                </button>
+            </div>
+        </div>
+    </body>
 </html>

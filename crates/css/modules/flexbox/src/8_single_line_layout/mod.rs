@@ -11,7 +11,7 @@ mod distribution;
 mod multi_line;
 
 pub use cross_axis::BaselineMetrics;
-pub use cross_axis::alignment::{align_cross_for_items, align_single_line_cross};
+pub use cross_axis::alignment::{CrossSize, align_cross_for_items, align_single_line_cross};
 use cross_axis::compute_line_baseline_ref;
 use distribution::{
     MainOffsetPlan, accumulate_main_offsets, build_main_placements, clamp,
@@ -27,7 +27,7 @@ use multi_line::{
 #[derive(Copy, Clone)]
 pub struct CrossAndBaseline<'cb> {
     /// Per-item cross inputs `(cross_size, min_cross, max_cross)`
-    pub cross_inputs: &'cb [(f32, f32, f32)],
+    pub cross_inputs: &'cb [(CrossSize, f32, f32)],
     /// Per-item baseline metrics if available
     pub baseline_inputs: &'cb [BaselineMetrics],
 }
@@ -37,6 +37,7 @@ pub struct CrossAndBaseline<'cb> {
 pub struct FlexChild {
     pub handle: ItemRef,
     /// Flex base size (used as hypothetical main size before flexing), in CSS px.
+    /// This is the **content-box** (inner) size, used for shrink weight calculation.
     pub flex_basis: f32,
     /// Flex grow factor (>= 0).
     pub flex_grow: f32,
@@ -55,6 +56,10 @@ pub struct FlexChild {
     /// For row direction in horizontal writing modes, these map to left/right.
     pub margin_left_auto: bool,
     pub margin_right_auto: bool,
+    /// Main-axis padding + border (content-box to border-box adjustment).
+    /// For row flex, this is horizontal padding + border.
+    /// For column flex, this is vertical padding + border.
+    pub main_padding_border: f32,
 }
 
 /// Resulting per-item main-axis size and offset.
@@ -135,6 +140,7 @@ fn plan_hypotheticals_and_flex(
     container: FlexContainerInputs,
     items: &[FlexChild],
 ) -> (Vec<f32>, f32) {
+    // Inner (content-box) sizes from flex_basis, used for shrink weight calculation
     let mut sizes: Vec<f32> = items
         .iter()
         .map(|child| clamp(child.flex_basis, child.min_main, child.max_main))
@@ -144,16 +150,27 @@ fn plan_hypotheticals_and_flex(
     } else {
         0.0
     };
-    let sum: f32 = sizes.iter().copied().sum();
-    let free_space = container.container_main_size - sum - gaps_total;
+
+    // Calculate free space using OUTER (border-box) sizes
+    // Per CSS Flexbox spec 9.7: "the sum of the outer hypothetical main sizes"
+    // Outer size = inner size + padding + border
+    let sum_outer: f32 = sizes
+        .iter()
+        .zip(items.iter())
+        .map(|(inner_size, child)| inner_size + child.main_padding_border)
+        .sum();
+    let free_space = container.container_main_size - sum_outer - gaps_total;
+
     debug!(
-        "[FLEX-JUSTIFY] items={} sum_sizes={:.3} gaps_total={:.3} container_main={:.3} free_space={:.3}",
+        "[FLEX-JUSTIFY] items={} sum_inner={:.3} sum_outer={:.3} gaps_total={:.3} container_main={:.3} free_space={:.3}",
         items.len(),
-        sum,
+        sizes.iter().copied().sum::<f32>(),
+        sum_outer,
         gaps_total,
         container.container_main_size,
         free_space
     );
+
     if free_space > 0.0 {
         distribute_grow(free_space, items, &mut sizes);
     } else if free_space < 0.0 {

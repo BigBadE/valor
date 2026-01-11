@@ -30,13 +30,51 @@ pub fn apply_flex_scalars(
             computed.flex_shrink = number;
         }
     } else if !has_flex_shorthand {
-        // Only apply default flex-shrink if no flex shorthand was used
-        // Chromium default for flex-shrink is 1
+        // Default flex-shrink is 1 per spec (only if no flex shorthand was used)
         computed.flex_shrink = 1.0;
     }
     if let Some(value) = decls.get("flex-basis") {
-        computed.flex_basis = parse_px(value);
+        parse_flex_basis(computed, value);
     }
+
+    // Parse order property
+    if let Some(value) = decls.get("order")
+        && let Ok(number) = value.trim().parse::<i32>()
+    {
+        computed.order = number;
+    }
+}
+
+/// Parse flex-basis property, handling both pixel values and percentages.
+fn parse_flex_basis(computed: &mut style_model::ComputedStyle, value: &str) {
+    let value = value.trim();
+
+    // Handle 'auto' keyword
+    if value.eq_ignore_ascii_case("auto") {
+        computed.flex_basis = None;
+        computed.flex_basis_percent = None;
+        return;
+    }
+
+    // Try to parse as pixel value
+    if let Some(px_value) = parse_px(value) {
+        computed.flex_basis = Some(px_value);
+        computed.flex_basis_percent = None;
+        return;
+    }
+
+    // Try to parse as percentage
+    if value.ends_with('%')
+        && let Ok(percent) = value.trim_end_matches('%').trim().parse::<f32>()
+    {
+        computed.flex_basis = None;
+        computed.flex_basis_percent = Some(percent / 100.0);
+        return;
+    }
+
+    // Default to auto if parsing fails
+    computed.flex_basis = None;
+    computed.flex_basis_percent = None;
 }
 
 /// Parse the flex shorthand property.
@@ -69,7 +107,8 @@ fn parse_flex_shorthand(computed: &mut style_model::ComputedStyle, value: &str) 
         // `flex: <number>` → <number> 1 0%
         computed.flex_grow = number;
         computed.flex_shrink = 1.0;
-        computed.flex_basis = Some(0.0); // 0%
+        computed.flex_basis = None;
+        computed.flex_basis_percent = Some(0.0); // 0%
         return;
     }
 
@@ -116,6 +155,7 @@ pub fn apply_flex_alignment(
     parse_flex_direction_prop(computed, decls);
     parse_flex_wrap_prop(computed, decls);
     parse_align_items_prop(computed, decls);
+    parse_align_self_prop(computed, decls);
     parse_justify_content_prop(computed, decls);
     parse_align_content_prop(computed, decls);
 }
@@ -142,6 +182,8 @@ fn parse_flex_wrap_prop(
     if let Some(value) = decls.get("flex-wrap") {
         computed.flex_wrap = if value.eq_ignore_ascii_case("wrap") {
             style_model::FlexWrap::Wrap
+        } else if value.eq_ignore_ascii_case("wrap-reverse") {
+            style_model::FlexWrap::WrapReverse
         } else {
             style_model::FlexWrap::NoWrap
         };
@@ -166,6 +208,30 @@ fn parse_align_items_prop(
             style_model::AlignItems::FlexEnd
         } else {
             style_model::AlignItems::Normal
+        };
+    }
+}
+
+/// Parse the `align-self` property into the computed style.
+fn parse_align_self_prop(
+    computed: &mut style_model::ComputedStyle,
+    decls: &HashMap<String, String>,
+) {
+    if let Some(value) = decls.get("align-self") {
+        computed.align_self = if value.eq_ignore_ascii_case("auto") {
+            style_model::AlignSelf::Auto
+        } else if value.eq_ignore_ascii_case("normal") {
+            style_model::AlignSelf::Normal
+        } else if value.eq_ignore_ascii_case("stretch") {
+            style_model::AlignSelf::Stretch
+        } else if value.eq_ignore_ascii_case("flex-start") {
+            style_model::AlignSelf::FlexStart
+        } else if value.eq_ignore_ascii_case("center") {
+            style_model::AlignSelf::Center
+        } else if value.eq_ignore_ascii_case("flex-end") {
+            style_model::AlignSelf::FlexEnd
+        } else {
+            style_model::AlignSelf::Auto
         };
     }
 }

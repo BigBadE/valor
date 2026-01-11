@@ -239,12 +239,14 @@ impl App {
         let init = create_chrome_and_content(&runtime, Url::parse("https://example.com/")?)?;
         let chrome_page = init.chrome_page;
         let content_page = init.content_page;
+        #[cfg(feature = "js")]
         let chrome_rx = init.chrome_host_rx;
 
         self.state = Some(AppState {
             render_state,
             pages: vec![chrome_page, content_page],
             runtime,
+            #[cfg(feature = "js")]
             chrome_host_rx: chrome_rx,
             focused_page_index: 0, // focus chrome by default
             pointer_target_index: None,
@@ -430,6 +432,7 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(state) = self.state.as_mut() {
             // Drain any pending chromeHost commands
+            #[cfg(feature = "js")]
             while let Ok(cmd) = state.chrome_host_rx.try_recv() {
                 Self::process_chrome_cmd(state, cmd);
             }

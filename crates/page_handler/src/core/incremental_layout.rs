@@ -76,22 +76,32 @@ impl IncrementalLayoutEngine {
     }
 
     /// Apply a style change and invalidate affected layouts
-    pub fn apply_style_change(&mut self, node: NodeKey, new_style: ComputedStyle) {
-        // Get old style handle
+    pub fn apply_style_change(&mut self, node: NodeKey, new_style: &ComputedStyle) {
+        // Get old style handle and clone the old style (to avoid borrow checker issues)
         let old_handle = self.style_interner.get_node_style(node);
+        let old_style_clone = old_handle
+            .and_then(|style_handle| self.style_interner.get(style_handle))
+            .map(|arc| arc.as_ref().clone());
 
         // Intern new style
-        let new_handle = self.style_interner.set_node_style(node, new_style);
+        self.style_interner.set_node_style(node, new_style.clone());
 
-        // If style actually changed, invalidate
-        if old_handle != Some(new_handle) {
+        // Check if style actually changed by comparing values, not just handles
+        // This ensures we invalidate even if the style interner reuses a handle
+        let changed = old_style_clone.as_ref() != Some(new_style);
+
+        if changed {
             self.invalidate_node(node);
         }
     }
 
     /// Apply DOM updates
     pub fn apply_dom_updates(&mut self, updates: &[DOMUpdate]) {
-        log::info!("apply_dom_updates: Applying {} updates, dirty_nodes before: {}", updates.len(), self.dirty_nodes.len());
+        log::info!(
+            "apply_dom_updates: Applying {} updates, dirty_nodes before: {}",
+            updates.len(),
+            self.dirty_nodes.len()
+        );
         for update in updates {
             match update {
                 DOMUpdate::InsertElement {
@@ -158,7 +168,10 @@ impl IncrementalLayoutEngine {
                 DOMUpdate::EndOfDocument => {}
             }
         }
-    log::info!("apply_dom_updates: Done, dirty_nodes after: {}", self.dirty_nodes.len());
+        log::info!(
+            "apply_dom_updates: Done, dirty_nodes after: {}",
+            self.dirty_nodes.len()
+        );
     }
 
     /// Invalidate a specific node
@@ -216,12 +229,73 @@ impl IncrementalLayoutEngine {
 
         // Run real layout computation
         if let Some(root_node) = self.root {
+            log::error!("RUNNING LAYOUT TREE - generation {}", self.generation);
             layout_tree(&mut tree, root_node);
+            log::error!(
+                "LAYOUT TREE COMPLETE - generation {}, total results: {}",
+                self.generation,
+                tree.layout_results.len()
+            );
 
             // Convert results and update cache
             for (node, result) in &tree.layout_results {
                 let rect = LayoutRect::from_layout_result(result);
+                // Debug logging for text nodes
+                if let Some(text) = tree.text_nodes.get(node) {
+                    if text == "1" || text == "2" || text == "3" {
+                        log::warn!(
+                            "CACHING TEXT LAYOUT: text='{}', rect.width={}, result.inline_size={}",
+                            text,
+                            rect.width,
+                            result.inline_size
+                        );
+                    }
+                }
                 self.layout_cache.insert(*node, rect);
+            }
+
+            // Check if any text nodes are missing from layout_results
+            for (node, text) in &tree.text_nodes {
+                if (text == "1" || text == "2" || text == "3")
+                    && !tree.layout_results.contains_key(node)
+                {
+                    // Find parent
+                    let parent = tree
+                        .children
+                        .iter()
+                        .find(|(_, children)| children.contains(node))
+                        .map(|(parent, _)| *parent);
+                    let parent_in_results =
+                        parent.map_or(false, |p| tree.layout_results.contains_key(&p));
+                    let parent_display = parent
+                        .and_then(|p| tree.styles.get(&p))
+                        .map(|s| format!("{:?}", s.display));
+                    // Find grandparent
+                    let grandparent = parent.and_then(|p| {
+                        tree.children
+                            .iter()
+                            .find(|(_, children)| children.contains(&p))
+                            .map(|(gp, _)| *gp)
+                    });
+                    let grandparent_display = grandparent
+                        .and_then(|gp| tree.styles.get(&gp))
+                        .map(|s| format!("{:?}", s.display));
+                    let grandparent_in_results =
+                        grandparent.map_or(false, |gp| tree.layout_results.contains_key(&gp));
+
+                    log::error!(
+                        "TEXT NODE NOT IN LAYOUT RESULTS: text='{}', node={:?}, generation={}, parent={:?}, parent_in_results={}, parent_display={:?}, grandparent={:?}, grandparent_in_results={}, grandparent_display={:?}",
+                        text,
+                        node,
+                        self.generation,
+                        parent,
+                        parent_in_results,
+                        parent_display,
+                        grandparent,
+                        grandparent_in_results,
+                        grandparent_display
+                    );
+                }
             }
         }
 
@@ -307,9 +381,9 @@ impl IncrementalLayoutEngine {
     }
 
     /// Set computed styles (for compatibility with `LayoutManager`)
-    pub fn set_computed_styles(&mut self, styles: HashMap<NodeKey, ComputedStyle>) {
+    pub fn set_computed_styles(&mut self, styles: &HashMap<NodeKey, ComputedStyle>) {
         for (node, style) in styles {
-            self.apply_style_change(node, style);
+            self.apply_style_change(*node, style);
         }
     }
 
@@ -350,7 +424,7 @@ mod tests {
         }]);
 
         // Apply style
-        engine.apply_style_change(node, style);
+        engine.apply_style_change(node, &style);
 
         // Node should be dirty
         assert_eq!(engine.dirty_nodes.len(), 1);
@@ -378,15 +452,15 @@ mod tests {
         let node_b = NodeKey::ROOT;
 
         // Set up styles
-        engine.apply_style_change(node_a, ComputedStyle::default());
-        engine.apply_style_change(node_b, ComputedStyle::default());
+        engine.apply_style_change(node_a, &ComputedStyle::default());
+        engine.apply_style_change(node_b, &ComputedStyle::default());
 
         // Compute initial layouts - errors are OK in tests, they'll fail later assertions
         let _result = engine.compute_layouts().ok();
 
         // Change node_a's style
         let new_style = ComputedStyle::default();
-        engine.apply_style_change(node_a, new_style);
+        engine.apply_style_change(node_a, &new_style);
 
         // node_a should be dirty
         assert!(!engine.dirty_nodes.is_empty());

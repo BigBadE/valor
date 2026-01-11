@@ -3,7 +3,7 @@
 //! This module provides components, resources, and systems for rendering
 //! HTML/CSS UIs within Bevy applications using the Valor browser engine.
 
-use log::{info, error, warn};
+use log::info;
 mod api;
 mod components;
 mod rendering;
@@ -15,9 +15,8 @@ pub use api::{
     update_element_text,
 };
 pub use components::{
-    NeedsRender,
-    ClickHandler, GlobalStyles, ImageAssetRequest, ImageRegistry, PersistentRenderContext,
-    TokioHandle, ValorPageInitialized, ValorPages, ValorTexture, ValorUi,
+    ClickHandler, GlobalStyles, ImageAssetRequest, ImageRegistry, NeedsRender,
+    PersistentRenderContext, TokioHandle, ValorPageInitialized, ValorPages, ValorTexture, ValorUi,
 };
 
 use crate::styling::{TailwindUtilities, Theme};

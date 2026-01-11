@@ -310,6 +310,87 @@ fn combinator_child_vs_descendant() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Asserts that margin value matches expected within tolerance.
+///
+/// # Errors
+/// Returns an error if the actual margin differs from expected by more than 0.01.
+fn assert_margin(name: &str, actual: f32, expected: f32) -> Result<(), Box<dyn Error>> {
+    if (actual - expected).abs() >= 0.01 {
+        return Err(format!("{name} should be {expected}px, got {actual}").into());
+    }
+    Ok(())
+}
+
+/// Test that :first-child and :last-child pseudo-class selectors work correctly.
+///
+/// # Errors
+/// Returns an error if DOM setup or style computation fails.
+#[test]
+fn pseudo_class_first_last_child() -> Result<(), Box<dyn Error>> {
+    let sheet = sheet_for_selectors(vec![
+        (
+            ".container",
+            vec![("display", "flex", false)],
+            types::Origin::Author,
+            0,
+        ),
+        (
+            ".container .item",
+            vec![("margin", "8px", false)],
+            types::Origin::Author,
+            1,
+        ),
+        (
+            ".container .item:first-child",
+            vec![("margin-left", "0px", false)],
+            types::Origin::Author,
+            2,
+        ),
+        (
+            ".container .item:last-child",
+            vec![("margin-right", "0px", false)],
+            types::Origin::Author,
+            3,
+        ),
+    ]);
+
+    let mut core = CoreEngine::new();
+    core.replace_stylesheet(sheet);
+
+    let container = NodeKey(1);
+    let item1 = NodeKey(2);
+    let item2 = NodeKey(3);
+    let item3 = NodeKey(4);
+
+    insert_element(&mut core, NodeKey::ROOT, container, "div", 0)?;
+    set_attr(&mut core, container, "class", "container")?;
+    insert_element(&mut core, container, item1, "div", 0)?;
+    set_attr(&mut core, item1, "class", "item")?;
+    insert_element(&mut core, container, item2, "div", 1)?;
+    set_attr(&mut core, item2, "class", "item")?;
+    insert_element(&mut core, container, item3, "div", 2)?;
+    set_attr(&mut core, item3, "class", "item")?;
+    apply(&mut core, DOMUpdate::EndOfDocument)?;
+
+    let _changed = core.recompute_styles();
+
+    let comp1 = get_computed_for(&core, item1).unwrap_or_default();
+    let comp2 = get_computed_for(&core, item2).unwrap_or_default();
+    let comp3 = get_computed_for(&core, item3).unwrap_or_default();
+
+    // item1 is :first-child - margin-left: 0, margin-right: 8
+    assert_margin("item1 margin-left", comp1.margin.left, 0.0)?;
+    assert_margin("item1 margin-right", comp1.margin.right, 8.0)?;
+    // item2 is neither first nor last - margin: 8px all sides
+    assert_margin("item2 margin-left", comp2.margin.left, 8.0)?;
+    assert_margin("item2 margin-right", comp2.margin.right, 8.0)?;
+    // item3 is :last-child - margin-left: 8, margin-right: 0
+    assert_margin("item3 margin-left", comp3.margin.left, 8.0)?;
+    assert_margin("item3 margin-right", comp3.margin.right, 0.0)?;
+
+    Ok(())
+}
+
 /// Test that em-based font-size values are computed correctly relative to parent font size.
 ///
 /// # Errors

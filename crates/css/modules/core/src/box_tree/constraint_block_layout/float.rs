@@ -52,6 +52,8 @@ impl ConstraintLayoutTree {
             fragmentainer_offset: constraint_space.fragmentainer_offset,
             is_for_measurement_only: constraint_space.is_for_measurement_only, // Propagate measurement flag
             margins_already_applied: false,
+            is_block_size_forced: false,
+            is_inline_size_forced: false,
         };
 
         // Normalize children to handle display:none and display:contents

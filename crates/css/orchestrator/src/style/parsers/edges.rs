@@ -195,6 +195,14 @@ fn apply_border_side_shorthand_tokens(
             BorderSide::Bottom => computed.border_width.bottom = medium,
             BorderSide::Left => computed.border_width.left = medium,
         }
+    } else if matches!(style_opt, Some(style_model::BorderStyle::None)) {
+        // border-*: none should set border width to 0 for that side
+        match side {
+            BorderSide::Top => computed.border_width.top = 0.0,
+            BorderSide::Right => computed.border_width.right = 0.0,
+            BorderSide::Bottom => computed.border_width.bottom = 0.0,
+            BorderSide::Left => computed.border_width.left = 0.0,
+        }
     }
     if let Some(style_value) = style_opt {
         // Update overall border-style; tests and our layouter only consider solid/none, and

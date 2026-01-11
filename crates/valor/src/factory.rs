@@ -1,7 +1,9 @@
 use anyhow::Result;
+#[cfg(feature = "js")]
 use js::ChromeHostCommand;
 use page_handler::{HtmlPage, ValorConfig};
 use tokio::runtime::Runtime;
+#[cfg(feature = "js")]
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use url::Url;
 
@@ -9,6 +11,7 @@ use url::Url;
 pub struct ChromeInit {
     pub chrome_page: HtmlPage,
     pub content_page: HtmlPage,
+    #[cfg(feature = "js")]
     pub chrome_host_rx: UnboundedReceiver<ChromeHostCommand>,
 }
 
@@ -34,12 +37,17 @@ pub fn create_chrome_and_content(
         runtime.block_on(HtmlPage::new(runtime.handle(), initial_content_url, config))?;
 
     // Wire privileged chromeHost channel for the chrome page
-    let (chrome_tx, chrome_rx) = unbounded_channel::<ChromeHostCommand>();
-    let _attach_result: Result<(), _> = chrome_page.attach_chrome_host(chrome_tx);
+    #[cfg(feature = "js")]
+    let chrome_host_rx = {
+        let (chrome_tx, chrome_rx) = unbounded_channel::<ChromeHostCommand>();
+        let _attach_result: Result<(), _> = chrome_page.attach_chrome_host(chrome_tx);
+        chrome_rx
+    };
 
     Ok(ChromeInit {
         chrome_page,
         content_page,
-        chrome_host_rx: chrome_rx,
+        #[cfg(feature = "js")]
+        chrome_host_rx,
     })
 }

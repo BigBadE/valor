@@ -19,7 +19,7 @@ use tokio::runtime::Handle;
 ///
 /// Returns an error if the test fails or infrastructure errors occur.
 async fn run_comparison_test_simple<T: ComparisonTest>(
-    page: &Page,
+    page: Option<&Page>,
     handle: &Handle,
     fixture: &Path,
 ) -> Result<()> {
@@ -62,7 +62,7 @@ fn create_page_error_result(
 
 /// Runs layout and graphics comparison tests for a fixture.
 async fn run_layout_and_graphics_tests(
-    page: &Page,
+    page: Option<&Page>,
     fixture_path: &Path,
     fixture_start: Instant,
 ) -> FixtureResult {
@@ -97,7 +97,7 @@ async fn process_fixture(
     _idx: usize,
     _total_fixtures: usize,
     fixture_path: &Path,
-    browser: &Browser,
+    browser: Option<&Browser>,
 ) -> FixtureResult {
     let fixture_start = Instant::now();
 
@@ -113,20 +113,26 @@ async fn process_fixture(
         };
     }
 
-    // Create a new page for this fixture
-    let page = match browser.new_page("about:blank").await {
-        Ok(page) => page,
-        Err(err) => {
-            let error_msg = format!("Failed to create page: {err}");
-            return create_page_error_result(fixture_path, error_msg, fixture_start.elapsed());
+    // Create a new page for this fixture (if browser is available)
+    let page = if let Some(browser) = browser {
+        match browser.new_page("about:blank").await {
+            Ok(page) => Some(page),
+            Err(err) => {
+                let error_msg = format!("Failed to create page: {err}");
+                return create_page_error_result(fixture_path, error_msg, fixture_start.elapsed());
+            }
         }
+    } else {
+        None
     };
 
     // Run tests and ensure page cleanup even on error
-    let result = run_layout_and_graphics_tests(&page, fixture_path, fixture_start).await;
+    let result = run_layout_and_graphics_tests(page.as_ref(), fixture_path, fixture_start).await;
 
     // Always close the page to prevent Chrome tab accumulation
-    let _ignore_close_error = page.close().await;
+    if let Some(page) = page {
+        let _ignore_close_error = page.close().await;
+    }
 
     result
 }
@@ -228,16 +234,38 @@ pub async fn run_all_fixtures(fixtures: &[PathBuf]) -> Result<()> {
 
     let total_start = Instant::now();
 
-    // Start and connect to Chrome
-    let browser_with_handler = start_and_connect_chrome().await?;
-    let browser = &browser_with_handler.browser;
+    // Check if all fixtures have cached Chrome results
+    use super::cache_utils::cache_exists;
+    let all_cached = fixtures.iter().all(|fixture| {
+        cache_exists("layout", fixture, "_chrome.cache").unwrap_or(false)
+            && cache_exists("graphics", fixture, "_chrome.cache").unwrap_or(false)
+    });
+
+    if all_cached {
+        warn!("All fixtures have cached Chrome results - skipping Chrome startup");
+    }
+
+    // Start and connect to Chrome only if needed
+    let browser_with_handler = if !all_cached {
+        Some(start_and_connect_chrome().await?)
+    } else {
+        None
+    };
+    let browser = browser_with_handler.as_ref().map(|bwh| &bwh.browser);
     let _connect_time = total_start.elapsed();
 
-    let mut results = Vec::new();
     let total_fixtures = fixtures.len();
 
+    // Run all fixtures in parallel with FuturesUnordered
+    use futures::stream::{FuturesUnordered, StreamExt};
+
+    let mut futures = FuturesUnordered::new();
     for (idx, fixture_path) in fixtures.iter().enumerate() {
-        let result = process_fixture(idx, total_fixtures, fixture_path, browser).await;
+        futures.push(process_fixture(idx, total_fixtures, fixture_path, browser));
+    }
+
+    let mut results = Vec::with_capacity(total_fixtures);
+    while let Some(result) = futures.next().await {
         results.push(result);
     }
 

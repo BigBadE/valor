@@ -1,119 +1,166 @@
 <!doctype html>
 <!-- VALOR fixture: Search input -->
 <html>
-<head>
-  <meta charset="utf-8">
-  <title>UI Components: Search</title>
-  <style>
-    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
-    .container { padding: 16px; display: flex; flex-direction: column; gap: 16px; max-width: 400px; }
-    .search-wrapper { position: relative; }
-    .search-input {
-      width: 100%;
-      padding: 10px 40px 10px 40px;
-      font-size: 14px;
-      border: 1px solid #d1d5db;
-      border-radius: 8px;
-      box-sizing: border-box;
-    }
-    .search-icon {
-      position: absolute;
-      left: 12px;
-      top: 50%;
-      transform: translateY(-50%);
-      width: 18px;
-      height: 18px;
-      background: #9ca3af;
-      border-radius: 50%;
-    }
-    .search-clear {
-      position: absolute;
-      right: 12px;
-      top: 50%;
-      transform: translateY(-50%);
-      width: 18px;
-      height: 18px;
-      background: #e5e7eb;
-      border-radius: 50%;
-    }
-    .search-rounded .search-input { border-radius: 9999px; }
-    .search-with-button {
-      display: flex;
-      gap: 0;
-    }
-    .search-with-button .search-input {
-      border-radius: 8px 0 0 8px;
-      padding-right: 12px;
-    }
-    .search-btn {
-      padding: 0 20px;
-      background: #3b82f6;
-      color: white;
-      border: none;
-      border-radius: 0 8px 8px 0;
-      font-size: 14px;
-      font-weight: 500;
-    }
-    .search-dropdown {
-      position: absolute;
-      top: 100%;
-      left: 0;
-      right: 0;
-      margin-top: 4px;
-      background: white;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      box-shadow: 0 10px 25px rgba(0,0,0,0.1);
-      overflow: hidden;
-    }
-    .search-result {
-      padding: 10px 16px;
-      font-size: 14px;
-      color: #374151;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .search-result:hover { background: #f3f4f6; }
-    .result-icon {
-      width: 16px;
-      height: 16px;
-      background: #d1d5db;
-      border-radius: 3px;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="search-wrapper" id="basic">
-      <span class="search-icon"></span>
-      <input type="text" class="search-input" placeholder="Search...">
-    </div>
-    <div class="search-wrapper" id="with-clear">
-      <span class="search-icon"></span>
-      <input type="text" class="search-input" placeholder="Search..." value="query">
-      <span class="search-clear"></span>
-    </div>
-    <div class="search-wrapper search-rounded" id="rounded">
-      <span class="search-icon"></span>
-      <input type="text" class="search-input" placeholder="Search...">
-    </div>
-    <div class="search-with-button" id="with-button">
-      <div class="search-wrapper" style="flex: 1;">
-        <span class="search-icon"></span>
-        <input type="text" class="search-input" placeholder="Search products...">
-      </div>
-      <button class="search-btn">Search</button>
-    </div>
-    <div class="search-wrapper" id="with-dropdown">
-      <span class="search-icon"></span>
-      <input type="text" class="search-input" placeholder="Search..." value="react">
-      <div class="search-dropdown">
-        <div class="search-result"><span class="result-icon"></span>React Components</div>
-        <div class="search-result"><span class="result-icon"></span>React Hooks</div>
-        <div class="search-result"><span class="result-icon"></span>React Router</div>
-      </div>
-    </div>
-  </div>
-</body>
+    <head>
+        <meta charset="utf-8" />
+        <title>UI Components: Search</title>
+        <style>
+            html,
+            body {
+                margin: 0;
+                padding: 0;
+                font-family: system-ui, sans-serif;
+            }
+            .container {
+                padding: 16px;
+                display: flex;
+                flex-direction: column;
+                gap: 16px;
+                max-width: 400px;
+            }
+            .search-wrapper {
+                position: relative;
+            }
+            .search-input {
+                width: 100%;
+                padding: 10px 40px 10px 40px;
+                font-family: inherit;
+                font-size: 14px;
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                box-sizing: border-box;
+            }
+            .search-icon {
+                position: absolute;
+                left: 12px;
+                top: 50%;
+                transform: translateY(-50%);
+                width: 18px;
+                height: 18px;
+                background: #9ca3af;
+                border-radius: 50%;
+            }
+            .search-clear {
+                position: absolute;
+                right: 12px;
+                top: 50%;
+                transform: translateY(-50%);
+                width: 18px;
+                height: 18px;
+                background: #e5e7eb;
+                border-radius: 50%;
+            }
+            .search-rounded .search-input {
+                border-radius: 9999px;
+            }
+            .search-with-button {
+                display: flex;
+                gap: 0;
+            }
+            .search-with-button .search-input {
+                border-radius: 8px 0 0 8px;
+                padding-right: 12px;
+            }
+            .search-btn {
+                padding: 0 20px;
+                background: #3b82f6;
+                color: white;
+                border: none;
+                border-radius: 0 8px 8px 0;
+                font-family: inherit;
+                font-size: 14px;
+                font-weight: 500;
+            }
+            .search-dropdown {
+                position: absolute;
+                top: 100%;
+                left: 0;
+                right: 0;
+                margin-top: 4px;
+                background: white;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+                overflow: hidden;
+            }
+            .search-result {
+                padding: 10px 16px;
+                font-size: 14px;
+                color: #374151;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            .search-result:hover {
+                background: #f3f4f6;
+            }
+            .result-icon {
+                width: 16px;
+                height: 16px;
+                background: #d1d5db;
+                border-radius: 3px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="search-wrapper" id="basic">
+                <span class="search-icon"></span>
+                <input
+                    type="text"
+                    class="search-input"
+                    placeholder="Search..."
+                />
+            </div>
+            <div class="search-wrapper" id="with-clear">
+                <span class="search-icon"></span>
+                <input
+                    type="text"
+                    class="search-input"
+                    placeholder="Search..."
+                    value="query"
+                />
+                <span class="search-clear"></span>
+            </div>
+            <div class="search-wrapper search-rounded" id="rounded">
+                <span class="search-icon"></span>
+                <input
+                    type="text"
+                    class="search-input"
+                    placeholder="Search..."
+                />
+            </div>
+            <div class="search-with-button" id="with-button">
+                <div class="search-wrapper" style="flex: 1">
+                    <span class="search-icon"></span>
+                    <input
+                        type="text"
+                        class="search-input"
+                        placeholder="Search products..."
+                    />
+                </div>
+                <button class="search-btn">Search</button>
+            </div>
+            <div class="search-wrapper" id="with-dropdown">
+                <span class="search-icon"></span>
+                <input
+                    type="text"
+                    class="search-input"
+                    placeholder="Search..."
+                    value="react"
+                />
+                <div class="search-dropdown">
+                    <div class="search-result">
+                        <span class="result-icon"></span>React Components
+                    </div>
+                    <div class="search-result">
+                        <span class="result-icon"></span>React Hooks
+                    </div>
+                    <div class="search-result">
+                        <span class="result-icon"></span>React Router
+                    </div>
+                </div>
+            </div>
+        </div>
+    </body>
 </html>

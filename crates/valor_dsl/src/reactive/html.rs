@@ -104,7 +104,7 @@ impl Html {
         ];
 
         // Prepend to existing updates
-        prepended_updates.extend(self.updates.drain(..));
+        prepended_updates.append(&mut self.updates);
         self.updates = prepended_updates;
     }
 }

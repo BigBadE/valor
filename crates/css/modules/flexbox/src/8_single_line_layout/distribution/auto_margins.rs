@@ -65,7 +65,8 @@ pub fn resolve_auto_margins_and_outer(
                 0.0
             };
         effective_left_margins.push(eff_left);
-        outer_sizes.push(inner + eff_left + eff_right);
+        // Outer size per spec includes: content-box + padding + border + margins
+        outer_sizes.push(inner + child.main_padding_border + eff_left + eff_right);
     }
     let sum_outer: f32 = outer_sizes.iter().copied().sum();
     (outer_sizes, effective_left_margins, auto_slots, sum_outer)

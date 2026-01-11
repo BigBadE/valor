@@ -16,22 +16,22 @@ impl TailwindUtilities {
         css.push_str(&Self::spacing());
 
         // Typography utilities
-        css.push_str(&Self::typography());
+        css.push_str(Self::typography());
 
         // Color utilities
         css.push_str(&Self::colors(colors));
 
         // Layout utilities
-        css.push_str(&Self::layout());
+        css.push_str(Self::layout());
 
         // Border utilities
-        css.push_str(&Self::borders());
+        css.push_str(Self::borders());
 
         // Shadow utilities
-        css.push_str(&Self::shadows());
+        css.push_str(Self::shadows());
 
         // Effects utilities
-        css.push_str(&Self::effects());
+        css.push_str(Self::effects());
 
         css
     }

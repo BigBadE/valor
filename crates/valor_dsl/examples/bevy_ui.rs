@@ -2,8 +2,10 @@
 //!
 //! This opens a real Bevy window and displays a functional counter UI.
 
+use bevy::ecs::system::ChildSpawnerCommands;
 use bevy::prelude::*;
 use bevy::winit::WinitSettings;
+use log::info;
 use std::sync::{Arc, Mutex};
 
 /// Main entry point
@@ -77,7 +79,7 @@ struct DecrementButton;
 struct ResetButton;
 
 /// Spawn the button group with all three buttons
-fn spawn_button_group(parent: &mut ChildBuilder) {
+fn spawn_button_group(parent: &mut ChildSpawnerCommands) {
     parent
         .spawn((Node {
             flex_direction: FlexDirection::Row,
@@ -113,7 +115,7 @@ fn spawn_button_group(parent: &mut ChildBuilder) {
 }
 
 /// Spawn the counter container with title, display, buttons, and description
-fn spawn_counter_container(parent: &mut ChildBuilder) {
+fn spawn_counter_container(parent: &mut ChildSpawnerCommands) {
     parent
         .spawn((
             Node {
@@ -188,7 +190,12 @@ fn setup_ui(mut commands: Commands, _asset_server: Res<AssetServer>) {
 }
 
 /// Create a button with the specified text, color, and marker component
-fn create_button<T: Component>(parent: &mut ChildBuilder, text: &str, color: Color, marker: T) {
+fn create_button<T: Component>(
+    parent: &mut ChildSpawnerCommands,
+    text: &str,
+    color: Color,
+    marker: T,
+) {
     parent
         .spawn((
             Button,

@@ -94,6 +94,7 @@ fn grow_distribution_and_placement_row() {
             margin_bottom: 0.0,
             margin_left_auto: false,
             margin_right_auto: false,
+            main_padding_border: 0.0,
         },
         FlexChild {
             handle: ItemRef(2),
@@ -108,6 +109,7 @@ fn grow_distribution_and_placement_row() {
             margin_bottom: 0.0,
             margin_left_auto: false,
             margin_right_auto: false,
+            main_padding_border: 0.0,
         },
     ];
     let container = FlexContainerInputs {
@@ -161,6 +163,7 @@ fn shrink_distribution_row_reverse_center() {
             margin_bottom: 0.0,
             margin_left_auto: false,
             margin_right_auto: false,
+            main_padding_border: 0.0,
         },
         FlexChild {
             handle: ItemRef(2),
@@ -175,6 +178,7 @@ fn shrink_distribution_row_reverse_center() {
             margin_bottom: 0.0,
             margin_left_auto: false,
             margin_right_auto: false,
+            main_padding_border: 0.0,
         },
     ];
     let container = FlexContainerInputs {

@@ -2,7 +2,7 @@
 
 use log::debug;
 
-use super::super::cross_axis::alignment::align_single_line_cross;
+use super::super::cross_axis::alignment::{CrossSize, align_single_line_cross};
 use super::super::cross_axis::{
     BaselineAdjustCtx, adjust_cross_for_baseline, compute_line_baseline_ref,
 };
@@ -24,7 +24,7 @@ pub fn per_line_main_and_cross(
     container: FlexContainerInputs,
     justify_content: JustifyContent,
     items: &[super::super::FlexChild],
-    cross_inputs: &[(f32, f32, f32)],
+    cross_inputs: &[(CrossSize, f32, f32)],
     line_ranges: &[LineRange],
 ) -> (Vec<PerLineMain>, Vec<f32>) {
     let mut per_line_main: Vec<PerLineMain> = Vec::with_capacity(line_ranges.len());
@@ -54,7 +54,9 @@ pub fn per_line_main_and_cross(
         );
         let mut line_cross_max = 0.0f32;
         for (idx, &(item_cross, min_c, max_c)) in line_cross_inputs.iter().enumerate() {
-            let clamped = clamp(item_cross, min_c, max_c);
+            // Get the intrinsic cross size from CrossSize
+            let effective_cross = item_cross.intrinsic_size();
+            let clamped = clamp(effective_cross, min_c, max_c);
             // Include cross-axis margins per CSS Flexbox spec
             // For row direction, this is margin-top + margin-bottom
             let global_item_idx = line_start + idx;
@@ -79,7 +81,7 @@ struct LineBuildCtx<'ctx> {
     /// Main placements for items in the line.
     line_main: &'ctx PerLineMain,
     /// Cross inputs for items in the line.
-    line_cross_inputs: &'ctx [(f32, f32, f32)],
+    line_cross_inputs: &'ctx [(CrossSize, f32, f32)],
     /// Baseline metrics for items in the line.
     line_baselines: &'ctx [super::super::cross_axis::BaselineMetrics],
     /// Max cross-size for the line.

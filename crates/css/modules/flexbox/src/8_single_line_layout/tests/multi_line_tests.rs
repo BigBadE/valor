@@ -9,9 +9,9 @@ fn multi_line_wrap_basic_two_lines() {
     // Three items of 50 each, gap 10, container 120 → line 1 has two items (50+10+50=110), line 2 has one item.
     let items = three_items_50();
     let cross_inputs = vec![
-        (20.0, 0.0, 1000.0),
-        (20.0, 0.0, 1000.0),
-        (20.0, 0.0, 1000.0),
+        (CrossSize::Explicit(20.0), 0.0, 1000.0),
+        (CrossSize::Explicit(20.0), 0.0, 1000.0),
+        (CrossSize::Explicit(20.0), 0.0, 1000.0),
     ];
     let container = FlexContainerInputs {
         direction: FlexDirection::Row,
@@ -67,7 +67,7 @@ fn multi_line_auto_margin_left_first_line_absorbs_space() {
     if let Some(first) = items_with_auto.get_mut(0) {
         first.margin_left_auto = true;
     }
-    let cross_inputs = vec![(20.0, 0.0, 1000.0); 4];
+    let cross_inputs = vec![(CrossSize::Explicit(20.0), 0.0, 1000.0); 4];
     let container = FlexContainerInputs {
         direction: FlexDirection::Row,
         writing_mode: WritingMode::HorizontalTb,
@@ -112,7 +112,7 @@ fn multi_line_single_item_both_auto_centers() {
         last.margin_left_auto = true;
         last.margin_right_auto = true;
     }
-    let cross_inputs = vec![(20.0, 0.0, 1000.0); 3];
+    let cross_inputs = vec![(CrossSize::Explicit(20.0), 0.0, 1000.0); 3];
     let container = FlexContainerInputs {
         direction: FlexDirection::Row,
         writing_mode: WritingMode::HorizontalTb,

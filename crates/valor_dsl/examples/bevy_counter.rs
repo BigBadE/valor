@@ -4,6 +4,7 @@
 
 use bevy::prelude::*;
 use bevy::window::{Window, WindowPlugin};
+use log::info;
 use valor_dsl::{bevy_events::*, bevy_integration::*, click_handler, jsx};
 
 #[derive(Component)]
@@ -73,7 +74,7 @@ fn setup(mut commands: Commands, global_styles: Res<valor_dsl::bevy_integration:
 
 // Bevy observer systems - these get triggered by UI click events
 fn increment_counter(
-    trigger: Trigger<OnClick>,
+    trigger: On<OnClick>,
     click_handlers: Query<&ClickHandler>,
     mut counter_query: Query<&mut Counter>,
     mut commands: Commands,
@@ -112,7 +113,7 @@ fn increment_counter(
 }
 
 fn decrement_counter(
-    trigger: Trigger<OnClick>,
+    trigger: On<OnClick>,
     click_handlers: Query<&ClickHandler>,
     mut counter_query: Query<&mut Counter>,
     mut commands: Commands,
@@ -149,7 +150,7 @@ fn decrement_counter(
 }
 
 fn reset_counter(
-    trigger: Trigger<OnClick>,
+    trigger: On<OnClick>,
     click_handlers: Query<&ClickHandler>,
     mut counter_query: Query<&mut Counter>,
     mut commands: Commands,

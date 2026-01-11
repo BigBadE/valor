@@ -68,7 +68,7 @@ pub fn stretch_line_crosses(cross_ctx: &CrossContext, per_line_cross_max: &[f32]
 /// Inputs for line packing.
 pub struct PackInputs<'inputs> {
     /// Per-item cross inputs `(cross_size, min_cross, max_cross)`
-    pub cross_inputs: &'inputs [(f32, f32, f32)],
+    pub cross_inputs: &'inputs [(super::super::CrossSize, f32, f32)],
     /// Per-item baseline metrics if available
     pub baseline_inputs: &'inputs [super::super::cross_axis::BaselineMetrics],
     /// Ranges of items per line

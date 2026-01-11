@@ -4,6 +4,7 @@ use super::ConstraintLayoutTree;
 use super::shared::ChildrenLayoutState;
 use css_box::LayoutUnit;
 use css_orchestrator::style_model::ComputedStyle;
+use css_text::collapse_whitespace;
 use css_text::measurement::{TextMetrics, measure_text, measure_text_wrapped};
 use js::NodeKey;
 
@@ -65,12 +66,18 @@ impl ConstraintLayoutTree {
     fn build_text_result(&self, params: &TextLayoutParams<'_>) -> LayoutResult {
         // Calculate text Y position within the line box (centering vertically)
         // CRITICAL: Floor half_leading to match Chrome's behavior and avoid 0.5px offsets.
-        // For wrapped text (text_rect_height > single_line_height), don't apply half_leading
+        // For wrapped text (multiple lines), don't apply half_leading
         // because the text spans multiple lines and should start at the container's top edge.
-        let is_wrapped = params.text_rect_height > params.single_line_height;
+        //
+        // Detect wrapping by checking if text_rect_height significantly exceeds single_line_height.
+        // Use 1.5× threshold to distinguish actual multi-line wrapping from cases where
+        // glyph bounds simply exceed the CSS line-height (which is allowed).
+        let is_wrapped = params.text_rect_height > params.single_line_height * 1.5;
         let half_leading = if is_wrapped {
             0.0
         } else {
+            // For single-line text, center glyphs vertically in line box.
+            // half_leading can be negative when glyph_height > line_height (glyphs overflow).
             ((params.single_line_height - params.glyph_height) / 2.0).floor()
         };
         let text_y_offset = params.resolved_offset + LayoutUnit::from_px(half_leading);
@@ -81,15 +88,50 @@ impl ConstraintLayoutTree {
         let text_x_offset =
             params.child_space.bfc_offset.inline_offset + LayoutUnit::from_px(text_align_offset);
 
+        // CRITICAL: Use single_line_height for block_size (CSS line-height).
+        // This ensures containers size correctly using CSS line-height,
+        // which matches Chrome's behavior. Glyph bounds can exceed line-height
+        // (glyphs overflow), but the line box height is still determined by line-height.
+        // For wrapped text, use text_rect_height (total height = line_count × line_height).
+        let block_size = if is_wrapped {
+            params.text_rect_height
+        } else {
+            params.single_line_height
+        };
+
         LayoutResult {
             inline_size: params.text_width,
-            block_size: params.text_rect_height,
+            block_size,
             bfc_offset: BfcOffset::new(text_x_offset, Some(text_y_offset)),
             exclusion_space: params.child_space.exclusion_space.clone(),
             end_margin_strut: MarginStrut::default(),
             baseline: None,
             needs_relayout: false,
         }
+    }
+
+    /// Check if a text node is a continuation of a previous text node.
+    fn is_text_continuation(&self, parent: NodeKey, child: NodeKey) -> bool {
+        self.children.get(&parent).is_some_and(|siblings| {
+            siblings
+                .iter()
+                .position(|&sibling| sibling == child)
+                .is_some_and(|idx| idx > 0 && self.text_nodes.contains_key(&siblings[idx - 1]))
+        })
+    }
+
+    /// Handle whitespace-only text nodes.
+    fn handle_whitespace_text(&mut self, child: NodeKey, child_space: &ConstraintSpace) {
+        let text_result = LayoutResult {
+            inline_size: 0.0,
+            block_size: 0.0,
+            bfc_offset: child_space.bfc_offset,
+            exclusion_space: child_space.exclusion_space.clone(),
+            end_margin_strut: MarginStrut::default(),
+            baseline: None,
+            needs_relayout: false,
+        };
+        self.layout_results.insert(child, text_result);
     }
 
     pub(super) fn layout_text_child(
@@ -101,37 +143,29 @@ impl ConstraintLayoutTree {
     ) -> bool {
         let (parent, child) = parent_child;
         let text = self.text_nodes.get(&child).map_or("", String::as_str);
-        let is_whitespace_only = text.chars().all(char::is_whitespace);
 
-        if is_whitespace_only {
-            let text_result = LayoutResult {
-                inline_size: 0.0,
-                block_size: 0.0,
-                bfc_offset: child_space.bfc_offset,
-                exclusion_space: child_space.exclusion_space.clone(),
-                end_margin_strut: MarginStrut::default(),
-                baseline: None,
-                needs_relayout: false,
-            };
-            self.layout_results.insert(child, text_result);
+        if text == "1" || text == "2" || text == "3" {
+            log::warn!(
+                "layout_text_child CALLED: text='{}', node={:?}",
+                text,
+                child
+            );
+        }
+
+        if text.chars().all(char::is_whitespace) {
+            self.handle_whitespace_text(child, child_space);
             return false;
         }
 
-        // Check if this is a continuation of a previous text node.
-        // Continuation text nodes get positioned but with zero inline size,
-        // so rendering can find them and combine their text with the lead node.
-        let is_continuation = self.children.get(&parent).is_some_and(|siblings| {
-            siblings
-                .iter()
-                .position(|&sibling| sibling == child)
-                .is_some_and(|child_index| {
-                    child_index > 0 && {
-                        let prev_sibling = siblings[child_index - 1];
-                        self.text_nodes.contains_key(&prev_sibling)
-                    }
-                })
-        });
-
+        let is_continuation = self.is_text_continuation(parent, child);
+        if text == "1" || text == "2" || text == "3" {
+            log::warn!(
+                "layout_text_child ENTRY: text='{}', is_continuation={}, is_for_measurement_only={}",
+                text,
+                is_continuation,
+                child_space.is_for_measurement_only
+            );
+        }
         state.has_text_content = true;
 
         // Text nodes don't have margins, but if parent can collapse with children,
@@ -168,13 +202,33 @@ impl ConstraintLayoutTree {
                 text_rect_height: 0.0,
             }
         } else {
-            self.measure_text(child, Some(parent), child_space.available_inline_size)
+            let measured =
+                self.measure_text(child, Some(parent), child_space.available_inline_size);
+            if text == "1" || text == "2" || text == "3" {
+                log::warn!(
+                    "TEXT MEASUREMENT DEBUG: text='{}', width={}, is_continuation={}, is_for_measurement_only={}",
+                    text,
+                    measured.width,
+                    is_continuation,
+                    child_space.is_for_measurement_only
+                );
+            }
+            measured
         };
 
         let text_width = measurement.width;
         let glyph_height = measurement.glyph_height;
         let single_line_height = measurement.single_line_height;
         let text_rect_height = measurement.text_rect_height;
+
+        if (text == "1" || text == "2" || text == "3") && text_width == 0.0 {
+            log::error!(
+                "TEXT WIDTH IS ZERO! text='{}', is_continuation={}, available_inline={:?}",
+                text,
+                is_continuation,
+                child_space.available_inline_size
+            );
+        }
 
         let text_result = self.build_text_result(&TextLayoutParams {
             parent,
@@ -186,20 +240,47 @@ impl ConstraintLayoutTree {
             child_space,
         });
 
-        // Only store layout results during final layout, not during measurement passes.
-        // During grid/flex sizing measurement, text gets laid out with intrinsic widths,
-        // but we need to recalculate with the final definite widths from the container.
-        if !child_space.is_for_measurement_only {
-            self.layout_results.insert(child, text_result);
+        // Always store text layout results, even during measurement passes.
+        // Text nodes need their dimensions recorded for serialization and rendering.
+        // Even if the text wrapping changes during final layout, having preliminary
+        // dimensions is better than having no dimensions at all.
+        if text == "1" || text == "2" || text == "3" || text == "Primary" {
+            log::error!(
+                "INSERTING TEXT RESULT: text='{}', inline_size={}, block_size={}, single_line_height={}, glyph_height={}, is_for_measurement_only={}",
+                text,
+                text_result.inline_size,
+                text_result.block_size,
+                single_line_height,
+                glyph_height,
+                child_space.is_for_measurement_only
+            );
         }
+        self.layout_results.insert(child, text_result);
 
         // Only advance BFC offset for the lead text node, not continuations
         if !is_continuation {
             child_space.margin_strut = MarginStrut::default();
-            // Advance BFC offset based on whether text wrapped
-            // For single-line text: use single_line_height (CSS line-height, e.g. 19px)
-            // For wrapped text: use text_rect_height (total height across all lines)
-            let bfc_advance_height = if text_rect_height > single_line_height { text_rect_height } else { single_line_height };
+            // Advance BFC offset based on whether text wrapped to multiple lines.
+            //
+            // For single-line text: use single_line_height (CSS line-height)
+            // For wrapped text: use text_rect_height (total height = line_count × line_height)
+            //
+            // CRITICAL: Detect wrapping by checking if text_rect_height exceeds single_line_height
+            // by more than a small epsilon. This distinguishes actual wrapping (where
+            // text_rect_height = n × line_height for n > 1) from the case where glyph bounds
+            // simply exceed the CSS line-height (which is allowed - glyphs can overflow).
+            //
+            // Example: 16px Noto Sans with line-height:19px
+            // - glyph_height = 22px (ascent + descent)
+            // - single_line_height = 19px (CSS line-height)
+            // - For single line: use 19px (the CSS line-height), not 22px (glyph bounds)
+            // - For 2 lines: text_rect_height = 38px, use that
+            let is_wrapped = text_rect_height > single_line_height * 1.5;
+            let bfc_advance_height = if is_wrapped {
+                text_rect_height
+            } else {
+                single_line_height
+            };
             child_space.bfc_offset.block_offset =
                 Some(resolved_offset + LayoutUnit::from_px(bfc_advance_height));
         }
@@ -259,7 +340,11 @@ impl ConstraintLayoutTree {
             },
         );
 
-        let text = combined_text.as_str();
+        // CSS white-space: normal (default) collapses whitespace runs to a single space
+        // and trims leading/trailing whitespace. We apply this before measurement.
+        // TODO: Check parent's white-space property; for now assume 'normal' (collapse).
+        let collapsed_text = collapse_whitespace(&combined_text);
+        let text = collapsed_text.as_str();
 
         if text.is_empty() {
             return TextMeasurement {
@@ -341,15 +426,20 @@ impl ConstraintLayoutTree {
         size: LayoutUnit,
         single_line_text_rect_height: f32,
     ) -> TextMeasurement {
-        const MIN_WRAP_WIDTH: f32 = 50.0;
+        const MIN_WRAP_WIDTH: f32 = 1.0;
+        // Epsilon tolerance for floating point precision in text wrapping decisions.
+        // During flex basis measurement, max-content width may differ from available_width
+        // by tiny amounts (e.g., 289.24 vs 289.23) due to floating point arithmetic.
+        const WRAP_EPSILON: f32 = 0.1;
+
         let available_width = size.to_px();
 
         Self::debug_log_wrap_decision(text, available_width, metrics.width);
 
-        // Don't wrap at absurdly small widths - use natural width instead
+        // Only skip wrapping for absurdly small widths (< 1px) that indicate measurement errors
         if available_width < MIN_WRAP_WIDTH {
             log::debug!(
-                "measure_text: SMALL DEFINITE ({}px < {}px) for text='{}', metrics.width={}, using natural width",
+                "measure_text: INVALID DEFINITE ({}px < {}px) for text='{}', metrics.width={}, using natural width",
                 available_width,
                 MIN_WRAP_WIDTH,
                 text,
@@ -365,7 +455,7 @@ impl ConstraintLayoutTree {
             };
         }
 
-        if metrics.width <= available_width {
+        if metrics.width <= available_width + WRAP_EPSILON {
             // Text fits on one line - use actual width
             TextMeasurement {
                 width: metrics.width,

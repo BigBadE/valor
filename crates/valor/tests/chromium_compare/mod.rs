@@ -8,5 +8,4 @@ pub mod graphics_tests;
 pub mod json_compare;
 pub mod layout_comparison;
 pub mod layout_tests;
-pub mod text_rendering_comparison;
 pub mod valor;

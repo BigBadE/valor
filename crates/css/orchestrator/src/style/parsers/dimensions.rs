@@ -6,55 +6,52 @@ use crate::style_model;
 
 use super::super::parse_px;
 
+/// Parse a dimension value, returning pixel and percent values.
+fn parse_dimension(value: &str) -> (Option<f32>, Option<f32>) {
+    let trimmed = value.trim();
+    if let Some(percent_str) = trimmed.strip_suffix('%')
+        && let Ok(percent_value) = percent_str.trim().parse::<f32>()
+    {
+        (None, Some((percent_value / 100.0).clamp(0.0, 1.0)))
+    } else {
+        (parse_px(value), None)
+    }
+}
+
 /// Parse width/height/min/max and box-sizing.
 pub fn apply_dimensions(
     computed: &mut style_model::ComputedStyle,
     decls: &HashMap<String, String>,
 ) {
     if let Some(value) = decls.get("width") {
-        computed.width = parse_px(value);
+        let (pixels, percent) = parse_dimension(value);
+        computed.width = pixels;
+        computed.width_percent = percent;
     }
     if let Some(value) = decls.get("height") {
-        let trimmed = value.trim();
-        if let Some(percent_str) = trimmed.strip_suffix('%')
-            && let Ok(percent_value) = percent_str.trim().parse::<f32>()
-        {
-            computed.height = None;
-            computed.height_percent = Some((percent_value / 100.0).clamp(0.0, 1.0));
-        } else {
-            computed.height = parse_px(value);
-            computed.height_percent = None;
-        }
+        let (pixels, percent) = parse_dimension(value);
+        computed.height = pixels;
+        computed.height_percent = percent;
     }
     if let Some(value) = decls.get("min-width") {
-        computed.min_width = parse_px(value);
+        let (pixels, percent) = parse_dimension(value);
+        computed.min_width = pixels;
+        computed.min_width_percent = percent.map(|val| val.max(0.0));
     }
     if let Some(value) = decls.get("min-height") {
-        let trimmed = value.trim();
-        if let Some(percent_str) = trimmed.strip_suffix('%')
-            && let Ok(percent_value) = percent_str.trim().parse::<f32>()
-        {
-            computed.min_height = None;
-            computed.min_height_percent = Some((percent_value / 100.0).max(0.0));
-        } else {
-            computed.min_height = parse_px(value);
-            computed.min_height_percent = None;
-        }
+        let (pixels, percent) = parse_dimension(value);
+        computed.min_height = pixels;
+        computed.min_height_percent = percent.map(|val| val.max(0.0));
     }
     if let Some(value) = decls.get("max-width") {
-        computed.max_width = parse_px(value);
+        let (pixels, percent) = parse_dimension(value);
+        computed.max_width = pixels;
+        computed.max_width_percent = percent.map(|val| val.max(0.0));
     }
     if let Some(value) = decls.get("max-height") {
-        let trimmed = value.trim();
-        if let Some(percent_str) = trimmed.strip_suffix('%')
-            && let Ok(percent_value) = percent_str.trim().parse::<f32>()
-        {
-            computed.max_height = None;
-            computed.max_height_percent = Some((percent_value / 100.0).max(0.0));
-        } else {
-            computed.max_height = parse_px(value);
-            computed.max_height_percent = None;
-        }
+        let (pixels, percent) = parse_dimension(value);
+        computed.max_height = pixels;
+        computed.max_height_percent = percent.map(|val| val.max(0.0));
     }
     if let Some(value) = decls.get("box-sizing") {
         computed.box_sizing = if value.eq_ignore_ascii_case("border-box") {

@@ -3,6 +3,30 @@
 use super::super::{AlignItems, CrossPlacement};
 use super::baseline::BaselineMetrics;
 
+/// Cross-size specification for flex items, distinguishing between
+/// explicit sizes and items that should stretch to fill the container.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum CrossSize {
+    /// Item has explicit cross-size (or intrinsic size with no stretch)
+    Explicit(f32),
+    /// Item should stretch to container; value is the measured intrinsic size
+    Stretch(f32),
+}
+
+impl CrossSize {
+    /// Get the intrinsic cross size (the size before alignment/stretching)
+    pub fn intrinsic_size(self) -> f32 {
+        match self {
+            Self::Explicit(size) | Self::Stretch(size) => size,
+        }
+    }
+
+    /// Check if this item should stretch
+    pub fn should_stretch(self) -> bool {
+        matches!(self, Self::Stretch(_))
+    }
+}
+
 /// Compute cross-axis placement and size given `align-items` for single-line containers.
 ///
 /// Behavior:
@@ -11,16 +35,17 @@ use super::baseline::BaselineMetrics;
 pub fn align_single_line_cross(
     align: AlignItems,
     container_cross_size: f32,
-    item_cross_size: f32,
+    item_cross_size: CrossSize,
     min_cross: f32,
     max_cross: f32,
 ) -> CrossPlacement {
-    let clamped_item = super::super::distribution::clamp(item_cross_size, min_cross, max_cross);
+    let intrinsic = item_cross_size.intrinsic_size();
+    let clamped_item = super::super::distribution::clamp(intrinsic, min_cross, max_cross);
+
     match align {
         AlignItems::Stretch => {
-            // Stretch applies when the item cross-size is auto/unspecified.
-            // Heuristic: treat non-positive sizes as auto for MVP.
-            if item_cross_size <= 0.0 {
+            // Stretch applies when the item doesn't have an explicit cross-size
+            if item_cross_size.should_stretch() {
                 CrossPlacement {
                     cross_size: super::super::distribution::clamp(
                         container_cross_size,
@@ -30,6 +55,7 @@ pub fn align_single_line_cross(
                     cross_offset: 0.0,
                 }
             } else {
+                // Item has explicit cross-size - use it, no stretching
                 CrossPlacement {
                     cross_size: clamped_item,
                     cross_offset: 0.0,
@@ -64,7 +90,7 @@ pub fn align_single_line_cross(
 pub fn align_cross_for_items(
     align: AlignItems,
     container_cross_size: f32,
-    items: &[(f32, f32, f32)],
+    items: &[(CrossSize, f32, f32)],
 ) -> Vec<CrossPlacement> {
     items
         .iter()

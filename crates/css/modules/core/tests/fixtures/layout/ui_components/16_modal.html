@@ -1,77 +1,109 @@
 <!doctype html>
 <!-- VALOR fixture: Modal dialog -->
 <html>
-<head>
-  <meta charset="utf-8">
-  <title>UI Components: Modal</title>
-  <style>
-    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
-    .modal-backdrop {
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.5);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .modal {
-      background: white;
-      border-radius: 12px;
-      box-shadow: 0 25px 50px rgba(0,0,0,0.25);
-      width: 420px;
-      max-width: 90%;
-    }
-    .modal-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 16px 20px;
-      border-bottom: 1px solid #e5e7eb;
-    }
-    .modal-title { font-size: 18px; font-weight: 600; margin: 0; }
-    .modal-close {
-      width: 24px;
-      height: 24px;
-      background: #f3f4f6;
-      border-radius: 4px;
-    }
-    .modal-body { padding: 20px; }
-    .modal-text { font-size: 14px; color: #6b7280; line-height: 1.6; margin: 0; }
-    .modal-footer {
-      display: flex;
-      justify-content: flex-end;
-      gap: 12px;
-      padding: 16px 20px;
-      border-top: 1px solid #e5e7eb;
-      background: #f9fafb;
-      border-radius: 0 0 12px 12px;
-    }
-    .btn {
-      padding: 8px 16px;
-      border-radius: 6px;
-      font-size: 14px;
-      font-weight: 500;
-    }
-    .btn-secondary { background: white; border: 1px solid #d1d5db; color: #374151; }
-    .btn-primary { background: #3b82f6; color: white; border: none; }
-    .btn-danger { background: #ef4444; color: white; border: none; }
-  </style>
-</head>
-<body>
-  <div class="modal-backdrop">
-    <div class="modal" id="modal">
-      <div class="modal-header">
-        <h2 class="modal-title">Confirm Action</h2>
-        <span class="modal-close"></span>
-      </div>
-      <div class="modal-body">
-        <p class="modal-text">Are you sure you want to proceed with this action? This cannot be undone.</p>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary">Cancel</button>
-        <button class="btn btn-danger">Delete</button>
-      </div>
-    </div>
-  </div>
-</body>
+    <head>
+        <meta charset="utf-8" />
+        <title>UI Components: Modal</title>
+        <style>
+            html,
+            body {
+                margin: 0;
+                padding: 0;
+                font-family: system-ui, sans-serif;
+            }
+            .modal-backdrop {
+                position: fixed;
+                inset: 0;
+                background: rgba(0, 0, 0, 0.5);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .modal {
+                background: white;
+                border-radius: 12px;
+                box-shadow: 0 25px 50px rgba(0, 0, 0, 0.25);
+                width: 420px;
+                max-width: 90%;
+            }
+            .modal-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 16px 20px;
+                border-bottom: 1px solid #e5e7eb;
+            }
+            .modal-title {
+                font-size: 18px;
+                font-weight: 600;
+                margin: 0;
+            }
+            .modal-close {
+                width: 24px;
+                height: 24px;
+                background: #f3f4f6;
+                border-radius: 4px;
+            }
+            .modal-body {
+                padding: 20px;
+            }
+            .modal-text {
+                font-size: 14px;
+                color: #6b7280;
+                line-height: 1.6;
+                margin: 0;
+            }
+            .modal-footer {
+                display: flex;
+                justify-content: flex-end;
+                gap: 12px;
+                padding: 16px 20px;
+                border-top: 1px solid #e5e7eb;
+                background: #f9fafb;
+                border-radius: 0 0 12px 12px;
+            }
+            .btn {
+                font-family: inherit;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-size: 14px;
+                font-weight: 500;
+            }
+            .btn-secondary {
+                background: white;
+                border: 1px solid #d1d5db;
+                color: #374151;
+            }
+            .btn-primary {
+                background: #3b82f6;
+                color: white;
+                border: none;
+            }
+            .btn-danger {
+                background: #ef4444;
+                color: white;
+                border: none;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="modal-backdrop">
+            <div class="modal" id="modal">
+                <div class="modal-header">
+                    <h2 class="modal-title">Confirm Action</h2>
+                    <span class="modal-close"></span>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-text">
+                        Are you sure you want to proceed with this action? This
+                        cannot be undone.
+                    </p>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary">Cancel</button>
+                    <button class="btn btn-danger">Delete</button>
+                </div>
+            </div>
+        </div>
+    </body>
 </html>

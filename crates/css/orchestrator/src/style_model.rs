@@ -106,11 +106,23 @@ pub enum FlexWrap {
     #[default]
     NoWrap,
     Wrap,
+    WrapReverse,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AlignItems {
     #[default]
+    Normal,
+    Stretch,
+    FlexStart,
+    Center,
+    FlexEnd,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AlignSelf {
+    #[default]
+    Auto,
     Normal,
     Stretch,
     FlexStart,
@@ -192,10 +204,16 @@ pub struct ComputedStyle {
     pub min_height: Option<f32>,
     pub max_width: Option<f32>,
     pub max_height: Option<f32>,
+    /// Optional width as a percentage fraction (0.0..=1.0) of containing block.
+    pub width_percent: Option<f32>,
     /// Optional height as a percentage fraction (0.0..=1.0) of containing block.
     pub height_percent: Option<f32>,
+    /// Optional min-width as a percentage fraction (0.0..=1.0).
+    pub min_width_percent: Option<f32>,
     /// Optional min-height as a percentage fraction (0.0..=1.0).
     pub min_height_percent: Option<f32>,
+    /// Optional max-width as a percentage fraction (0.0..=1.0).
+    pub max_width_percent: Option<f32>,
     /// Optional max-height as a percentage fraction (0.0..=1.0).
     pub max_height_percent: Option<f32>,
     /// Whether margin-left was specified as 'auto' (used in horizontal width solving).
@@ -223,11 +241,14 @@ pub struct ComputedStyle {
     pub flex_grow: f32,
     pub flex_shrink: f32,
     pub flex_basis: Option<f32>,
+    pub flex_basis_percent: Option<f32>,
     pub flex_direction: FlexDirection,
     pub flex_wrap: FlexWrap,
     pub align_items: AlignItems,
+    pub align_self: AlignSelf,
     pub justify_content: JustifyContent,
     pub align_content: AlignContent,
+    pub order: i32,
     /// Gap between adjacent items along rows (cross axis for column direction), in px.
     pub row_gap: f32,
     /// Gap between adjacent items along columns (main axis for row direction), in px.

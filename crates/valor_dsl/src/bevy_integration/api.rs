@@ -5,7 +5,7 @@ use super::rendering::render_valor_ui_display_list;
 use bevy::asset::Handle;
 use bevy::prelude::*;
 use js::DOMUpdate;
-use log::{info, error, warn};
+use log::{error, info, warn};
 
 /// Command to trigger a re-render of a ValorUi entity
 pub fn rerender_valor_ui(world: &mut World, valor_ui_entity: Entity) {
@@ -58,11 +58,11 @@ pub fn rerender_valor_ui(world: &mut World, valor_ui_entity: Entity) {
     };
 
     // Apply DOM updates (or skip if empty on re-render)
-    if !updates_to_apply.is_empty() {
-        if let Err(err) = page.send_dom_updates(updates_to_apply) {
-            error!("Failed to apply DOM updates: {}", err);
-            return;
-        }
+    if !updates_to_apply.is_empty()
+        && let Err(err) = page.send_dom_updates(updates_to_apply)
+    {
+        error!("Failed to apply DOM updates: {err}");
+        return;
     }
 
     // Update the page to compute layout
@@ -73,8 +73,8 @@ pub fn rerender_valor_ui(world: &mut World, valor_ui_entity: Entity) {
 
     let display_list = page.display_list_retained_snapshot();
 
-    // Drop pages to release the borrow before accessing world
-    drop(pages);
+    // Release pages borrow before accessing world
+    let _ = pages;
 
     // Mark as no longer first render
     if let Some(mut valor_ui) = world.get_mut::<ValorUi>(valor_ui_entity) {
@@ -93,17 +93,19 @@ pub fn rerender_valor_ui(world: &mut World, valor_ui_entity: Entity) {
         height,
     );
 
-    // Drop the ValorPages borrow before accessing Assets
-    drop(pages);
+    // Release the ValorPages borrow before accessing Assets
+    let _ = pages;
 
     // Create and update the image
     update_image_texture(
         world,
-        valor_ui_entity,
-        display_node,
-        image_data,
-        width,
-        height,
+        ImageTextureUpdate {
+            valor_ui_entity,
+            display_node,
+            image_data,
+            width,
+            height,
+        },
     );
 
     // Re-extract click handlers from the DOM after updates
@@ -150,15 +152,24 @@ fn transform_updates_for_rerender(updates: &[DOMUpdate]) -> Vec<DOMUpdate> {
     transformed_updates
 }
 
-/// Update the image texture with new pixel data
-fn update_image_texture(
-    world: &mut World,
+/// Parameters for updating an image texture.
+struct ImageTextureUpdate {
     valor_ui_entity: Entity,
     display_node: Entity,
     image_data: Vec<u8>,
     width: u32,
     height: u32,
-) {
+}
+
+/// Update the image texture with new pixel data
+fn update_image_texture(world: &mut World, update: ImageTextureUpdate) {
+    let ImageTextureUpdate {
+        valor_ui_entity,
+        display_node,
+        image_data,
+        width,
+        height,
+    } = update;
     // Create a new Image with the updated data
     let new_image = super::rendering::create_bevy_image(image_data, width, height);
 
@@ -345,7 +356,6 @@ pub fn dispatch_click(world: &mut World, valor_ui_entity: Entity, x: f32, y: f32
                     .is_some_and(|h| h.name == handler_name)
             })
             .collect();
-
 
         for handler_entity in handler_entities {
             let event = crate::bevy_events::OnClick {

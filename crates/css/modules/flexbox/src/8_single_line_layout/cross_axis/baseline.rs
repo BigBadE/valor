@@ -1,6 +1,7 @@
 //! Baseline alignment support for flex items.
 
 use super::super::AlignItems;
+use super::alignment::CrossSize;
 
 /// Optional baseline metrics per item: `(first_baseline, last_baseline)`.
 pub type BaselineMetrics = Option<(f32, f32)>;
@@ -9,7 +10,7 @@ pub type BaselineMetrics = Option<(f32, f32)>;
 pub fn compute_line_baseline_ref(
     align: AlignItems,
     baselines: &[BaselineMetrics],
-    cross_inputs: &[(f32, f32, f32)],
+    cross_inputs: &[(CrossSize, f32, f32)],
 ) -> f32 {
     let mut reference = 0.0f32;
     for (metrics_opt, &(item_cross, _min_c, _max_c)) in baselines.iter().zip(cross_inputs.iter()) {
@@ -20,7 +21,8 @@ pub fn compute_line_baseline_ref(
                 _ => 0.0,
             };
             // Clamp within the item cross-size just in case metrics exceed bounds.
-            let clamped = candidate.max(0.0).min(item_cross);
+            let intrinsic = item_cross.intrinsic_size();
+            let clamped = candidate.max(0.0).min(intrinsic);
             if clamped > reference {
                 reference = clamped;
             }

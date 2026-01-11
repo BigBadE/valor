@@ -298,15 +298,21 @@ impl TreeSink for ValorSink {
                 {
                     buffer.push_str(text.as_ref());
                 }
-                let node = self
-                    .dom
-                    .borrow_mut()
-                    .mirror_mut()
-                    .new_text(text.to_string());
-                self.dom
-                    .borrow_mut()
-                    .mirror_mut()
-                    .append_child(*parent, node);
+
+                // Check if the last child of parent is a text node
+                // If so, append to it silently (without emitting update)
+                // The final merged text will be in the InsertText update
+                let mut dom = self.dom.borrow_mut();
+                let mirror = dom.mirror_mut();
+
+                if let Some(last_text_node) = mirror.last_child_if_text(*parent) {
+                    // Append to existing text node and update the batch
+                    mirror.append_to_text_node_update_batch(last_text_node, text.as_ref());
+                } else {
+                    // Create new text node
+                    let node = mirror.new_text(text.to_string());
+                    mirror.append_child(*parent, node);
+                }
             }
         }
     }
@@ -327,15 +333,15 @@ impl TreeSink for ValorSink {
                     .append_child(parent, node);
             }
             NodeOrText::AppendText(text) => {
-                let node = self
-                    .dom
-                    .borrow_mut()
-                    .mirror_mut()
-                    .new_text(text.to_string());
-                self.dom
-                    .borrow_mut()
-                    .mirror_mut()
-                    .append_child(parent, node);
+                let mut dom = self.dom.borrow_mut();
+                let mirror = dom.mirror_mut();
+
+                if let Some(last_text_node) = mirror.last_child_if_text(parent) {
+                    mirror.append_to_text_node_update_batch(last_text_node, text.as_ref());
+                } else {
+                    let node = mirror.new_text(text.to_string());
+                    mirror.append_child(parent, node);
+                }
             }
         }
     }

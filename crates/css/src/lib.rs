@@ -31,6 +31,8 @@ pub struct CSSMirror {
     style_nodes_order: Vec<NodeKey>,
     /// Map from style node key to its accumulated text content.
     style_text_by_node: HashMap<NodeKey, String>,
+    /// Debug counter for rebuild tracking
+    rebuild_counter: u32,
 }
 
 impl DOMSubscriber for Orchestrator {
@@ -57,6 +59,7 @@ impl CSSMirror {
             discovered: Vec::new(),
             style_nodes_order: Vec::new(),
             style_text_by_node: HashMap::new(),
+            rebuild_counter: 0,
         }
     }
     #[inline]
@@ -67,11 +70,12 @@ impl CSSMirror {
             discovered: Vec::new(),
             style_nodes_order: Vec::new(),
             style_text_by_node: HashMap::new(),
+            rebuild_counter: 0,
         }
     }
     /// Mutable reference to the aggregated in-document stylesheet.
     #[inline]
-    pub const fn styles(&mut self) -> &mut types::Stylesheet {
+    pub fn styles(&mut self) -> &mut types::Stylesheet {
         &mut self.styles
     }
 
@@ -82,6 +86,8 @@ impl CSSMirror {
 
     /// Rebuild the aggregated stylesheet from tracked <style> nodes in DOM order.
     fn rebuild_styles_from_style_nodes(&mut self) {
+        self.rebuild_counter += 1;
+
         let mut out = types::Stylesheet::default();
         let mut base: u32 = 0;
 

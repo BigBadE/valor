@@ -6,7 +6,13 @@ use super::*;
 /// # Panics
 /// Panics if center alignment does not center the item within the container cross-size.
 fn align_items_center_cross_axis() {
-    let placement = align_single_line_cross(AlignItems::Center, 200.0, 100.0, 0.0, 1e9);
+    let placement = align_single_line_cross(
+        AlignItems::Center,
+        200.0,
+        CrossSize::Explicit(100.0),
+        0.0,
+        1e9,
+    );
     assert!(
         (placement.cross_size - 100.0).abs() < 0.001,
         "size remains item size"
@@ -21,8 +27,14 @@ fn align_items_center_cross_axis() {
 /// # Panics
 /// Panics if stretch alignment does not expand to container cross-size respecting constraints.
 fn align_items_stretch_cross_axis() {
-    // When item cross-size is auto/unspecified (here modeled as 0), Stretch expands to container size.
-    let placement = align_single_line_cross(AlignItems::Stretch, 120.0, 0.0, 0.0, 1e9);
+    // When item cross-size is auto/unspecified, Stretch expands to container size.
+    let placement = align_single_line_cross(
+        AlignItems::Stretch,
+        120.0,
+        CrossSize::Stretch(0.0),
+        0.0,
+        1e9,
+    );
     assert!(
         (placement.cross_size - 120.0).abs() < 0.001,
         "stretched to container size"
@@ -37,10 +49,10 @@ fn align_items_stretch_cross_axis() {
 /// # Panics
 /// Panics if bulk cross-axis alignment does not mirror per-item alignment.
 fn align_cross_for_items_bulk_matches_scalar() {
-    let items: Vec<(f32, f32, f32)> = vec![
-        (10.0, 0.0, 1000.0),
-        (20.0, 0.0, 1000.0),
-        (30.0, 0.0, 1000.0),
+    let items: Vec<(CrossSize, f32, f32)> = vec![
+        (CrossSize::Explicit(10.0), 0.0, 1000.0),
+        (CrossSize::Explicit(20.0), 0.0, 1000.0),
+        (CrossSize::Explicit(30.0), 0.0, 1000.0),
     ];
     let bulk = align_cross_for_items(AlignItems::Center, 100.0, &items);
     let scalar: Vec<CrossPlacement> = items
@@ -74,6 +86,7 @@ fn layout_single_line_with_cross_pairs_outputs() {
             margin_bottom: 0.0,
             margin_left_auto: false,
             margin_right_auto: false,
+            main_padding_border: 0.0,
         },
         FlexChild {
             handle: ItemRef(2),
@@ -88,9 +101,13 @@ fn layout_single_line_with_cross_pairs_outputs() {
             margin_bottom: 0.0,
             margin_left_auto: false,
             margin_right_auto: false,
+            main_padding_border: 0.0,
         },
     ];
-    let cross_inputs = vec![(20.0, 0.0, 100.0), (20.0, 0.0, 100.0)];
+    let cross_inputs = vec![
+        (CrossSize::Explicit(20.0), 0.0, 100.0),
+        (CrossSize::Explicit(20.0), 0.0, 100.0),
+    ];
     let container = FlexContainerInputs {
         direction: FlexDirection::Row,
         writing_mode: WritingMode::HorizontalTb,

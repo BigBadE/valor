@@ -143,6 +143,46 @@ impl ParserDOMMirror {
         })
     }
 
+    /// Append text to an existing text node and update the `InsertText` in the batch.
+    /// This is for merging adjacent text fragments during initial parsing.
+    #[inline]
+    pub fn append_to_text_node_update_batch(&mut self, node: NodeId, additional_text: &str) {
+        let key = self.key_of(node);
+
+        // Modify the text node
+        if let Some(dom_node) = self.dom.get_mut(node)
+            && let ParserNodeKind::Text { text } = &mut dom_node.get_mut().kind
+        {
+            text.push_str(additional_text);
+            let updated_text = text.clone();
+
+            // Find and update the InsertText in the current batch
+            for update in self.current_batch.iter_mut().rev() {
+                if let DOMUpdate::InsertText {
+                    node: upd_node,
+                    text: upd_text,
+                    ..
+                } = update
+                    && *upd_node == key
+                {
+                    *upd_text = updated_text;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Get the last child of a node if it exists and is a text node.
+    #[inline]
+    pub fn last_child_if_text(&self, parent: NodeId) -> Option<NodeId> {
+        let child = parent.children(&self.dom).next_back()?;
+        let dom_node = self.dom.get(child)?;
+        match &dom_node.get().kind {
+            ParserNodeKind::Text { .. } => Some(child),
+            _ => None,
+        }
+    }
+
     #[inline]
     pub fn set_attr(&mut self, node: NodeId, name: String, value: String) {
         let key = self.key_of(node);

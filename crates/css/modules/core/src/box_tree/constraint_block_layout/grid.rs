@@ -239,6 +239,21 @@ impl ConstraintLayoutTree {
                     sides.padding_top.to_px() + sides.border_top.to_px() + placed_item.y,
                 );
 
+            // Grid items without explicit height are stretched to fill the grid area.
+            // We need to tell nested flex containers that their block size is definite
+            // so they can properly center content with align-items: center.
+            // Extract the style values we need before calling layout_block (which borrows self mutably)
+            let (has_explicit_height, has_explicit_width, display) = {
+                let style = &self.styles[&node_key];
+                log::error!(
+                    "Grid item: node={:?}, display={:?}",
+                    node_key,
+                    style.display
+                );
+                (style.height.is_some(), style.width.is_some(), style.display)
+            };
+            let is_block_size_forced = !has_explicit_height; // Stretched grid items have definite height
+
             let item_constraint = ConstraintSpace {
                 available_inline_size: AvailableSize::Definite(item_inline_size),
                 available_block_size: AvailableSize::Definite(item_block_size),
@@ -251,6 +266,8 @@ impl ConstraintLayoutTree {
                 fragmentainer_offset: LayoutUnit::zero(),
                 is_for_measurement_only: false, // Grid item final layout is not measurement
                 margins_already_applied: true, // Grid layout algorithm already positioned items with margins
+                is_block_size_forced,
+                is_inline_size_forced: false,
             };
 
             // Layout the grid item to compute its internal layout
@@ -259,9 +276,6 @@ impl ConstraintLayoutTree {
             // Determine final size based on item's explicit sizing
             // If item has no explicit height, it should stretch to grid area (default align-self: stretch)
             // If item has explicit height, use its natural size
-            let style = &self.styles[&node_key];
-            let has_explicit_height = style.height.is_some();
-            let has_explicit_width = style.width.is_some();
 
             let final_inline_size = if has_explicit_width {
                 item_result.inline_size

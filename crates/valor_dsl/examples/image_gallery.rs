@@ -5,6 +5,7 @@
 
 use bevy::prelude::*;
 use bevy::window::{Window, WindowPlugin};
+use log::info;
 use valor_dsl::reactive::Component;
 use valor_dsl::reactive::prelude::*;
 use valor_dsl::reactive::runtime::ReactiveAppExt;

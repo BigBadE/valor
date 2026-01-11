@@ -40,13 +40,19 @@ pub fn get_font_system() -> Arc<Mutex<FontSystem>> {
 
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            // Chrome uses these fonts as defaults on Linux
-            // DejaVu fonts are widely available and match Chrome's behavior
+            // Chrome uses Liberation Sans as the default sans-serif font on Linux
+            // (not Noto Sans, despite fontconfig defaulting to Noto Sans)
+            // Liberation Sans metrics: ascent=0.905, descent=0.212, total=1.150
+            // This produces line-heights that match Chrome exactly:
+            //   8px font → 9px height, 10px font → 11px height, etc.
+            // Note: DejaVu Sans has identical metrics but different glyphs (Q tail differs)
             font_system
                 .db_mut()
                 .set_monospace_family("DejaVu Sans Mono");
-            font_system.db_mut().set_sans_serif_family("DejaVu Sans");
-            font_system.db_mut().set_serif_family("DejaVu Serif");
+            font_system
+                .db_mut()
+                .set_sans_serif_family("Liberation Sans");
+            font_system.db_mut().set_serif_family("Liberation Serif");
         }
 
         let arc = Arc::new(Mutex::new(font_system));
@@ -64,7 +70,7 @@ pub fn get_font_system() -> Arc<Mutex<FontSystem>> {
 /// fonts depending on fontdb's internal logic.
 pub fn map_font_family(font_name: &str) -> Family<'_> {
     match font_name.to_lowercase().as_str() {
-        "sans-serif" => {
+        "system-ui" | "-apple-system" | "blinkmacsystemfont" | "sans-serif" => {
             #[cfg(target_os = "windows")]
             {
                 Family::Name("Arial")
@@ -75,7 +81,8 @@ pub fn map_font_family(font_name: &str) -> Family<'_> {
             }
             #[cfg(all(unix, not(target_os = "macos")))]
             {
-                Family::Name("DejaVu Sans")
+                // Chrome uses Liberation Sans as the default sans-serif font on Linux
+                Family::Name("Liberation Sans")
             }
         }
         "serif" => {
@@ -89,7 +96,8 @@ pub fn map_font_family(font_name: &str) -> Family<'_> {
             }
             #[cfg(all(unix, not(target_os = "macos")))]
             {
-                Family::Name("DejaVu Serif")
+                // Liberation Serif is a metrically-compatible Times New Roman clone
+                Family::Name("Liberation Serif")
             }
         }
         "monospace" => {
@@ -143,12 +151,17 @@ pub fn get_font_metrics(font_sys: &mut FontSystem, attrs: &Attrs<'_>) -> Option<
     // Get the actual Font object
     let font = font_sys.get_font(first_match.id, weight)?;
 
+    // Font matching complete - metrics will be extracted below
+    let _ = font_sys.db().face(first_match.id);
+
     // Get font metrics directly from the font (NO SHAPING!)
     let metrics = font.metrics();
     let units_per_em = f32::from(metrics.units_per_em);
 
-    // On Windows, Chrome uses OS/2 winAscent + winDescent for line-height calculation.
-    // On macOS/Linux, it uses hhea ascent + descent + leading.
+    // Chrome uses different font metric tables depending on the platform:
+    // - Windows: OS/2 winAscent + winDescent (no line gap)
+    // - Linux: OS/2 typo metrics if USE_TYPO_METRICS flag is set, otherwise hhea metrics
+    // - macOS: hhea ascent + descent + leading
     // We need to match this platform-specific behavior for correct text layout.
     #[cfg(target_os = "windows")]
     let (ascent, descent, leading) = {
@@ -164,7 +177,15 @@ pub fn get_font_metrics(font_sys: &mut FontSystem, attrs: &Attrs<'_>) -> Option<
         }
     };
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let (ascent, descent, leading) = {
+        let ascent = metrics.ascent / units_per_em;
+        let descent = -metrics.descent / units_per_em; // Note: descent is negative in font metrics
+        let leading = metrics.leading / units_per_em; // Line-gap for "normal" line-height
+        (ascent, descent, leading)
+    };
+
+    #[cfg(target_os = "macos")]
     let (ascent, descent, leading) = {
         let ascent = metrics.ascent / units_per_em;
         let descent = -metrics.descent / units_per_em; // Note: descent is negative in font metrics

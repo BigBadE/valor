@@ -16,6 +16,7 @@ impl HtmlPage {
     /// # Errors
     ///
     /// Returns an error if event handling fails.
+    #[cfg(feature = "js")]
     pub(crate) fn handle_dom_content_loaded_if_needed(&mut self) -> Result<(), Error> {
         super::dom_processing::handle_dom_content_loaded_if_needed(
             self.loader.as_ref(),

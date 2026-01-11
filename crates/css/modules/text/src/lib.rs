@@ -48,12 +48,15 @@ pub fn default_line_height_px(style: &ComputedStyle) -> i32 {
     };
 
     // Match Chrome's line-height values for common font sizes
+    // Chrome uses ~1.5x font-size for normal line-height with system fonts
     match font_size.round() as i32 {
-        14 => 17,
-        16 => 18,
-        18 => 20,
-        24 => 28,
-        _ => (font_size * 1.125).round() as i32,
+        12 => 18, // 12 * 1.5 = 18
+        14 => 21, // 14 * 1.5 = 21
+        16 => 24, // 16 * 1.5 = 24
+        18 => 27, // 18 * 1.5 = 27
+        20 => 30, // 20 * 1.5 = 30
+        24 => 36, // 24 * 1.5 = 36
+        _ => (font_size * 1.5).round() as i32,
     }
 }
 
