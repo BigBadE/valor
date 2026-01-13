@@ -11,3 +11,6 @@ js.workspace = true
 css_style_attr.workspace = true
 css_variables.workspace = true
 css_color.workspace = true
+valor_query.workspace = true
+log.workspace = true
+rayon.workspace = true

@@ -81,8 +81,7 @@ pub(super) fn process_css_and_styles(
     // Ensure CSSMirror has applied any pending DOM updates so that inline <style>
     // rules are visible in the aggregated stylesheet for this tick.
     css_mirror.try_update_sync()?;
-    // Ensure the Orchestrator mirror has applied DOM updates prior to stylesheet processing
-    orchestrator_mirror.try_update_sync()?;
+
     // Get attributes from incremental layout
     let lay_attrs = incremental_layout.attrs_map().clone();
     trace!(
@@ -90,30 +89,32 @@ pub(super) fn process_css_and_styles(
         lay_attrs.len()
     );
     // Snapshot structure once and optionally rebuild StyleEngine's inventory
-    let (_tags_by_key, _element_children, _raw_children, _text_by_key) =
+    let (tags_by_key, element_children, raw_children, text_by_key) =
         snapshot_layout_maps(incremental_layout);
     maybe_rebuild_style_nodes_after_load(loader, style_nodes_rebuilt_after_load);
 
     // Use CSSMirror's aggregated in-document stylesheet (rebuilds on <style> updates)
-    let author_styles = css_mirror.mirror_mut().styles().clone();
+    let author_styles = css_mirror.mirror_mut().styles();
 
-    // Apply stylesheet to orchestrator and compute once
+    // Drain any pending Orchestrator updates
+    orchestrator_mirror.try_update_sync()?;
+
+    // Replace the stylesheet in the Orchestrator
     orchestrator_mirror
         .mirror_mut()
-        .replace_stylesheet(&author_styles);
+        .replace_stylesheet(author_styles);
+
+    // Process styles using Orchestrator
     let artifacts = orchestrator_mirror.mirror_mut().process_once()?;
-    let computed_styles = artifacts.computed_styles;
 
-    // Apply computed styles to incremental engine
-    for (node, style) in &computed_styles {
-        incremental_layout.apply_style_change(*node, style);
-    }
+    eprintln!(
+        "Style processing: {} computed styles, changed={}",
+        artifacts.computed_styles.len(),
+        artifacts.styles_changed
+    );
 
-    // Styles come from orchestrator via set_computed_styles
-    incremental_layout.set_computed_styles(&computed_styles);
+    // Apply computed styles to incremental layout
+    incremental_layout.set_computed_styles(&artifacts.computed_styles);
 
-    // Mark dirty nodes for reflow if styles changed
-    let style_changed = artifacts.styles_changed;
-
-    Ok(style_changed)
+    Ok(artifacts.styles_changed)
 }

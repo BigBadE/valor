@@ -10,10 +10,14 @@ use std::collections::HashMap;
 // Self-contained core types (kept simple; orchestrator maps to its public types)
 mod data;
 pub mod layout_model;
+pub mod queries;
 pub mod selectors;
 mod style;
+mod style_database;
 pub mod style_model;
 pub mod types;
+
+pub use style_database::StyleDatabase;
 
 pub struct CoreEngine {
     /// Style system that computes computed styles from the stylesheet and DOM.

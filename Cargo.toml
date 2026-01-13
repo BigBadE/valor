@@ -64,6 +64,7 @@ futures = "0.3"
 chromiumoxide = { version = "0.8.0", default-features = false, features = ["tokio-runtime"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
+bincode = "1.3.3"
 urlencoding = "2.1.3"
 criterion = "0.7.0"
 image = { version = "0.25.8", default-features = false, features = ["png", "jpeg", "webp"] }
@@ -110,6 +111,7 @@ css_sizing = { path = "crates/css/modules/sizing" }
 css_text = { path = "crates/css/modules/text" }
 css_text_decoration = { path = "crates/css/modules/text_decoration" }
 css_core = { path = "crates/css/modules/core" }
+valor_query = { path = "crates/valor_query" }
 
 [profile.dev]
 opt-level = 1

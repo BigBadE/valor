@@ -11,6 +11,9 @@ pub use js::NodeKey;
 use crate::parser::parse_stylesheet;
 use css_orchestrator::CoreEngine;
 
+// Re-export StyleDatabase from css_orchestrator
+pub use css_orchestrator::StyleDatabase;
+
 pub mod style_types;
 use crate::style_types::ComputedStyle;
 

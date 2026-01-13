@@ -8721,3 +8721,12 @@ measure_text [QUOTED WRAPPING DECISION]: available_width=238.000000px, metrics.w
 measure_text [QUOTED WRAPPING DECISION]: available_width=762.000000px, metrics.width=465.680023px, will_wrap=false
 measure_text [QUOTED WRAPPING DECISION]: available_width=232.671875px, metrics.width=465.680023px, will_wrap=true
 measure_text [QUOTED WRAPPING DECISION]: available_width=232.671875px, metrics.width=465.680023px, will_wrap=true
+measure_text [QUOTED WRAPPING DECISION]: available_width=778.000000px, metrics.width=465.680023px, will_wrap=false
+measure_text [QUOTED WRAPPING DECISION]: available_width=238.000000px, metrics.width=465.680023px, will_wrap=true
+measure_text [QUOTED WRAPPING DECISION]: available_width=238.000000px, metrics.width=465.680023px, will_wrap=true
+measure_text [QUOTED WRAPPING DECISION]: available_width=778.000000px, metrics.width=465.680023px, will_wrap=false
+measure_text [QUOTED WRAPPING DECISION]: available_width=238.000000px, metrics.width=465.680023px, will_wrap=true
+measure_text [QUOTED WRAPPING DECISION]: available_width=238.000000px, metrics.width=465.680023px, will_wrap=true
+measure_text [QUOTED WRAPPING DECISION]: available_width=762.000000px, metrics.width=465.680023px, will_wrap=false
+measure_text [QUOTED WRAPPING DECISION]: available_width=232.671875px, metrics.width=465.680023px, will_wrap=true
+measure_text [QUOTED WRAPPING DECISION]: available_width=232.671875px, metrics.width=465.680023px, will_wrap=true

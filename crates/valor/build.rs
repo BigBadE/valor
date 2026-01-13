@@ -139,7 +139,7 @@ fn generate_fixture_tests() {
     }
     test_code.push_str("    ];\n\n");
 
-    // Generate a single test that runs all fixtures
+    // Generate a single test that runs all fixtures with custom tokio runtime
     test_code.push_str("    /// Tests all fixtures against Chromium.\n");
     test_code.push_str("    ///\n");
     test_code.push_str("    /// # Errors\n");
@@ -149,12 +149,21 @@ fn generate_fixture_tests() {
     test_code.push_str("    /// # Panics\n");
     test_code.push_str("    ///\n");
     test_code.push_str("    /// May panic if the runtime fails.\n");
-    test_code.push_str("    #[tokio::test]\n");
-    test_code.push_str("    async fn all_fixtures() -> Result<()> {\n");
+    test_code.push_str("    #[test]\n");
+    test_code.push_str("    fn all_fixtures() -> Result<()> {\n");
+    test_code.push_str(
+        "        // Create a tokio runtime with many blocking threads for maximum parallelism\n",
+    );
+    test_code.push_str("        // Set high limit to allow all tests to run concurrently\n");
+    test_code.push_str("        let runtime = tokio::runtime::Builder::new_multi_thread()\n");
+    test_code.push_str("            .max_blocking_threads(512)\n");
+    test_code.push_str("            .enable_all()\n");
+    test_code.push_str("            .build()\n");
+    test_code.push_str("            .expect(\"Failed to create tokio runtime\");\n\n");
     test_code.push_str(
         "        let fixtures: Vec<PathBuf> = ALL_FIXTURES.iter().map(PathBuf::from).collect();\n",
     );
-    test_code.push_str("        fixture_runner::run_all_fixtures(&fixtures).await\n");
+    test_code.push_str("        runtime.block_on(fixture_runner::run_all_fixtures(&fixtures))\n");
     test_code.push_str("    }\n");
 
     test_code.push_str("}\n");

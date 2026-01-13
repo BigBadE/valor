@@ -11,14 +11,21 @@
 //! - `box_tree::ExclusionSpace` - Float exclusions and clearance tracking
 //! - `box_tree::MarginStrut` - Margin collapsing state
 //! - `box_tree::layout_tree()` - Entry point for constraint-based layout
+//! - `queries` - Query-based layout computation for parallelism and incrementality
 //!
 //! Spec reference: <https://www.w3.org/TR/CSS22>
 
 // Constraint-based layout architecture (Chromium LayoutNG-like)
 pub mod box_tree;
 
-// Re-export primary constraint-based API
-pub use box_tree::layout_tree;
-pub use box_tree::{AvailableSize, BfcOffset, ConstraintLayoutTree, ConstraintSpace};
+// Query-based layout for parallel execution
+pub mod layout_database;
+pub mod queries;
+
+// Re-export constraint space types (still needed for query-based layout)
+pub use box_tree::{AvailableSize, BfcOffset, ConstraintSpace};
 pub use box_tree::{ExclusionSpace, FloatExclusion, FloatSize, MarginStrut};
 pub use box_tree::{LayoutRect, LayoutResult, LayoutUnit};
+
+// Re-export query-based layout API
+pub use layout_database::LayoutDatabase;

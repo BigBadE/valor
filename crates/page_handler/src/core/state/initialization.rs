@@ -33,7 +33,7 @@ use url::Url;
 pub(super) struct DomMirrors {
     /// CSS mirror for observing DOM updates.
     pub css_mirror: DOMMirror<CSSMirror>,
-    /// Orchestrator mirror for style computation.
+    /// Orchestrator mirror that computes styles using the css engine.
     pub orchestrator_mirror: DOMMirror<Orchestrator>,
     /// Renderer mirror for scene graph management.
     pub renderer_mirror: DOMMirror<Renderer>,
@@ -53,11 +53,15 @@ pub(super) struct JsContext {
 }
 
 /// Create DOM mirrors for observing DOM updates.
+///
+/// # Errors
+///
+/// Returns an error if StyleDatabase initialization fails.
 pub(super) fn create_dom_mirrors(
     in_updater: &mpsc::Sender<Vec<DOMUpdate>>,
     dom: &DOM,
     url: &Url,
-) -> DomMirrors {
+) -> Result<DomMirrors, Error> {
     let css_mirror = DOMMirror::new(
         in_updater.clone(),
         dom.subscribe(),
@@ -69,13 +73,13 @@ pub(super) fn create_dom_mirrors(
     let (dom_index_sub, dom_index_shared) = DomIndex::new();
     let dom_index_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), dom_index_sub);
 
-    DomMirrors {
+    Ok(DomMirrors {
         css_mirror,
         orchestrator_mirror,
         renderer_mirror,
         dom_index_mirror,
         dom_index_shared,
-    }
+    })
 }
 
 /// Build page origin string for same-origin checks.
@@ -168,7 +172,7 @@ pub(super) fn initialize_blank_page(
     let blank_url =
         Url::parse("file:///blank").map_err(|err| anyhow!("Failed to parse blank URL: {err}"))?;
 
-    let mirrors = create_dom_mirrors(&in_updater, &dom, &blank_url);
+    let mirrors = create_dom_mirrors(&in_updater, &dom, &blank_url)?;
 
     #[cfg(feature = "js")]
     let js_ctx = if enable_js {
@@ -271,7 +275,7 @@ pub(super) async fn initialize_page(
     };
     let loader = HTMLParser::parse(handle, inputs);
 
-    let mirrors = create_dom_mirrors(&in_updater, &dom, &url);
+    let mirrors = create_dom_mirrors(&in_updater, &dom, &url)?;
 
     #[cfg(feature = "js")]
     let js_ctx = if enable_js {

@@ -13,7 +13,7 @@ use crate::core::style_interning::{StyleInterner, StyleInternerStats};
 use crate::utilities::snapshots::LayoutNodeKind;
 use anyhow::Result;
 use css::style_types::ComputedStyle;
-use css_core::{ConstraintLayoutTree, LayoutRect, LayoutUnit, layout_tree};
+use css_core::{LayoutDatabase, LayoutRect, LayoutUnit};
 use js::{DOMUpdate, NodeKey};
 // TODO: Re-enable when parallelization is implemented
 // use rayon::prelude::*;
@@ -48,10 +48,16 @@ pub struct IncrementalLayoutEngine {
 
     /// Cached layout results
     layout_cache: HashMap<NodeKey, LayoutRect>,
+
+    /// Parallel layout database (Phase 4)
+    layout_database: Option<LayoutDatabase>,
 }
 
 impl IncrementalLayoutEngine {
     pub fn new(viewport_width: f32, viewport_height: f32) -> Self {
+        // Try to create parallel layout database
+        let layout_database = LayoutDatabase::new(viewport_width, viewport_height).ok();
+
         Self {
             style_interner: StyleInterner::new(),
             dependency_graph: DependencyGraph::new(),
@@ -67,6 +73,38 @@ impl IncrementalLayoutEngine {
             attrs: HashMap::new(),
             root: None,
             layout_cache: HashMap::new(),
+            layout_database,
+        }
+    }
+
+    /// Create a new layout engine that shares the QueryDatabase with StyleDatabase.
+    ///
+    /// This ensures that layout queries can access DOM structure populated by style queries.
+    pub fn new_shared(
+        shared_db: std::sync::Arc<valor_query::QueryDatabase>,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Self {
+        // Create layout database with shared QueryDatabase
+        let layout_database =
+            LayoutDatabase::new_shared(shared_db, viewport_width, viewport_height).ok();
+
+        Self {
+            style_interner: StyleInterner::new(),
+            dependency_graph: DependencyGraph::new(),
+            dirty_nodes: HashSet::new(),
+            viewport: Viewport {
+                width: viewport_width,
+                height: viewport_height,
+            },
+            generation: 0,
+            children: HashMap::new(),
+            tags: HashMap::new(),
+            text_nodes: HashMap::new(),
+            attrs: HashMap::new(),
+            root: None,
+            layout_cache: HashMap::new(),
+            layout_database,
         }
     }
 
@@ -92,6 +130,11 @@ impl IncrementalLayoutEngine {
 
         if changed {
             self.invalidate_node(node);
+
+            // Update parallel layout database
+            if let Some(layout_db) = &mut self.layout_database {
+                layout_db.set_computed_style(node, new_style.clone());
+            }
         }
     }
 
@@ -102,6 +145,14 @@ impl IncrementalLayoutEngine {
             updates.len(),
             self.dirty_nodes.len()
         );
+
+        // Apply to parallel layout database
+        if let Some(layout_db) = &mut self.layout_database {
+            for update in updates {
+                layout_db.apply_update(update.clone());
+            }
+        }
+
         for update in updates {
             match update {
                 DOMUpdate::InsertElement {
@@ -196,7 +247,7 @@ impl IncrementalLayoutEngine {
         self.dirty_nodes.extend(affected);
     }
 
-    /// Compute layouts for all dirty nodes using real `css_core` layout engine.
+    /// Compute layouts using parallel query-based layout engine.
     ///
     /// # Errors
     /// Returns an error if layout computation fails.
@@ -206,97 +257,37 @@ impl IncrementalLayoutEngine {
         }
 
         self.generation += 1;
+        log::info!("RUNNING PARALLEL LAYOUT - generation {}", self.generation);
 
-        // Build ConstraintLayoutTree with current state
-        let mut tree = ConstraintLayoutTree::new(
-            LayoutUnit::from_raw((self.viewport.width * 64.0) as i32),
-            LayoutUnit::from_raw((self.viewport.height * 64.0) as i32),
-        );
+        // Use parallel layout database if available
+        if let Some(layout_db) = &mut self.layout_database {
+            let _executed = layout_db.recompute_layouts_parallel();
 
-        // Get all computed styles from interner
-        let mut styles = HashMap::new();
-        for (node, handle) in self.style_interner.node_styles_iter() {
-            if let Some(style) = self.style_interner.get(*handle) {
-                styles.insert(*node, (**style).clone());
+            // Get all layout results from query database
+            let all_layouts = layout_db.get_all_layouts();
+
+            // Convert query results to LayoutRect and update cache
+            for (node, result) in all_layouts {
+                let rect = LayoutRect {
+                    x: result.bfc_offset.inline_offset.to_px(),
+                    y: result
+                        .bfc_offset
+                        .block_offset
+                        .unwrap_or(LayoutUnit::zero())
+                        .to_px(),
+                    width: result.inline_size,
+                    height: result.block_size,
+                };
+                self.layout_cache.insert(node, rect);
             }
-        }
 
-        tree.styles = styles;
-        tree.children.clone_from(&self.children);
-        tree.text_nodes.clone_from(&self.text_nodes);
-        tree.tags.clone_from(&self.tags);
-        tree.attrs.clone_from(&self.attrs);
-
-        // Run real layout computation
-        if let Some(root_node) = self.root {
-            log::error!("RUNNING LAYOUT TREE - generation {}", self.generation);
-            layout_tree(&mut tree, root_node);
-            log::error!(
-                "LAYOUT TREE COMPLETE - generation {}, total results: {}",
+            log::info!(
+                "PARALLEL LAYOUT COMPLETE - generation {}, total results: {}",
                 self.generation,
-                tree.layout_results.len()
+                self.layout_cache.len()
             );
-
-            // Convert results and update cache
-            for (node, result) in &tree.layout_results {
-                let rect = LayoutRect::from_layout_result(result);
-                // Debug logging for text nodes
-                if let Some(text) = tree.text_nodes.get(node) {
-                    if text == "1" || text == "2" || text == "3" {
-                        log::warn!(
-                            "CACHING TEXT LAYOUT: text='{}', rect.width={}, result.inline_size={}",
-                            text,
-                            rect.width,
-                            result.inline_size
-                        );
-                    }
-                }
-                self.layout_cache.insert(*node, rect);
-            }
-
-            // Check if any text nodes are missing from layout_results
-            for (node, text) in &tree.text_nodes {
-                if (text == "1" || text == "2" || text == "3")
-                    && !tree.layout_results.contains_key(node)
-                {
-                    // Find parent
-                    let parent = tree
-                        .children
-                        .iter()
-                        .find(|(_, children)| children.contains(node))
-                        .map(|(parent, _)| *parent);
-                    let parent_in_results =
-                        parent.map_or(false, |p| tree.layout_results.contains_key(&p));
-                    let parent_display = parent
-                        .and_then(|p| tree.styles.get(&p))
-                        .map(|s| format!("{:?}", s.display));
-                    // Find grandparent
-                    let grandparent = parent.and_then(|p| {
-                        tree.children
-                            .iter()
-                            .find(|(_, children)| children.contains(&p))
-                            .map(|(gp, _)| *gp)
-                    });
-                    let grandparent_display = grandparent
-                        .and_then(|gp| tree.styles.get(&gp))
-                        .map(|s| format!("{:?}", s.display));
-                    let grandparent_in_results =
-                        grandparent.map_or(false, |gp| tree.layout_results.contains_key(&gp));
-
-                    log::error!(
-                        "TEXT NODE NOT IN LAYOUT RESULTS: text='{}', node={:?}, generation={}, parent={:?}, parent_in_results={}, parent_display={:?}, grandparent={:?}, grandparent_in_results={}, grandparent_display={:?}",
-                        text,
-                        node,
-                        self.generation,
-                        parent,
-                        parent_in_results,
-                        parent_display,
-                        grandparent,
-                        grandparent_in_results,
-                        grandparent_display
-                    );
-                }
-            }
+        } else {
+            log::warn!("Parallel layout database not available, returning empty results");
         }
 
         // Clear dirty set
@@ -332,6 +323,14 @@ impl IncrementalLayoutEngine {
         if let Some(root_key) = self.root {
             self.build_snapshot_recursive(root_key, &mut result);
         }
+
+        log::info!(
+            "snapshot() returning {} nodes, root={:?}, tags.len()={}, children.len()={}",
+            result.len(),
+            self.root,
+            self.tags.len(),
+            self.children.len()
+        );
 
         result
     }
@@ -374,6 +373,11 @@ impl IncrementalLayoutEngine {
             || (self.viewport.height - new_height).abs() > 0.1
         {
             self.layout_cache.clear();
+
+            // Update parallel layout database viewport
+            if let Some(layout_db) = &mut self.layout_database {
+                layout_db.set_viewport(new_width, new_height);
+            }
         }
 
         self.viewport.width = new_width;

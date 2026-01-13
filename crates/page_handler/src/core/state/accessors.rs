@@ -7,8 +7,8 @@ use crate::utilities::accessibility::ax_tree_snapshot_from;
 use crate::utilities::scheduler::FrameScheduler;
 use crate::utilities::telemetry::{self as telemetry_mod, PerfCounters};
 use anyhow::Error;
+use css::CSSMirror;
 use css::style_types::ComputedStyle as CssComputedStyle;
-use css::{CSSMirror, Orchestrator};
 use css_core::LayoutRect;
 use html::dom::DOM;
 use js::{DOMMirror, DomIndex, NodeKey, SharedDomIndex};
@@ -67,15 +67,12 @@ pub(super) fn layouter_hit_test(x: i32, y: i32) -> Option<NodeKey> {
 ///
 /// Returns an error if CSS synchronization or style processing fails.
 pub(super) fn computed_styles_snapshot(
-    css_mirror: &mut DOMMirror<CSSMirror>,
-    orchestrator_mirror: &mut DOMMirror<Orchestrator>,
+    orchestrator_mirror: &mut DOMMirror<css::Orchestrator>,
 ) -> Result<HashMap<NodeKey, CssComputedStyle>, Error> {
-    // Ensure the latest inline <style> and orchestrator state are reflected
-    css_mirror.try_update_sync()?;
-    // Ensure the Orchestrator mirror has applied all pending DOM updates before processing
+    // Drain any pending Orchestrator updates
     orchestrator_mirror.try_update_sync()?;
-    let sheet = css_mirror.mirror_mut().styles().clone();
-    orchestrator_mirror.mirror_mut().replace_stylesheet(&sheet);
+
+    // Process and get computed styles from the Orchestrator
     let artifacts = orchestrator_mirror.mirror_mut().process_once()?;
     Ok(artifacts.computed_styles)
 }

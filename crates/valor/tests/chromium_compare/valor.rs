@@ -1,132 +1,21 @@
-use anyhow::{Result, anyhow};
-use pollster::block_on;
+use anyhow::Result;
 use renderer::{DisplayItem, DisplayList};
 use std::env::set_var;
 use std::path::Path;
-use std::process;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
 use tokio::runtime::Handle;
-use wgpu_backend::{GlyphBounds, RenderState};
-use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalSize};
-use winit::event::WindowEvent;
-use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowId};
+use wgpu_backend::{GlyphBounds, PersistentGpuContext, initialize_persistent_context};
 
 use super::layout_tests::setup::setup_page_for_fixture;
 
-static RENDER_COUNTER: AtomicUsize = AtomicUsize::new(0);
-static RENDER_STATE: OnceLock<Mutex<RenderState>> = OnceLock::new();
-static WINDOW: OnceLock<Arc<Window>> = OnceLock::new();
-
-struct WindowCreator {
-    window: Option<Window>,
-    width: u32,
-    height: u32,
-}
-
-impl WindowCreator {
-    const fn new(width: u32, height: u32) -> Self {
-        Self {
-            window: None,
-            width,
-            height,
-        }
-    }
-
-    /// Creates a window if one hasn't been created yet.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if window creation fails.
-    fn create_window_if_needed(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
-        if self.window.is_some() {
-            return Ok(());
-        }
-        let window = event_loop
-            .create_window(
-                Window::default_attributes()
-                    .with_title("Valor Test")
-                    .with_inner_size(LogicalSize::new(self.width, self.height))
-                    .with_visible(false),
-            )
-            .map_err(|err| anyhow!("Failed to create window: {err}"))?;
-        self.window = Some(window);
-        Ok(())
-    }
-
-    /// Consumes the creator and returns the created window.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no window was created.
-    fn into_window(self) -> Result<Window> {
-        self.window.ok_or_else(|| anyhow!("Window not created"))
-    }
-}
-
-impl ApplicationHandler for WindowCreator {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let _ignore_result = self.create_window_if_needed(event_loop);
-        event_loop.exit();
-    }
-
-    fn window_event(
-        &mut self,
-        _event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
-        _event: WindowEvent,
-    ) {
-    }
-}
-
-/// Initializes the render state singleton with the given dimensions.
-fn initialize_render_state(width: u32, height: u32) -> &'static Mutex<RenderState> {
-    use winit::event_loop::EventLoop;
-
-    #[cfg(target_os = "macos")]
-    use winit::platform::macos::EventLoopBuilderExtMacOS as _;
-    #[cfg(target_os = "windows")]
-    use winit::platform::windows::EventLoopBuilderExtWindows as _;
-    #[cfg(all(unix, not(target_os = "macos")))]
-    use winit::platform::x11::EventLoopBuilderExtX11 as _;
-
-    RENDER_STATE.get_or_init(|| {
-        let mut builder = EventLoop::builder();
-
-        // Allow running event loop on any thread for tests
-        #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
-        {
-            let _ignore = builder.with_any_thread(true);
-        }
-
-        let event_loop = builder.build().unwrap_or_else(|err| {
-            log::error!("Failed to create event loop: {err}");
-            process::abort();
-        });
-
-        let window = {
-            let mut app = WindowCreator::new(width, height);
-            event_loop.run_app(&mut app).unwrap_or_else(|err| {
-                log::error!("Failed to run event loop: {err}");
-                process::abort();
-            });
-            app.into_window().unwrap_or_else(|err| {
-                log::error!("{err}");
-                process::abort();
-            })
-        };
-
-        let window = Arc::new(window);
-        let _ignore_result = WINDOW.set(Arc::clone(&window));
-
-        let state = block_on(RenderState::new(window)).unwrap_or_else(|err| {
-            log::error!("Failed to create render state: {err}");
-            process::abort();
-        });
-        Mutex::new(state)
-    })
+/// Creates a new headless GPU context for rendering tests.
+/// This uses WGPU's headless rendering, which doesn't require windows or event loops.
+/// Tests can now run in parallel without any window creation constraints!
+///
+/// # Errors
+///
+/// Returns an error if GPU context creation fails.
+pub fn create_render_context(width: u32, height: u32) -> Result<PersistentGpuContext> {
+    initialize_persistent_context(width, height)
 }
 
 /// Builds BOTH layout JSON and display list from a single HtmlPage to avoid
@@ -206,6 +95,28 @@ pub async fn build_display_list_for_fixture(
     viewport_w: u32,
     viewport_h: u32,
 ) -> Result<DisplayList> {
+    use super::cache_utils::{CacheFetcher, read_or_fetch_cache};
+
+    // Try to load from cache first
+    let cache_key = format!("{}x{}", viewport_w, viewport_h);
+    let cached_result = read_or_fetch_cache(CacheFetcher {
+        test_name: "display_list",
+        fixture_path: path,
+        cache_suffix: &format!("_{}.bincode", cache_key),
+        fetch_fn: || async { build_display_list_uncached(path, viewport_w, viewport_h).await },
+        deserialize_fn: |bytes| bincode::deserialize(bytes).map_err(Into::into),
+        serialize_fn: |dl| bincode::serialize(dl).map_err(Into::into),
+    })
+    .await;
+
+    cached_result
+}
+
+async fn build_display_list_uncached(
+    path: &Path,
+    viewport_w: u32,
+    viewport_h: u32,
+) -> Result<DisplayList> {
     use std::time::Instant;
     let start = Instant::now();
 
@@ -249,13 +160,14 @@ pub async fn build_display_list_for_fixture(
 
 type RasterizeResult = (Vec<u8>, Vec<GlyphBounds>);
 
-/// Rasterizes a display list to RGBA bytes using the GPU backend.
+/// Rasterizes a display list to RGBA bytes using headless GPU rendering.
 /// Also returns glyph bounds for text region masking.
 ///
 /// # Errors
 ///
-/// Returns an error if render state locking or rendering fails.
+/// Returns an error if rendering fails.
 pub fn rasterize_display_list_to_rgba(
+    render_context: &mut PersistentGpuContext,
     display_list: &DisplayList,
     width: u32,
     height: u32,
@@ -263,47 +175,22 @@ pub fn rasterize_display_list_to_rgba(
     use std::time::Instant;
     let start = Instant::now();
 
-    eprintln!("[VALOR_TIMING] initialize_render_state START");
-    let state_mutex = initialize_render_state(width, height);
+    eprintln!("[VALOR_TIMING] render_display_list_with_context START");
+    let rgba = wgpu_backend::render_display_list_with_context(
+        render_context,
+        display_list,
+        width,
+        height,
+    )?;
     eprintln!(
-        "[VALOR_TIMING] initialize_render_state took: {:?}",
+        "[VALOR_TIMING] render_display_list_with_context took: {:?}",
         start.elapsed()
     );
 
-    eprintln!("[VALOR_TIMING] lock render state START");
-    let mut state = state_mutex
-        .lock()
-        .map_err(|err| anyhow!("Failed to lock render state: {err}"))?;
-    eprintln!(
-        "[VALOR_TIMING] lock render state took: {:?}",
-        start.elapsed()
-    );
+    // For now, return empty glyph bounds since headless rendering doesn't track them yet
+    // TODO: Extend headless rendering to return glyph bounds for text masking
+    let glyph_bounds = Vec::new();
 
-    let _render_num = RENDER_COUNTER.fetch_add(1, Ordering::SeqCst);
-
-    eprintln!("[VALOR_TIMING] reset_for_next_frame START");
-    state.reset_for_next_frame();
-    eprintln!(
-        "[VALOR_TIMING] reset_for_next_frame took: {:?}",
-        start.elapsed()
-    );
-
-    eprintln!("[VALOR_TIMING] resize START");
-    state.resize(PhysicalSize::new(width, height));
-    eprintln!("[VALOR_TIMING] resize took: {:?}", start.elapsed());
-
-    eprintln!("[VALOR_TIMING] set_retained_display_list START");
-    state.set_retained_display_list(display_list.clone());
-    eprintln!(
-        "[VALOR_TIMING] set_retained_display_list took: {:?}",
-        start.elapsed()
-    );
-
-    eprintln!("[VALOR_TIMING] render_to_rgba START");
-    let rgba = state.render_to_rgba()?;
-    eprintln!("[VALOR_TIMING] render_to_rgba took: {:?}", start.elapsed());
-
-    let glyph_bounds = state.glyph_bounds().to_vec();
     eprintln!(
         "[VALOR_TIMING] rasterize_display_list_to_rgba TOTAL: {:?}",
         start.elapsed()

@@ -8,6 +8,8 @@ use html5ever::{Attribute, LocalName, Namespace, QualName, local_name};
 use indextree::NodeId;
 use js::DOMMirror;
 use std::collections::HashMap;
+// Note: Using std::fs for now since TreeSink isn't async
+// TODO: Make TreeSink async-aware to use tokio::fs
 use std::fs::read_to_string;
 use tokio::sync::mpsc::UnboundedSender;
 use url::Url;

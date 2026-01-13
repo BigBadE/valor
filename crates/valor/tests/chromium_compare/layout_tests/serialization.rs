@@ -22,6 +22,9 @@ struct SerializationContext<'context> {
     rects: &'context HashMap<NodeKey, LayoutRect>,
     styles: &'context HashMap<NodeKey, ComputedStyle>,
     attrs: &'context HashMap<NodeKey, HashMap<String, String>>,
+    /// Offset to subtract from all coordinates (body element's position)
+    body_offset_x: f32,
+    body_offset_y: f32,
 }
 
 /// Find the parent key for a given node key in the snapshot.
@@ -34,10 +37,11 @@ fn find_parent_key(snapshot: &LayoutSnapshot, key: NodeKey) -> Option<NodeKey> {
 
 /// Serialize a layout box's rect as JSON.
 /// Chrome rounds dimensions to whole pixels for text boxes, so we do the same.
-fn serialize_rect(rect: &LayoutRect) -> JsonValue {
+/// Coordinates are adjusted relative to the body element's position.
+fn serialize_rect(rect: &LayoutRect, body_offset_x: f32, body_offset_y: f32) -> JsonValue {
     json!({
-        "x": f64::from(rect.x),
-        "y": f64::from(rect.y),
+        "x": f64::from(rect.x - body_offset_x),
+        "y": f64::from(rect.y - body_offset_y),
         "width": f64::from(rect.width),
         "height": f64::from(rect.height.round())
     })
@@ -183,6 +187,8 @@ fn serialize_text_node(
     rect: &LayoutRect,
     computed: &ComputedStyle,
     _parent_width: f32,
+    body_offset_x: f32,
+    body_offset_y: f32,
 ) -> JsonValue {
     // The rect passed in from layout already has the correct height accounting for:
     // - Single line: glyph_height (shaped bounds)
@@ -211,10 +217,10 @@ fn serialize_text_node(
         text_height
     };
 
-    // Create rect with appropriate height
+    // Create rect with appropriate height, adjusted relative to body element
     let text_rect = json!({
-        "x": f64::from(rect.x),
-        "y": f64::from(rect.y),
+        "x": f64::from(rect.x - body_offset_x),
+        "y": f64::from(rect.y - body_offset_y),
         "width": f64::from(rect.width),
         "height": f64::from(final_height)
     });
@@ -322,7 +328,7 @@ fn serialize_block_element(
         "tag": tag,
         "id": id,
         "attrs": attrs_map,
-        "rect": serialize_rect(rect),
+        "rect": serialize_rect(rect, ctx.body_offset_x, ctx.body_offset_y),
         "style": serialize_style(computed, parent_style, is_root),
         "children": child_json
     }));
@@ -346,6 +352,10 @@ fn serialize_element_recursive(
         .iter()
         .find(|(node_key, _, _)| *node_key == key);
     let Some((_, kind, children)) = node_info else {
+        log::warn!(
+            "serialize_element_recursive: node {:?} not found in snapshot",
+            key
+        );
         return Ok(());
     };
 
@@ -356,9 +366,9 @@ fn serialize_element_recursive(
                 return Ok(());
             };
 
-            // Skip whitespace-only text nodes with zero dimensions
-            // (Chrome filters these out from layout output)
-            if rect.width == 0.0 && rect.height == 0.0 && text.trim().is_empty() {
+            // Skip whitespace-only text nodes
+            // (Chrome filters these out from layout output in block formatting contexts)
+            if text.trim().is_empty() {
                 return Ok(());
             }
 
@@ -387,14 +397,31 @@ fn serialize_element_recursive(
                 .and_then(|parent| ctx.rects.get(&parent))
                 .map_or(800.0, |parent_rect| parent_rect.width); // Fallback to viewport width
 
-            parent_children.push(serialize_text_node(text, rect, computed, parent_width));
+            parent_children.push(serialize_text_node(
+                text,
+                rect,
+                computed,
+                parent_width,
+                ctx.body_offset_x,
+                ctx.body_offset_y,
+            ));
         }
         LayoutNodeKind::Block { tag } => {
             // Block elements need rect and computed style
             let Some(_rect) = ctx.rects.get(&key) else {
+                log::warn!(
+                    "serialize_element_recursive: no rect for block {:?} tag={}",
+                    key,
+                    tag
+                );
                 return Ok(());
             };
             let Some(computed) = ctx.styles.get(&key) else {
+                log::warn!(
+                    "serialize_element_recursive: no computed style for block {:?} tag={}",
+                    key,
+                    tag
+                );
                 return Ok(());
             };
 
@@ -422,11 +449,15 @@ fn serialize_element_recursive(
 ///
 /// Returns an error if layout serialization fails.
 pub fn serialize_valor_layout(page: &mut HtmlPage) -> Result<JsonValue> {
-    // Get layout snapshot
-    let snapshot = page.layouter_snapshot();
-
-    // Ensure layout is computed and get rects
+    // Ensure layout is computed first
     page.ensure_layout_now();
+
+    // Get layout snapshot AFTER layout is computed
+    let snapshot = page.layouter_snapshot();
+    log::info!(
+        "serialize_valor_layout: snapshot has {} nodes",
+        snapshot.len()
+    );
     let rects = page.layouter_geometry_mut();
 
     // Get computed styles
@@ -435,25 +466,62 @@ pub fn serialize_valor_layout(page: &mut HtmlPage) -> Result<JsonValue> {
     // Get attributes
     let attrs = page.layouter_attrs_map();
 
-    // Create serialization context
+    // Find body element in the snapshot first to get its offset
+    let body_key = snapshot
+        .iter()
+        .find(|(_, kind, _)| matches!(kind, LayoutNodeKind::Block { tag } if tag == "body"))
+        .map(|(key, _, _)| *key)
+        .ok_or_else(|| {
+            log::error!("No body element found in snapshot. Available elements:");
+            for (key, kind, _) in &snapshot {
+                match kind {
+                    LayoutNodeKind::Block { tag } => log::error!("  - {:?}: {}", key, tag),
+                    LayoutNodeKind::InlineText { text } => {
+                        log::error!("  - {:?}: text({:?})", key, text)
+                    }
+                    LayoutNodeKind::Document => log::error!("  - {:?}: Document", key),
+                }
+            }
+            anyhow!("No body element found")
+        })?;
+
+    // Get body's position to use as offset (make body coordinates relative to itself at 0,0)
+    let body_rect = rects
+        .get(&body_key)
+        .ok_or_else(|| anyhow!("No rect for body element"))?;
+    let body_offset_x = body_rect.x;
+    let body_offset_y = body_rect.y;
+
+    log::info!(
+        "Body element at ({}, {}) - will adjust all coordinates relative to this",
+        body_offset_x,
+        body_offset_y
+    );
+
+    // Create serialization context with body offset
     let ctx = SerializationContext {
         snapshot: &snapshot,
         rects: &rects,
         styles: &styles,
         attrs: &attrs,
+        body_offset_x,
+        body_offset_y,
     };
 
-    // Find body element in the snapshot
-    let body_key = snapshot
-        .iter()
-        .find(|(_, kind, _)| matches!(kind, LayoutNodeKind::Block { tag } if tag == "body"))
-        .map(|(key, _, _)| *key)
-        .ok_or_else(|| anyhow!("No body element found"))?;
-
+    log::info!("Found body element: {:?}", body_key);
     let mut root_children = Vec::new();
     serialize_element_recursive(body_key, &ctx, &mut root_children)?;
+    log::info!("Serialized {} root children", root_children.len());
 
     let layout = root_children.into_iter().next().unwrap_or(Value::Null);
+    log::info!(
+        "Final layout is: {}",
+        if layout == Value::Null {
+            "null"
+        } else {
+            "non-null"
+        }
+    );
 
     Ok(json!({
         "layout": layout,

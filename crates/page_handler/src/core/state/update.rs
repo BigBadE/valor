@@ -46,8 +46,6 @@ pub async fn perform_update_cycle(
     last_style_restyled_nodes: u64,
     _pipeline: &Pipeline,
 ) -> Result<UpdateOutcome, Error> {
-    let _span = info_span!("page.update").entered();
-
     // Finalize DOM loading if the loader has finished
     super::dom_processing::finalize_dom_loading_if_needed(loader).await?;
 
@@ -92,7 +90,11 @@ pub async fn perform_update_cycle(
     renderer_mirror.try_update_sync()?;
 
     // Emit optional production telemetry for this tick per config
-    emit_perf_telemetry_if_enabled(render.telemetry_enabled, last_style_restyled_nodes, frame_scheduler);
+    emit_perf_telemetry_if_enabled(
+        render.telemetry_enabled,
+        last_style_restyled_nodes,
+        frame_scheduler,
+    );
 
     let outcome = UpdateOutcome {
         redraw_needed: render.needs_redraw,

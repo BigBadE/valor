@@ -42,3 +42,5 @@ unicode-linebreak.workspace = true
 # Parallelism
 rayon.workspace = true
 num_cpus.workspace = true
+valor_query.workspace = true
+css_orchestrator.workspace = true

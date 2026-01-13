@@ -3,6 +3,7 @@
 use super::chrome::capture_screenshot_rgba;
 use super::common::write_png_rgba_if_changed;
 use super::comparison_framework::ComparisonTest;
+use super::gpu_pool::acquire_gpu_context;
 use super::valor::{build_display_list_for_fixture, rasterize_display_list_to_rgba};
 use anyhow::Result;
 use chromiumoxide::page::Page;
@@ -147,8 +148,20 @@ impl ComparisonTest for GraphicsComparison {
     ) -> Result<Self::ValorOutput> {
         let display_list =
             build_display_list_for_fixture(fixture, metadata.width, metadata.height).await?;
-        let (pixels, glyph_bounds) =
-            rasterize_display_list_to_rgba(&display_list, metadata.width, metadata.height)?;
+
+        let width = metadata.width;
+        let height = metadata.height;
+
+        // Run CPU-intensive rendering on a blocking thread pool for true parallelism
+        let (pixels, glyph_bounds) = tokio::task::spawn_blocking(move || {
+            // Acquire a GPU context from the pool (reuses contexts across tests)
+            let mut gpu_guard = acquire_gpu_context()?;
+            let render_context = gpu_guard.get_mut();
+
+            rasterize_display_list_to_rgba(render_context, &display_list, width, height)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Render task panicked: {e}"))??;
 
         // Store glyph bounds in metadata for comparison
         metadata.glyph_bounds = glyph_bounds;

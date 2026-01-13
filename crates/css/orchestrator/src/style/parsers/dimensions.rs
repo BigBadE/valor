@@ -23,8 +23,19 @@ pub fn apply_dimensions(
     computed: &mut style_model::ComputedStyle,
     decls: &HashMap<String, String>,
 ) {
+    log::trace!(
+        "apply_dimensions: decls keys = {:?}",
+        decls.keys().collect::<Vec<_>>()
+    );
+
     if let Some(value) = decls.get("width") {
         let (pixels, percent) = parse_dimension(value);
+        log::trace!(
+            "apply_dimensions: width='{}' -> pixels={:?}, percent={:?}",
+            value,
+            pixels,
+            percent
+        );
         computed.width = pixels;
         computed.width_percent = percent;
     }

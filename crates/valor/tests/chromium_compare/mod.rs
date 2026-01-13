@@ -3,6 +3,7 @@ pub mod chrome;
 pub mod common;
 pub mod comparison_framework;
 pub mod fixture_runner;
+pub mod gpu_pool;
 pub mod graphics_comparison;
 pub mod graphics_tests;
 pub mod json_compare;

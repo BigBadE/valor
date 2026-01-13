@@ -10,16 +10,17 @@
 // Re-export LayoutUnit from css_box
 pub use css_box::LayoutUnit;
 
-// Constraint-based layout system (Chromium-like)
-// This is the primary layout system modeled after Chromium's LayoutNG
-pub mod constraint_block_layout;
+// Constraint space types (used by query-based layout)
 pub mod constraint_space;
 pub mod exclusion_space;
 pub mod grid_template_parser;
 pub mod margin_strut;
 
-// Export constraint-based layout types
-pub use constraint_block_layout::{ConstraintLayoutTree, layout_tree};
+// OLD SYSTEM - DELETED: The old ConstraintLayoutTree-based layout has been replaced
+// by the query-based incremental layout system in queries/layout_queries.rs
+// pub mod constraint_block_layout;
+
+// Export constraint space types (used by query-based layout)
 pub use constraint_space::{AvailableSize, BfcOffset, ConstraintSpace, LayoutResult};
 pub use exclusion_space::{ExclusionSpace, FloatExclusion, FloatSize};
 pub use margin_strut::MarginStrut;

@@ -332,7 +332,11 @@ impl HtmlPage {
     ///
     /// Returns an error if any update step fails (DOM loading, JS execution, CSS processing, or layout).
     pub async fn update_with_outcome(&mut self) -> Result<UpdateOutcome, Error> {
-        let _span = info_span!("page.update").entered();
+        // Create span but drop it before any awaits to maintain Send
+        let span = info_span!("page.update");
+        let _enter = span.enter();
+        drop(_enter); // Drop the guard immediately
+
         // Finalize DOM loading if the loader has finished
         dom_processing::finalize_dom_loading_if_needed(&mut self.loader).await?;
 
@@ -444,7 +448,7 @@ impl HtmlPage {
     ///
     /// Returns an error if CSS synchronization or style processing fails.
     pub fn computed_styles_snapshot(&mut self) -> Result<HashMap<NodeKey, ComputedStyle>, Error> {
-        accessors::computed_styles_snapshot(&mut self.css_mirror, &mut self.orchestrator_mirror)
+        accessors::computed_styles_snapshot(&mut self.orchestrator_mirror)
     }
 
     /// Drain CSS mirror and return a snapshot clone of discovered external stylesheet URLs.
