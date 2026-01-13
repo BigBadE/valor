@@ -49,6 +49,20 @@ impl StyleDatabase {
         })
     }
 
+    /// Create a new style database with a shared parallel runtime.
+    ///
+    /// This avoids creating multiple rayon thread pools.
+    pub fn new_with_runtime(runtime: Arc<ParallelRuntime>) -> Result<Self> {
+        let db = Arc::new(QueryDatabase::new());
+
+        Ok(Self {
+            db,
+            runtime,
+            nodes: HashSet::new(),
+            dirty_nodes: HashSet::new(),
+        })
+    }
+
     /// Apply a DOM update to the style database.
     pub fn apply_update(&mut self, update: DOMUpdate) {
         match update {
@@ -122,12 +136,14 @@ impl StyleDatabase {
     /// Returns true if any styles changed.
     pub fn recompute_styles_parallel(&mut self) -> bool {
         if self.dirty_nodes.is_empty() {
+            log::info!("StyleDatabase: No dirty nodes, skipping style recomputation");
             return false;
         }
 
-        trace!(
-            "Recomputing styles for {} dirty nodes",
-            self.dirty_nodes.len()
+        log::info!(
+            "StyleDatabase: Recomputing styles for {} dirty nodes out of {} total nodes",
+            self.dirty_nodes.len(),
+            self.nodes.len()
         );
 
         // Group dirty nodes by depth for parallel waves
@@ -201,6 +217,11 @@ impl StyleDatabase {
     /// Get a cloned Arc to the query database for sharing with other subsystems.
     pub fn shared_query_db(&self) -> Arc<QueryDatabase> {
         Arc::clone(&self.db)
+    }
+
+    /// Get a cloned Arc to the parallel runtime for sharing with other subsystems.
+    pub fn shared_runtime(&self) -> Arc<ParallelRuntime> {
+        Arc::clone(&self.runtime)
     }
 
     /// Get all computed styles for all nodes.

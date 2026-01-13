@@ -5,12 +5,10 @@
 //! independent formatting contexts.
 
 use crate::LayoutUnit;
-use crate::queries::layout_queries::{
-    ComputedStyleInput, DomChildrenInput, DomParentInput, ViewportInput,
-};
+use crate::queries::layout_queries::ViewportInput;
 use crate::queries::{FormattingContextQuery, FormattingContextType, LayoutResultQuery};
 use anyhow::Result;
-use css_orchestrator::style_model::ComputedStyle;
+use css_orchestrator::queries::{DomChildrenInput, DomParentInput};
 use js::{DOMUpdate, NodeKey};
 use log::trace;
 use std::collections::{HashMap, HashSet};
@@ -105,56 +103,57 @@ impl LayoutDatabase {
         })
     }
 
-    /// Apply a DOM update to the layout database.
+    /// Create a layout database with shared QueryDatabase and ParallelRuntime.
+    ///
+    /// This avoids creating multiple rayon thread pools, which can cause hangs.
+    pub fn new_shared_with_runtime(
+        shared_db: Arc<QueryDatabase>,
+        runtime: Arc<ParallelRuntime>,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Result<Self> {
+        // Set initial viewport dimensions
+        let viewport = (
+            LayoutUnit::from_px(viewport_width),
+            LayoutUnit::from_px(viewport_height),
+        );
+        shared_db.set_input::<ViewportInput>((), viewport);
+
+        Ok(Self {
+            db: shared_db,
+            runtime,
+            nodes: HashSet::new(),
+            dirty_nodes: HashSet::new(),
+            root: None,
+            viewport_width,
+            viewport_height,
+            layout_cache: HashMap::new(),
+        })
+    }
+
+    /// Apply a DOM update to track nodes and dirty state.
+    ///
+    /// Note: This does NOT populate DOM inputs (DomParentInput, DomChildrenInput)
+    /// because those are already populated by StyleDatabase in the shared QueryDatabase.
+    /// This method only tracks which nodes exist and which need layout recomputation.
     pub fn apply_update(&mut self, update: DOMUpdate) {
         match update {
             DOMUpdate::InsertElement { node, parent, .. } => {
                 self.nodes.insert(node);
                 self.dirty_nodes.insert(node);
 
-                // Set parent relationship
-                self.db.set_input::<DomParentInput>(node, Some(parent));
-
-                // Add to parent's children
-                let children_arc: Arc<Vec<NodeKey>> = self.db.input::<DomChildrenInput>(parent);
-                let mut children = (*children_arc).clone();
-                if !children.contains(&node) {
-                    children.push(node);
-                    self.db.set_input::<DomChildrenInput>(parent, children);
-                }
-
                 // Set root if this is html element under ROOT
                 if parent == NodeKey::ROOT && self.root.is_none() {
                     self.root = Some(node);
                 }
             }
-            DOMUpdate::InsertText { node, parent, .. } => {
+            DOMUpdate::InsertText { node, .. } => {
                 self.nodes.insert(node);
                 self.dirty_nodes.insert(node);
-
-                // Set parent relationship
-                self.db.set_input::<DomParentInput>(node, Some(parent));
-
-                // Add to parent's children
-                let children_arc: Arc<Vec<NodeKey>> = self.db.input::<DomChildrenInput>(parent);
-                let mut children = (*children_arc).clone();
-                if !children.contains(&node) {
-                    children.push(node);
-                    self.db.set_input::<DomChildrenInput>(parent, children);
-                }
             }
             DOMUpdate::RemoveNode { node } => {
                 self.nodes.remove(&node);
                 self.dirty_nodes.remove(&node);
-
-                // Remove from parent's children
-                let parent_opt = self.db.input::<DomParentInput>(node);
-                if let Some(parent) = *parent_opt {
-                    let children_arc: Arc<Vec<NodeKey>> = self.db.input::<DomChildrenInput>(parent);
-                    let mut children = (*children_arc).clone();
-                    children.retain(|&child| child != node);
-                    self.db.set_input::<DomChildrenInput>(parent, children);
-                }
             }
             DOMUpdate::SetAttr { node, .. } => {
                 // Attribute changes might affect layout
@@ -168,9 +167,11 @@ impl LayoutDatabase {
         }
     }
 
-    /// Set computed style for a node (from style computation phase).
-    pub fn set_computed_style(&mut self, node: NodeKey, style: ComputedStyle) {
-        self.db.set_input::<ComputedStyleInput>(node, style);
+    /// Mark a node as dirty for layout recomputation.
+    ///
+    /// Note: Computed styles come from ComputedStyleQuery in the shared QueryDatabase,
+    /// so we don't need to set them as inputs.
+    pub fn mark_dirty(&mut self, node: NodeKey) {
         self.dirty_nodes.insert(node);
     }
 
@@ -251,18 +252,27 @@ impl LayoutDatabase {
     /// is computed via LayoutResultQuery, which recursively queries children.
     pub fn recompute_layouts_parallel(&mut self) -> bool {
         if self.root.is_none() {
+            log::warn!("LayoutDatabase: No root node set, skipping layout");
             return false;
         }
 
         let root = self.root.unwrap();
 
-        trace!(
-            "recompute_layouts_parallel: running query-based layout for root {:?}",
-            root
+        log::info!(
+            "LayoutDatabase: Computing layouts for root {:?}, dirty_nodes={}, total_nodes={}",
+            root,
+            self.dirty_nodes.len(),
+            self.nodes.len()
         );
 
         // Query the root layout - this will recursively query all children
         let root_result = self.db.query::<LayoutResultQuery>(root);
+
+        log::info!(
+            "LayoutDatabase: Root layout computed: width={}, height={}",
+            root_result.inline_size,
+            root_result.block_size
+        );
 
         // Cache the root result
         self.layout_cache.clear();

@@ -1,21 +1,16 @@
 //! CSS orchestrator and mirror types exposed to other crates.
 use anyhow::Result;
-use js::DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr};
+use js::DOMUpdate::{EndOfDocument, InsertElement, InsertText, RemoveNode};
 use js::{DOMSubscriber, DOMUpdate};
 use std::collections::HashMap;
 use url::Url;
 
 pub use js::NodeKey;
 
-// Bring core types into scope to avoid fully qualified paths and satisfy clippy
-use crate::parser::parse_stylesheet;
-use css_orchestrator::CoreEngine;
-
 // Re-export StyleDatabase from css_orchestrator
 pub use css_orchestrator::StyleDatabase;
 
 pub mod style_types;
-use crate::style_types::ComputedStyle;
 
 pub mod types;
 
@@ -36,13 +31,6 @@ pub struct CSSMirror {
     style_text_by_node: HashMap<NodeKey, String>,
     /// Debug counter for rebuild tracking
     rebuild_counter: u32,
-}
-
-impl DOMSubscriber for Orchestrator {
-    #[inline]
-    fn apply_update(&mut self, update: DOMUpdate) -> Result<()> {
-        self.apply_dom_update(update)
-    }
 }
 
 impl Default for CSSMirror {
@@ -116,13 +104,6 @@ impl CSSMirror {
         }
         self.styles = out;
     }
-
-    /// Apply the aggregated in-document stylesheet to the given orchestrator.
-    /// This is the minimal glue to feed parsed CSS into the core engine.
-    #[inline]
-    pub fn apply_to_orchestrator(&self, orchestrator: &mut Orchestrator) {
-        orchestrator.replace_stylesheet(&self.styles);
-    }
 }
 
 impl DOMSubscriber for CSSMirror {
@@ -158,7 +139,7 @@ impl DOMSubscriber for CSSMirror {
                     self.rebuild_styles_from_style_nodes();
                 }
             }
-            DOMUpdate::UpdateText { .. } | SetAttr { .. } => {
+            DOMUpdate::UpdateText { .. } | DOMUpdate::SetAttr { .. } => {
                 // UpdateText doesn't affect CSS mirror since it only updates text nodes,
                 // and CSS is only collected from <style> element children via InsertText
                 // SetAttr also doesn't affect CSS mirror
@@ -168,68 +149,5 @@ impl DOMSubscriber for CSSMirror {
             }
         }
         Ok(())
-    }
-}
-
-pub struct Orchestrator {
-    /// Core CSS engine that performs style and layout computation.
-    core: CoreEngine,
-}
-
-pub struct ProcessArtifacts {
-    pub styles_changed: bool,
-    pub computed_styles: HashMap<NodeKey, ComputedStyle>,
-}
-impl Default for Orchestrator {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Orchestrator {
-    #[inline]
-    pub fn new() -> Self {
-        Self {
-            core: CoreEngine::new(),
-        }
-    }
-
-    /// Apply a `DOMUpdate` to the core engine.
-    ///
-    /// # Errors
-    /// Returns an error if the core engine reports a failure during update application.
-    #[inline]
-    pub fn apply_dom_update(&mut self, update: DOMUpdate) -> Result<()> {
-        self.core.apply_dom_update(update)
-    }
-
-    /// Replace the current stylesheet used by the engine.
-    #[inline]
-    pub fn replace_stylesheet(&mut self, sheet: &types::Stylesheet) {
-        // The public types are re-exports of core types, so we can pass through directly.
-        self.core.replace_stylesheet(sheet.clone());
-    }
-
-    /// Parse the provided CSS text with the given origin and replace the current stylesheet.
-    /// This allows callers to bypass `CSSMirror` and feed raw CSS into the engine.
-    #[inline]
-    pub fn replace_stylesheet_from_css(&mut self, css_text: &str, origin: types::Origin) {
-        let parsed = parse_stylesheet(css_text, origin, 0);
-        self.replace_stylesheet(&parsed);
-    }
-    /// Execute one processing pass and return artifacts for rendering and inspection.
-    ///
-    /// # Errors
-    /// Returns an error if the core engine encounters a failure during processing.
-    #[inline]
-    pub fn process_once(&mut self) -> Result<ProcessArtifacts> {
-        let styles_changed = self.core.recompute_styles();
-        let computed_styles = self.core.computed_snapshot();
-
-        Ok(ProcessArtifacts {
-            styles_changed,
-            computed_styles,
-        })
     }
 }

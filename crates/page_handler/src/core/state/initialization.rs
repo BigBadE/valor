@@ -7,7 +7,7 @@ use crate::utilities::config::ValorConfig;
 use crate::utilities::scheduler::FrameScheduler;
 use anyhow::{Error, anyhow};
 use core::sync::atomic::AtomicU64;
-use css::{CSSMirror, Orchestrator};
+use css::{CSSMirror, StyleDatabase};
 use html::dom::DOM;
 use html::parser::{HTMLParser, ParseInputs, ScriptJob};
 
@@ -33,8 +33,8 @@ use url::Url;
 pub(super) struct DomMirrors {
     /// CSS mirror for observing DOM updates.
     pub css_mirror: DOMMirror<CSSMirror>,
-    /// Orchestrator mirror that computes styles using the css engine.
-    pub orchestrator_mirror: DOMMirror<Orchestrator>,
+    /// StyleDatabase for computing styles using query-based engine.
+    pub style_database: StyleDatabase,
     /// Renderer mirror for scene graph management.
     pub renderer_mirror: DOMMirror<Renderer>,
     /// DOM index mirror for JS queries.
@@ -67,15 +67,15 @@ pub(super) fn create_dom_mirrors(
         dom.subscribe(),
         CSSMirror::with_base(url.clone()),
     );
-    let orchestrator_mirror =
-        DOMMirror::new(in_updater.clone(), dom.subscribe(), Orchestrator::new());
+    let style_database =
+        StyleDatabase::new().map_err(|err| anyhow!("Failed to create StyleDatabase: {err}"))?;
     let renderer_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), Renderer::new());
     let (dom_index_sub, dom_index_shared) = DomIndex::new();
     let dom_index_mirror = DOMMirror::new(in_updater.clone(), dom.subscribe(), dom_index_sub);
 
     Ok(DomMirrors {
         css_mirror,
-        orchestrator_mirror,
+        style_database,
         renderer_mirror,
         dom_index_mirror,
         dom_index_shared,
@@ -190,9 +190,15 @@ pub(super) fn initialize_blank_page(
 
     let pipeline = Pipeline::new(PipelineConfig::default());
 
-    // Create incremental layout engine with viewport dimensions from config
-    let incremental_layout =
-        IncrementalLayoutEngine::new(config.viewport_width, config.viewport_height);
+    // Create incremental layout engine with shared QueryDatabase and ParallelRuntime from StyleDatabase
+    let shared_db = mirrors.style_database.shared_query_db();
+    let shared_runtime = mirrors.style_database.shared_runtime();
+    let incremental_layout = IncrementalLayoutEngine::new_shared_with_runtime(
+        shared_db,
+        shared_runtime,
+        config.viewport_width,
+        config.viewport_height,
+    );
 
     // Create basic HTML document structure (html > body)
     // This ensures body styles work correctly
@@ -293,9 +299,15 @@ pub(super) async fn initialize_page(
 
     let pipeline = Pipeline::new(PipelineConfig::default());
 
-    // Create incremental layout engine with viewport dimensions from config
-    let incremental_layout =
-        IncrementalLayoutEngine::new(config.viewport_width, config.viewport_height);
+    // Create incremental layout engine with shared QueryDatabase and ParallelRuntime from StyleDatabase
+    let shared_db = mirrors.style_database.shared_query_db();
+    let shared_runtime = mirrors.style_database.shared_runtime();
+    let incremental_layout = IncrementalLayoutEngine::new_shared_with_runtime(
+        shared_db,
+        shared_runtime,
+        config.viewport_width,
+        config.viewport_height,
+    );
 
     drop(url); // url was previously part of PageComponents but is no longer used
     Ok(PageComponents {

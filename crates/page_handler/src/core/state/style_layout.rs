@@ -3,7 +3,7 @@
 use crate::core::incremental_layout::IncrementalLayoutEngine;
 use crate::utilities::snapshots::LayoutNodeKind;
 use anyhow::Error;
-use css::{CSSMirror, Orchestrator};
+use css::{CSSMirror, StyleDatabase};
 use html::parser::HTMLParser;
 use js::{DOMMirror, NodeKey};
 use log::trace;
@@ -72,7 +72,7 @@ pub(super) fn maybe_rebuild_style_nodes_after_load(
 /// Returns an error if CSS processing fails.
 pub(super) fn process_css_and_styles(
     css_mirror: &mut DOMMirror<CSSMirror>,
-    orchestrator_mirror: &mut DOMMirror<Orchestrator>,
+    style_database: &mut StyleDatabase,
     incremental_layout: &mut IncrementalLayoutEngine,
     loader: Option<&HTMLParser>,
     style_nodes_rebuilt_after_load: &mut bool,
@@ -96,25 +96,23 @@ pub(super) fn process_css_and_styles(
     // Use CSSMirror's aggregated in-document stylesheet (rebuilds on <style> updates)
     let author_styles = css_mirror.mirror_mut().styles();
 
-    // Drain any pending Orchestrator updates
-    orchestrator_mirror.try_update_sync()?;
+    // Replace the stylesheet in the StyleDatabase (clone because replace_stylesheet takes ownership)
+    style_database.replace_stylesheet(author_styles.clone());
 
-    // Replace the stylesheet in the Orchestrator
-    orchestrator_mirror
-        .mirror_mut()
-        .replace_stylesheet(author_styles);
+    // Recompute styles for dirty nodes in parallel
+    let styles_changed = style_database.recompute_styles_parallel();
 
-    // Process styles using Orchestrator
-    let artifacts = orchestrator_mirror.mirror_mut().process_once()?;
+    // Get computed styles snapshot
+    let computed_styles = style_database.get_all_styles();
 
     eprintln!(
         "Style processing: {} computed styles, changed={}",
-        artifacts.computed_styles.len(),
-        artifacts.styles_changed
+        computed_styles.len(),
+        styles_changed
     );
 
     // Apply computed styles to incremental layout
-    incremental_layout.set_computed_styles(&artifacts.computed_styles);
+    incremental_layout.set_computed_styles(&computed_styles);
 
-    Ok(artifacts.styles_changed)
+    Ok(styles_changed)
 }

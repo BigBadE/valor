@@ -108,6 +108,51 @@ impl IncrementalLayoutEngine {
         }
     }
 
+    /// Create a new layout engine with shared QueryDatabase and ParallelRuntime.
+    ///
+    /// This avoids creating multiple rayon thread pools, which can cause hangs.
+    pub fn new_shared_with_runtime(
+        shared_db: std::sync::Arc<valor_query::QueryDatabase>,
+        shared_runtime: std::sync::Arc<valor_query::parallel::ParallelRuntime>,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Self {
+        // Create layout database with shared QueryDatabase and runtime
+        let layout_database = match LayoutDatabase::new_shared_with_runtime(
+            shared_db,
+            shared_runtime,
+            viewport_width,
+            viewport_height,
+        ) {
+            Ok(db) => {
+                log::info!("LayoutDatabase created successfully");
+                Some(db)
+            }
+            Err(e) => {
+                log::error!("Failed to create LayoutDatabase: {}", e);
+                None
+            }
+        };
+
+        Self {
+            style_interner: StyleInterner::new(),
+            dependency_graph: DependencyGraph::new(),
+            dirty_nodes: HashSet::new(),
+            viewport: Viewport {
+                width: viewport_width,
+                height: viewport_height,
+            },
+            generation: 0,
+            children: HashMap::new(),
+            tags: HashMap::new(),
+            text_nodes: HashMap::new(),
+            attrs: HashMap::new(),
+            root: None,
+            layout_cache: HashMap::new(),
+            layout_database,
+        }
+    }
+
     /// Check if there are dirty nodes requiring layout
     pub fn has_dirty_nodes(&self) -> bool {
         !self.dirty_nodes.is_empty()
@@ -131,9 +176,10 @@ impl IncrementalLayoutEngine {
         if changed {
             self.invalidate_node(node);
 
-            // Update parallel layout database
+            // Mark node as dirty in parallel layout database
+            // Note: Styles are accessed via ComputedStyleQuery, not inputs
             if let Some(layout_db) = &mut self.layout_database {
-                layout_db.set_computed_style(node, new_style.clone());
+                layout_db.mark_dirty(node);
             }
         }
     }
@@ -146,7 +192,9 @@ impl IncrementalLayoutEngine {
             self.dirty_nodes.len()
         );
 
-        // Apply to parallel layout database
+        // Apply to parallel layout database for node tracking
+        // Note: LayoutDatabase.apply_update only tracks nodes, it doesn't populate DOM inputs
+        // since those are already populated by StyleDatabase in the shared QueryDatabase
         if let Some(layout_db) = &mut self.layout_database {
             for update in updates {
                 layout_db.apply_update(update.clone());

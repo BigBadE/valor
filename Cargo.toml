@@ -118,7 +118,7 @@ opt-level = 1
 debug = 0
 strip = "debuginfo"
 lto = false
-codegen-backend = "cranelift"
+# codegen-backend = "cranelift"  # Temporarily disabled due to ICE
 
 [profile.dev.package."*"]
 opt-level = 3

@@ -67,14 +67,13 @@ pub(super) fn layouter_hit_test(x: i32, y: i32) -> Option<NodeKey> {
 ///
 /// Returns an error if CSS synchronization or style processing fails.
 pub(super) fn computed_styles_snapshot(
-    orchestrator_mirror: &mut DOMMirror<css::Orchestrator>,
+    style_database: &mut css::StyleDatabase,
 ) -> Result<HashMap<NodeKey, CssComputedStyle>, Error> {
-    // Drain any pending Orchestrator updates
-    orchestrator_mirror.try_update_sync()?;
+    // Recompute any dirty styles
+    style_database.recompute_styles_parallel();
 
-    // Process and get computed styles from the Orchestrator
-    let artifacts = orchestrator_mirror.mirror_mut().process_once()?;
-    Ok(artifacts.computed_styles)
+    // Get computed styles snapshot
+    Ok(style_database.get_all_styles())
 }
 
 /// Return a JSON string with key performance counters from the layouter to aid diagnostics (Phase 8).

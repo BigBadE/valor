@@ -347,6 +347,30 @@ impl Query for ComputedStyleQuery {
                 | "footer"
                 | "main"
                 | "aside"
+                | "h1"
+                | "h2"
+                | "h3"
+                | "h4"
+                | "h5"
+                | "h6"
+                | "p"
+                | "ul"
+                | "ol"
+                | "li"
+                | "dl"
+                | "dt"
+                | "dd"
+                | "blockquote"
+                | "pre"
+                | "form"
+                | "fieldset"
+                | "table"
+                | "thead"
+                | "tbody"
+                | "tfoot"
+                | "tr"
+                | "th"
+                | "td"
         ) {
             let ua_display = CascadedDecl {
                 value: "block".to_string(),
@@ -356,6 +380,134 @@ impl Query for ComputedStyleQuery {
                 inline_boost: false,
             };
             cascaded_decls.insert("display".to_string(), ua_display);
+        }
+
+        // Headings get bold font-weight and larger font sizes
+        match tag.as_str() {
+            "h1" => {
+                cascaded_decls.insert(
+                    "font-weight".to_string(),
+                    CascadedDecl {
+                        value: "700".to_string(),
+                        important: false,
+                        specificity: (0, 0, 0),
+                        source_order: 0,
+                        inline_boost: false,
+                    },
+                );
+                cascaded_decls.insert(
+                    "font-size".to_string(),
+                    CascadedDecl {
+                        value: "32px".to_string(), // 2em = 32px at 16px base
+                        important: false,
+                        specificity: (0, 0, 0),
+                        source_order: 0,
+                        inline_boost: false,
+                    },
+                );
+            }
+            "h2" => {
+                cascaded_decls.insert(
+                    "font-weight".to_string(),
+                    CascadedDecl {
+                        value: "700".to_string(),
+                        important: false,
+                        specificity: (0, 0, 0),
+                        source_order: 0,
+                        inline_boost: false,
+                    },
+                );
+                cascaded_decls.insert(
+                    "font-size".to_string(),
+                    CascadedDecl {
+                        value: "24px".to_string(), // 1.5em = 24px at 16px base
+                        important: false,
+                        specificity: (0, 0, 0),
+                        source_order: 0,
+                        inline_boost: false,
+                    },
+                );
+            }
+            "h3" => {
+                cascaded_decls.insert(
+                    "font-weight".to_string(),
+                    CascadedDecl {
+                        value: "700".to_string(),
+                        important: false,
+                        specificity: (0, 0, 0),
+                        source_order: 0,
+                        inline_boost: false,
+                    },
+                );
+                cascaded_decls.insert(
+                    "font-size".to_string(),
+                    CascadedDecl {
+                        value: "18.72px".to_string(), // 1.17em ≈ 18.72px at 16px base
+                        important: false,
+                        specificity: (0, 0, 0),
+                        source_order: 0,
+                        inline_boost: false,
+                    },
+                );
+            }
+            "h4" => {
+                cascaded_decls.insert(
+                    "font-weight".to_string(),
+                    CascadedDecl {
+                        value: "700".to_string(),
+                        important: false,
+                        specificity: (0, 0, 0),
+                        source_order: 0,
+                        inline_boost: false,
+                    },
+                );
+                // h4 is typically 1em (same as base), already 16px
+            }
+            "h5" => {
+                cascaded_decls.insert(
+                    "font-weight".to_string(),
+                    CascadedDecl {
+                        value: "700".to_string(),
+                        important: false,
+                        specificity: (0, 0, 0),
+                        source_order: 0,
+                        inline_boost: false,
+                    },
+                );
+                cascaded_decls.insert(
+                    "font-size".to_string(),
+                    CascadedDecl {
+                        value: "13.28px".to_string(), // 0.83em ≈ 13.28px at 16px base
+                        important: false,
+                        specificity: (0, 0, 0),
+                        source_order: 0,
+                        inline_boost: false,
+                    },
+                );
+            }
+            "h6" => {
+                cascaded_decls.insert(
+                    "font-weight".to_string(),
+                    CascadedDecl {
+                        value: "700".to_string(),
+                        important: false,
+                        specificity: (0, 0, 0),
+                        source_order: 0,
+                        inline_boost: false,
+                    },
+                );
+                cascaded_decls.insert(
+                    "font-size".to_string(),
+                    CascadedDecl {
+                        value: "10.72px".to_string(), // 0.67em ≈ 10.72px at 16px base
+                        important: false,
+                        specificity: (0, 0, 0),
+                        source_order: 0,
+                        inline_boost: false,
+                    },
+                );
+            }
+            _ => {}
         }
 
         // Body element gets overflow:hidden by default in many browsers

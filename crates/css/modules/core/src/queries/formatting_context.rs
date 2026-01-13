@@ -34,9 +34,9 @@ impl Query for FormattingContextQuery {
     type Value = FormattingContextType;
 
     fn execute(db: &QueryDatabase, key: Self::Key) -> Self::Value {
-        // Get the computed style for this node
-        use crate::queries::layout_queries::ComputedStyleInput;
-        let style = db.input::<ComputedStyleInput>(key);
+        // Get the computed style for this node via query (not input)
+        use css_orchestrator::queries::ComputedStyleQuery;
+        let style = db.query::<ComputedStyleQuery>(key);
 
         // display: none doesn't establish any formatting context
         if matches!(style.display, Display::None) {

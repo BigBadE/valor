@@ -5,7 +5,7 @@ use crate::core::pipeline::Pipeline;
 use crate::internal::runtime::JsRuntime as _;
 use crate::utilities::scheduler::FrameScheduler;
 use anyhow::Error;
-use css::{CSSMirror, Orchestrator};
+use css::{CSSMirror, StyleDatabase};
 use html::dom::DOM;
 use html::parser::HTMLParser;
 use js::{DOMMirror, DOMSubscriber, NodeKey, SharedDomIndex};
@@ -31,7 +31,7 @@ pub async fn perform_update_cycle(
     dom_index_mirror: &mut DOMMirror<js::DomIndex>,
     dom_index_shared: &SharedDomIndex,
     css_mirror: &mut DOMMirror<CSSMirror>,
-    orchestrator_mirror: &mut DOMMirror<Orchestrator>,
+    style_database: &mut StyleDatabase,
     renderer_mirror: &mut DOMMirror<Renderer>,
     incremental_layout: &mut IncrementalLayoutEngine,
     js_engine: &mut V8Engine,
@@ -77,7 +77,7 @@ pub async fn perform_update_cycle(
     // Process CSS and style updates
     let style_changed = super::style_layout::process_css_and_styles(
         css_mirror,
-        orchestrator_mirror,
+        style_database,
         incremental_layout,
         loader.as_ref(),
         &mut lifecycle.style_nodes_rebuilt_after_load,

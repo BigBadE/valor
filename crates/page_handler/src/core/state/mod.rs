@@ -20,7 +20,7 @@ use crate::utilities::snapshots::IRect;
 use anyhow::Error;
 use css::style_types::ComputedStyle;
 use css::types::Stylesheet;
-use css::{CSSMirror, Orchestrator};
+use css::{CSSMirror, StyleDatabase};
 use css_core::LayoutRect;
 use html::dom::DOM;
 use html::parser::HTMLParser;
@@ -83,8 +83,8 @@ pub struct HtmlPage {
     dom: DOM,
     /// Mirror that collects CSS from the DOM stream.
     css_mirror: DOMMirror<CSSMirror>,
-    /// Orchestrator mirror that computes styles using the css engine.
-    orchestrator_mirror: DOMMirror<Orchestrator>,
+    /// StyleDatabase that computes styles using the query-based engine.
+    style_database: StyleDatabase,
     /// Renderer mirror that maintains a scene graph from DOM updates.
     renderer_mirror: DOMMirror<Renderer>,
     /// DOM index mirror for JS document.getElement* queries.
@@ -149,7 +149,7 @@ impl HtmlPage {
             loader: components.loader,
             dom: components.dom,
             css_mirror: components.mirrors.css_mirror,
-            orchestrator_mirror: components.mirrors.orchestrator_mirror,
+            style_database: components.mirrors.style_database,
             renderer_mirror: components.mirrors.renderer_mirror,
             dom_index_mirror: components.mirrors.dom_index_mirror,
             dom_index_shared: components.mirrors.dom_index_shared,
@@ -208,7 +208,7 @@ impl HtmlPage {
             loader: components.loader,
             dom: components.dom,
             css_mirror: components.mirrors.css_mirror,
-            orchestrator_mirror: components.mirrors.orchestrator_mirror,
+            style_database: components.mirrors.style_database,
             renderer_mirror: components.mirrors.renderer_mirror,
             dom_index_mirror: components.mirrors.dom_index_mirror,
             dom_index_shared: components.mirrors.dom_index_shared,
@@ -346,6 +346,10 @@ impl HtmlPage {
 
         // Apply any pending DOM updates and get them for incremental engine
         let dom_updates = self.dom.update()?;
+        // Apply DOM updates to style database
+        for update in &dom_updates {
+            self.style_database.apply_update(update.clone());
+        }
         // Apply DOM updates to incremental engine
         self.incremental_layout.apply_dom_updates(&dom_updates);
         // Keep the DOM index mirror in sync before any JS queries (e.g., getElementById)
@@ -356,7 +360,7 @@ impl HtmlPage {
         // Process CSS and style updates
         let style_changed = style_layout::process_css_and_styles(
             &mut self.css_mirror,
-            &mut self.orchestrator_mirror,
+            &mut self.style_database,
             &mut self.incremental_layout,
             self.loader.as_ref(),
             &mut self.lifecycle.style_nodes_rebuilt_after_load,
@@ -448,7 +452,7 @@ impl HtmlPage {
     ///
     /// Returns an error if CSS synchronization or style processing fails.
     pub fn computed_styles_snapshot(&mut self) -> Result<HashMap<NodeKey, ComputedStyle>, Error> {
-        accessors::computed_styles_snapshot(&mut self.orchestrator_mirror)
+        accessors::computed_styles_snapshot(&mut self.style_database)
     }
 
     /// Drain CSS mirror and return a snapshot clone of discovered external stylesheet URLs.
