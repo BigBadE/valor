@@ -316,15 +316,22 @@ impl IncrementalLayoutEngine {
 
             // Convert query results to LayoutRect and update cache
             for (node, result) in all_layouts {
+                let base_y = result
+                    .bfc_offset
+                    .block_offset
+                    .unwrap_or(LayoutUnit::zero())
+                    .to_px();
+
+                // Use the full line-height for layout positioning
+                // Half-leading is a rendering concept and should not affect layout
+                let final_y = base_y;
+                let final_height = result.block_size;
+
                 let rect = LayoutRect {
                     x: result.bfc_offset.inline_offset.to_px(),
-                    y: result
-                        .bfc_offset
-                        .block_offset
-                        .unwrap_or(LayoutUnit::zero())
-                        .to_px(),
+                    y: final_y,
                     width: result.inline_size,
-                    height: result.block_size,
+                    height: final_height,
                 };
                 self.layout_cache.insert(node, rect);
             }

@@ -338,7 +338,7 @@ fn create_single_buffer(
             item.font_weight,
             matched_weight,
             family,
-            &item.text[..item.text.len().min(10)]
+            item.text.chars().take(10).collect::<String>()
         ),
     );
 

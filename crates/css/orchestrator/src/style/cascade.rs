@@ -245,6 +245,43 @@ fn node_has_class(
     })
 }
 
+/// Expand a shorthand property into its constituent longhand properties.
+/// Returns a list of (longhand_name, longhand_value) tuples.
+/// If the property is not a recognized shorthand, returns an empty list.
+fn expand_shorthand(name: &str, value: &str) -> Vec<(String, String)> {
+    eprintln!(
+        "expand_shorthand called: name='{}', value='{}'",
+        name, value
+    );
+    match name {
+        "margin" | "padding" => {
+            let tokens: Vec<&str> = value
+                .split(|c: char| c.is_ascii_whitespace())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            let (top, right, bottom, left) = match tokens.len() {
+                1 => (tokens[0], tokens[0], tokens[0], tokens[0]),
+                2 => (tokens[0], tokens[1], tokens[0], tokens[1]),
+                3 => (tokens[0], tokens[1], tokens[2], tokens[1]),
+                4 => (tokens[0], tokens[1], tokens[2], tokens[3]),
+                _ => return Vec::new(),
+            };
+
+            let result = vec![
+                (format!("{}-top", name), top.to_string()),
+                (format!("{}-right", name), right.to_string()),
+                (format!("{}-bottom", name), bottom.to_string()),
+                (format!("{}-left", name), left.to_string()),
+            ];
+
+            eprintln!("EXPAND: {} = '{}' => {:?}", name, value, result);
+            result
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Apply a single rule's winning declarations (if any) to the props map for node.
 fn apply_rule_to_props(
     rule: &types::Rule,
@@ -262,15 +299,34 @@ fn apply_rule_to_props(
         let specificity = selectors::compute_specificity(&selector);
 
         for decl in &rule.declarations {
-            let entry = CascadedDecl {
-                value: decl.value.clone(),
-                important: decl.important,
-                origin: rule.origin,
-                specificity,
-                source_order: rule.source_order,
-                inline_boost: false,
-            };
-            cascade_put(props, &decl.name, entry);
+            // Try to expand shorthands first
+            let longhands = expand_shorthand(&decl.name, &decl.value);
+
+            if longhands.is_empty() {
+                // Not a shorthand or expansion failed, apply as-is
+                let entry = CascadedDecl {
+                    value: decl.value.clone(),
+                    important: decl.important,
+                    origin: rule.origin,
+                    specificity,
+                    source_order: rule.source_order,
+                    inline_boost: false,
+                };
+                cascade_put(props, &decl.name, entry);
+            } else {
+                // Shorthand was expanded, apply all longhands
+                for (longhand_name, longhand_value) in longhands {
+                    let entry = CascadedDecl {
+                        value: longhand_value,
+                        important: decl.important,
+                        origin: rule.origin,
+                        specificity,
+                        source_order: rule.source_order,
+                        inline_boost: false,
+                    };
+                    cascade_put(props, &longhand_name, entry);
+                }
+            }
         }
     }
 }
@@ -373,6 +429,7 @@ impl StyleComputer {
             | DOMUpdate::UpdateText { .. }
             | DOMUpdate::EndOfDocument => {}
             DOMUpdate::SetAttr { node, name, value } => {
+                log::warn!("SET_ATTR: node={:?}, name={}, value={}", node, name, value);
                 // Store all attributes for attribute selector matching
                 self.attrs_by_node
                     .entry(node)
@@ -388,6 +445,7 @@ impl StyleComputer {
                         .filter(|segment| !segment.is_empty())
                         .map(|segment: &str| segment.to_owned())
                         .collect();
+                    eprintln!("SET_CLASS: node={:?}, classes={:?}", node, classes);
                     self.classes_by_node.insert(node, classes);
                 } else if name.eq_ignore_ascii_case("style") {
                     let map = parse_style_attribute_into_map(&value);
@@ -464,15 +522,35 @@ impl StyleComputer {
                 names.sort();
                 for name in names {
                     let value = inline.get(name).cloned().unwrap_or_default();
-                    let entry = CascadedDecl {
-                        value,
-                        important: false,
-                        origin: types::Origin::Author,
-                        specificity: Specificity(1_000, 0, 0),
-                        source_order: u32::MAX,
-                        inline_boost: true,
-                    };
-                    cascade_put(&mut props, name, entry);
+
+                    // Try to expand shorthands in inline styles
+                    let longhands = expand_shorthand(name, &value);
+
+                    if longhands.is_empty() {
+                        // Not a shorthand, apply as-is
+                        let entry = CascadedDecl {
+                            value,
+                            important: false,
+                            origin: types::Origin::Author,
+                            specificity: Specificity(1_000, 0, 0),
+                            source_order: u32::MAX,
+                            inline_boost: true,
+                        };
+                        cascade_put(&mut props, name, entry);
+                    } else {
+                        // Shorthand was expanded, apply all longhands
+                        for (longhand_name, longhand_value) in longhands {
+                            let entry = CascadedDecl {
+                                value: longhand_value,
+                                important: false,
+                                origin: types::Origin::Author,
+                                specificity: Specificity(1_000, 0, 0),
+                                source_order: u32::MAX,
+                                inline_boost: true,
+                            };
+                            cascade_put(&mut props, &longhand_name, entry);
+                        }
+                    }
                 }
             }
             let mut decls: HashMap<String, String> = HashMap::new();

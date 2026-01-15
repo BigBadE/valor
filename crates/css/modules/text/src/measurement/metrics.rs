@@ -98,33 +98,29 @@ fn compute_line_height_metrics(
             // - Windows: Uses OS/2 winAscent + winDescent (no line gap)
             // - Linux/macOS: Uses hhea ascent + descent + leading
             //
-            // CRITICAL: Chrome rounds the TOTAL line-height, not individual components.
+            // CRITICAL: Chrome rounds the TOTAL, not individual components.
             // For Liberation Serif 24px: ascent=21.387 + descent=5.191 = 26.578 → round to 27px
             // If we rounded individually: round(21.387)=21 + round(5.191)=5 = 26px ❌
             //
-            // However, we do round individual ascent/descent for glyph positioning.
-            let ascent_rounded = ascent_px.round();
-            let descent_rounded = descent_px.round();
+            // This applies to BOTH line-height AND glyph height calculations.
+            // Glyph height must also round the sum to match Chrome's behavior.
 
             // Normal line-height = round(ascent + descent + leading)
             let normal_line_h = (ascent_px + descent_px + leading_px).round();
 
-            // Debug output for Liberation Sans at 14px
-            #[cfg(all(unix, not(target_os = "macos")))]
-            if (font_size - 14.0).abs() < 0.01 {
-                eprintln!(
-                    "LINE-HEIGHT CALC at font_size={:.1}px: ascent_px={:.2} + descent_px={:.2} + leading_px={:.2} = {:.2} → normal_line_h={}",
-                    font_size, ascent_px, descent_px, leading_px,
-                    ascent_px + descent_px + leading_px,
-                    normal_line_h
-                );
-            }
+            // Glyph height for rendering = floor(ascent + descent), no leading
+            // Chrome appears to use floor/truncate for glyph height, not round
+            // For Liberation Serif 16px: 14.2578 + 3.4609 = 17.7188 → floor = 17px ✓
+            let glyph_h_rounded = (ascent_px + descent_px).floor();
+
+            // For glyph positioning, we need individual ascent/descent.
+            // Chrome uses ascent/descent from the font metrics for vertical positioning.
+            // We round these individually for pixel-aligned positioning.
+            let ascent_rounded = ascent_px.round();
+            let descent_rounded = descent_px.round();
 
             // Unrounded line height for cosmic-text internal calculations
             let line_h_unrounded = style.line_height.unwrap_or(normal_line_h);
-
-            // Glyph height for rendering (ascent + descent only, no leading)
-            let glyph_h_rounded = ascent_rounded + descent_rounded;
 
             // Use explicit line-height from style, or computed normal line-height
             let line_h = style.line_height.unwrap_or(normal_line_h);

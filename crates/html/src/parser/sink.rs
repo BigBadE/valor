@@ -218,6 +218,7 @@ impl TreeSink for ValorSink {
         attrs: Vec<Attribute>,
         _flags: ElementFlags,
     ) -> Self::Handle {
+        log::warn!("CREATE_ELEMENT: {}, attrs.len={}", name.local, attrs.len());
         let id = {
             let mut dom = self.dom.borrow_mut();
             let domm = dom.mirror_mut();
@@ -231,11 +232,20 @@ impl TreeSink for ValorSink {
         let mut src_value: Option<String> = None;
         let mut script_attrs = ScriptAttributes::default();
 
-        for attr in attrs {
+        log::warn!("ATTRS LOOP START: elem={}, len={}", name.local, attrs.len());
+        for attr in &attrs {
+            log::warn!("ATTRS LOOP ITER: elem={}", name.local);
             let local = attr.name.local.to_string();
+            let value = attr.value.to_string();
+            log::warn!(
+                "SINK ATTR: elem={}, attr={}, value={}",
+                name.local,
+                local,
+                value
+            );
             if is_script {
                 if attr.name.local.eq(&local_name!("src")) {
-                    src_value = Some(attr.value.to_string());
+                    src_value = Some(value.clone());
                 }
                 if attr.name.local.eq(&local_name!("defer")) {
                     script_attrs.defer = true;
@@ -251,7 +261,7 @@ impl TreeSink for ValorSink {
             }
             let mut dom = self.dom.borrow_mut();
             let domm = dom.mirror_mut();
-            domm.set_attr(id, local, attr.value.to_string());
+            domm.set_attr(id, local, value);
         }
 
         // Create the appropriate script state if this is a script

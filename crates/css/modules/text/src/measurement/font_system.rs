@@ -40,13 +40,14 @@ pub fn get_font_system() -> Arc<Mutex<FontSystem>> {
 
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            // On Linux, we rely on fontconfig to resolve generic families
-            // This matches Chrome's behavior which uses fontconfig for font resolution
-            // Typically fontconfig maps:
+            // On Linux, explicitly use Liberation Serif for the serif family.
+            // Liberation Serif is metrically compatible with Times New Roman, which Chrome uses.
+            // This ensures our layout tests match Chrome's output exactly.
+            font_system.db_mut().set_serif_family("Liberation Serif");
+
+            // For sans-serif and monospace, let fontconfig resolve them:
             // - sans-serif → Noto Sans (most modern Linux distributions)
-            // - serif → Liberation Serif or Noto Serif
             // - monospace → DejaVu Sans Mono or Noto Sans Mono
-            // We don't override these - let fontconfig do its job
         }
 
         let arc = Arc::new(Mutex::new(font_system));
@@ -141,23 +142,6 @@ pub fn get_font_metrics(font_sys: &mut FontSystem, attrs: &Attrs<'_>) -> Option<
     let metrics = font.metrics();
     let units_per_em = f32::from(metrics.units_per_em);
 
-    // Debug: Print raw metrics
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let family_name = match &attrs.family {
-            Family::Name(name) => *name,
-            Family::Serif => "serif",
-            Family::SansSerif => "sans-serif",
-            Family::Monospace => "monospace",
-            Family::Cursive => "cursive",
-            Family::Fantasy => "fantasy",
-        };
-        eprintln!(
-            "FONT METRICS for '{}': ascent={}, descent={}, leading={}, units_per_em={}",
-            family_name, metrics.ascent, metrics.descent, metrics.leading, metrics.units_per_em
-        );
-    }
-
     // Chrome uses different font metric tables depending on the platform:
     // - Windows: OS/2 winAscent + winDescent (no line gap)
     // - Linux: OS/2 typo metrics if USE_TYPO_METRICS flag is set, otherwise hhea metrics
@@ -245,21 +229,6 @@ pub fn get_font_metrics(font_sys: &mut FontSystem, attrs: &Attrs<'_>) -> Option<
             Family::Name(name) => name,
             _ => "unknown",
         };
-        eprintln!(
-            "NORMALIZED {}: ascent={:.6}, descent={:.6}, leading={:.6}, total={:.6}",
-            font_name,
-            ascent,
-            descent,
-            leading,
-            ascent + descent + leading
-        );
-        eprintln!(
-            "For 14px font: line-height = ({:.6} + {:.6} + {:.6}) * 14 = {:.2}px",
-            ascent,
-            descent,
-            leading,
-            (ascent + descent + leading) * 14.0
-        );
     }
 
     Some(FontMetricsData {

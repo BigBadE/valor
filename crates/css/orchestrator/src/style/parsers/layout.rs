@@ -28,6 +28,24 @@ pub fn apply_layout_keywords(
             style_model::Display::Contents
         } else if value.eq_ignore_ascii_case("inline-block") {
             style_model::Display::InlineBlock
+        } else if value.eq_ignore_ascii_case("table") {
+            style_model::Display::Table
+        } else if value.eq_ignore_ascii_case("table-row") {
+            style_model::Display::TableRow
+        } else if value.eq_ignore_ascii_case("table-cell") {
+            style_model::Display::TableCell
+        } else if value.eq_ignore_ascii_case("table-row-group") {
+            style_model::Display::TableRowGroup
+        } else if value.eq_ignore_ascii_case("table-header-group") {
+            style_model::Display::TableHeaderGroup
+        } else if value.eq_ignore_ascii_case("table-footer-group") {
+            style_model::Display::TableFooterGroup
+        } else if value.eq_ignore_ascii_case("table-column") {
+            style_model::Display::TableColumn
+        } else if value.eq_ignore_ascii_case("table-column-group") {
+            style_model::Display::TableColumnGroup
+        } else if value.eq_ignore_ascii_case("table-caption") {
+            style_model::Display::TableCaption
         } else {
             // Default to inline for unknown values or "inline"
             style_model::Display::Inline

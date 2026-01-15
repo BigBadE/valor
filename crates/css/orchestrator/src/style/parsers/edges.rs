@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::style_model;
 use css_color::parse_css_color;
 
-use super::super::parse_px;
+use super::super::{parse_font_size, parse_px};
 
 /// Denotes a single border side for per-side shorthand parsing.
 #[derive(Clone, Copy)]
@@ -21,7 +21,18 @@ enum BorderSide {
 }
 
 /// Parse 4 edge values with longhand names like "{prefix}-top" in pixels.
-fn parse_edges(prefix: &str, decls: &HashMap<String, String>) -> style_model::Edges {
+/// Supports px, em, and unitless values. Em values are resolved against font_size.
+fn parse_edges(
+    prefix: &str,
+    decls: &HashMap<String, String>,
+    font_size: f32,
+) -> style_model::Edges {
+    // Helper to parse a single edge value (px, em, or unitless)
+    let parse_edge_value = |value: &str| -> Option<f32> {
+        // Try parse_font_size which handles px, em, and unitless
+        parse_font_size(value, font_size)
+    };
+
     // Start from shorthand if present
     let mut edges = decls
         .get(prefix)
@@ -29,7 +40,7 @@ fn parse_edges(prefix: &str, decls: &HashMap<String, String>) -> style_model::Ed
             let numbers: Vec<f32> = shorthand
                 .split(|character: char| character.is_ascii_whitespace())
                 .filter(|segment| !segment.is_empty())
-                .filter_map(parse_px)
+                .filter_map(|seg| parse_edge_value(seg))
                 .collect();
             match *numbers.as_slice() {
                 [one] => style_model::Edges {
@@ -61,22 +72,22 @@ fn parse_edges(prefix: &str, decls: &HashMap<String, String>) -> style_model::Ed
         });
     // Longhands override shorthand sides if present
     if let Some(value) = decls.get(&format!("{prefix}-top"))
-        && let Some(pixels) = parse_px(value)
+        && let Some(pixels) = parse_edge_value(value)
     {
         edges.top = pixels;
     }
     if let Some(value) = decls.get(&format!("{prefix}-right"))
-        && let Some(pixels) = parse_px(value)
+        && let Some(pixels) = parse_edge_value(value)
     {
         edges.right = pixels;
     }
     if let Some(value) = decls.get(&format!("{prefix}-bottom"))
-        && let Some(pixels) = parse_px(value)
+        && let Some(pixels) = parse_edge_value(value)
     {
         edges.bottom = pixels;
     }
     if let Some(value) = decls.get(&format!("{prefix}-left"))
-        && let Some(pixels) = parse_px(value)
+        && let Some(pixels) = parse_edge_value(value)
     {
         edges.left = pixels;
     }
@@ -295,13 +306,16 @@ pub fn apply_edges_and_borders(
     computed: &mut style_model::ComputedStyle,
     decls: &HashMap<String, String>,
 ) {
-    computed.margin = parse_edges("margin", decls);
+    // Use current font_size for em unit resolution
+    let font_size = computed.font_size;
+
+    computed.margin = parse_edges("margin", decls, font_size);
     // Margin auto flags from shorthand and longhands
     apply_margin_auto_flags(computed, decls);
-    computed.padding = parse_edges("padding", decls);
+    computed.padding = parse_edges("padding", decls, font_size);
     // 1) Border widths
     // Prefer explicit 'border-width' (and per-side longhands) when present.
-    let border_widths_from_bw = parse_edges("border-width", decls);
+    let border_widths_from_bw = parse_edges("border-width", decls, font_size);
     let has_bw_longhands = decls.contains_key("border-width")
         || decls.contains_key("border-top-width")
         || decls.contains_key("border-right-width")
@@ -316,7 +330,7 @@ pub fn apply_edges_and_borders(
         };
     } else {
         // Fallback: numeric-only shorthand widths for 'border' when author uses 'border: 1px 2px ...'
-        let border_widths_tmp = parse_edges("border", decls);
+        let border_widths_tmp = parse_edges("border", decls, font_size);
         computed.border_width = style_model::BorderWidths {
             top: border_widths_tmp.top,
             right: border_widths_tmp.right,

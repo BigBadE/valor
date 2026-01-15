@@ -77,6 +77,15 @@ pub enum Display {
     InlineGrid,
     None,
     Contents,
+    Table,
+    TableRow,
+    TableCell,
+    TableRowGroup,
+    TableHeaderGroup,
+    TableFooterGroup,
+    TableColumn,
+    TableColumnGroup,
+    TableCaption,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

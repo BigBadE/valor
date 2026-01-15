@@ -198,6 +198,12 @@ impl ParserDOMMirror {
                 dom_node.get_mut().attrs.push((name.clone(), value.clone()));
             }
         }
+        log::warn!(
+            "PARSER SET_ATTR: node={:?}, name={}, value={}",
+            key,
+            name,
+            value
+        );
         self.push_update(DOMUpdate::SetAttr {
             node: key,
             name,

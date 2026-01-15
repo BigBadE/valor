@@ -280,41 +280,87 @@ pub fn create_ua_stylesheet() -> types::Stylesheet {
     source_order = next_order;
 
     // Add heading styles to match browser defaults
-    // Font sizes based on Chrome/Firefox user-agent stylesheets
+    // Font sizes and margins based on Chrome/Firefox user-agent stylesheets
+    // Margins are 0.67em top/bottom for h1, 0.83em for h2/h3, 1.33em for h4, etc.
+    // NOTE: Margins are specified as explicit longhands (margin-top, margin-bottom, etc.)
+    // instead of shorthands to ensure proper cascade behavior when user stylesheets
+    // override specific sides (e.g., "margin-top: 0" should override only top margin).
     rules.push(make_ua_rule(
         "h1",
         source_order,
-        &[("font-weight", "700"), ("font-size", "2em")],
+        &[
+            ("font-weight", "700"),
+            ("font-size", "2em"),
+            ("margin-top", "0.67em"),
+            ("margin-right", "0"),
+            ("margin-bottom", "0.67em"),
+            ("margin-left", "0"),
+        ],
     ));
     source_order += 1;
     rules.push(make_ua_rule(
         "h2",
         source_order,
-        &[("font-weight", "700"), ("font-size", "1.5em")],
+        &[
+            ("font-weight", "700"),
+            ("font-size", "1.5em"),
+            ("margin-top", "0.83em"),
+            ("margin-right", "0"),
+            ("margin-bottom", "0.83em"),
+            ("margin-left", "0"),
+        ],
     ));
     source_order += 1;
     rules.push(make_ua_rule(
         "h3",
         source_order,
-        &[("font-weight", "700"), ("font-size", "1.17em")],
+        &[
+            ("font-weight", "700"),
+            ("font-size", "1.17em"),
+            ("margin-top", "1em"),
+            ("margin-right", "0"),
+            ("margin-bottom", "1em"),
+            ("margin-left", "0"),
+        ],
     ));
     source_order += 1;
     rules.push(make_ua_rule(
         "h4",
         source_order,
-        &[("font-weight", "700"), ("font-size", "1em")],
+        &[
+            ("font-weight", "700"),
+            ("font-size", "1em"),
+            ("margin-top", "1.33em"),
+            ("margin-right", "0"),
+            ("margin-bottom", "1.33em"),
+            ("margin-left", "0"),
+        ],
     ));
     source_order += 1;
     rules.push(make_ua_rule(
         "h5",
         source_order,
-        &[("font-weight", "700"), ("font-size", "0.83em")],
+        &[
+            ("font-weight", "700"),
+            ("font-size", "0.83em"),
+            ("margin-top", "1.67em"),
+            ("margin-right", "0"),
+            ("margin-bottom", "1.67em"),
+            ("margin-left", "0"),
+        ],
     ));
     source_order += 1;
     rules.push(make_ua_rule(
         "h6",
         source_order,
-        &[("font-weight", "700"), ("font-size", "0.67em")],
+        &[
+            ("font-weight", "700"),
+            ("font-size", "0.67em"),
+            ("margin-top", "2.33em"),
+            ("margin-right", "0"),
+            ("margin-bottom", "2.33em"),
+            ("margin-left", "0"),
+        ],
     ));
 
     types::Stylesheet {

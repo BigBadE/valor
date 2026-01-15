@@ -291,6 +291,12 @@ impl LayoutDatabase {
     fn cache_descendant_layouts(&mut self, node: NodeKey) {
         let children_arc: Arc<Vec<NodeKey>> = self.db.input::<DomChildrenInput>(node);
 
+        log::trace!(
+            "cache_descendant_layouts: node={:?} has {} children in database",
+            node,
+            children_arc.len()
+        );
+
         for &child in children_arc.iter() {
             // Query and cache child layout
             let child_result = self.db.query::<LayoutResultQuery>(child);

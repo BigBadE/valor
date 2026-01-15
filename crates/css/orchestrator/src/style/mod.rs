@@ -6,7 +6,7 @@
 
 mod cascade;
 mod parsers;
-mod ua_stylesheet;
+pub mod ua_stylesheet;
 
 pub use cascade::StyleComputer;
 
@@ -39,15 +39,18 @@ pub fn build_computed_from_inline(
         color: inherited_color,
         font_weight: inherited_font_weight,
         font_family: inherited_font_family,
+        flex_shrink: 1.0, // CSS spec default for flex-shrink
         ..Default::default()
     };
+
     parsers::layout::apply_layout_keywords(&mut computed, decls);
     parsers::dimensions::apply_dimensions(&mut computed, decls);
+    // Typography must be parsed before edges to resolve em units in margins/padding
+    parsers::typography::apply_typography(&mut computed, decls);
     parsers::edges::apply_edges_and_borders(&mut computed, decls);
     parsers::colors::apply_colors(&mut computed, decls);
     // Borders may depend on color defaults (currentColor). Finalize after colors.
     parsers::edges::finalize_borders_after_colors(&mut computed);
-    parsers::typography::apply_typography(&mut computed, decls);
     parsers::flex::apply_flex_scalars(&mut computed, decls);
     parsers::flex::apply_flex_alignment(&mut computed, decls);
     parsers::gaps::apply_gaps(&mut computed, decls);

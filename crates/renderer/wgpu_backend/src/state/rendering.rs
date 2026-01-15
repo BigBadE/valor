@@ -99,7 +99,10 @@ impl RenderState {
         };
         eprintln!("[GPU_TIMING] submit_with_validation START");
         submit_with_validation(self.gpu.device(), self.gpu.queue(), [copy_command_buffer])?;
-        eprintln!("[GPU_TIMING] submit_with_validation took: {:?}", start.elapsed());
+        eprintln!(
+            "[GPU_TIMING] submit_with_validation took: {:?}",
+            start.elapsed()
+        );
 
         eprintln!("[GPU_TIMING] read_pixels START");
         let mut out = self
@@ -109,7 +112,10 @@ impl RenderState {
 
         eprintln!("[GPU_TIMING] convert_bgra_to_rgba START");
         self.convert_bgra_to_rgba(&mut out);
-        eprintln!("[GPU_TIMING] convert_bgra_to_rgba took: {:?}", start.elapsed());
+        eprintln!(
+            "[GPU_TIMING] convert_bgra_to_rgba took: {:?}",
+            start.elapsed()
+        );
         Ok(out)
     }
 

@@ -38,18 +38,7 @@ pub struct LayoutRect {
 }
 
 impl LayoutRect {
-    /// Create a new layout rect from a constraint-based layout result.
-    /// Converts from `LayoutUnit` to pixel units (f32).
-    pub fn from_layout_result(result: &LayoutResult) -> Self {
-        Self {
-            x: result.bfc_offset.inline_offset.to_px(),
-            y: result
-                .bfc_offset
-                .block_offset
-                .unwrap_or(LayoutUnit::zero())
-                .to_px(),
-            width: result.inline_size,
-            height: result.block_size,
-        }
-    }
+    // Note: LayoutRect is now created directly in incremental_layout.rs
+    // The old from_layout_result method is removed to avoid type confusion
+    // between constraint_space::LayoutResult and layout_queries::LayoutResult
 }

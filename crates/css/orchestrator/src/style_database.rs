@@ -41,6 +41,10 @@ impl StyleDatabase {
         let db = Arc::new(QueryDatabase::new());
         let runtime = Arc::new(ParallelRuntime::new(None)?);
 
+        // Initialize UA stylesheet
+        let ua_stylesheet = crate::style::ua_stylesheet::create_ua_stylesheet();
+        db.set_input::<crate::queries::style_queries::StylesheetInput>((), ua_stylesheet);
+
         Ok(Self {
             db,
             runtime,
@@ -54,6 +58,10 @@ impl StyleDatabase {
     /// This avoids creating multiple rayon thread pools.
     pub fn new_with_runtime(runtime: Arc<ParallelRuntime>) -> Result<Self> {
         let db = Arc::new(QueryDatabase::new());
+
+        // Initialize UA stylesheet
+        let ua_stylesheet = crate::style::ua_stylesheet::create_ua_stylesheet();
+        db.set_input::<crate::queries::style_queries::StylesheetInput>((), ua_stylesheet);
 
         Ok(Self {
             db,
@@ -126,7 +134,30 @@ impl StyleDatabase {
 
     /// Replace the active stylesheet.
     pub fn replace_stylesheet(&mut self, sheet: Stylesheet) {
-        self.db.set_input::<StylesheetInput>((), sheet);
+        // IMPORTANT: Merge author stylesheet with UA stylesheet
+        // The UA stylesheet was set in new() and contains display:block rules, body margins, etc.
+        // We need to keep those rules and add the author rules after them
+        let ua_stylesheet = crate::style::ua_stylesheet::create_ua_stylesheet();
+
+        // Merge: UA rules first (lower source order), then author rules
+        let mut merged = Stylesheet {
+            origin: sheet.origin,
+            rules: Vec::new(),
+        };
+
+        // Add UA rules first
+        let ua_rule_count = ua_stylesheet.rules.len();
+        merged.rules.extend(ua_stylesheet.rules);
+
+        // Add author rules after, adjusting source_order so they're all higher than UA rules
+        // This ensures author styles always win over UA styles in the cascade
+        let source_order_offset = ua_rule_count as u32 + 1000; // Add 1000 to be safe
+        for mut rule in sheet.rules {
+            rule.source_order = rule.source_order.saturating_add(source_order_offset);
+            merged.rules.push(rule);
+        }
+
+        self.db.set_input::<StylesheetInput>((), merged);
         // Mark all nodes dirty since stylesheet changed
         self.dirty_nodes.extend(self.nodes.iter());
     }

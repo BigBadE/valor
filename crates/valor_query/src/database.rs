@@ -22,12 +22,17 @@ use thread_local::ThreadLocal;
 struct QueryStack {
     /// Stack of currently executing queries.
     stack: Vec<QueryKey>,
+    /// Stack of input dependencies, one vec per query level.
+    /// When a query starts, we push an empty vec. When it ends, we pop and return those deps.
+    input_deps_stack: Vec<Vec<QueryKey>>,
 }
 
 impl QueryStack {
     #[inline]
     fn push(&mut self, key: QueryKey) {
         self.stack.push(key);
+        // Start a new input dependencies list for this query
+        self.input_deps_stack.push(Vec::new());
     }
 
     #[inline]
@@ -36,8 +41,22 @@ impl QueryStack {
     }
 
     #[inline]
-    fn current_dependencies(&self) -> Vec<QueryKey> {
-        self.stack.clone()
+    fn record_input_access(&mut self, key: QueryKey) {
+        // Add to the current query's input dependencies (top of stack)
+        if let Some(deps) = self.input_deps_stack.last_mut() {
+            deps.push(key);
+        }
+    }
+
+    #[inline]
+    fn current_dependencies(&mut self) -> Vec<QueryKey> {
+        // Pop the current query's input dependencies
+        let input_deps = self.input_deps_stack.pop().unwrap_or_default();
+
+        // Combine stack (parent queries) with input dependencies
+        let mut deps = self.stack.clone();
+        deps.extend(input_deps);
+        deps
     }
 
     #[inline]
@@ -112,8 +131,27 @@ impl QueryDatabase {
     }
 
     /// Get an input value.
+    ///
+    /// If called from within a query execution, automatically registers
+    /// this input as a dependency.
     #[inline]
     pub fn input<I: InputQuery>(&self, key: I::Key) -> Arc<I::Value> {
+        // Register this input as a dependency if we're executing a query
+        if let Some(stack) = self.query_stacks.get() {
+            if !stack.borrow().is_empty() {
+                use std::hash::Hasher;
+                let mut hasher = rustc_hash::FxHasher::default();
+                key.hash(&mut hasher);
+                let query_key = QueryKey {
+                    query_type: TypeId::of::<I>(),
+                    key_hash: hasher.finish(),
+                };
+
+                // Record this input access as a dependency
+                stack.borrow_mut().record_input_access(query_key);
+            }
+        }
+
         self.inputs.get::<I>(key)
     }
 
@@ -251,7 +289,7 @@ impl QueryDatabase {
     fn current_dependencies(&self) -> Vec<QueryKey> {
         self.query_stacks
             .get()
-            .map(|stack| stack.borrow().current_dependencies())
+            .map(|stack| stack.borrow_mut().current_dependencies())
             .unwrap_or_default()
     }
 }

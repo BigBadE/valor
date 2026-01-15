@@ -20,6 +20,16 @@ const fn blockify(display: Display) -> Display {
         Display::Block | Display::Flex | Display::Grid | Display::None | Display::Contents => {
             display
         }
+        // Table display values are already block-level (outer display is block)
+        Display::Table
+        | Display::TableRow
+        | Display::TableCell
+        | Display::TableRowGroup
+        | Display::TableHeaderGroup
+        | Display::TableFooterGroup
+        | Display::TableColumn
+        | Display::TableColumnGroup
+        | Display::TableCaption => display,
     }
 }
 

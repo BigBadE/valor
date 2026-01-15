@@ -89,6 +89,15 @@ fn serialize_style(
         Display::Contents => "contents",
         Display::InlineBlock => "inline-block",
         Display::Inline => "inline",
+        Display::Table => "table",
+        Display::TableRow => "table-row",
+        Display::TableCell => "table-cell",
+        Display::TableRowGroup => "table-row-group",
+        Display::TableHeaderGroup => "table-header-group",
+        Display::TableFooterGroup => "table-footer-group",
+        Display::TableColumn => "table-column",
+        Display::TableColumnGroup => "table-column-group",
+        Display::TableCaption => "table-caption",
     };
 
     let box_sizing_str = match computed.box_sizing {
@@ -190,39 +199,19 @@ fn serialize_text_node(
     body_offset_x: f32,
     body_offset_y: f32,
 ) -> JsonValue {
-    // The rect passed in from layout already has the correct height accounting for:
-    // - Single line: glyph_height (shaped bounds)
-    // - Wrapped text: total_height (line_height × line_count)
+    // The rect passed in from layout already has the correct dimensions:
+    // - For single-line text: glyph_height (with half-leading Y offset applied)
+    // - For wrapped text: total_height (line_height × line_count)
     //
-    // Chrome's getBoundingClientRect() for text nodes returns the ink bounds,
-    // which for wrapped text is the total height of all lines. Our layout engine
-    // computes this correctly in text.rs, so we just use rect.height directly.
-    //
-    // Floor the height to match Chrome's pixel rounding behavior.
-    let text_height = rect.height.floor();
+    // The layout engine now correctly computes text positioning with half-leading,
+    // so we just use the rect values directly without re-measuring.
 
-    // Chrome's Range.getBoundingClientRect() returns the CONTENT AREA height
-    // (font ascent + descent), NOT the line-height or ink bounds.
-    // This is the em-box height from the font metrics.
-    let metrics = measure_text(text, computed);
-    let single_line_height = metrics.height; // CSS line-height
-    let is_single_line = rect.height <= single_line_height * 1.5;
-
-    let final_height = if is_single_line {
-        // Single line: use font content area (ascent + descent)
-        let content_height = metrics.shaped_ascent + metrics.shaped_descent;
-        content_height.floor()
-    } else {
-        // Wrapped text: use layout-computed height (line_height × line_count)
-        text_height
-    };
-
-    // Create rect with appropriate height, adjusted relative to body element
+    // Create rect with layout-computed values, adjusted relative to body element
     let text_rect = json!({
         "x": f64::from(rect.x - body_offset_x),
         "y": f64::from(rect.y - body_offset_y),
         "width": f64::from(rect.width),
-        "height": f64::from(final_height)
+        "height": f64::from(rect.height)
     });
 
     json!({

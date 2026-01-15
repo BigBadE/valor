@@ -344,7 +344,8 @@ fn process_selector_char<I>(
         }
         '.' => {
             chars.next();
-            current.classes.push(consume_ident(chars, true));
+            let class_name = consume_ident(chars, true);
+            current.classes.push(class_name);
         }
         '[' => {
             chars.next();

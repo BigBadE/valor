@@ -1,7 +1,7 @@
 // Fixture test runner - only used by chromium_tests.rs (generated tests)
 // Uses the unified comparison framework for all test types
 
-use super::chrome::start_and_connect_chrome;
+use super::chrome::{BrowserWithHandler, start_and_connect_chrome};
 use super::common::{init_test_logger, target_dir};
 use super::comparison_framework::{ComparisonTest, run_comparison_test};
 use super::graphics_comparison::GraphicsComparison;
@@ -10,6 +10,7 @@ use anyhow::{Result, anyhow};
 use chromiumoxide::{Browser, Page};
 use log::warn;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 
@@ -117,6 +118,7 @@ async fn process_fixture(
     idx: usize,
     _total_fixtures: usize,
     fixture_path: &Path,
+    browser: Option<Arc<BrowserWithHandler>>,
 ) -> Result<FixtureResult> {
     let fixture_start = Instant::now();
 
@@ -137,9 +139,14 @@ async fn process_fixture(
         });
     }
 
-    // All caches exist, so we don't need Chrome at all
-    // Run tests without any browser page
-    let result = run_layout_and_graphics_tests(None, fixture_path, fixture_start).await;
+    // Get a page from the browser if available
+    let page = if let Some(ref browser_handler) = browser {
+        Some(browser_handler.browser.new_page("about:blank").await?)
+    } else {
+        None
+    };
+
+    let result = run_layout_and_graphics_tests(page.as_ref(), fixture_path, fixture_start).await;
 
     // Benchmark: Log completion for profiling
     if idx % 20 == 0 {
@@ -328,9 +335,11 @@ pub async fn run_all_fixtures(fixtures: &[PathBuf]) -> Result<()> {
         total_fixtures, concurrency
     );
 
+    let browser_arc = browser_with_handler.clone();
     let results: Vec<FixtureResult> = stream::iter(fixtures.iter().enumerate())
-        .map(|(idx, fixture_path)| async move {
-            process_fixture(idx, total_fixtures, fixture_path).await
+        .map(|(idx, fixture_path)| {
+            let browser = browser_arc.clone();
+            async move { process_fixture(idx, total_fixtures, fixture_path, browser).await }
         })
         .buffer_unordered(concurrency)
         .collect::<Vec<_>>()
