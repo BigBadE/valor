@@ -343,11 +343,25 @@ fn layout_block_node(
     let mut current_block_offset = LayoutUnit::zero();
     let mut pending_margin_strut = space.margin_strut.clone();
 
+    // Check if this element establishes a Block Formatting Context (BFC)
+    // BFCs prevent margin collapsing with children
+    let establishes_bfc = !matches!(
+        style.overflow,
+        css_orchestrator::style_model::Overflow::Visible
+    ) || matches!(
+        style.display,
+        css_orchestrator::style_model::Display::Flex
+            | css_orchestrator::style_model::Display::Grid
+            | css_orchestrator::style_model::Display::InlineBlock
+    ) || !matches!(style.float, css_orchestrator::style_model::Float::None);
+
     // Check if margins can collapse through this element
+    // Margins cannot collapse through if there's padding, border, or if element establishes BFC
     let can_collapse_through_top =
-        sides.border_top.to_px() == 0.0 && sides.padding_top.to_px() == 0.0;
-    let can_collapse_through_bottom =
-        sides.border_bottom.to_px() == 0.0 && sides.padding_bottom.to_px() == 0.0;
+        sides.border_top.to_px() == 0.0 && sides.padding_top.to_px() == 0.0 && !establishes_bfc;
+    let can_collapse_through_bottom = sides.border_bottom.to_px() == 0.0
+        && sides.padding_bottom.to_px() == 0.0
+        && !establishes_bfc;
 
     let mut is_first_block_child = true;
     let mut collapsed_through_top_margin = LayoutUnit::zero();
