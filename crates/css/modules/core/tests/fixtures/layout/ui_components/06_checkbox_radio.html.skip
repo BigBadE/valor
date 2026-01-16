@@ -1,0 +1,73 @@
+<!doctype html>
+<!-- VALOR fixture: Checkbox and Radio -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>UI Components: Checkbox and Radio</title>
+  <style>
+    html, body { margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    .container { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+    .checkbox-group, .radio-group { display: flex; flex-direction: column; gap: 8px; }
+    .checkbox-item, .radio-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .checkbox {
+      width: 16px;
+      height: 16px;
+      border: 2px solid #d1d5db;
+      border-radius: 3px;
+      background: white;
+    }
+    .checkbox.checked {
+      background: #3b82f6;
+      border-color: #3b82f6;
+    }
+    .radio {
+      width: 16px;
+      height: 16px;
+      border: 2px solid #d1d5db;
+      border-radius: 50%;
+      background: white;
+    }
+    .radio.checked {
+      border-color: #3b82f6;
+      background: white;
+      position: relative;
+    }
+    .radio.checked::after {
+      content: '';
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 6px;
+      height: 6px;
+      background: #3b82f6;
+      border-radius: 50%;
+    }
+    .label-text { font-size: 14px; color: #374151; }
+    .label-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; color: #111827; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div>
+      <div class="label-title">Checkboxes</div>
+      <div class="checkbox-group">
+        <label class="checkbox-item"><span class="checkbox checked" id="cb1"></span><span class="label-text">Option 1 (checked)</span></label>
+        <label class="checkbox-item"><span class="checkbox" id="cb2"></span><span class="label-text">Option 2</span></label>
+        <label class="checkbox-item"><span class="checkbox" id="cb3"></span><span class="label-text">Option 3</span></label>
+      </div>
+    </div>
+    <div>
+      <div class="label-title">Radio Buttons</div>
+      <div class="radio-group">
+        <label class="radio-item"><span class="radio checked" id="r1"></span><span class="label-text">Choice A (selected)</span></label>
+        <label class="radio-item"><span class="radio" id="r2"></span><span class="label-text">Choice B</span></label>
+        <label class="radio-item"><span class="radio" id="r3"></span><span class="label-text">Choice C</span></label>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

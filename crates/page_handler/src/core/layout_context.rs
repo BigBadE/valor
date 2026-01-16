@@ -7,7 +7,7 @@
 use crate::core::dependencies::{Dependency, DependencyTracker, PropertyId};
 use crate::core::style_interning::StyleInterner;
 use css::style_types::ComputedStyle;
-use css_core::LayoutRect;
+use css_core::{LayoutRect, LayoutUnit};
 use js::NodeKey;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -183,18 +183,18 @@ impl<'interner> LayoutContext<'interner> {
         };
 
         let node_rect = LayoutRect {
-            x: result.bfc_offset.inline_offset,
-            y: result.bfc_offset.block_offset,
-            width: result.inline_size,
-            height: result.block_size,
+            x: LayoutUnit::from_px(result.bfc_offset.inline_offset).to_raw(),
+            y: LayoutUnit::from_px(result.bfc_offset.block_offset).to_raw(),
+            width: LayoutUnit::from_px(result.inline_size).to_raw(),
+            height: LayoutUnit::from_px(result.block_size).to_raw(),
         };
 
         // Simple intersection test
         let viewport_rect = LayoutRect {
-            x: 0.0,
-            y: 0.0,
-            width: self.viewport.width,
-            height: self.viewport.height,
+            x: 0,
+            y: 0,
+            width: LayoutUnit::from_px(self.viewport.width).to_raw(),
+            height: LayoutUnit::from_px(self.viewport.height).to_raw(),
         };
 
         intersects(&node_rect, &viewport_rect)

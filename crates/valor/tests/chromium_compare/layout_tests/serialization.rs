@@ -38,12 +38,13 @@ fn find_parent_key(snapshot: &LayoutSnapshot, key: NodeKey) -> Option<NodeKey> {
 /// Serialize a layout box's rect as JSON.
 /// Chrome rounds dimensions to whole pixels for text boxes, so we do the same.
 /// Coordinates are adjusted relative to the body element's position.
+/// LayoutRect stores coordinates in 1/64px units (i32), so we convert to pixels (f32).
 fn serialize_rect(rect: &LayoutRect, body_offset_x: f32, body_offset_y: f32) -> JsonValue {
     json!({
-        "x": f64::from(rect.x - body_offset_x),
-        "y": f64::from(rect.y - body_offset_y),
-        "width": f64::from(rect.width),
-        "height": f64::from(rect.height.round())
+        "x": f64::from(rect.x_px() - body_offset_x),
+        "y": f64::from(rect.y_px() - body_offset_y),
+        "width": f64::from(rect.width_px()),
+        "height": f64::from(rect.height_px().round())
     })
 }
 
@@ -207,11 +208,12 @@ fn serialize_text_node(
     // so we just use the rect values directly without re-measuring.
 
     // Create rect with layout-computed values, adjusted relative to body element
+    // Convert from 1/64px units to pixels
     let text_rect = json!({
-        "x": f64::from(rect.x - body_offset_x),
-        "y": f64::from(rect.y - body_offset_y),
-        "width": f64::from(rect.width),
-        "height": f64::from(rect.height)
+        "x": f64::from(rect.x_px() - body_offset_x),
+        "y": f64::from(rect.y_px() - body_offset_y),
+        "width": f64::from(rect.width_px()),
+        "height": f64::from(rect.height_px())
     });
 
     json!({
@@ -384,7 +386,7 @@ fn serialize_element_recursive(
             // Get parent width for text wrapping calculation
             let parent_width = parent_key
                 .and_then(|parent| ctx.rects.get(&parent))
-                .map_or(800.0, |parent_rect| parent_rect.width); // Fallback to viewport width
+                .map_or(800.0, |parent_rect| parent_rect.width_px()); // Fallback to viewport width
 
             parent_children.push(serialize_text_node(
                 text,
@@ -478,8 +480,8 @@ pub fn serialize_valor_layout(page: &mut HtmlPage) -> Result<JsonValue> {
     let body_rect = rects
         .get(&body_key)
         .ok_or_else(|| anyhow!("No rect for body element"))?;
-    let body_offset_x = body_rect.x;
-    let body_offset_y = body_rect.y;
+    let body_offset_x = body_rect.x_px();
+    let body_offset_y = body_rect.y_px();
 
     log::info!(
         "Body element at ({}, {}) - will adjust all coordinates relative to this",

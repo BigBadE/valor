@@ -127,16 +127,16 @@ fn paint_node_content(
     if needs_clip {
         log::debug!(
             "[CLIP] BeginClip at x={}, y={}, w={}, h={}",
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height
+            rect.x_px(),
+            rect.y_px(),
+            rect.width_px(),
+            rect.height_px()
         );
         items.push(DisplayItem::BeginClip {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
+            x: rect.x_px(),
+            y: rect.y_px(),
+            width: rect.width_px(),
+            height: rect.height_px(),
         });
     }
 
@@ -174,10 +174,10 @@ fn paint_background(rect: &LayoutRect, style: &ComputedStyle, items: &mut Vec<Di
     let background = &style.background_color;
     if background.alpha > 0 {
         items.push(DisplayItem::Rect {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
+            x: rect.x_px(),
+            y: rect.y_px(),
+            width: rect.width_px(),
+            height: rect.height_px(),
             color: [
                 f32::from(background.red) / 255.0,
                 f32::from(background.green) / 255.0,
@@ -210,9 +210,9 @@ fn paint_borders(rect: &LayoutRect, style: &ComputedStyle, items: &mut Vec<Displ
     // Top border
     if border.top > 0.0 {
         items.push(DisplayItem::Rect {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
+            x: rect.x_px(),
+            y: rect.y_px(),
+            width: rect.width_px(),
             height: border.top,
             color: border_rgba,
         });
@@ -221,10 +221,10 @@ fn paint_borders(rect: &LayoutRect, style: &ComputedStyle, items: &mut Vec<Displ
     // Right border
     if border.right > 0.0 {
         items.push(DisplayItem::Rect {
-            x: rect.x + rect.width - border.right,
-            y: rect.y,
+            x: rect.x_px() + rect.width_px() - border.right,
+            y: rect.y_px(),
             width: border.right,
-            height: rect.height,
+            height: rect.height_px(),
             color: border_rgba,
         });
     }
@@ -232,9 +232,9 @@ fn paint_borders(rect: &LayoutRect, style: &ComputedStyle, items: &mut Vec<Displ
     // Bottom border
     if border.bottom > 0.0 {
         items.push(DisplayItem::Rect {
-            x: rect.x,
-            y: rect.y + rect.height - border.bottom,
-            width: rect.width,
+            x: rect.x_px(),
+            y: rect.y_px() + rect.height_px() - border.bottom,
+            width: rect.width_px(),
             height: border.bottom,
             color: border_rgba,
         });
@@ -243,10 +243,10 @@ fn paint_borders(rect: &LayoutRect, style: &ComputedStyle, items: &mut Vec<Displ
     // Left border
     if border.left > 0.0 {
         items.push(DisplayItem::Rect {
-            x: rect.x,
-            y: rect.y,
+            x: rect.x_px(),
+            y: rect.y_px(),
             width: border.left,
-            height: rect.height,
+            height: rect.height_px(),
             color: border_rgba,
         });
     }
@@ -333,8 +333,8 @@ fn paint_text(text: &str, rect: &LayoutRect, style: &ComputedStyle, items: &mut 
     // Note: Glyphon positions text from the top-left corner, not the baseline
 
     items.push(DisplayItem::Text {
-        x: rect.x,
-        y: rect.y,
+        x: rect.x_px(),
+        y: rect.y_px(),
         text: text.to_string(),
         color: text_color,
         font_size,
@@ -347,12 +347,12 @@ fn paint_text(text: &str, rect: &LayoutRect, style: &ComputedStyle, items: &mut 
         // If text measures at 252.04px and we truncate to 252px, glyphon will wrap the text.
         // Using ceil() ensures we always have enough space.
         bounds: Some((
-            rect.x.floor() as i32,
-            rect.y.floor() as i32,
-            (rect.x + rect.width).ceil() as i32,
-            (rect.y + rect.height).ceil() as i32,
+            rect.x_px().floor() as i32,
+            rect.y_px().floor() as i32,
+            (rect.x_px() + rect.width_px()).ceil() as i32,
+            (rect.y_px() + rect.height_px()).ceil() as i32,
         )),
-        measured_width: rect.width,
+        measured_width: rect.width_px(),
     });
 }
 
@@ -427,9 +427,9 @@ fn paint_checkbox_mark(rect: &LayoutRect, style: &ComputedStyle, items: &mut Vec
 
     // Draw a simple checkmark using two rectangles to form an "L" shape
     // The checkmark will be centered in the checkbox
-    let center_x = rect.x + rect.width / 2.0;
-    let center_y = rect.y + rect.height / 2.0;
-    let size = rect.width.min(rect.height) * 0.6;
+    let center_x = rect.x_px() + rect.width_px() / 2.0;
+    let center_y = rect.y_px() + rect.height_px() / 2.0;
+    let size = rect.width_px().min(rect.height_px()) * 0.6;
 
     // Short arm of the checkmark (bottom-left to center)
     let short_width = size * 0.4;
@@ -475,9 +475,9 @@ fn paint_radio_dot(rect: &LayoutRect, style: &ComputedStyle, items: &mut Vec<Dis
 
     // Draw a filled circle as a square (approximation)
     // The dot will be centered in the radio button
-    let center_x = rect.x + rect.width / 2.0;
-    let center_y = rect.y + rect.height / 2.0;
-    let size = rect.width.min(rect.height) * 0.5;
+    let center_x = rect.x_px() + rect.width_px() / 2.0;
+    let center_y = rect.y_px() + rect.height_px() / 2.0;
+    let size = rect.width_px().min(rect.height_px()) * 0.5;
 
     items.push(DisplayItem::Rect {
         x: center_x - size / 2.0,

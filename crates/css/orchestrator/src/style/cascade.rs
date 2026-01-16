@@ -87,6 +87,28 @@ fn cascade_put(props: &mut HashMap<String, CascadedDecl>, name: &str, entry: Cas
         .get(name)
         .is_none_or(|previous| wins_over(&entry, previous));
 
+    // Debug: log padding cascade decisions
+    if name.starts_with("padding") {
+        if let Some(previous) = props.get(name) {
+            eprintln!(
+                "CASCADE_DEBUG: {} - candidate value='{}' important={} order={} vs previous value='{}' important={} order={} => insert={}",
+                name,
+                entry.value,
+                entry.important,
+                entry.source_order,
+                previous.value,
+                previous.important,
+                previous.source_order,
+                should_insert
+            );
+        } else {
+            eprintln!(
+                "CASCADE_DEBUG: {} - first value='{}' important={} order={}",
+                name, entry.value, entry.important, entry.source_order
+            );
+        }
+    }
+
     if should_insert {
         props.insert(name.to_owned(), entry);
     }

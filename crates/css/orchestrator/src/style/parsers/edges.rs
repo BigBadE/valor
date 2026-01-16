@@ -312,6 +312,7 @@ pub fn apply_edges_and_borders(
     computed.margin = parse_edges("margin", decls, font_size);
     // Margin auto flags from shorthand and longhands
     apply_margin_auto_flags(computed, decls);
+
     computed.padding = parse_edges("padding", decls, font_size);
     // 1) Border widths
     // Prefer explicit 'border-width' (and per-side longhands) when present.

@@ -251,12 +251,20 @@ impl LayoutDatabase {
     /// This uses the new incremental query system where each node's layout
     /// is computed via LayoutResultQuery, which recursively queries children.
     pub fn recompute_layouts_parallel(&mut self) -> bool {
+        println!(
+            "LAYOUT_DB: recompute called, root={:?}, nodes={}",
+            self.root,
+            self.nodes.len()
+        );
+
         if self.root.is_none() {
             log::warn!("LayoutDatabase: No root node set, skipping layout");
+            println!("LAYOUT_DB: NO ROOT, returning false");
             return false;
         }
 
         let root = self.root.unwrap();
+        println!("LAYOUT_DB: root={:?}, about to query layout", root);
 
         log::info!(
             "LayoutDatabase: Computing layouts for root {:?}, dirty_nodes={}, total_nodes={}",
@@ -269,6 +277,12 @@ impl LayoutDatabase {
         let root_result = self.db.query::<LayoutResultQuery>(root);
 
         log::info!(
+            "LayoutDatabase: Root bfc_offset: inline={}, block={:?}",
+            root_result.bfc_offset.inline_offset.to_px(),
+            root_result.bfc_offset.block_offset.map(|b| b.to_px())
+        );
+
+        log::info!(
             "LayoutDatabase: Root layout computed: width={}, height={}",
             root_result.inline_size,
             root_result.block_size
@@ -277,9 +291,15 @@ impl LayoutDatabase {
         // Cache the root result
         self.layout_cache.clear();
         self.layout_cache.insert(root, (*root_result).clone());
+        println!("LAYOUT_DB: Cached root, now caching descendants");
 
         // Recursively cache all descendants
         self.cache_descendant_layouts(root);
+
+        println!(
+            "LAYOUT_DB: Done caching, cache size={}",
+            self.layout_cache.len()
+        );
 
         // Clear dirty nodes after successful layout
         self.dirty_nodes.clear();

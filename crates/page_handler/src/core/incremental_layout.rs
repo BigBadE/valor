@@ -300,39 +300,72 @@ impl IncrementalLayoutEngine {
     /// # Errors
     /// Returns an error if layout computation fails.
     pub fn compute_layouts(&mut self) -> Result<HashMap<NodeKey, LayoutRect>> {
+        std::fs::write(
+            "/tmp/valor_compute_start.txt",
+            format!(
+                "root={:?} layout_db={}\n",
+                self.root,
+                self.layout_database.is_some()
+            ),
+        )
+        .ok();
+
         if self.root.is_none() {
+            std::fs::write("/tmp/valor_no_root.txt", "No root!\n").ok();
             return Ok(HashMap::new());
         }
 
         self.generation += 1;
         log::info!("RUNNING PARALLEL LAYOUT - generation {}", self.generation);
 
+        println!(
+            "INCR_LAYOUT: compute_layouts called, layout_db exists={}",
+            self.layout_database.is_some()
+        );
+
         // Use parallel layout database if available
         if let Some(layout_db) = &mut self.layout_database {
+            println!("INCR_LAYOUT: Calling recompute_layouts_parallel");
             let _executed = layout_db.recompute_layouts_parallel();
+            println!("INCR_LAYOUT: recompute returned");
 
             // Get all layout results from query database
             let all_layouts = layout_db.get_all_layouts();
 
-            // Convert query results to LayoutRect and update cache
-            for (node, result) in all_layouts {
-                let base_y = result
-                    .bfc_offset
-                    .block_offset
-                    .unwrap_or(LayoutUnit::zero())
-                    .to_px();
+            println!(
+                "INCR_LAYOUT: Got {} layouts from database",
+                all_layouts.len()
+            );
 
-                // Use the full line-height for layout positioning
-                // Half-leading is a rendering concept and should not affect layout
-                let final_y = base_y;
-                let final_height = result.block_size;
+            // Convert query results to LayoutRect and update cache
+            // LayoutRect uses 1/64px units (i32) to preserve sub-pixel precision
+            for (node, result) in all_layouts {
+                let base_y = result.bfc_offset.block_offset.unwrap_or(LayoutUnit::zero());
+
+                if result.bfc_offset.block_offset.is_none() {
+                    log::warn!(
+                        "Node {:?} has None block_offset! inline_offset={}",
+                        node,
+                        result.bfc_offset.inline_offset.to_px()
+                    );
+                }
 
                 let rect = LayoutRect {
-                    x: result.bfc_offset.inline_offset.to_px(),
-                    y: final_y,
-                    width: result.inline_size,
-                    height: final_height,
+                    x: result.bfc_offset.inline_offset.to_raw(),
+                    y: base_y.to_raw(),
+                    width: LayoutUnit::from_px(result.inline_size).to_raw(),
+                    height: LayoutUnit::from_px(result.block_size).to_raw(),
                 };
+
+                if base_y.to_px() > 0.1 {
+                    println!(
+                        "INCR_LAYOUT: Storing node {:?} with y={}px (raw={})",
+                        node,
+                        base_y.to_px(),
+                        base_y.to_raw()
+                    );
+                }
+
                 self.layout_cache.insert(node, rect);
             }
 

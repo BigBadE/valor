@@ -18,6 +18,32 @@ pub struct LayoutRect {
     pub height: i32,
 }
 
+impl LayoutRect {
+    /// Convert x coordinate to pixels (f32)
+    #[must_use]
+    pub fn x_px(&self) -> f32 {
+        self.x as f32 / 64.0
+    }
+
+    /// Convert y coordinate to pixels (f32)
+    #[must_use]
+    pub fn y_px(&self) -> f32 {
+        self.y as f32 / 64.0
+    }
+
+    /// Convert width to pixels (f32)
+    #[must_use]
+    pub fn width_px(&self) -> f32 {
+        self.width as f32 / 64.0
+    }
+
+    /// Convert height to pixels (f32)
+    #[must_use]
+    pub fn height_px(&self) -> f32 {
+        self.height as f32 / 64.0
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum LayoutNodeKind {
     Document,

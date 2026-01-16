@@ -433,7 +433,21 @@ impl HtmlPage {
     /// Ensure a layout pass has been run at least once or if material dirt is pending.
     pub fn ensure_layout_now(&mut self) {
         let need = self.incremental_layout.rects().is_empty();
+        std::fs::write(
+            "/tmp/valor_ensure_layout.txt",
+            format!(
+                "need={} rects_len={}\n",
+                need,
+                self.incremental_layout.rects().len()
+            ),
+        )
+        .ok();
         if need {
+            std::fs::write(
+                "/tmp/valor_calling_compute.txt",
+                "Calling compute_layouts\n",
+            )
+            .ok();
             if let Err(err) = self.incremental_layout.compute_layouts() {
                 tracing::warn!("Failed to compute layouts: {err}");
             }

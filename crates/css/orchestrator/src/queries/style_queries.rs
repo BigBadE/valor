@@ -31,11 +31,16 @@ impl InputQuery for StylesheetInput {
 pub struct MatchingRulesQuery;
 
 #[derive(Clone, Debug)]
-pub struct MatchedRule {
-    pub declarations: HashMap<String, String>, // property -> value
-    pub specificity: (u32, u32, u32),          // (a, b, c) specificity
-    pub source_order: u32,
+pub struct DeclarationValue {
+    pub value: String,
     pub important: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct MatchedRule {
+    pub declarations: HashMap<String, DeclarationValue>, // property -> (value, important)
+    pub specificity: (u32, u32, u32),                    // (a, b, c) specificity
+    pub source_order: u32,
 }
 
 impl Query for MatchingRulesQuery {
@@ -77,17 +82,22 @@ impl Query for MatchingRulesQuery {
                     // Compute specificity
                     let spec = selectors::compute_specificity(&selector);
 
-                    // Convert declarations to HashMap
+                    // Convert declarations to HashMap with importance flags
                     let mut decls = HashMap::new();
                     for decl in &rule.declarations {
-                        decls.insert(decl.name.clone(), decl.value.clone());
+                        decls.insert(
+                            decl.name.clone(),
+                            DeclarationValue {
+                                value: decl.value.clone(),
+                                important: decl.important,
+                            },
+                        );
                     }
 
                     matched.push(MatchedRule {
                         declarations: decls,
                         specificity: (spec.0, spec.1, spec.2),
                         source_order: rule.source_order,
-                        important: false, // TODO: Parse !important from declarations
                     });
                     break; // Match found for this selector, move to next rule
                 }
@@ -190,6 +200,36 @@ fn matches_selector_for_node(
     }
 
     part_idx >= parts.len()
+}
+
+/// Expand a CSS shorthand property into its constituent longhand properties.
+/// Returns a list of (longhand_name, longhand_value) tuples.
+/// If the property is not a recognized shorthand, returns an empty list.
+fn expand_shorthand_property(name: &str, value: &str) -> Vec<(String, String)> {
+    match name {
+        "margin" | "padding" => {
+            let tokens: Vec<&str> = value
+                .split(|c: char| c.is_ascii_whitespace())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            let (top, right, bottom, left) = match tokens.len() {
+                1 => (tokens[0], tokens[0], tokens[0], tokens[0]),
+                2 => (tokens[0], tokens[1], tokens[0], tokens[1]),
+                3 => (tokens[0], tokens[1], tokens[2], tokens[1]),
+                4 => (tokens[0], tokens[1], tokens[2], tokens[3]),
+                _ => return Vec::new(),
+            };
+
+            vec![
+                (format!("{}-top", name), top.to_string()),
+                (format!("{}-right", name), right.to_string()),
+                (format!("{}-bottom", name), bottom.to_string()),
+                (format!("{}-left", name), left.to_string()),
+            ]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Check if a simple selector matches the given node data.
@@ -534,15 +574,33 @@ impl Query for ComputedStyleQuery {
 
         // Apply each matched rule
         for matched_rule in matched_rules.iter() {
-            for (prop_name, prop_value) in &matched_rule.declarations {
-                let entry = CascadedDecl {
-                    value: prop_value.clone(),
-                    important: matched_rule.important,
-                    specificity: matched_rule.specificity,
-                    source_order: matched_rule.source_order,
-                    inline_boost: false,
-                };
-                cascade_insert(&mut cascaded_decls, prop_name, entry);
+            for (prop_name, decl_value) in &matched_rule.declarations {
+                // Expand shorthands like "margin" and "padding" into longhands
+                let longhands = expand_shorthand_property(prop_name, &decl_value.value);
+
+                if longhands.is_empty() {
+                    // Not a shorthand, apply as-is
+                    let entry = CascadedDecl {
+                        value: decl_value.value.clone(),
+                        important: decl_value.important,
+                        specificity: matched_rule.specificity,
+                        source_order: matched_rule.source_order,
+                        inline_boost: false,
+                    };
+                    cascade_insert(&mut cascaded_decls, prop_name, entry);
+                } else {
+                    // Shorthand was expanded, apply all longhands
+                    for (longhand_name, longhand_value) in longhands {
+                        let entry = CascadedDecl {
+                            value: longhand_value,
+                            important: decl_value.important,
+                            specificity: matched_rule.specificity,
+                            source_order: matched_rule.source_order,
+                            inline_boost: false,
+                        };
+                        cascade_insert(&mut cascaded_decls, &longhand_name, entry);
+                    }
+                }
             }
         }
 
@@ -551,15 +609,34 @@ impl Query for ComputedStyleQuery {
         let attrs = db.input::<DomAttributesInput>(key);
         if let Some(inline_style_value) = attrs.get("style") {
             let inline_decls = css_style_attr::parse_style_attribute_into_map(inline_style_value);
+
             for (prop_name, prop_value) in inline_decls {
-                let entry = CascadedDecl {
-                    value: prop_value.clone(),
-                    important: false,
-                    specificity: (1000, 0, 0), // Inline styles have very high specificity
-                    source_order: u32::MAX,
-                    inline_boost: true,
-                };
-                cascade_insert(&mut cascaded_decls, &prop_name, entry);
+                // Expand shorthands in inline styles too
+                let longhands = expand_shorthand_property(&prop_name, &prop_value);
+
+                if longhands.is_empty() {
+                    // Not a shorthand, apply as-is
+                    let entry = CascadedDecl {
+                        value: prop_value.clone(),
+                        important: false,
+                        specificity: (1000, 0, 0), // Inline styles have very high specificity
+                        source_order: u32::MAX,
+                        inline_boost: true,
+                    };
+                    cascade_insert(&mut cascaded_decls, &prop_name, entry);
+                } else {
+                    // Shorthand was expanded, apply all longhands
+                    for (longhand_name, longhand_value) in longhands {
+                        let entry = CascadedDecl {
+                            value: longhand_value,
+                            important: false,
+                            specificity: (1000, 0, 0),
+                            source_order: u32::MAX,
+                            inline_boost: true,
+                        };
+                        cascade_insert(&mut cascaded_decls, &longhand_name, entry);
+                    }
+                }
             }
         }
 

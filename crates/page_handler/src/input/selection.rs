@@ -28,11 +28,11 @@ pub fn selection_rects<S: BuildHasher>(
     sel: IRect,
 ) -> Vec<LayoutRect> {
     let (x0, y0, x1, y1) = sel;
-    let sel_x = x0.min(x1) as f32;
-    let sel_y = y0.min(y1) as f32;
+    let sel_x = x0.min(x1);
+    let sel_y = y0.min(y1);
 
-    let sel_w = (x0.max(x1) - sel_x.round() as i32).max(0i32) as f32;
-    let sel_h = (y0.max(y1) - sel_y.round() as i32).max(0i32) as f32;
+    let sel_w = (x0.max(x1) - sel_x).max(0i32);
+    let sel_h = (y0.max(y1) - sel_y).max(0i32);
     let selection = LayoutRect {
         x: sel_x,
         y: sel_y,
@@ -50,9 +50,9 @@ pub fn selection_rects<S: BuildHasher>(
                 let intersect_top = rect.y.max(selection.y);
                 let intersect_right = (rect.x + rect.width).min(selection.x + selection.width);
                 let intersect_bottom = (rect.y + rect.height).min(selection.y + selection.height);
-                let intersect_width = (intersect_right - intersect_left).max(0.0);
-                let intersect_height = (intersect_bottom - intersect_top).max(0.0);
-                if intersect_width > 0.0 && intersect_height > 0.0 {
+                let intersect_width = (intersect_right - intersect_left).max(0);
+                let intersect_height = (intersect_bottom - intersect_top).max(0);
+                if intersect_width > 0 && intersect_height > 0 {
                     out.push(LayoutRect {
                         x: intersect_left,
                         y: intersect_top,
@@ -99,11 +99,11 @@ pub fn caret_at<S: BuildHasher>(
             .find(|(key, _, _)| *key == hit_key)
             .map(|(_, kind, _)| ((), kind, ()))
     {
-        let caret_x = (x_coord as f32).clamp(rect.x, rect.x + rect.width);
+        let caret_x = (x_coord * 64).clamp(rect.x, rect.x + rect.width);
         return Some(LayoutRect {
             x: caret_x,
             y: rect.y,
-            width: 1.0,
+            width: 64, // 1px in 1/64px units
             height: rect.height,
         });
     }
@@ -111,14 +111,14 @@ pub fn caret_at<S: BuildHasher>(
     for (key, kind, _children) in snapshot {
         if let LayoutNodeKind::InlineText { .. } = kind
             && let Some(rect) = rects.get(key)
-            && y_coord >= rect.y.round() as i32
-            && y_coord < (rect.y + rect.height).round() as i32
+            && y_coord >= (rect.y / 64)
+            && y_coord < ((rect.y + rect.height) / 64)
         {
-            let caret_x = (x_coord as f32).clamp(rect.x, rect.x + rect.width);
+            let caret_x = (x_coord * 64).clamp(rect.x, rect.x + rect.width);
             return Some(LayoutRect {
                 x: caret_x,
                 y: rect.y,
-                width: 1.0,
+                width: 64, // 1px in 1/64px units
                 height: rect.height,
             });
         }
