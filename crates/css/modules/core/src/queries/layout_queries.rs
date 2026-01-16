@@ -435,17 +435,27 @@ fn layout_block_node(
         }
 
         // Create constraint space for child
+        // Children are positioned relative to parent's content box (padding edge)
+        // Parent's margin is already included in parent's bfc_offset, so we don't add it again
+        // For inline children (like text nodes), don't include child margins in positioning
+        // Only block-level children have their margins affect their position
+        let child_inline_offset = if is_block_level {
+            space.bfc_offset.inline_offset
+                + sides.padding_left
+                + sides.border_left
+                + child_sides.margin_left
+        } else {
+            // Inline children: position at parent's content box edge (no child margin)
+            space.bfc_offset.inline_offset + sides.padding_left + sides.border_left
+        };
+
         let child_space = ConstraintSpace {
             available_inline_size: AvailableSize::Definite(LayoutUnit::from_px(
                 content_inline_size,
             )),
             available_block_size: space.available_block_size,
             bfc_offset: BfcOffset::new(
-                space.bfc_offset.inline_offset
-                    + actual_margin_left
-                    + sides.padding_left
-                    + sides.border_left
-                    + child_sides.margin_left,
+                child_inline_offset,
                 Some(
                     space.bfc_offset.block_offset.unwrap_or(LayoutUnit::zero())
                         + current_block_offset
