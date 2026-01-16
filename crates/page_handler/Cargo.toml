@@ -15,6 +15,7 @@ css.workspace = true
 css_core.workspace = true
 css_display.workspace = true
 css_text.workspace = true
+css_box.workspace = true
 renderer.workspace = true
 js_engine_v8 = { workspace = true, optional = true }
 js = { workspace = true }

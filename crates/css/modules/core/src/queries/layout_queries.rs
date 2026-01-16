@@ -271,62 +271,63 @@ fn layout_block_node(
     // Compute inline size with auto margin handling
     let (inline_size, actual_margin_left, actual_margin_right) = if let Some(width_px) = style.width
     {
+        // Convert width to border-box based on box-sizing property
+        // Internally we work with border-box dimensions
+        let border_box_width = match style.box_sizing {
+            css_orchestrator::style_model::BoxSizing::ContentBox => {
+                // width is content-box, add padding and border to get border-box
+                width_px
+                    + (sides.padding_left
+                        + sides.padding_right
+                        + sides.border_left
+                        + sides.border_right)
+                        .to_px()
+            }
+            css_orchestrator::style_model::BoxSizing::BorderBox => {
+                // width is already border-box
+                width_px
+            }
+        };
+
         // Explicit width: handle auto margins for centering
+        // Note: border_box_width already includes padding and border
         if style.margin_left_auto && style.margin_right_auto {
             // Both margins auto: center the block
-            let border_padding_inline =
-                (sides.padding_left + sides.padding_right + sides.border_left + sides.border_right)
-                    .to_px();
-            let remaining_space =
-                (available_inline.to_px() - width_px - border_padding_inline).max(0.0);
+            let remaining_space = (available_inline.to_px() - border_box_width).max(0.0);
             let auto_margin = remaining_space / 2.0;
             (
-                width_px,
+                border_box_width,
                 LayoutUnit::from_px(auto_margin),
                 LayoutUnit::from_px(auto_margin),
             )
         } else if style.margin_left_auto {
             // Left margin auto: push to the right
-            let border_padding_inline =
-                (sides.padding_left + sides.padding_right + sides.border_left + sides.border_right)
-                    .to_px();
-            let remaining_space = (available_inline.to_px()
-                - width_px
-                - sides.margin_right.to_px()
-                - border_padding_inline)
-                .max(0.0);
+            let remaining_space =
+                (available_inline.to_px() - border_box_width - sides.margin_right.to_px()).max(0.0);
             (
-                width_px,
+                border_box_width,
                 LayoutUnit::from_px(remaining_space),
                 sides.margin_right,
             )
         } else if style.margin_right_auto {
             // Right margin auto: push to the left
-            let border_padding_inline =
-                (sides.padding_left + sides.padding_right + sides.border_left + sides.border_right)
-                    .to_px();
-            let remaining_space = (available_inline.to_px()
-                - width_px
-                - sides.margin_left.to_px()
-                - border_padding_inline)
-                .max(0.0);
+            let remaining_space =
+                (available_inline.to_px() - border_box_width - sides.margin_left.to_px()).max(0.0);
             (
-                width_px,
+                border_box_width,
                 sides.margin_left,
                 LayoutUnit::from_px(remaining_space),
             )
         } else {
             // No auto margins
-            (width_px, sides.margin_left, sides.margin_right)
+            (border_box_width, sides.margin_left, sides.margin_right)
         }
     } else {
         // Auto width = fill available space minus margins
+        // Result is border-box width (content + padding + border)
         let margin_inline = (sides.margin_left + sides.margin_right).to_px();
-        let border_padding_inline =
-            (sides.padding_left + sides.padding_right + sides.border_left + sides.border_right)
-                .to_px();
-        let width = (available_inline.to_px() - margin_inline - border_padding_inline).max(0.0);
-        (width, sides.margin_left, sides.margin_right)
+        let border_box_width = (available_inline.to_px() - margin_inline).max(0.0);
+        (border_box_width, sides.margin_left, sides.margin_right)
     };
 
     // Get children
@@ -572,11 +573,26 @@ fn layout_block_node(
         current_block_offset = current_block_offset + final_collapsed_margin;
     }
 
-    // Compute final block size
+    // Compute final block size (border-box)
     let block_size = if let Some(height_px) = style.height {
-        height_px
+        // Convert height to border-box based on box-sizing property
+        match style.box_sizing {
+            css_orchestrator::style_model::BoxSizing::ContentBox => {
+                // height is content-box, add padding and border to get border-box
+                height_px
+                    + (sides.padding_top
+                        + sides.padding_bottom
+                        + sides.border_top
+                        + sides.border_bottom)
+                        .to_px()
+            }
+            css_orchestrator::style_model::BoxSizing::BorderBox => {
+                // height is already border-box
+                height_px
+            }
+        }
     } else {
-        // Auto height = sum of children + padding + border
+        // Auto height = sum of children + padding + border (border-box)
         let children_height = current_block_offset.to_px();
         let vertical_spacing =
             (sides.padding_top + sides.padding_bottom + sides.border_top + sides.border_bottom)
@@ -624,6 +640,7 @@ fn layout_block_node(
         (top, bottom)
     };
 
+    // inline_size and block_size are now in border-box format
     LayoutResult {
         inline_size,
         block_size,

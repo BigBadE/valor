@@ -346,4 +346,13 @@ impl LayoutDatabase {
     ) -> HashMap<NodeKey, crate::queries::layout_queries::LayoutResult> {
         self.layout_cache.clone()
     }
+
+    /// Query the computed style for a node.
+    pub fn query_style(
+        &self,
+        node: NodeKey,
+    ) -> std::sync::Arc<css_orchestrator::style_model::ComputedStyle> {
+        use css_orchestrator::queries::ComputedStyleQuery;
+        self.db.query::<ComputedStyleQuery>(node)
+    }
 }
