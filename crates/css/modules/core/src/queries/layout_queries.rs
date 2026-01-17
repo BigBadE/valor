@@ -385,13 +385,13 @@ fn layout_text_node(
 
     LayoutResult {
         inline_size: final_width,
-        block_size: final_height, // Report total height (possibly multiple lines)
+        block_size: final_height, // Report total height for parent layout (line_height for single line, wrapped height for multi-line)
         bfc_offset: adjusted_bfc_offset,
         exclusion_space: Arc::new(space.exclusion_space.clone()),
         baseline: Some(ascent),
         collapsed_through_top_margin: LayoutUnit::zero(),
         collapsed_through_bottom_margin: LayoutUnit::zero(),
-        render_height: Some(final_height), // Use total height for rendering wrapped text
+        render_height: Some(glyph_height), // Always use glyph_height for text node rect rendering
     }
 }
 
