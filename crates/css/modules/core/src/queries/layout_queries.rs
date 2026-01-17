@@ -485,6 +485,16 @@ fn layout_block_node(
         use css_orchestrator::queries::ComputedStyleQuery;
         let child_style = db.query::<ComputedStyleQuery>(child);
 
+        // Skip absolutely/fixed positioned elements - they're removed from normal flow
+        // They'll be positioned by their own layout query based on their offset properties
+        if matches!(
+            child_style.position,
+            css_orchestrator::style_model::Position::Absolute
+                | css_orchestrator::style_model::Position::Fixed
+        ) {
+            continue;
+        }
+
         // Get child's box sides for margins
         let child_sides = css_box::compute_box_sides(&child_style);
 
