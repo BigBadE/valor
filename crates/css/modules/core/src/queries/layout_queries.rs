@@ -323,13 +323,56 @@ fn layout_text_node(
     }
 
     // Use the text measurement system from css_text
-    use css_text::measurement::measure_text;
+    use css_text::measurement::{measure_text, measure_text_wrapped};
 
-    let metrics = measure_text(text, &style);
+    // First measure text without wrapping to see if it fits
+    let single_line_metrics = measure_text(text, &style);
+
+    // Check if we have a definite available inline size (width constraint)
+    let available_width = match space.available_inline_size {
+        AvailableSize::Definite(width) => Some(width.to_px()),
+        AvailableSize::Indefinite | AvailableSize::MinContent | AvailableSize::MaxContent => None,
+    };
+
+    // Determine if text needs wrapping and measure accordingly
+    let (final_width, final_height, glyph_height, ascent) = if let Some(max_width) = available_width
+    {
+        if single_line_metrics.width > max_width {
+            // Text exceeds available width - needs wrapping
+            let wrapped = measure_text_wrapped(text, &style, max_width);
+            (
+                wrapped.actual_width,
+                wrapped.total_height,
+                wrapped.glyph_height,
+                wrapped.ascent,
+            )
+        } else {
+            // Text fits on single line
+            (
+                single_line_metrics.width,
+                single_line_metrics.height,
+                single_line_metrics.glyph_height,
+                single_line_metrics.ascent,
+            )
+        }
+    } else {
+        // No width constraint - use single line measurement
+        (
+            single_line_metrics.width,
+            single_line_metrics.height,
+            single_line_metrics.glyph_height,
+            single_line_metrics.ascent,
+        )
+    };
 
     // Calculate half-leading: the vertical offset to center glyphs within the line box
-    // Half-leading = (line_height - glyph_height) / 2
-    let half_leading = (metrics.height - metrics.glyph_height) / 2.0;
+    // For multi-line text, this is the leading for the first line only
+    let line_height = if let Some(lh) = style.line_height {
+        lh
+    } else {
+        single_line_metrics.height
+    };
+    let half_leading = (line_height - glyph_height) / 2.0;
 
     // Adjust text position by half-leading to vertically center it
     let adjusted_bfc_offset = BfcOffset::new(
@@ -341,14 +384,14 @@ fn layout_text_node(
     );
 
     LayoutResult {
-        inline_size: metrics.width,
-        block_size: metrics.height, // Report line-height for parent's layout spacing
+        inline_size: final_width,
+        block_size: final_height, // Report total height (possibly multiple lines)
         bfc_offset: adjusted_bfc_offset,
         exclusion_space: Arc::new(space.exclusion_space.clone()),
-        baseline: Some(metrics.ascent),
+        baseline: Some(ascent),
         collapsed_through_top_margin: LayoutUnit::zero(),
         collapsed_through_bottom_margin: LayoutUnit::zero(),
-        render_height: Some(metrics.glyph_height), // Actual glyph height for rendering
+        render_height: Some(final_height), // Use total height for rendering wrapped text
     }
 }
 
@@ -1845,10 +1888,25 @@ fn layout_table_container(
                 is_inline_size_forced: false,
             };
 
+            eprintln!(
+                "TABLE LAYOUT: Setting cell at column {} to X={}, Y={:?}",
+                col_idx,
+                (row_space.bfc_offset.inline_offset + LayoutUnit::from_px(current_x)).to_px(),
+                row_space.bfc_offset.block_offset.map(|b| b.to_px())
+            );
+
             db.set_input::<ConstraintSpaceInput>(cell, cell_space);
 
             // Layout cell as block
             let cell_result = db.query::<LayoutResultQuery>(cell);
+            eprintln!(
+                "TABLE LAYOUT: Cell result - X={}, Y={:?}, width={}, height={}",
+                cell_result.bfc_offset.inline_offset.to_px(),
+                cell_result.bfc_offset.block_offset.map(|b| b.to_px()),
+                cell_result.inline_size,
+                cell_result.block_size
+            );
+
             row_height = row_height.max(cell_result.block_size);
 
             current_x += cell_width;

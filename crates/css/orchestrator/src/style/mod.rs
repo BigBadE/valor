@@ -33,12 +33,14 @@ pub fn build_computed_from_inline(
     );
     let inherited_font_weight = parent_style.map_or(400, |parent| parent.font_weight);
     let inherited_font_family = parent_style.and_then(|parent| parent.font_family.clone());
+    let inherited_line_height = parent_style.and_then(|parent| parent.line_height);
 
     let mut computed = style_model::ComputedStyle {
         font_size: inherited_font_size,
         color: inherited_color,
         font_weight: inherited_font_weight,
         font_family: inherited_font_family,
+        line_height: inherited_line_height,
         flex_shrink: 1.0, // CSS spec default for flex-shrink
         ..Default::default()
     };

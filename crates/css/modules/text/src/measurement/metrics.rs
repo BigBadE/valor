@@ -327,7 +327,20 @@ pub fn measure_text_wrapped(
     let (final_glyph_height, final_ascent, final_descent) =
         (metrics.glyph_height, metrics.ascent, metrics.descent);
 
-    let total_height = layout_result.line_count as f32 * metrics.line_height;
+    // Chrome's multi-line text height calculation:
+    // For single-line text: use line_height
+    // For multi-line text: (line_count - 1) * line_height + glyph_height
+    // Example: 2 lines with line_height=21px, glyph_height=19px → 1 * 21 + 19 = 40px ✓
+    let total_height = if layout_result.line_count == 0 {
+        0.0
+    } else if layout_result.line_count == 1 {
+        // Single line: use line_height
+        metrics.line_height
+    } else {
+        // Multiple lines: spacing between lines + glyph height for last line
+        (layout_result.line_count.saturating_sub(1) as f32 * metrics.line_height)
+            + final_glyph_height
+    };
 
     WrappedTextMetrics {
         total_height,
