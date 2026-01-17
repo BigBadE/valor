@@ -171,24 +171,115 @@ impl Query for LayoutResultQuery {
         ) {
             let mut adjusted_bfc_offset = result.bfc_offset.clone();
 
+            // Get the containing block (parent with position: relative/absolute/fixed)
+            // For now, we need to find where the containing block starts
+            // The static position is already in result.bfc_offset from flex layout
+            // We need to get the containing block's position to resolve offsets correctly
+
+            // Get parent to find containing block origin and size
+            let parent = db.input::<DomParentInput>(node);
+            let (
+                containing_block_inline,
+                containing_block_block,
+                containing_block_width,
+                containing_block_height,
+            ) = if let Some(parent_node) = *parent {
+                // Get parent's constraint space which has its position
+                let parent_space = db.input::<ConstraintSpaceInput>(parent_node);
+                use css_orchestrator::queries::ComputedStyleQuery;
+                let parent_style = db.query::<ComputedStyleQuery>(parent_node);
+                let parent_sides = css_box::compute_box_sides(&parent_style);
+
+                // Containing block is parent's padding box (content + padding)
+                let cb_inline = parent_space.bfc_offset.inline_offset + parent_sides.border_left;
+                let cb_block = parent_space
+                    .bfc_offset
+                    .block_offset
+                    .unwrap_or(LayoutUnit::zero())
+                    + parent_sides.border_top;
+
+                // Get containing block size for percentage resolution
+                // For absolute positioning, percentages resolve against the padding box (content + padding)
+                // of the containing block
+                // Try to get the parent's explicit width/height, otherwise use available sizes
+                let cb_width = if let Some(width_px) = parent_style.width {
+                    width_px
+                } else {
+                    parent_space
+                        .available_inline_size
+                        .resolve(LayoutUnit::from_raw(800 * 64))
+                        .to_px()
+                };
+
+                let cb_height = if let Some(height_px) = parent_style.height {
+                    height_px
+                } else {
+                    parent_space
+                        .available_block_size
+                        .resolve(LayoutUnit::from_raw(600 * 64))
+                        .to_px()
+                };
+
+                log::debug!(
+                    "ABSPOS CB: width={}, height={}, parent_width={:?}, parent_height={:?}",
+                    cb_width,
+                    cb_height,
+                    parent_style.width,
+                    parent_style.height
+                );
+
+                (cb_inline, cb_block, cb_width, cb_height)
+            } else {
+                (LayoutUnit::zero(), LayoutUnit::zero(), 800.0, 600.0)
+            };
+
             // Apply left/right offset (left takes precedence)
+            // If specified, use it relative to containing block; otherwise use static position
             if let Some(left_px) = style.left {
-                adjusted_bfc_offset.inline_offset = LayoutUnit::from_px(left_px);
+                adjusted_bfc_offset.inline_offset =
+                    containing_block_inline + LayoutUnit::from_px(left_px);
+            } else if let Some(left_pct) = style.left_percent {
+                // Resolve percentage against containing block width
+                // left_pct is already a fraction (0.1 for 10%), not a percentage value
+                let left_resolved = containing_block_width * left_pct;
+                adjusted_bfc_offset.inline_offset =
+                    containing_block_inline + LayoutUnit::from_px(left_resolved);
             } else if let Some(right_px) = style.right {
                 // For right positioning, we'd need the containing block width
                 // For now, just use the offset as-is (incomplete implementation)
                 // TODO: Properly handle right/bottom by computing from containing block
-                adjusted_bfc_offset.inline_offset = LayoutUnit::from_px(right_px);
+                adjusted_bfc_offset.inline_offset =
+                    containing_block_inline + LayoutUnit::from_px(right_px);
+            } else if let Some(right_pct) = style.right_percent {
+                // right_pct is already a fraction, not a percentage value
+                let right_resolved = containing_block_width * right_pct;
+                adjusted_bfc_offset.inline_offset =
+                    containing_block_inline + LayoutUnit::from_px(right_resolved);
             }
+            // else: keep static position from result.bfc_offset
 
             // Apply top/bottom offset (top takes precedence)
             if let Some(top_px) = style.top {
-                adjusted_bfc_offset.block_offset = Some(LayoutUnit::from_px(top_px));
+                adjusted_bfc_offset.block_offset =
+                    Some(containing_block_block + LayoutUnit::from_px(top_px));
+            } else if let Some(top_pct) = style.top_percent {
+                // Resolve percentage against containing block height
+                // top_pct is already a fraction, not a percentage value
+                let top_resolved = containing_block_height * top_pct;
+                adjusted_bfc_offset.block_offset =
+                    Some(containing_block_block + LayoutUnit::from_px(top_resolved));
             } else if let Some(bottom_px) = style.bottom {
                 // For bottom positioning, we'd need the containing block height
                 // For now, just use the offset as-is (incomplete implementation)
-                adjusted_bfc_offset.block_offset = Some(LayoutUnit::from_px(bottom_px));
+                adjusted_bfc_offset.block_offset =
+                    Some(containing_block_block + LayoutUnit::from_px(bottom_px));
+            } else if let Some(bottom_pct) = style.bottom_percent {
+                // bottom_pct is already a fraction, not a percentage value
+                let bottom_resolved = containing_block_height * bottom_pct;
+                adjusted_bfc_offset.block_offset =
+                    Some(containing_block_block + LayoutUnit::from_px(bottom_resolved));
             }
+            // else: keep static position from result.bfc_offset
 
             LayoutResult {
                 bfc_offset: adjusted_bfc_offset,
@@ -335,35 +426,38 @@ fn layout_text_node(
     };
 
     // Determine if text needs wrapping and measure accordingly
-    let (final_width, final_height, glyph_height, ascent) = if let Some(max_width) = available_width
-    {
-        if single_line_metrics.width > max_width {
-            // Text exceeds available width - needs wrapping
-            let wrapped = measure_text_wrapped(text, &style, max_width);
-            (
-                wrapped.actual_width,
-                wrapped.total_height,
-                wrapped.glyph_height,
-                wrapped.ascent,
-            )
+    let (final_width, final_height, glyph_height, ascent, text_wrapped) =
+        if let Some(max_width) = available_width {
+            if single_line_metrics.width > max_width {
+                // Text exceeds available width - needs wrapping
+                let wrapped = measure_text_wrapped(text, &style, max_width);
+                (
+                    wrapped.actual_width,
+                    wrapped.total_height,
+                    wrapped.glyph_height,
+                    wrapped.ascent,
+                    true, // text wrapped
+                )
+            } else {
+                // Text fits on single line
+                (
+                    single_line_metrics.width,
+                    single_line_metrics.height,
+                    single_line_metrics.glyph_height,
+                    single_line_metrics.ascent,
+                    false, // text did not wrap
+                )
+            }
         } else {
-            // Text fits on single line
+            // No width constraint - use single line measurement
             (
                 single_line_metrics.width,
                 single_line_metrics.height,
                 single_line_metrics.glyph_height,
                 single_line_metrics.ascent,
+                false, // text did not wrap
             )
-        }
-    } else {
-        // No width constraint - use single line measurement
-        (
-            single_line_metrics.width,
-            single_line_metrics.height,
-            single_line_metrics.glyph_height,
-            single_line_metrics.ascent,
-        )
-    };
+        };
 
     // Calculate half-leading: the vertical offset to center glyphs within the line box
     // For multi-line text, this is the leading for the first line only
@@ -391,7 +485,12 @@ fn layout_text_node(
         baseline: Some(ascent),
         collapsed_through_top_margin: LayoutUnit::zero(),
         collapsed_through_bottom_margin: LayoutUnit::zero(),
-        render_height: Some(glyph_height), // Always use glyph_height for text node rect rendering
+        // For wrapped text, use total height; for single-line, use glyph_height to match previous behavior
+        render_height: Some(if text_wrapped {
+            final_height
+        } else {
+            glyph_height
+        }),
     }
 }
 
@@ -501,15 +600,23 @@ fn layout_block_node(
             (border_box_width, sides.margin_left, sides.margin_right)
         }
     } else {
-        // Auto width behavior depends on display type
-        // Table cells should shrink-to-fit, blocks should fill available space
+        // Auto width behavior depends on display type and sizing context
+        // - Table cells should shrink-to-fit
+        // - Blocks in max-content/min-content context should shrink-to-fit (for flex intrinsic sizing)
+        // - Blocks in definite context should fill available space
         let is_table_cell = matches!(
             style.display,
             css_orchestrator::style_model::Display::TableCell
         );
 
-        if is_table_cell {
-            // Table cells: shrink to fit content (like inline-block)
+        let should_shrink_wrap = is_table_cell
+            || matches!(
+                space.available_inline_size,
+                AvailableSize::MaxContent | AvailableSize::MinContent
+            );
+
+        if should_shrink_wrap {
+            // Shrink to fit content (like inline-block or table-cell)
             // Measure text content if present, otherwise use reasonable default
             let children_arc: Arc<Vec<NodeKey>> = db.input::<DomChildrenInput>(node);
             let children = &*children_arc;
@@ -541,7 +648,7 @@ fn layout_block_node(
 
             (border_box_width, sides.margin_left, sides.margin_right)
         } else {
-            // Block elements: fill available space minus margins
+            // Block elements in definite context: fill available space minus margins
             // Result is border-box width (content + padding + border)
             let margin_inline = (sides.margin_left + sides.margin_right).to_px();
             let border_box_width = (available_inline.to_px() - margin_inline).max(0.0);
@@ -972,18 +1079,29 @@ fn layout_flex_container(
         .available_inline_size
         .resolve(LayoutUnit::from_raw(800 * 64));
     let inline_size = if let Some(width_px) = style.width {
+        log::debug!("FLEX CONTAINER: has width={}", width_px);
         width_px
     } else {
+        // Auto width: fill available space minus margins
+        // inline_size should be in border-box format (content + padding + border)
+        // regardless of box-sizing, since we convert to content later
         let margin_inline = (sides.margin_left + sides.margin_right).to_px();
-        let border_padding_inline =
-            (sides.padding_left + sides.padding_right + sides.border_left + sides.border_right)
-                .to_px();
-        (available_inline.to_px() - margin_inline - border_padding_inline).max(0.0)
+        let border_box_width = (available_inline.to_px() - margin_inline).max(0.0);
+        log::debug!(
+            "FLEX CONTAINER: no width, border_box_width={}",
+            border_box_width
+        );
+        border_box_width
     };
 
     let content_inline_size = inline_size
         - (sides.padding_left + sides.padding_right + sides.border_left + sides.border_right)
             .to_px();
+    log::debug!(
+        "FLEX CONTAINER: inline_size={}, content_inline_size={}",
+        inline_size,
+        content_inline_size
+    );
 
     // Get children
     let children_arc: Arc<Vec<NodeKey>> = db.input::<DomChildrenInput>(node);
@@ -1020,9 +1138,11 @@ fn layout_flex_container(
     };
 
     // Convert children to flex items and measure them
+    let flex_start = std::time::Instant::now();
     let mut flex_children = Vec::new();
     let mut cross_inputs = Vec::new();
     let mut baseline_inputs = Vec::new();
+    let mut child_padding_borders = Vec::new(); // Store (main_pb, cross_pb) for each child
 
     for (idx, &child) in children.iter().enumerate() {
         // Get child's computed style
@@ -1054,25 +1174,7 @@ fn layout_flex_container(
 
         let child_sides = compute_box_sides(&child_style);
 
-        // Determine flex basis
-        let flex_basis = if let Some(basis) = child_style.flex_basis {
-            basis
-        } else if let Some(size) = if is_row {
-            child_style.width
-        } else {
-            child_style.height
-        } {
-            size
-        } else {
-            // Auto flex-basis: use content size
-            if is_row {
-                child_measure.inline_size
-            } else {
-                child_measure.block_size
-            }
-        };
-
-        // Main axis padding + border
+        // Calculate main and cross axis padding + border (needed for flex_basis and later positioning)
         let main_padding_border = if is_row {
             (child_sides.padding_left
                 + child_sides.padding_right
@@ -1085,6 +1187,59 @@ fn layout_flex_container(
                 + child_sides.border_top
                 + child_sides.border_bottom)
                 .to_px()
+        };
+
+        let cross_padding_border = if is_row {
+            (child_sides.padding_top
+                + child_sides.padding_bottom
+                + child_sides.border_top
+                + child_sides.border_bottom)
+                .to_px()
+        } else {
+            (child_sides.padding_left
+                + child_sides.padding_right
+                + child_sides.border_left
+                + child_sides.border_right)
+                .to_px()
+        };
+
+        // Store for later use when positioning children
+        child_padding_borders.push((main_padding_border, cross_padding_border));
+
+        // Determine flex basis (must be content-box size)
+        let flex_basis = if let Some(basis) = child_style.flex_basis {
+            basis
+        } else if let Some(size) = if is_row {
+            child_style.width
+        } else {
+            child_style.height
+        } {
+            size
+        } else if let Some(pct) = if is_row {
+            child_style.width_percent
+        } else {
+            child_style.height_percent
+        } {
+            // Percentage width/height: resolve against container's content size
+            // pct is stored as a fraction (e.g., 1.0 for 100%)
+            let border_box_size = content_inline_size * pct;
+            // If box-sizing is border-box, subtract padding/border to get content-box
+            // (flex_basis should be content-box size per spec)
+            if matches!(
+                child_style.box_sizing,
+                css_orchestrator::style_model::BoxSizing::BorderBox
+            ) {
+                (border_box_size - main_padding_border).max(0.0)
+            } else {
+                border_box_size
+            }
+        } else {
+            // Auto flex-basis: use content size
+            if is_row {
+                child_measure.inline_size
+            } else {
+                child_measure.block_size
+            }
         };
 
         // Create flex child
@@ -1204,7 +1359,14 @@ fn layout_flex_container(
         layout_multi_line_with_cross(container, justify_content, cross_ctx, &flex_children, cab)
     };
 
+    log::debug!(
+        "FLEX_TIMING: Building {} flex children took {:?}",
+        flex_children.len(),
+        flex_start.elapsed()
+    );
+
     // Position children using flex results
+    let position_start = std::time::Instant::now();
     for (placement_idx, (main_placement, cross_placement)) in placements.iter().enumerate() {
         let child_idx = main_placement.handle.0 as usize;
         if child_idx >= children.len() {
@@ -1212,21 +1374,29 @@ fn layout_flex_container(
         }
         let child = children[child_idx];
 
+        // Get the stored padding/border for this child (stored when building FlexChild)
+        // placement_idx should match the index in child_padding_borders since both are built from the same filtered children
+        if placement_idx >= child_padding_borders.len() {
+            continue;
+        }
+        let (main_padding_border, cross_padding_border) = child_padding_borders[placement_idx];
+
         // Create constraint space for child at its flex position
+        // Convert content-box sizes to border-box by adding padding+border
         let (child_inline_offset, child_block_offset, child_inline_size, child_block_size) =
             if is_row {
                 (
                     main_placement.main_offset,
                     cross_placement.cross_offset,
-                    main_placement.main_size,
-                    cross_placement.cross_size,
+                    main_placement.main_size + main_padding_border,
+                    cross_placement.cross_size + cross_padding_border,
                 )
             } else {
                 (
                     cross_placement.cross_offset,
                     main_placement.main_offset,
-                    cross_placement.cross_size,
-                    main_placement.main_size,
+                    cross_placement.cross_size + cross_padding_border,
+                    main_placement.main_size + main_padding_border,
                 )
             };
 
@@ -1261,6 +1431,188 @@ fn layout_flex_container(
 
         // Trigger child layout
         let _child_result = db.query::<LayoutResultQuery>(child);
+    }
+
+    log::debug!(
+        "FLEX_TIMING: Positioning {} children took {:?}",
+        placements.len(),
+        position_start.elapsed()
+    );
+
+    // Compute static positions for absolutely positioned children
+    // Spec: https://www.w3.org/TR/css-flexbox-1/#abspos-items
+    // "The static position of an absolutely-positioned child of a flex container is determined
+    // such that the child is positioned as if it were the sole flex item in the flex container"
+    for &child in children.iter() {
+        use css_orchestrator::queries::ComputedStyleQuery;
+        let child_style = db.query::<ComputedStyleQuery>(child);
+
+        // Only handle absolutely/fixed positioned children
+        if !matches!(
+            child_style.position,
+            css_orchestrator::style_model::Position::Absolute
+                | css_orchestrator::style_model::Position::Fixed
+        ) {
+            continue;
+        }
+
+        // Skip display:none children
+        if matches!(
+            child_style.display,
+            css_orchestrator::style_model::Display::None
+        ) {
+            continue;
+        }
+
+        // Measure the abspos child to get its size
+        let measure_space =
+            create_flex_measurement_space(&child_style, &sides, space, is_row, content_inline_size);
+        db.set_input::<ConstraintSpaceInput>(child, measure_space);
+        let child_measure = db.query::<LayoutResultQuery>(child);
+
+        let child_sides = compute_box_sides(&child_style);
+
+        // Determine the child's size (treating auto margins as zero per spec)
+        let child_main_size = if is_row {
+            if let Some(width_px) = child_style.width {
+                width_px
+            } else {
+                child_measure.inline_size
+            }
+        } else {
+            if let Some(height_px) = child_style.height {
+                height_px
+            } else {
+                child_measure.block_size
+            }
+        };
+
+        let child_cross_size = if is_row {
+            if let Some(height_px) = child_style.height {
+                height_px
+            } else {
+                child_measure.block_size
+            }
+        } else {
+            if let Some(width_px) = child_style.width {
+                width_px
+            } else {
+                child_measure.inline_size
+            }
+        };
+
+        // Create a single-item flex layout to determine static position
+        // Treat auto margins as zero per spec
+        let margin_left = if child_style.margin_left_auto {
+            0.0
+        } else {
+            child_sides.margin_left.to_px()
+        };
+        let margin_right = if child_style.margin_right_auto {
+            0.0
+        } else {
+            child_sides.margin_right.to_px()
+        };
+        let margin_top = child_sides.margin_top.to_px();
+        let margin_bottom = child_sides.margin_bottom.to_px();
+
+        let flex_child = FlexChild {
+            handle: ItemRef(0),
+            flex_basis: child_main_size,
+            flex_grow: 0.0, // Treat as fixed-size per spec
+            flex_shrink: 0.0,
+            min_main: child_main_size,
+            max_main: child_main_size,
+            margin_left,
+            margin_right,
+            margin_top,
+            margin_bottom,
+            margin_left_auto: false, // Treat as zero per spec
+            margin_right_auto: false,
+            main_padding_border: 0.0, // Already included in child_main_size
+        };
+
+        let cross_input = (
+            css_flexbox::CrossSize::Explicit(child_cross_size),
+            child_cross_size,
+            child_cross_size,
+        );
+
+        let baseline = child_measure.baseline.unwrap_or(child_cross_size);
+        let baseline_input = Some((baseline, baseline));
+
+        // Run single-line flex layout with this sole item
+        let cab = CrossAndBaseline {
+            cross_inputs: &[cross_input],
+            baseline_inputs: &[baseline_input],
+        };
+
+        let static_placements = layout_single_line_with_cross(
+            container,
+            justify_content,
+            cross_ctx,
+            &[flex_child],
+            cab,
+        );
+
+        // Extract the static position from the flex layout result
+        if let Some((main_placement, cross_placement)) = static_placements.first() {
+            let (static_inline_offset, static_block_offset) = if is_row {
+                (main_placement.main_offset, cross_placement.cross_offset)
+            } else {
+                (cross_placement.cross_offset, main_placement.main_offset)
+            };
+
+            // Set the child's constraint space with the static position
+            // The available sizes should be the flex container's content box (containing block)
+            log::debug!(
+                "ABSPOS FLEX: content_inline={}, cross={}, main={}, is_row={}",
+                content_inline_size,
+                container_cross_size,
+                container_main_size,
+                is_row
+            );
+            let child_space = ConstraintSpace {
+                available_inline_size: AvailableSize::Definite(LayoutUnit::from_px(
+                    content_inline_size,
+                )),
+                available_block_size: AvailableSize::Definite(LayoutUnit::from_px(if is_row {
+                    container_cross_size
+                } else {
+                    container_main_size
+                })),
+                bfc_offset: BfcOffset::new(
+                    space.bfc_offset.inline_offset
+                        + sides.padding_left
+                        + sides.border_left
+                        + LayoutUnit::from_px(static_inline_offset),
+                    Some(
+                        space.bfc_offset.block_offset.unwrap_or(LayoutUnit::zero())
+                            + sides.padding_top
+                            + sides.border_top
+                            + LayoutUnit::from_px(static_block_offset),
+                    ),
+                ),
+                exclusion_space: space.exclusion_space.clone(),
+                margin_strut: MarginStrut::default(),
+                is_new_formatting_context: true,
+                percentage_resolution_block_size: style
+                    .height
+                    .map(LayoutUnit::from_px)
+                    .or_else(|| Some(LayoutUnit::from_px(container_cross_size))),
+                fragmentainer_block_size: None,
+                fragmentainer_offset: LayoutUnit::zero(),
+                is_for_measurement_only: false,
+                margins_already_applied: false,
+                is_block_size_forced: false,
+                is_inline_size_forced: false,
+            };
+
+            db.set_input::<ConstraintSpaceInput>(child, child_space);
+
+            // Trigger child layout with static position
+            let _child_result = db.query::<LayoutResultQuery>(child);
+        }
     }
 
     // Compute final container size
@@ -1444,11 +1796,10 @@ fn layout_grid_container(
     let inline_size = if let Some(width_px) = style.width {
         width_px
     } else {
+        // Auto width: fill available space minus margins
+        // inline_size should be in border-box format
         let margin_inline = (sides.margin_left + sides.margin_right).to_px();
-        let border_padding_inline =
-            (sides.padding_left + sides.padding_right + sides.border_left + sides.border_right)
-                .to_px();
-        (available_inline.to_px() - margin_inline - border_padding_inline).max(0.0)
+        (available_inline.to_px() - margin_inline).max(0.0)
     };
 
     let content_inline_size = inline_size

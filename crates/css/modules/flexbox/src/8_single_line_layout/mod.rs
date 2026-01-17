@@ -350,7 +350,14 @@ pub fn layout_multi_line_with_cross(
         cross_ctx.container_cross_size
     );
     // Break into lines using outer sizes (margin-aware)
-    let line_ranges = break_into_lines(container.container_main_size, container.main_gap, items);
+    let axes = resolve_axes(container.direction, container.writing_mode);
+    let is_row_direction = axes.main_is_inline;
+    let line_ranges = break_into_lines(
+        container.container_main_size,
+        container.main_gap,
+        items,
+        is_row_direction,
+    );
     debug!(
         "[MULTI-LINE] Line breaking: {} lines -> {:?}",
         line_ranges.len(),
