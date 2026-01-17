@@ -180,6 +180,77 @@ impl Query for LayoutResultQuery {
                 bfc_offset: adjusted_bfc_offset,
                 ..result
             }
+        } else if !matches!(style.float, css_orchestrator::style_model::Float::None) {
+            // Handle floated elements
+            // Get parent to compute containing block dimensions
+            let parent = db.input::<DomParentInput>(node);
+
+            if let Some(parent_node) = *parent {
+                use css_orchestrator::queries::ComputedStyleQuery;
+                let parent_style = db.query::<ComputedStyleQuery>(parent_node);
+                let parent_sides = css_box::compute_box_sides(&parent_style);
+
+                // Get parent's constraint space to find its position
+                let parent_space = db.input::<ConstraintSpaceInput>(parent_node);
+
+                // Compute parent's content box left edge
+                let parent_content_left = parent_space.bfc_offset.inline_offset
+                    + parent_sides.padding_left
+                    + parent_sides.border_left;
+
+                // Compute parent's content width
+                let parent_content_width = if let Some(width) = parent_style.width {
+                    // Use explicit width (need to account for box-sizing)
+                    match parent_style.box_sizing {
+                        css_orchestrator::style_model::BoxSizing::ContentBox => width,
+                        css_orchestrator::style_model::BoxSizing::BorderBox => {
+                            width
+                                - (parent_sides.padding_left
+                                    + parent_sides.padding_right
+                                    + parent_sides.border_left
+                                    + parent_sides.border_right)
+                                    .to_px()
+                        }
+                    }
+                } else {
+                    // Use available inline size from parent's constraint space
+                    parent_space
+                        .available_inline_size
+                        .resolve(LayoutUnit::from_raw(800 * 64))
+                        .to_px()
+                        - (parent_sides.padding_left
+                            + parent_sides.padding_right
+                            + parent_sides.border_left
+                            + parent_sides.border_right)
+                            .to_px()
+                };
+
+                let sides = css_box::compute_box_sides(&style);
+                let mut adjusted_bfc_offset = result.bfc_offset.clone();
+
+                match style.float {
+                    css_orchestrator::style_model::Float::Left => {
+                        // Float left: position at left edge
+                        adjusted_bfc_offset.inline_offset = parent_content_left + sides.margin_left;
+                    }
+                    css_orchestrator::style_model::Float::Right => {
+                        // Float right: position at right edge
+                        let parent_content_right =
+                            parent_content_left + LayoutUnit::from_px(parent_content_width);
+                        adjusted_bfc_offset.inline_offset = parent_content_right
+                            - LayoutUnit::from_px(result.inline_size)
+                            - sides.margin_right;
+                    }
+                    css_orchestrator::style_model::Float::None => {}
+                }
+
+                LayoutResult {
+                    bfc_offset: adjusted_bfc_offset,
+                    ..result
+                }
+            } else {
+                result
+            }
         } else {
             result
         };
@@ -475,6 +546,9 @@ fn layout_block_node(
         // Parent's margin is already included in parent's bfc_offset, so we don't add it again
         // For inline children (like text nodes), don't include child margins in positioning
         // Only block-level children have their margins affect their position
+
+        // For floated elements, we need to know their width first to position them
+        // We'll adjust their position after layout if they're floated
         let child_inline_offset = if is_block_level {
             space.bfc_offset.inline_offset
                 + sides.padding_left
