@@ -856,6 +856,15 @@ fn layout_flex_container(
             continue;
         }
 
+        // Skip absolutely/fixed positioned children - they're removed from flex flow
+        if matches!(
+            child_style.position,
+            css_orchestrator::style_model::Position::Absolute
+                | css_orchestrator::style_model::Position::Fixed
+        ) {
+            continue;
+        }
+
         // Measure child in flex base size constraint
         let measure_space =
             create_flex_measurement_space(&child_style, &sides, space, is_row, content_inline_size);
@@ -1270,6 +1279,29 @@ fn layout_grid_container(
 
     let grid_items: Vec<GridItem<NodeKey>> = children
         .iter()
+        .filter(|&&child_key| {
+            use css_orchestrator::queries::ComputedStyleQuery;
+            let child_style = db.query::<ComputedStyleQuery>(child_key);
+
+            // Skip display:none children
+            if matches!(
+                child_style.display,
+                css_orchestrator::style_model::Display::None
+            ) {
+                return false;
+            }
+
+            // Skip absolutely/fixed positioned children - they're removed from grid flow
+            if matches!(
+                child_style.position,
+                css_orchestrator::style_model::Position::Absolute
+                    | css_orchestrator::style_model::Position::Fixed
+            ) {
+                return false;
+            }
+
+            true
+        })
         .map(|&child_key| GridItem::new(child_key))
         .collect();
 
