@@ -118,6 +118,7 @@ fn create_input_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
             ("box-sizing", "border-box"),
             ("overflow", "clip"),
             ("font-family", "Arial"),
+            ("width", "200px"), // Default width for text inputs
         ],
     ));
     source_order += 1;
@@ -131,6 +132,8 @@ fn create_input_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
             ("border", "0"),
             ("font-size", "13.3333px"),
             ("overflow", "visible"),
+            ("width", "16px"), // Explicit size for checkboxes
+            ("height", "16px"),
         ],
     ));
     source_order += 1;
@@ -144,6 +147,8 @@ fn create_input_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
             ("border", "0"),
             ("font-size", "13.3333px"),
             ("overflow", "visible"),
+            ("width", "16px"), // Explicit size for radio buttons
+            ("height", "16px"),
         ],
     ));
     source_order += 1;
@@ -189,14 +194,18 @@ fn create_table_display_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) 
     rules.push(make_ua_rule(
         "th",
         source_order,
-        &[("display", "table-cell")],
+        &[
+            ("display", "table-cell"),
+            ("padding", "12px 16px"),
+            ("font-weight", "600"),
+        ],
     ));
     source_order += 1;
 
     rules.push(make_ua_rule(
         "td",
         source_order,
-        &[("display", "table-cell")],
+        &[("display", "table-cell"), ("padding", "12px 16px")],
     ));
     source_order += 1;
 
@@ -231,6 +240,8 @@ fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
             ("box-sizing", "border-box"),
             ("overflow", "auto"),
             ("font-family", "Arial"),
+            ("width", "200px"),  // Default width
+            ("height", "100px"), // Default height for textarea
         ],
     ));
     source_order += 1;
@@ -242,6 +253,9 @@ fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
             ("display", "inline-block"),
             ("align-items", "center"),
             ("font-family", "Arial"),
+            ("padding", "6px 8px"),
+            ("border", "1px solid"),
+            ("width", "200px"), // Default width for select
         ],
     ));
     source_order += 1;

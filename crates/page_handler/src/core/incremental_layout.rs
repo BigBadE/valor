@@ -350,11 +350,14 @@ impl IncrementalLayoutEngine {
                     );
                 }
 
+                // Use render_height for text nodes (glyph_height), otherwise use block_size
+                let height = result.render_height.unwrap_or(result.block_size);
+
                 let rect = LayoutRect {
                     x: result.bfc_offset.inline_offset.to_raw(),
                     y: base_y.to_raw(),
                     width: LayoutUnit::from_px(result.inline_size).to_raw(),
-                    height: LayoutUnit::from_px(result.block_size).to_raw(),
+                    height: LayoutUnit::from_px(height).to_raw(),
                 };
 
                 if base_y.to_px() > 0.1 {

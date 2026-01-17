@@ -79,6 +79,11 @@ pub struct LayoutResult {
     /// Margin strut that collapsed through this element from the bottom
     /// Used to adjust parent height when margins collapse through
     pub collapsed_through_bottom_margin: LayoutUnit,
+
+    /// Optional render height for text nodes (glyph_height vs line_height)
+    /// For text: block_size = line_height (for parent spacing), render_height = glyph_height (for rect)
+    /// For other elements: None (use block_size for rendering)
+    pub render_height: Option<f32>,
 }
 
 impl Default for LayoutResult {
@@ -91,6 +96,7 @@ impl Default for LayoutResult {
             baseline: None,
             collapsed_through_top_margin: LayoutUnit::zero(),
             collapsed_through_bottom_margin: LayoutUnit::zero(),
+            render_height: None,
         }
     }
 }
@@ -304,6 +310,7 @@ fn layout_text_node(
             baseline: None,
             collapsed_through_top_margin: LayoutUnit::zero(),
             collapsed_through_bottom_margin: LayoutUnit::zero(),
+            render_height: None,
         };
     }
 
@@ -312,14 +319,28 @@ fn layout_text_node(
 
     let metrics = measure_text(text, &style);
 
+    // Calculate half-leading: the vertical offset to center glyphs within the line box
+    // Half-leading = (line_height - glyph_height) / 2
+    let half_leading = (metrics.height - metrics.glyph_height) / 2.0;
+
+    // Adjust text position by half-leading to vertically center it
+    let adjusted_bfc_offset = BfcOffset::new(
+        space.bfc_offset.inline_offset,
+        space
+            .bfc_offset
+            .block_offset
+            .map(|offset| offset + LayoutUnit::from_px(half_leading)),
+    );
+
     LayoutResult {
         inline_size: metrics.width,
-        block_size: metrics.height,
-        bfc_offset: space.bfc_offset.clone(),
+        block_size: metrics.height, // Report line-height for parent's layout spacing
+        bfc_offset: adjusted_bfc_offset,
         exclusion_space: Arc::new(space.exclusion_space.clone()),
         baseline: Some(metrics.ascent),
         collapsed_through_top_margin: LayoutUnit::zero(),
         collapsed_through_bottom_margin: LayoutUnit::zero(),
+        render_height: Some(metrics.glyph_height), // Actual glyph height for rendering
     }
 }
 
@@ -429,11 +450,86 @@ fn layout_block_node(
             (border_box_width, sides.margin_left, sides.margin_right)
         }
     } else {
-        // Auto width = fill available space minus margins
-        // Result is border-box width (content + padding + border)
-        let margin_inline = (sides.margin_left + sides.margin_right).to_px();
-        let border_box_width = (available_inline.to_px() - margin_inline).max(0.0);
-        (border_box_width, sides.margin_left, sides.margin_right)
+        // Auto width behavior depends on display type
+        // Table cells should shrink-to-fit, blocks should fill available space
+        let is_table_cell = matches!(
+            style.display,
+            css_orchestrator::style_model::Display::TableCell
+        );
+
+        if is_table_cell {
+            // Table cells: shrink to fit content (like inline-block)
+            // Measure text content if present, otherwise use reasonable default
+            let children_arc: Arc<Vec<NodeKey>> = db.input::<DomChildrenInput>(node);
+            let children = &*children_arc;
+
+            let mut content_width = 0.0f32;
+            for &child in children.iter() {
+                use css_orchestrator::queries::DomTextInput;
+                let text_content = db.input::<DomTextInput>(child);
+                if let Some(text) = text_content.as_deref() {
+                    // Measure text width
+                    use css_orchestrator::queries::ComputedStyleQuery;
+                    use css_text::measurement::measure_text;
+                    let child_style = db.query::<ComputedStyleQuery>(child);
+                    let metrics = measure_text(text, &child_style);
+                    content_width = content_width.max(metrics.width);
+                }
+            }
+
+            // Add padding and border to content width for border-box sizing
+            let padding_border =
+                (sides.padding_left + sides.padding_right + sides.border_left + sides.border_right)
+                    .to_px();
+            let border_box_width = if content_width > 0.0 {
+                content_width + padding_border
+            } else {
+                // No text content, use reasonable default
+                40.0 + padding_border
+            };
+
+            (border_box_width, sides.margin_left, sides.margin_right)
+        } else {
+            // Block elements: fill available space minus margins
+            // Result is border-box width (content + padding + border)
+            let margin_inline = (sides.margin_left + sides.margin_right).to_px();
+            let border_box_width = (available_inline.to_px() - margin_inline).max(0.0);
+            (border_box_width, sides.margin_left, sides.margin_right)
+        }
+    };
+
+    // Apply min-width and max-width constraints (border-box values)
+    let inline_size = {
+        let mut size = inline_size;
+        if let Some(min_width) = style.min_width {
+            let min_bb = match style.box_sizing {
+                css_orchestrator::style_model::BoxSizing::ContentBox => {
+                    min_width
+                        + (sides.padding_left
+                            + sides.padding_right
+                            + sides.border_left
+                            + sides.border_right)
+                            .to_px()
+                }
+                css_orchestrator::style_model::BoxSizing::BorderBox => min_width,
+            };
+            size = size.max(min_bb);
+        }
+        if let Some(max_width) = style.max_width {
+            let max_bb = match style.box_sizing {
+                css_orchestrator::style_model::BoxSizing::ContentBox => {
+                    max_width
+                        + (sides.padding_left
+                            + sides.padding_right
+                            + sides.border_left
+                            + sides.border_right)
+                            .to_px()
+                }
+                css_orchestrator::style_model::BoxSizing::BorderBox => max_width,
+            };
+            size = size.min(max_bb);
+        }
+        size
     };
 
     // Get children
@@ -610,9 +706,8 @@ fn layout_block_node(
         // If child has margins that collapsed through it, we need to handle it
         if child_result.collapsed_through_top_margin != LayoutUnit::zero() {
             // Check if this is the first block child and we can collapse through top
-            let is_collapsing_first_child = is_block_level
-                && collapsed_through_top_margin != LayoutUnit::zero()
-                && can_collapse_through_top;
+            let is_collapsing_first_child =
+                is_block_level && is_first_block_child && can_collapse_through_top;
 
             if is_collapsing_first_child {
                 // Re-calculate the collapsed margin: max(child's margin, child's collapsed-through)
@@ -722,6 +817,40 @@ fn layout_block_node(
         children_height + vertical_spacing
     };
 
+    // Apply min-height and max-height constraints (border-box values)
+    let block_size = {
+        let mut size = block_size;
+        if let Some(min_height) = style.min_height {
+            let min_bb = match style.box_sizing {
+                css_orchestrator::style_model::BoxSizing::ContentBox => {
+                    min_height
+                        + (sides.padding_top
+                            + sides.padding_bottom
+                            + sides.border_top
+                            + sides.border_bottom)
+                            .to_px()
+                }
+                css_orchestrator::style_model::BoxSizing::BorderBox => min_height,
+            };
+            size = size.max(min_bb);
+        }
+        if let Some(max_height) = style.max_height {
+            let max_bb = match style.box_sizing {
+                css_orchestrator::style_model::BoxSizing::ContentBox => {
+                    max_height
+                        + (sides.padding_top
+                            + sides.padding_bottom
+                            + sides.border_top
+                            + sides.border_bottom)
+                            .to_px()
+                }
+                css_orchestrator::style_model::BoxSizing::BorderBox => max_height,
+            };
+            size = size.min(max_bb);
+        }
+        size
+    };
+
     // Check if this element is empty and both margins collapse through
     let is_empty_and_collapses_through = block_size == 0.0
         && can_collapse_through_top
@@ -768,6 +897,7 @@ fn layout_block_node(
         baseline: None,
         collapsed_through_top_margin: returned_top_margin,
         collapsed_through_bottom_margin: returned_bottom_margin,
+        render_height: None,
     }
 }
 
@@ -1109,6 +1239,7 @@ fn layout_flex_container(
         baseline: None,
         collapsed_through_top_margin: LayoutUnit::zero(),
         collapsed_through_bottom_margin: LayoutUnit::zero(),
+        render_height: None,
     }
 }
 
@@ -1412,6 +1543,7 @@ fn layout_grid_container(
         baseline: None,
         collapsed_through_top_margin: LayoutUnit::zero(),
         collapsed_through_bottom_margin: LayoutUnit::zero(),
+        render_height: None,
     }
 }
 
