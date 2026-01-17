@@ -145,8 +145,10 @@ fn plan_hypotheticals_and_flex(
         .iter()
         .map(|child| clamp(child.flex_basis, child.min_main, child.max_main))
         .collect();
-    let gaps_total = if items.len() > 1 {
-        (items.len() as f32 - 1.0) * container.main_gap.max(0.0)
+    // Gaps should only be between non-zero-sized items (excludes collapsed whitespace)
+    let non_zero_count = sizes.iter().filter(|&&s| s > 0.0).count();
+    let gaps_total = if non_zero_count > 1 {
+        (non_zero_count as f32 - 1.0) * container.main_gap.max(0.0)
     } else {
         0.0
     };
