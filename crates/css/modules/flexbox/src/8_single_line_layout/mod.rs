@@ -210,12 +210,21 @@ pub fn layout_single_line(
     } else {
         justify_content
     };
+
+    // For justify-content spacing calculations, only count items with non-zero size
+    // (whitespace text nodes can have zero size but still be flex items)
+    let non_zero_item_count = hypothetical_sizes
+        .iter()
+        .filter(|&&size| size > 0.0)
+        .count();
+
     let (start_offset, between_spacing) = justify_params(
         effective_justify,
         container.container_main_size,
         total + gaps_total,
-        items.len(),
+        non_zero_item_count,
     );
+
     debug!(
         "[FLEX-JUSTIFY] justify={:?} start_offset={:.3} between_spacing={:.3} total_including_gaps={:.3} sum_outer={:.3}",
         effective_justify,

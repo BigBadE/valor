@@ -119,7 +119,9 @@ pub fn accumulate_main_offsets(plan: &MainOffsetPlan, sizes: &[f32]) -> Vec<f32>
             let size_val = *size_ref;
             cursor = quantize_layout(cursor - size_val);
             offsets_accum.push(cursor);
-            if iter.peek().is_some() {
+            // Only add spacing if current item has non-zero size and there's a next item
+            // (zero-width items like collapsed whitespace shouldn't create gaps)
+            if iter.peek().is_some() && size_val > 0.0 {
                 cursor = quantize_layout(cursor - (plan.main_gap + plan.between_spacing));
             }
         }
@@ -129,9 +131,12 @@ pub fn accumulate_main_offsets(plan: &MainOffsetPlan, sizes: &[f32]) -> Vec<f32>
         let mut offsets_accum = Vec::with_capacity(sizes.len());
         let mut iter = sizes.iter().peekable();
         while let Some(size_ref) = iter.next() {
+            let size_val = *size_ref;
             offsets_accum.push(cursor);
-            cursor = quantize_layout(cursor + *size_ref);
-            if iter.peek().is_some() {
+            cursor = quantize_layout(cursor + size_val);
+            // Only add spacing if current item has non-zero size and there's a next item
+            // (zero-width items like collapsed whitespace shouldn't create gaps)
+            if iter.peek().is_some() && size_val > 0.0 {
                 cursor = quantize_layout(cursor + plan.main_gap + plan.between_spacing);
             }
         }
