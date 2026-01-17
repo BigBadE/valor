@@ -149,6 +149,41 @@ impl Query for LayoutResultQuery {
             }
         };
 
+        // Apply positioning offsets for absolutely/fixed positioned elements
+        let result = if matches!(
+            style.position,
+            css_orchestrator::style_model::Position::Absolute
+                | css_orchestrator::style_model::Position::Fixed
+        ) {
+            let mut adjusted_bfc_offset = result.bfc_offset.clone();
+
+            // Apply left/right offset (left takes precedence)
+            if let Some(left_px) = style.left {
+                adjusted_bfc_offset.inline_offset = LayoutUnit::from_px(left_px);
+            } else if let Some(right_px) = style.right {
+                // For right positioning, we'd need the containing block width
+                // For now, just use the offset as-is (incomplete implementation)
+                // TODO: Properly handle right/bottom by computing from containing block
+                adjusted_bfc_offset.inline_offset = LayoutUnit::from_px(right_px);
+            }
+
+            // Apply top/bottom offset (top takes precedence)
+            if let Some(top_px) = style.top {
+                adjusted_bfc_offset.block_offset = Some(LayoutUnit::from_px(top_px));
+            } else if let Some(bottom_px) = style.bottom {
+                // For bottom positioning, we'd need the containing block height
+                // For now, just use the offset as-is (incomplete implementation)
+                adjusted_bfc_offset.block_offset = Some(LayoutUnit::from_px(bottom_px));
+            }
+
+            LayoutResult {
+                bfc_offset: adjusted_bfc_offset,
+                ..result
+            }
+        } else {
+            result
+        };
+
         log::trace!(
             "LayoutResultQuery: node={:?} -> inline={}, block={}, bfc_offset=({}, {:?})",
             node,
