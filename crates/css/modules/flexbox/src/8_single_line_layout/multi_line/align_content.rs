@@ -77,4 +77,6 @@ pub struct PackInputs<'inputs> {
     pub per_line_main: &'inputs [Vec<super::super::FlexPlacement>],
     /// Resolved cross-size per line (after stretch)
     pub line_cross_vec: &'inputs [f32],
+    /// Flex items with margin information
+    pub items: &'inputs [super::super::FlexChild],
 }

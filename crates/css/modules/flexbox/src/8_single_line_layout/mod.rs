@@ -281,7 +281,20 @@ pub fn layout_single_line_with_cross(
         cross_ctx.container_cross_size,
         cab.cross_inputs,
     );
-    let mut pairs: Vec<(FlexPlacement, CrossPlacement)> = main.into_iter().zip(cross).collect();
+    let mut pairs: Vec<(FlexPlacement, CrossPlacement)> = main
+        .into_iter()
+        .zip(cross)
+        .enumerate()
+        .map(|(idx, (main_place, mut cross_place))| {
+            // Add margin-top to position the item within the container
+            // For row direction: margin-top pushes item down from container start
+            // For column direction: this would be margin-left (handled by main-axis)
+            if let Some(item) = items.get(idx) {
+                cross_place.cross_offset += item.margin_top;
+            }
+            (main_place, cross_place)
+        })
+        .collect();
     // Adjust cross offsets for baseline alignment if needed (single-line)
     if matches!(
         cross_ctx.align_items,
@@ -359,6 +372,7 @@ pub fn layout_multi_line_with_cross(
         line_ranges: &line_ranges,
         per_line_main: &per_line_main,
         line_cross_vec: &stretched,
+        items,
     };
     pack_lines_and_build(&cross_ctx, &inputs)
 }

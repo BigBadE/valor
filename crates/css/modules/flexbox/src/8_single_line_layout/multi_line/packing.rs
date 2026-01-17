@@ -90,6 +90,10 @@ struct LineBuildCtx<'ctx> {
     line_ref: f32,
     /// Accumulated cross offset before this line.
     cross_accum_offset: f32,
+    /// All flex items (needed for margin access).
+    items: &'ctx [super::super::FlexChild],
+    /// Starting index of this line in the items array.
+    line_start: usize,
 }
 
 /// Build `(FlexPlacement, CrossPlacement)` pairs for a single line.
@@ -107,9 +111,21 @@ fn build_line_pairs(ctx: &LineBuildCtx<'_>) -> Vec<(FlexPlacement, CrossPlacemen
                     min_c,
                     max_c,
                 );
+
+                // Add margin-top to position the item within the line box
+                // For row direction: margin-top pushes item down from line start
+                // For column direction: this would be margin-left (handled by main-axis)
+                let global_item_idx = ctx.line_start + index_in_line;
+                let item_margin_top = ctx
+                    .items
+                    .get(global_item_idx)
+                    .map_or(0.0, |item| item.margin_top);
+
                 let mut lifted = CrossPlacement {
                     cross_size: within_line.cross_size,
-                    cross_offset: ctx.cross_accum_offset + within_line.cross_offset,
+                    cross_offset: ctx.cross_accum_offset
+                        + within_line.cross_offset
+                        + item_margin_top,
                 };
                 let bctx = BaselineAdjustCtx {
                     align: ctx.cross_ctx.align_items,
@@ -183,6 +199,8 @@ pub fn pack_lines_and_build(
             line_cross_max,
             line_ref,
             cross_accum_offset,
+            items: inputs.items,
+            line_start,
         });
         results.extend(line_pairs);
         cross_accum_offset += line_cross_max + between_spacing;
