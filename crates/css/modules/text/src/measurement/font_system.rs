@@ -79,9 +79,10 @@ pub fn map_font_family(font_name: &str) -> Family<'_> {
             }
             #[cfg(all(unix, not(target_os = "macos")))]
             {
-                // Chrome uses Noto Sans as the default sans-serif font on Linux
-                // (via fontconfig resolution, which typically maps sans-serif to Noto Sans)
-                Family::Name("Noto Sans")
+                // Chrome layout tests appear to use Liberation Sans on Linux
+                // Liberation Sans 16px: glyph_height ≈ 17px (matching Chrome test expectations)
+                // Noto Sans 16px: glyph_height ≈ 21px (doesn't match Chrome)
+                Family::Name("Liberation Sans")
             }
         }
         "serif" => {
