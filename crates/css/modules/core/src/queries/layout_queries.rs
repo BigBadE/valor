@@ -140,6 +140,11 @@ impl Query for LayoutResultQuery {
         let constraint_space = get_constraint_space_for_node(db, node);
 
         // Dispatch to appropriate layout algorithm based on display type
+        let tag = db.input::<css_orchestrator::queries::DomTagInput>(node);
+        if *tag == "table" {
+            eprintln!("DISPATCH: table element has display={:?}", style.display);
+        }
+
         let result = match style.display {
             css_orchestrator::style_model::Display::Flex
             | css_orchestrator::style_model::Display::InlineFlex => {
@@ -148,6 +153,9 @@ impl Query for LayoutResultQuery {
             css_orchestrator::style_model::Display::Grid
             | css_orchestrator::style_model::Display::InlineGrid => {
                 layout_grid_container(db, node, &style, &constraint_space)
+            }
+            css_orchestrator::style_model::Display::Table => {
+                layout_table_container(db, node, &style, &constraint_space)
             }
             _ => {
                 // Block or inline - use block layout
@@ -1630,5 +1638,244 @@ fn convert_grid_auto_flow(
         StyleFlow::Column => GridAutoFlow::Column,
         StyleFlow::RowDense => GridAutoFlow::RowDense,
         StyleFlow::ColumnDense => GridAutoFlow::ColumnDense,
+    }
+}
+
+/// Layout a table container using simplified table layout algorithm.
+///
+/// This implements a basic table layout where:
+/// - Table contains row groups (thead, tbody, tfoot) or rows directly
+/// - Rows contain cells (th, td)
+/// - Cells are laid out horizontally within rows
+/// - Rows are stacked vertically
+fn layout_table_container(
+    db: &QueryDatabase,
+    node: NodeKey,
+    style: &css_orchestrator::style_model::ComputedStyle,
+    space: &ConstraintSpace,
+) -> LayoutResult {
+    use css_box::compute_box_sides;
+    use css_orchestrator::queries::ComputedStyleQuery;
+
+    eprintln!("TABLE LAYOUT: Starting table layout for node {:?}", node);
+
+    let sides = compute_box_sides(style);
+
+    // Compute table width
+    let available_inline = space
+        .available_inline_size
+        .resolve(LayoutUnit::from_raw(800 * 64));
+
+    let inline_size = if let Some(width_px) = style.width {
+        width_px
+    } else {
+        let margin_inline = (sides.margin_left + sides.margin_right).to_px();
+        (available_inline.to_px() - margin_inline).max(0.0)
+    };
+
+    let content_inline_size = inline_size
+        - (sides.padding_left + sides.padding_right + sides.border_left + sides.border_right)
+            .to_px();
+
+    // Get children (row groups or rows)
+    let children_arc: Arc<Vec<NodeKey>> = db.input::<DomChildrenInput>(node);
+    let children = &*children_arc;
+
+    // Collect all rows from the table (either direct children or children of row groups)
+    let mut all_rows = Vec::new();
+    for &child in children.iter() {
+        let child_style = db.query::<ComputedStyleQuery>(child);
+
+        // Skip non-displayed elements
+        if matches!(
+            child_style.display,
+            css_orchestrator::style_model::Display::None
+        ) {
+            continue;
+        }
+
+        if matches!(
+            child_style.display,
+            css_orchestrator::style_model::Display::TableRowGroup
+                | css_orchestrator::style_model::Display::TableHeaderGroup
+                | css_orchestrator::style_model::Display::TableFooterGroup
+        ) {
+            // This is a row group, get its rows
+            let row_group_children: Arc<Vec<NodeKey>> = db.input::<DomChildrenInput>(child);
+            for &row in row_group_children.iter() {
+                let row_style = db.query::<ComputedStyleQuery>(row);
+                if matches!(
+                    row_style.display,
+                    css_orchestrator::style_model::Display::TableRow
+                ) {
+                    all_rows.push(row);
+                }
+            }
+        } else if matches!(
+            child_style.display,
+            css_orchestrator::style_model::Display::TableRow
+        ) {
+            // Direct row child
+            all_rows.push(child);
+        }
+    }
+
+    // Layout each row and collect cell information
+    let mut current_y = LayoutUnit::zero();
+    let mut column_widths: Vec<f32> = Vec::new();
+
+    // First pass: measure all cells to determine column widths
+    for &row in &all_rows {
+        let row_cells: Arc<Vec<NodeKey>> = db.input::<DomChildrenInput>(row);
+
+        for (col_idx, &cell) in row_cells.iter().enumerate() {
+            let cell_style = db.query::<ComputedStyleQuery>(cell);
+
+            // Skip non-table-cells
+            if !matches!(
+                cell_style.display,
+                css_orchestrator::style_model::Display::TableCell
+            ) {
+                continue;
+            }
+
+            // Measure cell content width (already implemented in our table cell width logic)
+            let cell_sides = compute_box_sides(&cell_style);
+            let cell_children: Arc<Vec<NodeKey>> = db.input::<DomChildrenInput>(cell);
+
+            let mut content_width = 0.0f32;
+            for &child in cell_children.iter() {
+                use css_orchestrator::queries::DomTextInput;
+                let text_content = db.input::<DomTextInput>(child);
+                if let Some(text) = text_content.as_deref() {
+                    use css_text::measurement::measure_text;
+                    let child_style = db.query::<ComputedStyleQuery>(child);
+                    let metrics = measure_text(text, &child_style);
+                    content_width = content_width.max(metrics.width);
+                }
+            }
+
+            let padding_border = (cell_sides.padding_left
+                + cell_sides.padding_right
+                + cell_sides.border_left
+                + cell_sides.border_right)
+                .to_px();
+            let cell_width = if content_width > 0.0 {
+                content_width + padding_border
+            } else {
+                40.0 + padding_border
+            };
+
+            // Expand column_widths if needed
+            while column_widths.len() <= col_idx {
+                column_widths.push(0.0);
+            }
+            column_widths[col_idx] = column_widths[col_idx].max(cell_width);
+        }
+    }
+
+    // Second pass: layout rows and cells with determined column widths
+    for &row in &all_rows {
+        let row_style = db.query::<ComputedStyleQuery>(row);
+        let row_sides = compute_box_sides(&row_style);
+
+        // Position row
+        let row_space = ConstraintSpace {
+            available_inline_size: AvailableSize::Definite(LayoutUnit::from_px(
+                content_inline_size,
+            )),
+            available_block_size: space.available_block_size,
+            bfc_offset: BfcOffset::new(
+                space.bfc_offset.inline_offset + sides.padding_left + sides.border_left,
+                Some(
+                    space.bfc_offset.block_offset.unwrap_or(LayoutUnit::zero())
+                        + current_y
+                        + sides.padding_top
+                        + sides.border_top,
+                ),
+            ),
+            exclusion_space: space.exclusion_space.clone(),
+            margin_strut: MarginStrut::default(),
+            is_new_formatting_context: true,
+            percentage_resolution_block_size: space.percentage_resolution_block_size,
+            fragmentainer_block_size: None,
+            fragmentainer_offset: LayoutUnit::zero(),
+            is_for_measurement_only: false,
+            margins_already_applied: false,
+            is_block_size_forced: false,
+            is_inline_size_forced: false,
+        };
+
+        db.set_input::<ConstraintSpaceInput>(row, row_space.clone());
+
+        // Layout cells in this row horizontally
+        let row_cells: Arc<Vec<NodeKey>> = db.input::<DomChildrenInput>(row);
+        let mut current_x = 0.0f32;
+        let mut row_height = 0.0f32;
+
+        for (col_idx, &cell) in row_cells.iter().enumerate() {
+            let cell_style = db.query::<ComputedStyleQuery>(cell);
+
+            if !matches!(
+                cell_style.display,
+                css_orchestrator::style_model::Display::TableCell
+            ) {
+                continue;
+            }
+
+            let cell_width = column_widths.get(col_idx).copied().unwrap_or(40.0);
+
+            // Create constraint space for cell
+            let cell_space = ConstraintSpace {
+                available_inline_size: AvailableSize::Definite(LayoutUnit::from_px(cell_width)),
+                available_block_size: AvailableSize::Indefinite,
+                bfc_offset: BfcOffset::new(
+                    row_space.bfc_offset.inline_offset + LayoutUnit::from_px(current_x),
+                    row_space.bfc_offset.block_offset,
+                ),
+                exclusion_space: space.exclusion_space.clone(),
+                margin_strut: MarginStrut::default(),
+                is_new_formatting_context: true,
+                percentage_resolution_block_size: None,
+                fragmentainer_block_size: None,
+                fragmentainer_offset: LayoutUnit::zero(),
+                is_for_measurement_only: false,
+                margins_already_applied: false,
+                is_block_size_forced: false,
+                is_inline_size_forced: false,
+            };
+
+            db.set_input::<ConstraintSpaceInput>(cell, cell_space);
+
+            // Layout cell as block
+            let cell_result = db.query::<LayoutResultQuery>(cell);
+            row_height = row_height.max(cell_result.block_size);
+
+            current_x += cell_width;
+        }
+
+        // Advance to next row
+        current_y = current_y + LayoutUnit::from_px(row_height);
+    }
+
+    // Compute final table height
+    let block_size = if let Some(height_px) = style.height {
+        height_px
+    } else {
+        let vertical_spacing =
+            (sides.padding_top + sides.padding_bottom + sides.border_top + sides.border_bottom)
+                .to_px();
+        current_y.to_px() + vertical_spacing
+    };
+
+    LayoutResult {
+        inline_size,
+        block_size,
+        bfc_offset: space.bfc_offset.clone(),
+        exclusion_space: Arc::new(space.exclusion_space.clone()),
+        baseline: None,
+        collapsed_through_top_margin: LayoutUnit::zero(),
+        collapsed_through_bottom_margin: LayoutUnit::zero(),
+        render_height: None,
     }
 }
