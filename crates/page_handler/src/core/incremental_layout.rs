@@ -340,6 +340,12 @@ impl IncrementalLayoutEngine {
             // Convert query results to LayoutRect and update cache
             // LayoutRect uses 1/64px units (i32) to preserve sub-pixel precision
             for (node, result) in all_layouts {
+                // Skip nodes with display:none (they have default/empty layout results)
+                // This prevents hidden elements like <style>, <head>, etc. from being rendered
+                if result.inline_size == 0.0 && result.block_size == 0.0 {
+                    continue;
+                }
+
                 let base_y = result.bfc_offset.block_offset.unwrap_or(LayoutUnit::zero());
 
                 if result.bfc_offset.block_offset.is_none() {
