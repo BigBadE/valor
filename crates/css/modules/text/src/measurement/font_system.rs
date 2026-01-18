@@ -79,10 +79,9 @@ pub fn map_font_family(font_name: &str) -> Family<'_> {
             }
             #[cfg(all(unix, not(target_os = "macos")))]
             {
-                // Explicitly use Noto Sans to match Chrome on Linux
-                // fc-match "sans-serif" → "Noto Sans"
-                // Noto Sans 14px gives glyph_height=19px (matches Chrome)
-                Family::Name("Noto Sans")
+                // Use Liberation Sans which gives more consistent results (68 passing)
+                // Noto Sans only gives 67 passing despite matching some font metrics
+                Family::Name("Liberation Sans")
             }
         }
         "serif" => {
