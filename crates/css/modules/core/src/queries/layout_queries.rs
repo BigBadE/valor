@@ -389,6 +389,12 @@ fn layout_text_node(
     use css_orchestrator::queries::ComputedStyleQuery;
     let style = db.query::<ComputedStyleQuery>(node);
 
+    // Check if parent has display: none (text nodes inherit display from parent)
+    // This prevents text inside <style>, <head>, etc. from being laid out
+    if matches!(style.display, css_orchestrator::style_model::Display::None) {
+        return LayoutResult::default();
+    }
+
     // Get constraint space
     let space = get_constraint_space_for_node(db, node);
 
