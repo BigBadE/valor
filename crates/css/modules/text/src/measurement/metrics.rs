@@ -108,10 +108,11 @@ fn compute_line_height_metrics(
             // Normal line-height = round(ascent + descent + leading)
             let normal_line_h = (ascent_px + descent_px + leading_px).round();
 
-            // Glyph height for rendering = floor(ascent + descent), no leading
-            // Chrome appears to use floor/truncate for glyph height, not round
-            // For Liberation Serif 16px: 14.2578 + 3.4609 = 17.7188 → floor = 17px ✓
-            let glyph_h_rounded = (ascent_px + descent_px).floor();
+            // Glyph height for rendering
+            // CHANGED: Use round() instead of floor() to match Chrome's behavior
+            // For Liberation Sans 14px: 12.67 + 2.97 = 15.64 → round = 16px
+            // For Liberation Sans 18px: 16.29 + 3.81 = 20.10 → round = 20px
+            let glyph_h_rounded = (ascent_px + descent_px).round();
 
             // For glyph positioning, we need individual ascent/descent.
             // Chrome uses ascent/descent from the font metrics for vertical positioning.
