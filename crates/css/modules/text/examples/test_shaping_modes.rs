@@ -5,7 +5,7 @@ fn main() {
     let attrs = Attrs::new()
         .family(Family::Name("Liberation Serif"))
         .weight(Weight(400));
-    
+
     for shaping in &[Shaping::Basic, Shaping::Advanced] {
         println!("{:?} shaping:", shaping);
         for text in &["Tab A", "Tab D"] {
@@ -18,7 +18,7 @@ fn main() {
         }
         println!();
     }
-    
+
     println!("Chrome expects:");
     println!("  Tab A: 38.4375px");
     println!("  Tab D: 39.3125px");

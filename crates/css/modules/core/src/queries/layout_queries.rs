@@ -136,6 +136,17 @@ impl Query for LayoutResultQuery {
             return LayoutResult::default();
         }
 
+        // Check display: contents - element doesn't generate a box
+        // Its children are laid out as if they were children of the parent
+        // TODO: Proper implementation requires parent to flatten display:contents children
+        // For now, just return empty layout (partial implementation)
+        if matches!(
+            style.display,
+            css_orchestrator::style_model::Display::Contents
+        ) {
+            return LayoutResult::default();
+        }
+
         // Get constraint space for this node
         let constraint_space = get_constraint_space_for_node(db, node);
 
@@ -355,6 +366,23 @@ impl Query for LayoutResultQuery {
                 }
             } else {
                 result
+            }
+        } else {
+            result
+        };
+
+        // Apply CSS transform (translateX/translateY)
+        let result = if style.transform.translate_x != 0.0 || style.transform.translate_y != 0.0 {
+            let mut transformed_offset = result.bfc_offset.clone();
+            transformed_offset.inline_offset =
+                transformed_offset.inline_offset + LayoutUnit::from_px(style.transform.translate_x);
+            if let Some(block_offset) = transformed_offset.block_offset {
+                transformed_offset.block_offset =
+                    Some(block_offset + LayoutUnit::from_px(style.transform.translate_y));
+            }
+            LayoutResult {
+                bfc_offset: transformed_offset,
+                ..result
             }
         } else {
             result

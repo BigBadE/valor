@@ -82,17 +82,10 @@ impl CSSMirror {
         let mut out = types::Stylesheet::default();
         let mut base: u32 = 0;
 
-        // Sort nodes so injected nodes (with high NodeKey IDs) come LAST
-        // This ensures CSS reset injected via inject_css_sync comes after HTML styles
-        let mut sorted_nodes = self.style_nodes_order.clone();
-        sorted_nodes.sort_by_key(|node_key| {
-            // Injected nodes have IDs starting at 0xFFFF_0000
-            // Normal HTML nodes have lower IDs
-            // This sort puts HTML nodes first, injected nodes last
-            node_key.0
-        });
-
-        for node in &sorted_nodes {
+        // Process style nodes in insertion order.
+        // inject_css_sync ensures HTML <style> elements are processed first,
+        // then appends injected stylesheets, so insertion order = correct cascade order.
+        for node in &self.style_nodes_order {
             if let Some(text) = self.style_text_by_node.get(node) {
                 let parsed = parser::parse_stylesheet(text, out.origin, base);
 

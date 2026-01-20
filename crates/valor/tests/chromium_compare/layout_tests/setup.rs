@@ -16,7 +16,6 @@ use super::super::common::to_file_url;
 pub async fn setup_page_for_fixture(handle: &Handle, input_path: &Path) -> Result<HtmlPage> {
     let url = to_file_url(input_path)?;
     let mut page = create_page(handle, url).await?;
-    page.inject_css_sync(css_reset_string())?;
 
     let finished = update_until_finished(handle, &mut page, |_page| Ok(())).await?;
 
@@ -24,8 +23,8 @@ pub async fn setup_page_for_fixture(handle: &Handle, input_path: &Path) -> Resul
         return Err(anyhow!("Parsing did not finish"));
     }
 
-    // update_until_finished already ran layout in its final iteration
-    // No need to call update() or ensure_layout_now() again
+    // Inject CSS reset AFTER HTML parsing is complete to ensure it comes after test styles
+    page.inject_css_sync(css_reset_string())?;
 
     Ok(page)
 }

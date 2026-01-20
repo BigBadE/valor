@@ -5,7 +5,7 @@ fn main() {
     let attrs = Attrs::new()
         .family(Family::Name("Liberation Serif"))
         .weight(Weight(400));
-    
+
     println!("Individual letter widths:");
     for letter in &["A", "B", "C", "D", "E"] {
         let buffer_metrics = Metrics::new(16.0, 18.0);
@@ -15,7 +15,7 @@ fn main() {
         let width = buffer.line_layout(&mut font_system, 0).unwrap()[0].w;
         println!("  {}: {:.4}px", letter, width);
     }
-    
+
     println!("\nTab + letter widths:");
     for letter in &["A", "B", "C", "D", "E"] {
         let text = format!("Tab {}", letter);
@@ -26,7 +26,7 @@ fn main() {
         let width = buffer.line_layout(&mut font_system, 0).unwrap()[0].w;
         println!("  Tab {}: {:.4}px", letter, width);
     }
-    
+
     println!("\nChrome expects:");
     println!("  Tab A/B/C: 38.4375px");
     println!("  Tab D: 39.3125px");

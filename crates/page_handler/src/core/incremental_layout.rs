@@ -318,24 +318,12 @@ impl IncrementalLayoutEngine {
         self.generation += 1;
         log::info!("RUNNING PARALLEL LAYOUT - generation {}", self.generation);
 
-        println!(
-            "INCR_LAYOUT: compute_layouts called, layout_db exists={}",
-            self.layout_database.is_some()
-        );
-
         // Use parallel layout database if available
         if let Some(layout_db) = &mut self.layout_database {
-            println!("INCR_LAYOUT: Calling recompute_layouts_parallel");
             let _executed = layout_db.recompute_layouts_parallel();
-            println!("INCR_LAYOUT: recompute returned");
 
             // Get all layout results from query database
             let all_layouts = layout_db.get_all_layouts();
-
-            println!(
-                "INCR_LAYOUT: Got {} layouts from database",
-                all_layouts.len()
-            );
 
             // Convert query results to LayoutRect and update cache
             // LayoutRect uses 1/64px units (i32) to preserve sub-pixel precision
@@ -370,24 +358,7 @@ impl IncrementalLayoutEngine {
 
                 // Use render_height for text nodes (glyph_height), otherwise use block_size
                 let height = result.render_height.unwrap_or(result.block_size);
-
-                // Debug: Always log when height is around 30
-                if (height - 30.0).abs() < 1.0 {
-                    eprintln!(
-                        "DEBUG RECT 30: node={:?}, render_height={:?}, block_size={}, using_height={}",
-                        node, result.render_height, result.block_size, height
-                    );
-                }
-
                 let height_raw = LayoutUnit::from_px(height).to_raw();
-
-                // Debug: Check stored height
-                if (height - 15.0).abs() < 0.1 && height_raw != 960 {
-                    eprintln!(
-                        "DEBUG STORE: height_px={}, height_raw={}, expected_raw=960",
-                        height, height_raw
-                    );
-                }
 
                 let rect = LayoutRect {
                     x: result.bfc_offset.inline_offset.to_raw(),
@@ -395,26 +366,6 @@ impl IncrementalLayoutEngine {
                     width: LayoutUnit::from_px(result.inline_size).to_raw(),
                     height: height_raw,
                 };
-
-                if base_y.to_px() > 0.1 {
-                    println!(
-                        "INCR_LAYOUT: Storing node {:?} with y={}px (raw={})",
-                        node,
-                        base_y.to_px(),
-                        base_y.to_raw()
-                    );
-                }
-
-                // Debug: Log what we're storing - check for 15px or 30px
-                if (height - 30.0).abs() < 1.0 || (height - 15.0).abs() < 0.1 {
-                    eprintln!(
-                        "DEBUG INSERT: node={:?}, height_px={}, height_raw={}, rect.height_px()={}",
-                        node,
-                        height,
-                        height_raw,
-                        rect.height_px()
-                    );
-                }
 
                 self.layout_cache.insert(node, rect);
             }

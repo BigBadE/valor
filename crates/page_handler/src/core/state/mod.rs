@@ -581,6 +581,12 @@ impl HtmlPage {
             self.css_mirror.mirror_mut().apply_update(update.clone())?;
         }
 
+        // Update the stylesheet in the style database and recompute styles
+        let author_styles = self.css_mirror.mirror_mut().styles();
+        self.style_database
+            .replace_stylesheet(author_styles.clone());
+        self.style_database.recompute_styles_parallel();
+
         Ok(())
     }
 }

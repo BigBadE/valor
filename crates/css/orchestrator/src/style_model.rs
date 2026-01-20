@@ -29,6 +29,13 @@ pub enum BorderStyle {
     Solid,
 }
 
+/// CSS transform value (simplified for MVP)
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Transform {
+    pub translate_x: f32, // in pixels
+    pub translate_y: f32, // in pixels
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Overflow {
     #[default]
@@ -273,4 +280,7 @@ pub struct ComputedStyle {
     pub grid_template_rows: Option<String>,
     /// Grid auto flow direction
     pub grid_auto_flow: GridAutoFlow,
+    // Transform
+    /// CSS transform (translateX/translateY for MVP)
+    pub transform: Transform,
 }

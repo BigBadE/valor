@@ -42,6 +42,9 @@ pub struct PaintStyle {
     pub is_positioned: bool,
     /// Overflow clipping bounds.
     pub overflow_clip: Option<super::stacking::ClipRect>,
+    /// CSS transform (translateX, translateY).
+    pub transform_translate_x: f32,
+    pub transform_translate_y: f32,
 }
 
 impl Default for PaintStyle {
@@ -56,6 +59,8 @@ impl Default for PaintStyle {
             z_index: None,
             is_positioned: false,
             overflow_clip: None,
+            transform_translate_x: 0.0,
+            transform_translate_y: 0.0,
         }
     }
 }
@@ -190,8 +195,8 @@ impl DisplayListBuilder {
     fn paint_background(rect: &LayoutRect, style: &PaintStyle, items: &mut Vec<DisplayItem>) {
         if style.background_color[3] > 0.0 {
             items.push(DisplayItem::Rect {
-                x: rect.x,
-                y: rect.y,
+                x: rect.x + style.transform_translate_x,
+                y: rect.y + style.transform_translate_y,
                 width: rect.width,
                 height: rect.height,
                 color: style.background_color,
@@ -226,9 +231,12 @@ impl DisplayListBuilder {
                 rect.height
             );
 
+            let x = rect.x + style.transform_translate_x;
+            let y = rect.y + style.transform_translate_y;
+
             items.push(DisplayItem::Text {
-                x: rect.x,
-                y: rect.y + style.font_size, // baseline
+                x,
+                y: y + style.font_size, // baseline
                 text: text.clone(),
                 color: style.text_color,
                 font_size: style.font_size,
@@ -238,10 +246,10 @@ impl DisplayListBuilder {
                 line_height,
                 line_height_unrounded: line_height, // For test code, same as rounded
                 bounds: Some((
-                    rect.x.round() as i32,
-                    rect.y.round() as i32,
-                    (rect.x + rect.width).round() as i32,
-                    (rect.y + rect.height).round() as i32,
+                    x.round() as i32,
+                    y.round() as i32,
+                    (x + rect.width).round() as i32,
+                    (y + rect.height).round() as i32,
                 )),
                 measured_width: rect.width,
             });

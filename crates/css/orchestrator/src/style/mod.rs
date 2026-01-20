@@ -58,6 +58,7 @@ pub fn build_computed_from_inline(
     parsers::gaps::apply_gaps(&mut computed, decls);
     parsers::grid::apply_grid_properties(&mut computed, decls);
     parsers::layout::apply_offsets(&mut computed, decls);
+    parsers::transform::apply_transform(&mut computed, decls);
     parsers::colors::apply_effects(&mut computed, decls);
 
     computed

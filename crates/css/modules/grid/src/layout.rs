@@ -208,7 +208,23 @@ pub fn layout_grid<NodeId: Clone>(
         justify_items: inputs.justify_items,
         align_items: inputs.align_items,
     };
+
+    tracing::debug!("Col sizes: {:?}", col_sizes.base_sizes);
+    tracing::debug!("Row sizes: {:?}", row_sizes.base_sizes);
+
     let placed_items = position_grid_items(items, &placements, &positioning_ctx);
+
+    for (idx, item) in placed_items.iter().enumerate() {
+        tracing::debug!(
+            "Item {}: pos=({}, {}), size=({}, {}), area={:?}",
+            idx,
+            item.x,
+            item.y,
+            item.width,
+            item.height,
+            item.area
+        );
+    }
 
     // Calculate total grid size using actual track counts (including implicit tracks)
     let total_width = inputs.col_tracks.gap.mul_add(
@@ -473,5 +489,144 @@ mod tests {
                 "Column {idx} width should be ~{expected_col_width}px, got {col_width}px"
             );
         }
+    }
+
+    /// Test grid_03_grid_with_gap scenario (2x2 grid with gap).
+    ///
+    /// # Panics
+    /// Panics if layout computation fails or assertions fail.
+    #[test]
+    fn test_grid_03_with_gap() {
+        // Reproduce grid_03_grid_with_gap.html:
+        // grid-template-columns: 90px 90px
+        // grid-template-rows: 45px 45px
+        // gap: 10px
+
+        let items = vec![
+            GridItem::new(0), // item a
+            GridItem::new(1), // item b
+            GridItem::new(2), // item c
+            GridItem::new(3), // item d
+        ];
+
+        let row_tracks = GridAxisTracks::new(
+            vec![
+                GridTrack {
+                    size: GridTrackSize::Breadth(TrackBreadth::Length(45.0)),
+                    track_type: TrackListType::Explicit,
+                },
+                GridTrack {
+                    size: GridTrackSize::Breadth(TrackBreadth::Length(45.0)),
+                    track_type: TrackListType::Explicit,
+                },
+            ],
+            10.0, // gap
+        );
+
+        let col_tracks = GridAxisTracks::new(
+            vec![
+                GridTrack {
+                    size: GridTrackSize::Breadth(TrackBreadth::Length(90.0)),
+                    track_type: TrackListType::Explicit,
+                },
+                GridTrack {
+                    size: GridTrackSize::Breadth(TrackBreadth::Length(90.0)),
+                    track_type: TrackListType::Explicit,
+                },
+            ],
+            10.0, // gap
+        );
+
+        let inputs = GridContainerInputs::new(row_tracks, col_tracks, 180.0, 90.0);
+
+        let result = layout_grid(&items, &inputs).expect("Grid layout should succeed");
+
+        // Expected layout:
+        // Item 0 (a): (0, 0) 90x45
+        // Item 1 (b): (100, 0) 90x45
+        // Item 2 (c): (0, 55) 90x45
+        // Item 3 (d): (100, 55) 90x45
+
+        assert_eq!(result.items.len(), 4, "Should have 4 items");
+
+        println!("Actual layout:");
+        for (idx, item) in result.items.iter().enumerate() {
+            println!(
+                "  Item {}: pos=({}, {}), size=({}, {})",
+                idx, item.x, item.y, item.width, item.height
+            );
+        }
+
+        // Check item 0 (a)
+        assert!(
+            (result.items[0].x - 0.0).abs() < 0.1,
+            "Item 0 x should be 0"
+        );
+        assert!(
+            (result.items[0].y - 0.0).abs() < 0.1,
+            "Item 0 y should be 0"
+        );
+        assert!(
+            (result.items[0].width - 90.0).abs() < 0.1,
+            "Item 0 width should be 90"
+        );
+        assert!(
+            (result.items[0].height - 45.0).abs() < 0.1,
+            "Item 0 height should be 45"
+        );
+
+        // Check item 1 (b)
+        assert!(
+            (result.items[1].x - 100.0).abs() < 0.1,
+            "Item 1 x should be 100"
+        );
+        assert!(
+            (result.items[1].y - 0.0).abs() < 0.1,
+            "Item 1 y should be 0"
+        );
+        assert!(
+            (result.items[1].width - 90.0).abs() < 0.1,
+            "Item 1 width should be 90"
+        );
+        assert!(
+            (result.items[1].height - 45.0).abs() < 0.1,
+            "Item 1 height should be 45"
+        );
+
+        // Check item 2 (c)
+        assert!(
+            (result.items[2].x - 0.0).abs() < 0.1,
+            "Item 2 x should be 0"
+        );
+        assert!(
+            (result.items[2].y - 55.0).abs() < 0.1,
+            "Item 2 y should be 55"
+        );
+        assert!(
+            (result.items[2].width - 90.0).abs() < 0.1,
+            "Item 2 width should be 90"
+        );
+        assert!(
+            (result.items[2].height - 45.0).abs() < 0.1,
+            "Item 2 height should be 45"
+        );
+
+        // Check item 3 (d)
+        assert!(
+            (result.items[3].x - 100.0).abs() < 0.1,
+            "Item 3 x should be 100"
+        );
+        assert!(
+            (result.items[3].y - 55.0).abs() < 0.1,
+            "Item 3 y should be 55"
+        );
+        assert!(
+            (result.items[3].width - 90.0).abs() < 0.1,
+            "Item 3 width should be 90"
+        );
+        assert!(
+            (result.items[3].height - 45.0).abs() < 0.1,
+            "Item 3 height should be 45"
+        );
     }
 }

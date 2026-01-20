@@ -117,12 +117,6 @@ fn compute_line_height_metrics(
             // Glyph height is ascent + descent (rounded separately)
             let glyph_h_rounded = ascent_rounded + descent_rounded;
 
-            // Debug: Log glyph height calculation for specific font sizes
-            if (font_size - 14.0).abs() < 0.1 {
-                eprintln!("DEBUG glyph_height: font_size={}, ascent_px={:.2}, descent_px={:.2}, ascent_rounded={}, descent_rounded={}, glyph_h={}",
-                    font_size, ascent_px, descent_px, ascent_rounded, descent_rounded, glyph_h_rounded);
-            }
-
             // Normal line-height is ascent + descent + leading (all rounded separately)
             let normal_line_h = ascent_rounded + descent_rounded + leading_rounded;
 

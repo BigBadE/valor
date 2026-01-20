@@ -96,7 +96,7 @@ fn create_button_rule(source_order: u32) -> types::Rule {
         source_order,
         &[
             ("display", "block"),
-            ("padding", "6px 10px"),
+            ("padding", "0"),
             ("border", "1px solid"),
             ("box-sizing", "border-box"),
             ("font-family", "Arial"),
@@ -113,13 +113,13 @@ fn create_input_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
         source_order,
         &[
             ("display", "inline-block"),
-            ("padding", "8px 12px"),
+            ("padding", "0"),
             ("border", "2px solid"),
             ("box-sizing", "border-box"),
             ("overflow", "clip"),
             ("font-family", "Arial"),
-            ("width", "200px"), // Default width for text inputs
-            ("height", "35px"), // Default height for text inputs
+            ("width", "173px"), // Default width for text inputs (matches Chrome)
+            ("height", "19px"), // Default height for text inputs (matches Chrome)
         ],
     ));
     source_order += 1;
@@ -236,7 +236,7 @@ fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
         source_order,
         &[
             ("display", "inline-block"),
-            ("padding", "10px"),
+            ("padding", "0"),
             ("border", "2px solid"),
             ("box-sizing", "border-box"),
             ("overflow", "auto"),
@@ -254,7 +254,7 @@ fn create_form_control_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
             ("display", "inline-block"),
             ("align-items", "center"),
             ("font-family", "Arial"),
-            ("padding", "6px 8px"),
+            ("padding", "0"),
             ("border", "1px solid"),
             ("width", "200px"), // Default width for select
         ],
