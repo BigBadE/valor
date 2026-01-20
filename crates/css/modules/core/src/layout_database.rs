@@ -355,4 +355,10 @@ impl LayoutDatabase {
         use css_orchestrator::queries::ComputedStyleQuery;
         self.db.query::<ComputedStyleQuery>(node)
     }
+
+    /// Get text content for a node (if it's a text node).
+    pub fn get_text_content(&self, node: NodeKey) -> std::sync::Arc<Option<String>> {
+        use css_orchestrator::queries::DomTextInput;
+        self.db.input::<DomTextInput>(node)
+    }
 }

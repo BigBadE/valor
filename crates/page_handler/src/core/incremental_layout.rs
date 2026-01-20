@@ -342,8 +342,20 @@ impl IncrementalLayoutEngine {
             for (node, result) in all_layouts {
                 // Skip nodes with display:none (they have default/empty layout results)
                 // This prevents hidden elements like <style>, <head>, etc. from being rendered
+                // However, we keep display:contents elements even though they have zero size,
+                // because they should appear in the layout tree with their children
                 if result.inline_size == 0.0 && result.block_size == 0.0 {
-                    continue;
+                    // Check if this is display:contents (which should be kept) or display:none (which should be skipped)
+                    let style = layout_db.query_style(node);
+
+                    if !matches!(
+                        style.display,
+                        css_orchestrator::style_model::Display::Contents
+                    ) {
+                        // Not display:contents, so skip it (it's display:none or empty)
+                        continue;
+                    }
+                    // display:contents - continue to include it with zero size
                 }
 
                 let base_y = result.bfc_offset.block_offset.unwrap_or(LayoutUnit::zero());
@@ -359,11 +371,29 @@ impl IncrementalLayoutEngine {
                 // Use render_height for text nodes (glyph_height), otherwise use block_size
                 let height = result.render_height.unwrap_or(result.block_size);
 
+                // Debug: Always log when height is around 30
+                if (height - 30.0).abs() < 1.0 {
+                    eprintln!(
+                        "DEBUG RECT 30: node={:?}, render_height={:?}, block_size={}, using_height={}",
+                        node, result.render_height, result.block_size, height
+                    );
+                }
+
+                let height_raw = LayoutUnit::from_px(height).to_raw();
+
+                // Debug: Check stored height
+                if (height - 15.0).abs() < 0.1 && height_raw != 960 {
+                    eprintln!(
+                        "DEBUG STORE: height_px={}, height_raw={}, expected_raw=960",
+                        height, height_raw
+                    );
+                }
+
                 let rect = LayoutRect {
                     x: result.bfc_offset.inline_offset.to_raw(),
                     y: base_y.to_raw(),
                     width: LayoutUnit::from_px(result.inline_size).to_raw(),
-                    height: LayoutUnit::from_px(height).to_raw(),
+                    height: height_raw,
                 };
 
                 if base_y.to_px() > 0.1 {
@@ -372,6 +402,17 @@ impl IncrementalLayoutEngine {
                         node,
                         base_y.to_px(),
                         base_y.to_raw()
+                    );
+                }
+
+                // Debug: Log what we're storing - check for 15px or 30px
+                if (height - 30.0).abs() < 1.0 || (height - 15.0).abs() < 0.1 {
+                    eprintln!(
+                        "DEBUG INSERT: node={:?}, height_px={}, height_raw={}, rect.height_px()={}",
+                        node,
+                        height,
+                        height_raw,
+                        rect.height_px()
                     );
                 }
 

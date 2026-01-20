@@ -8,7 +8,7 @@ mod font_system;
 mod metrics;
 
 // Re-export public API
-pub use font_system::map_font_family;
+pub use font_system::{get_default_font_family, map_font_family};
 pub use metrics::{
     TextMetrics, WrappedTextMetrics, measure_text, measure_text_width, measure_text_wrapped,
 };

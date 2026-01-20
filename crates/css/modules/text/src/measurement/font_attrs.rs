@@ -42,9 +42,8 @@ pub fn prepare_font_attrs(style: &ComputedStyle) -> Attrs<'_> {
             }
         }
     } else {
-        // Default to generic serif family when no font family specified (will use fontdb settings)
-        // This matches browser default behavior - CSS spec defines serif as the initial value
-        attrs = attrs.family(Family::Serif);
+        // Use the shared default font family function (single source of truth)
+        attrs = attrs.family(super::font_system::get_default_font_family());
     }
 
     attrs

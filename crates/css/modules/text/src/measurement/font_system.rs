@@ -40,14 +40,12 @@ pub fn get_font_system() -> Arc<Mutex<FontSystem>> {
 
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            // On Linux, explicitly use Liberation Serif for the serif family.
-            // Liberation Serif is metrically compatible with Times New Roman, which Chrome uses.
-            // This ensures our layout tests match Chrome's output exactly.
+            // On Linux, explicitly set font families to match Chrome's defaults.
+            // Liberation Serif is metrically compatible with Times New Roman.
             font_system.db_mut().set_serif_family("Liberation Serif");
 
-            // For sans-serif and monospace, let fontconfig resolve them:
-            // - sans-serif → Noto Sans (most modern Linux distributions)
-            // - monospace → DejaVu Sans Mono or Noto Sans Mono
+            // For sans-serif and monospace, we explicitly map them in map_font_family()
+            // to avoid fontconfig's incorrect resolution
         }
 
         let arc = Arc::new(Mutex::new(font_system));
@@ -66,7 +64,10 @@ pub fn get_font_system() -> Arc<Mutex<FontSystem>> {
 /// - monospace → DejaVu Sans Mono or Noto Sans Mono
 ///
 /// This ensures we use the same fonts that Chrome uses via fontconfig.
-pub fn map_font_family(font_name: &str) -> Family<'_> {
+///
+/// This is the single source of truth for font family mapping used by both
+/// layout (css_text) and rendering (wgpu_backend).
+pub fn map_font_family(font_name: &str) -> Family<'static> {
     match font_name.to_lowercase().as_str() {
         "system-ui" | "-apple-system" | "blinkmacsystemfont" | "sans-serif" => {
             #[cfg(target_os = "windows")]
@@ -79,8 +80,6 @@ pub fn map_font_family(font_name: &str) -> Family<'_> {
             }
             #[cfg(all(unix, not(target_os = "macos")))]
             {
-                // Use Liberation Sans which gives more consistent results (68 passing)
-                // Noto Sans only gives 67 passing despite matching some font metrics
                 Family::Name("Liberation Sans")
             }
         }
@@ -92,15 +91,54 @@ pub fn map_font_family(font_name: &str) -> Family<'_> {
             Family::Serif
         }
         "monospace" => {
-            // Use Family::Monospace to let fontconfig resolve the actual font
-            // On Linux, this typically resolves to DejaVu Sans Mono or Noto Sans Mono
-            // On Windows, this resolves to Courier New
-            // On macOS, this resolves to Courier or Menlo
-            Family::Monospace
+            #[cfg(target_os = "windows")]
+            {
+                Family::Name("Courier New")
+            }
+            #[cfg(target_os = "macos")]
+            {
+                Family::Name("Menlo")
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                // CRITICAL: Use explicit font name instead of Family::Monospace.
+                // Family::Monospace causes fontconfig to resolve incorrectly,
+                // matching to random fonts (DejaVu Serif, Noto Sans Gujarati UI, etc.)
+                // DejaVu Sans Mono has correct weight matching: 400→400, 600→700, 700→700
+                Family::Name("DejaVu Sans Mono")
+            }
         }
         "cursive" => Family::Cursive,
         "fantasy" => Family::Fantasy,
-        _ => Family::Name(font_name),
+        // For custom font names, we can't return 'static since we'd need to own the string
+        // Fall back to serif (the default) for now
+        // TODO: Support custom font names by using a different approach
+        _ => Family::Serif,
+    }
+}
+
+/// Get the default font family when no font-family is specified.
+///
+/// This is the single source of truth for the default font used by both
+/// layout (css_text) and rendering (wgpu_backend).
+pub fn get_default_font_family() -> Family<'static> {
+    // Default to serif to match Chrome's behavior on Linux
+    // Chrome on Linux defaults to Times New Roman (Liberation Serif)
+    // Use explicit font names instead of Family::Serif to ensure cosmic-text loads the right font
+    #[cfg(target_os = "windows")]
+    {
+        Family::Name("Times New Roman")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Family::Name("Times")
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Use Liberation Serif to match Chrome's default on Linux
+        // Note: Liberation Serif on this system has a corrupted 'A' glyph (0.875px too wide)
+        // but it's still the closest match overall since Chrome uses Liberation Serif
+        Family::Name("Liberation Serif")
     }
 }
 
@@ -183,8 +221,7 @@ pub fn get_font_metrics(font_sys: &mut FontSystem, attrs: &Attrs<'_>) -> Option<
     #[cfg(all(unix, not(target_os = "macos")))]
     let (ascent, descent, leading) = {
         // Chrome on Linux uses OS/2 typo metrics when USE_TYPO_METRICS flag is set,
-        // otherwise uses hhea metrics. This matches Skia's behavior in
-        // SkFontHost_FreeType.cpp lines 1605-1611.
+        // otherwise falls back to hhea metrics.
         if let Some((typo_ascent, typo_descent, typo_line_gap, use_typo_metrics)) =
             font.os2_typo_metrics()
         {
@@ -217,19 +254,6 @@ pub fn get_font_metrics(font_sys: &mut FontSystem, attrs: &Attrs<'_>) -> Option<
         let leading = metrics.leading / units_per_em; // Line-gap for "normal" line-height
         (ascent, descent, leading)
     };
-
-    // Debug logging to verify final normalized metrics
-    #[cfg(all(unix, not(target_os = "macos")))]
-    // Debug logging for sans-serif fonts (useful for comparing with Chrome)
-    if matches!(attrs.family, Family::SansSerif | Family::Name("Noto Sans")) {
-        let font_name = match attrs.family {
-            Family::SansSerif => "sans-serif",
-            Family::Serif => "serif",
-            Family::Monospace => "monospace",
-            Family::Name(name) => name,
-            _ => "unknown",
-        };
-    }
 
     Some(FontMetricsData {
         ascent,

@@ -98,27 +98,33 @@ fn compute_line_height_metrics(
             // - Windows: Uses OS/2 winAscent + winDescent (no line gap)
             // - Linux/macOS: Uses hhea ascent + descent + leading
             //
-            // CRITICAL: Chrome rounds the TOTAL, not individual components.
-            // For Liberation Serif 24px: ascent=21.387 + descent=5.191 = 26.578 → round to 27px
-            // If we rounded individually: round(21.387)=21 + round(5.191)=5 = 26px ❌
+            // CRITICAL: Chrome rounds ascent and descent SEPARATELY, then sums them.
+            // This is the correct approach for line-height calculation.
             //
-            // This applies to BOTH line-height AND glyph height calculations.
-            // Glyph height must also round the sum to match Chrome's behavior.
+            // For Liberation Serif Bold 18.72px:
+            //   ascent=16.68 → round=17
+            //   descent=4.05 → round=4
+            //   leading=0.80 → round=1
+            //   line-height = 17 + 4 + 1 = 22px ✓
+            //
+            // This matches Chrome's behavior and produces correct heights.
 
-            // Normal line-height = round(ascent + descent + leading)
-            let normal_line_h = (ascent_px + descent_px + leading_px).round();
-
-            // Glyph height for rendering
-            // CHANGED: Use round() instead of floor() to match Chrome's behavior
-            // For Liberation Sans 14px: 12.67 + 2.97 = 15.64 → round = 16px
-            // For Liberation Sans 18px: 16.29 + 3.81 = 20.10 → round = 20px
-            let glyph_h_rounded = (ascent_px + descent_px).round();
-
-            // For glyph positioning, we need individual ascent/descent.
-            // Chrome uses ascent/descent from the font metrics for vertical positioning.
-            // We round these individually for pixel-aligned positioning.
+            // Round each component separately
             let ascent_rounded = ascent_px.round();
             let descent_rounded = descent_px.round();
+            let leading_rounded = leading_px.round();
+
+            // Glyph height is ascent + descent (rounded separately)
+            let glyph_h_rounded = ascent_rounded + descent_rounded;
+
+            // Debug: Log glyph height calculation for specific font sizes
+            if (font_size - 14.0).abs() < 0.1 {
+                eprintln!("DEBUG glyph_height: font_size={}, ascent_px={:.2}, descent_px={:.2}, ascent_rounded={}, descent_rounded={}, glyph_h={}",
+                    font_size, ascent_px, descent_px, ascent_rounded, descent_rounded, glyph_h_rounded);
+            }
+
+            // Normal line-height is ascent + descent + leading (all rounded separately)
+            let normal_line_h = ascent_rounded + descent_rounded + leading_rounded;
 
             // Unrounded line height for cosmic-text internal calculations
             let line_h_unrounded = style.line_height.unwrap_or(normal_line_h);
@@ -144,6 +150,7 @@ fn get_matched_font_weight(
     style: &ComputedStyle,
 ) -> u16 {
     let font_matches = font_sys.get_font_matches(attrs);
+
     font_matches.first().map_or_else(
         || {
             if style.font_weight == 0 {

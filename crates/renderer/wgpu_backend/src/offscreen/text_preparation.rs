@@ -370,67 +370,11 @@ fn create_single_buffer(
 }
 
 /// Get font family from an optional font family string.
+/// Uses the shared font mapping functions from css_text (single source of truth).
 fn get_font_family_from_option(family_opt: Option<&String>) -> Family<'static> {
-    // We need to own the string to return Family<'static>
-    family_opt.map_or_else(get_default_font_family, |family_str| {
-        // Map to Family and convert to static by using known constants
-        match family_str.to_lowercase().as_str() {
-            "sans-serif" => {
-                #[cfg(target_os = "windows")]
-                {
-                    Family::Name("Arial")
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    Family::Name("Helvetica")
-                }
-                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-                {
-                    Family::SansSerif
-                }
-            }
-            "serif" => {
-                #[cfg(target_os = "windows")]
-                {
-                    Family::Name("Times New Roman")
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    Family::Serif
-                }
-            }
-            "monospace" => {
-                #[cfg(target_os = "windows")]
-                {
-                    Family::Name("Consolas")
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    Family::Monospace
-                }
-            }
-            "cursive" => Family::Cursive,
-            "fantasy" => Family::Fantasy,
-            // For custom font names, we can't convert to 'static easily
-            // so fall back to default
-            _ => get_default_font_family(),
-        }
-    })
-}
+    use css_text::measurement::{get_default_font_family, map_font_family};
 
-/// Get the default font family for the current platform.
-fn get_default_font_family() -> Family<'static> {
-    // Default to sans-serif like Chrome
-    #[cfg(target_os = "windows")]
-    {
-        Family::Name("Arial")
-    }
-    #[cfg(target_os = "macos")]
-    {
-        Family::Name("Helvetica")
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        Family::SansSerif
-    }
+    family_opt.map_or_else(get_default_font_family, |family_str| {
+        map_font_family(family_str)
+    })
 }

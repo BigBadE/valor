@@ -144,6 +144,7 @@ async fn build_display_list_uncached(
         "[VALOR_TIMING] display_list_retained_snapshot took: {:?}",
         start.elapsed()
     );
+
     let clear_color = page.background_rgba();
     let mut items = Vec::with_capacity(display_list.items.len() + 1);
     items.push(DisplayItem::Rect {

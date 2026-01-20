@@ -119,6 +119,7 @@ fn create_input_rules(mut source_order: u32) -> (Vec<types::Rule>, u32) {
             ("overflow", "clip"),
             ("font-family", "Arial"),
             ("width", "200px"), // Default width for text inputs
+            ("height", "35px"), // Default height for text inputs
         ],
     ));
     source_order += 1;

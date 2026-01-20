@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body { margin: 20px; font-family: system-ui, sans-serif; }
+.regular { font-weight: 400; font-size: 14px; }
+.semibold { font-weight: 600; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="regular">Regular text (400)</div>
+<div class="semibold">Semibold text (600)</div>
+<script>
+// Log computed styles
+const regular = document.querySelector('.regular');
+const semibold = document.querySelector('.semibold');
+const regularStyle = window.getComputedStyle(regular);
+const semiboldStyle = window.getComputedStyle(semibold);
+
+console.log('Regular:', {
+  fontFamily: regularStyle.fontFamily,
+  fontSize: regularStyle.fontSize,
+  fontWeight: regularStyle.fontWeight,
+  height: regular.offsetHeight
+});
+
+console.log('Semibold:', {
+  fontFamily: semiboldStyle.fontFamily,
+  fontSize: semiboldStyle.fontSize,
+  fontWeight: semiboldStyle.fontWeight,
+  height: semibold.offsetHeight
+});
+</script>
+</body>
+</html>

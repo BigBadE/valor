@@ -740,6 +740,9 @@ fn layout_block_node(
     // Track exclusion space (updated as we add floats)
     let mut current_exclusion_space = space.exclusion_space.clone();
 
+    // Track maximum render_height from text children for inline elements
+    let mut max_text_render_height: Option<f32> = None;
+
     for (child_index, &child) in children.iter().enumerate() {
         // Get child's computed style to check margins
         use css_orchestrator::queries::ComputedStyleQuery;
@@ -829,10 +832,30 @@ fn layout_block_node(
             space.bfc_offset.inline_offset + sides.padding_left + sides.border_left
         };
 
+        // Determine available inline size for child:
+        // - Block-level children: use parent's content width (definite)
+        // - Inline-level element children in inline context: use indefinite (natural width)
+        // - Text nodes and other inline children in block context: use parent's content width
+        //
+        // Check if this parent establishes a block formatting context
+        let parent_is_block_container = matches!(
+            style.display,
+            css_orchestrator::style_model::Display::Block
+                | css_orchestrator::style_model::Display::Flex
+                | css_orchestrator::style_model::Display::Grid
+        );
+
+        let child_available_inline = if is_block_level || parent_is_block_container {
+            // Block children always get definite width
+            // In block containers, inline children also get definite width for wrapping
+            AvailableSize::Definite(LayoutUnit::from_px(content_inline_size))
+        } else {
+            // Inline children in inline containers get indefinite width
+            AvailableSize::Indefinite
+        };
+
         let child_space = ConstraintSpace {
-            available_inline_size: AvailableSize::Definite(LayoutUnit::from_px(
-                content_inline_size,
-            )),
+            available_inline_size: child_available_inline,
             available_block_size: space.available_block_size,
             bfc_offset: BfcOffset::new(
                 child_inline_offset,
@@ -866,6 +889,15 @@ fn layout_block_node(
             child,
             child_result.bfc_offset.block_offset.map(|b| b.to_px())
         );
+
+        // Collect render_height from children for inline elements containing text
+        if let Some(child_render_height) = child_result.render_height {
+            max_text_render_height = Some(
+                max_text_render_height
+                    .map(|current| current.max(child_render_height))
+                    .unwrap_or(child_render_height),
+            );
+        }
 
         // If child has margins that collapsed through it, we need to handle it
         if child_result.collapsed_through_top_margin != LayoutUnit::zero() {
@@ -1052,6 +1084,10 @@ fn layout_block_node(
         (top, bottom)
     };
 
+    // Don't propagate render_height to parent elements - only text nodes should have render_height set
+    // Parent elements (divs, spans, etc.) should use their computed block_size (line-height) for layout
+    let render_height = None;
+
     // inline_size and block_size are now in border-box format
     LayoutResult {
         inline_size,
@@ -1061,7 +1097,7 @@ fn layout_block_node(
         baseline: None,
         collapsed_through_top_margin: returned_top_margin,
         collapsed_through_bottom_margin: returned_bottom_margin,
-        render_height: None,
+        render_height,
     }
 }
 

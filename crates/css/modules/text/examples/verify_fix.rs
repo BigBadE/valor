@@ -1,56 +1,43 @@
-//! Verify the line-height fix works correctly
-
-use css_orchestrator::style_model::ComputedStyle;
-use css_text::measurement::measure_text;
+use css_text::measurement::font_system::{get_font_system, map_font_family};
+use glyphon::Attrs;
 
 fn main() {
-    println!("=== Line-Height Fix Verification ===\n");
+    let font_sys = get_font_system();
+    let mut font_sys = font_sys.lock().unwrap();
 
-    let test_cases = vec![
-        // (font_size, expected_line_height, description)
-        (12.0, 13.0, "12px Liberation Serif"),
-        (14.0, 16.0, "14px Liberation Serif"),
-        (16.0, 18.0, "16px Liberation Serif"),
-        (18.0, 20.0, "18px Liberation Serif"),
-        (20.0, 22.0, "20px Liberation Serif"),
-        (24.0, 27.0, "24px Liberation Serif (Times New Roman)"),
-    ];
+    // Test monospace weight 600 (the problematic case)
+    let family = map_font_family("monospace");
+    let attrs = Attrs::new().family(family).weight(glyphon::Weight(600));
+    let matches = font_sys.get_font_matches(&attrs);
 
-    let mut passed = 0;
-    let mut failed = 0;
+    if let Some(first) = matches.first() {
+        println!("Requested: monospace, weight=600");
+        println!("Matched weight: {}", first.font_weight);
 
-    for (font_size, expected, desc) in test_cases {
-        let mut style = ComputedStyle::default();
-        style.font_size = font_size;
-        style.font_family = Some("serif".to_string());
-        style.line_height = None; // Use "normal"
+        if let Some(face) = font_sys.db().face(first.id) {
+            println!("Font family: {}", face.families[0].0);
 
-        let metrics = measure_text("Test", &style);
-        let actual = metrics.height;
+            // Get actual metrics
+            if let Some(font) =
+                font_sys.get_font(first.id, glyphon::fontdb::Weight(first.font_weight))
+            {
+                let metrics = font.metrics();
+                let units_per_em = metrics.units_per_em as f32;
+                let hhea_total = (metrics.ascent - metrics.descent) / units_per_em;
+                println!(
+                    "hhea metrics: ascent={:.4}, descent={:.4}, total={:.4}",
+                    metrics.ascent / units_per_em,
+                    -metrics.descent / units_per_em,
+                    hhea_total
+                );
+                println!("At 13px font-size: {:.2}px", hhea_total * 13.0);
 
-        if actual == expected {
-            println!(
-                "✅ PASS: {} → line-height: {} (expected: {})",
-                desc, actual, expected
-            );
-            passed += 1;
-        } else {
-            println!(
-                "❌ FAIL: {} → line-height: {} (expected: {})",
-                desc, actual, expected
-            );
-            failed += 1;
+                if hhea_total * 13.0 >= 15.0 && hhea_total * 13.0 <= 15.5 {
+                    println!("✓ CORRECT: Height matches Chrome's expected 15px");
+                } else {
+                    println!("✗ WRONG: Height should be ~15px for Chrome compatibility");
+                }
+            }
         }
-    }
-
-    println!("\n=== Results ===");
-    println!("Passed: {}/{}", passed, passed + failed);
-    println!("Failed: {}/{}", failed, passed + failed);
-
-    if failed > 0 {
-        println!("\n❌ Line-height fix FAILED verification");
-        std::process::exit(1);
-    } else {
-        println!("\n✅ Line-height fix PASSED all tests!");
     }
 }

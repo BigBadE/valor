@@ -163,36 +163,39 @@ pub async fn update_until_finished_simple(handle: &Handle, page: &mut HtmlPage) 
 
 // ===== CSS reset for consistent test baseline =====
 
+/// Returns the CSS reset string for direct injection (without JS wrapper)
+pub fn css_reset_string() -> String {
+    "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;font-family:monospace !important;font-size:13px !important;}html,body{margin:0 !important;padding:0 !important;overflow:hidden;font-family:monospace !important;font-size:13px !important;}h1,h2,h3,h4,h5,h6,p{margin:0;padding:0;font-family:monospace !important;}ul,ol{margin:0;padding:0;list-style:none;}".to_string()
+}
+
 pub fn css_reset_injection_script() -> String {
-    // Don't force a specific font-family - let fixtures define their own fonts
-    "(function(){
-        try {
-            var css = '*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}html,body{margin:0 !important;padding:0 !important;overflow:hidden;}h1,h2,h3,h4,h5,h6,p{margin:0;padding:0;}ul,ol{margin:0;padding:0;list-style:none;}';
+    // Wrap the CSS reset string in JavaScript for Chrome injection
+    format!(
+        "(function(){{
+        try {{
+            var css = '{}';
             var existing = (typeof document.querySelector === 'function') ? document.querySelector('style[data-valor-test-reset=\\'1\\']') : null;
-            if (existing) { return true; }
-            if (document && typeof document.appendStyleText === 'function') {
+            if (existing) {{ return true; }}
+            if (document && typeof document.appendStyleText === 'function') {{
                 document.appendStyleText(css);
-            } else {
+            }} else {{
                 var style = document.createElement('style');
                 style.setAttribute('data-valor-test-reset','1');
                 style.type = 'text/css';
                 style.appendChild(document.createTextNode(css));
                 var head = document.head || document.getElementsByTagName('head')[0] || document.documentElement;
                 head.appendChild(style);
-            }
-            var de = document.documentElement; if (de && de.style){ de.style.margin='0'; de.style.padding='0'; }
-            var b = document.body; if (b && b.style){ b.style.margin='0'; b.style.padding='0'; }
+            }}
+            var de = document.documentElement; if (de && de.style){{ de.style.margin='0'; de.style.padding='0'; }}
+            var b = document.body; if (b && b.style){{ b.style.margin='0'; b.style.padding='0'; }}
             void (document.body && document.body.offsetWidth);
             return true;
-        } catch (e) {
+        }} catch (e) {{
             return false;
-        }
-    })()".to_string()
-}
-
-/// Returns the CSS reset string for direct injection (without JS wrapper)
-pub fn css_reset_string() -> String {
-    "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}html,body{margin:0 !important;padding:0 !important;overflow:hidden;}h1,h2,h3,h4,h5,h6,p{margin:0;padding:0;}ul,ol{margin:0;padding:0;list-style:none;}".to_string()
+        }}
+    }})()",
+        css_reset_string()
+    )
 }
 
 // ===== Unified test runner framework =====
