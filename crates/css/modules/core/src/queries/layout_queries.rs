@@ -1305,11 +1305,13 @@ fn layout_flex_container(
             }
         } else {
             // Auto flex-basis: use content size
-            if is_row {
+            // child_measure returns border-box size, but flex-basis should be content-box
+            let border_box_size = if is_row {
                 child_measure.inline_size
             } else {
                 child_measure.block_size
-            }
+            };
+            (border_box_size - main_padding_border).max(0.0)
         };
 
         // Create flex child
