@@ -1,0 +1,14 @@
+[package]
+name = "rewrite_html"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../core" }
+rewrite_macros = { path = "../macros" }
+html5ever = "0.27"
+markup5ever_rcdom = "0.3"
+tendril = "0.4"
+
+[lints]
+workspace = true

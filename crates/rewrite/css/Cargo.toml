@@ -1,0 +1,16 @@
+[package]
+name = "rewrite_css"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../core", package = "rewrite_core" }
+rewrite_html = { path = "../html", package = "rewrite_html" }
+rewrite_macros = { path = "../macros", package = "rewrite_macros" }
+dashmap = "6.1.0"
+smallvec.workspace = true
+cssparser = "0.31"
+selectors = "0.25"
+
+[lints]
+workspace = true

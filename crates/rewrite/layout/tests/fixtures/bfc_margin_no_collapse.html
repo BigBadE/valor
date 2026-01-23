@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .container {
+            width: 300px;
+            border: 2px solid black;
+            margin-bottom: 20px;
+        }
+        .parent {
+            background: lightgray;
+            margin-top: 20px;
+        }
+        .parent-bfc {
+            background: lightgreen;
+            margin-top: 20px;
+            overflow: hidden; /* Creates BFC */
+        }
+        .child {
+            width: 100px;
+            height: 50px;
+            background: blue;
+            margin-top: 30px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Without BFC: margins collapse -->
+    <div class="container">
+        <div class="parent">
+            <div class="child">Child</div>
+        </div>
+        <!-- Parent's 20px and child's 30px margins collapse to 30px -->
+    </div>
+
+    <!-- With BFC: margins don't collapse -->
+    <div class="container">
+        <div class="parent-bfc">
+            <div class="child">Child</div>
+        </div>
+        <!-- Parent's 20px margin stays, child's 30px margin is inside -->
+    </div>
+</body>
+</html>

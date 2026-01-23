@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .container {
+            width: 400px;
+            border: 2px solid black;
+            margin-bottom: 20px;
+        }
+        .float {
+            float: left;
+            width: 100px;
+            height: 100px;
+            background: blue;
+        }
+        .no-bfc {
+            background: lightgray;
+            padding: 10px;
+        }
+        .with-bfc {
+            background: lightgreen;
+            padding: 10px;
+            overflow: hidden; /* Creates BFC */
+        }
+    </style>
+</head>
+<body>
+    <!-- Without BFC: float extends outside container -->
+    <div class="container">
+        <div class="no-bfc">
+            <div class="float"></div>
+            <p>Without BFC, the float can extend outside the container's height.</p>
+        </div>
+    </div>
+
+    <!-- With BFC: float is contained -->
+    <div class="container">
+        <div class="with-bfc">
+            <div class="float"></div>
+            <p>With BFC (overflow: hidden), the container expands to contain the float.</p>
+        </div>
+    </div>
+</body>
+</html>

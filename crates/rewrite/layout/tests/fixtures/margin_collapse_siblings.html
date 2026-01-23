@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .container {
+            width: 300px;
+            border: 2px solid black;
+            margin-bottom: 20px;
+        }
+        .box {
+            width: 100px;
+            height: 50px;
+            background: blue;
+        }
+        .mb-20 {
+            margin-bottom: 20px;
+        }
+        .mt-30 {
+            margin-top: 30px;
+        }
+        .mb-neg-10 {
+            margin-bottom: -10px;
+        }
+        .mt-40 {
+            margin-top: 40px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Positive margins collapse (max wins) -->
+    <div class="container">
+        <div class="box mb-20">Margin bottom: 20px</div>
+        <div class="box mt-30">Margin top: 30px</div>
+        <!-- Collapsed margin should be 30px (max of 20 and 30) -->
+    </div>
+
+    <!-- Negative margin collapse -->
+    <div class="container">
+        <div class="box mb-neg-10">Margin bottom: -10px</div>
+        <div class="box mt-40">Margin top: 40px</div>
+        <!-- Collapsed margin: 40 + (-10) = 30px -->
+    </div>
+</body>
+</html>

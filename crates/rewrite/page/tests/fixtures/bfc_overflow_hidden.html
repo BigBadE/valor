@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .container {
+            width: 300px;
+            overflow: hidden;
+            margin-top: 20px;
+            background-color: #ecf0f1;
+        }
+        .child {
+            width: 200px;
+            height: 100px;
+            margin-top: 40px;
+            background-color: #f39c12;
+        }
+    </style>
+</head>
+<body>
+    <!-- Container establishes BFC with overflow: hidden -->
+    <!-- Parent and child margins should NOT collapse -->
+    <!-- Effective spacing should be 20px (parent) + 40px (child) = 60px -->
+    <div class="container">
+        <div class="child">Child</div>
+    </div>
+</body>
+</html>

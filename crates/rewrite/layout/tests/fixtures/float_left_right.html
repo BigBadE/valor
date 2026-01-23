@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .container {
+            width: 400px;
+            border: 2px solid black;
+            margin-bottom: 20px;
+        }
+        .float-left {
+            float: left;
+            width: 100px;
+            height: 100px;
+            background: blue;
+        }
+        .float-right {
+            float: right;
+            width: 100px;
+            height: 100px;
+            background: red;
+        }
+        .content {
+            background: lightgray;
+            height: 50px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Left float -->
+    <div class="container">
+        <div class="float-left"></div>
+        <div class="content">Content flows around float</div>
+    </div>
+
+    <!-- Right float -->
+    <div class="container">
+        <div class="float-right"></div>
+        <div class="content">Content flows around float</div>
+    </div>
+
+    <!-- Multiple floats -->
+    <div class="container">
+        <div class="float-left"></div>
+        <div class="float-left"></div>
+        <div class="float-right"></div>
+        <div class="content">Content between floats</div>
+    </div>
+</body>
+</html>

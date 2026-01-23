@@ -1,0 +1,10 @@
+[package]
+name = "rewrite_core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dashmap = "6.1"
+
+[lints]
+workspace = true

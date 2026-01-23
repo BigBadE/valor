@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        table {
+            border: 2px solid black;
+            margin-bottom: 20px;
+        }
+        td {
+            width: 100px;
+            height: 50px;
+            border: 1px solid blue;
+            background: lightblue;
+        }
+        .separate {
+            border-collapse: separate;
+            border-spacing: 5px;
+        }
+        .collapse {
+            border-collapse: collapse;
+        }
+    </style>
+</head>
+<body>
+    <!-- Separate borders -->
+    <table class="separate">
+        <tr>
+            <td>Cell 1</td>
+            <td>Cell 2</td>
+        </tr>
+        <tr>
+            <td>Cell 3</td>
+            <td>Cell 4</td>
+        </tr>
+    </table>
+
+    <!-- Collapsed borders -->
+    <table class="collapse">
+        <tr>
+            <td>Cell 1</td>
+            <td>Cell 2</td>
+        </tr>
+        <tr>
+            <td>Cell 3</td>
+            <td>Cell 4</td>
+        </tr>
+    </table>
+</body>
+</html>

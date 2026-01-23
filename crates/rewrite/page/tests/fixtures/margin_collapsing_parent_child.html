@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .parent {
+            width: 300px;
+            margin-top: 20px;
+            background-color: #f0f0f0;
+        }
+        .child {
+            width: 200px;
+            height: 100px;
+            margin-top: 40px;
+            background-color: #9b59b6;
+        }
+    </style>
+</head>
+<body>
+    <!-- Parent and child top margins should collapse: effective margin is 40px (max of 20px and 40px) -->
+    <div class="parent">
+        <div class="child">Child</div>
+    </div>
+</body>
+</html>

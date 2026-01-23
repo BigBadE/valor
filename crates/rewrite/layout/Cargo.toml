@@ -1,0 +1,16 @@
+[package]
+name = "rewrite_layout"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../core", package = "rewrite_core" }
+rewrite_css = { path = "../css", package = "rewrite_css" }
+rewrite_html = { path = "../html", package = "rewrite_html" }
+rewrite_macros = { path = "../macros", package = "rewrite_macros" }
+
+[dev-dependencies]
+rewrite_page = { path = "../page", package = "rewrite_page" }
+
+[lints]
+workspace = true

@@ -3,13 +3,14 @@ cargo-features = ["codegen-backend"]
 [workspace]
 resolver = "3"
 members = [
-    "crates/*",
     "crates/css/modules/*",
     "crates/css/orchestrator",
     "crates/js/js_engine_v8",
     "crates/renderer/wgpu_backend",
-    "crates/valor_dsl"
+    "crates/valor_dsl",
+    "crates/rewrite/*",
 ]
+
 exclude = ["deps/*"]
 
 [workspace.package]

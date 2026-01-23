@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .container {
+            width: 400px;
+            border: 2px solid black;
+            margin-bottom: 20px;
+            padding: 10px;
+            line-height: 2;
+        }
+        .baseline {
+            vertical-align: baseline;
+        }
+        .top {
+            vertical-align: top;
+        }
+        .middle {
+            vertical-align: middle;
+        }
+        .bottom {
+            vertical-align: bottom;
+        }
+        .sub {
+            vertical-align: sub;
+        }
+        .super {
+            vertical-align: super;
+        }
+        .text-top {
+            vertical-align: text-top;
+        }
+        .text-bottom {
+            vertical-align: text-bottom;
+        }
+        span {
+            background: lightblue;
+            padding: 2px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <span class="baseline">Baseline</span>
+        <span class="top">Top</span>
+        <span class="middle">Middle</span>
+        <span class="bottom">Bottom</span>
+    </div>
+
+    <div class="container">
+        Text with <span class="sub">subscript</span> and <span class="super">superscript</span> alignment.
+    </div>
+
+    <div class="container">
+        <span class="text-top">Text-top</span>
+        <span class="text-bottom">Text-bottom</span>
+    </div>
+</body>
+</html>

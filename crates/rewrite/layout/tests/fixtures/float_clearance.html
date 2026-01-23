@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .container {
+            width: 400px;
+            border: 2px solid black;
+            margin-bottom: 20px;
+        }
+        .float-left {
+            float: left;
+            width: 100px;
+            height: 100px;
+            background: blue;
+        }
+        .float-right {
+            float: right;
+            width: 100px;
+            height: 100px;
+            background: red;
+        }
+        .clear-left {
+            clear: left;
+            background: lightgray;
+            height: 50px;
+        }
+        .clear-right {
+            clear: right;
+            background: lightgreen;
+            height: 50px;
+        }
+        .clear-both {
+            clear: both;
+            background: lightyellow;
+            height: 50px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Clear left -->
+    <div class="container">
+        <div class="float-left"></div>
+        <div class="clear-left">Clears left float</div>
+    </div>
+
+    <!-- Clear right -->
+    <div class="container">
+        <div class="float-right"></div>
+        <div class="clear-right">Clears right float</div>
+    </div>
+
+    <!-- Clear both -->
+    <div class="container">
+        <div class="float-left"></div>
+        <div class="float-right"></div>
+        <div class="clear-both">Clears both floats</div>
+    </div>
+</body>
+</html>

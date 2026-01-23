@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .parent {
+            width: 300px;
+            background: lightgray;
+            margin-bottom: 20px;
+        }
+        .parent-with-border {
+            border-top: 1px solid black;
+        }
+        .parent-with-padding {
+            padding-top: 10px;
+        }
+        .child {
+            width: 100px;
+            height: 50px;
+            background: blue;
+        }
+        .mt-20 {
+            margin-top: 20px;
+        }
+        .mt-30 {
+            margin-top: 30px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Parent-child margin collapse (no border/padding) -->
+    <div class="parent mt-20">
+        <div class="child mt-30">Child</div>
+        <!-- Parent and child top margins collapse to 30px -->
+    </div>
+
+    <!-- No collapse with border -->
+    <div class="parent parent-with-border mt-20">
+        <div class="child mt-30">Child</div>
+        <!-- Margins don't collapse due to border -->
+    </div>
+
+    <!-- No collapse with padding -->
+    <div class="parent parent-with-padding mt-20">
+        <div class="child mt-30">Child</div>
+        <!-- Margins don't collapse due to padding -->
+    </div>
+</body>
+</html>

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .box1 {
+            width: 200px;
+            height: 100px;
+            margin-bottom: 30px;
+            background-color: #1abc9c;
+        }
+        .box2 {
+            width: 200px;
+            height: 100px;
+            margin-top: -10px;
+            background-color: #e67e22;
+        }
+    </style>
+</head>
+<body>
+    <!-- Mixed positive and negative margins -->
+    <!-- Should collapse to: max positive (30px) + min negative (-10px) = 20px gap -->
+    <div class="box1">Box 1</div>
+    <div class="box2">Box 2</div>
+</body>
+</html>

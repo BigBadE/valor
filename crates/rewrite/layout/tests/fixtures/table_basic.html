@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        table {
+            border-collapse: separate;
+            border-spacing: 10px;
+            border: 2px solid black;
+            margin-bottom: 20px;
+        }
+        td {
+            width: 100px;
+            height: 50px;
+            border: 1px solid blue;
+            background: lightblue;
+        }
+        .auto-layout {
+            table-layout: auto;
+        }
+        .fixed-layout {
+            table-layout: fixed;
+            width: 400px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Auto layout -->
+    <table class="auto-layout">
+        <tr>
+            <td>Cell 1</td>
+            <td>Cell 2</td>
+            <td>Cell 3</td>
+        </tr>
+        <tr>
+            <td>Cell 4</td>
+            <td>Cell 5</td>
+            <td>Cell 6</td>
+        </tr>
+    </table>
+
+    <!-- Fixed layout -->
+    <table class="fixed-layout">
+        <tr>
+            <td>Cell 1</td>
+            <td>Cell 2</td>
+            <td>Cell 3</td>
+        </tr>
+        <tr>
+            <td>Cell 4</td>
+            <td>Cell 5</td>
+            <td>Cell 6</td>
+        </tr>
+    </table>
+</body>
+</html>
