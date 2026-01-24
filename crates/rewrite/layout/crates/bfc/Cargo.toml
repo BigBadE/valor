@@ -1,0 +1,11 @@
+[package]
+name = "rewrite_layout_bfc"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../../../core" }
+rewrite_css = { path = "../../../css" }
+
+[lints]
+workspace = true

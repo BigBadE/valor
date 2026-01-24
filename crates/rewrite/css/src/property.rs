@@ -387,11 +387,7 @@ pub enum CssProperty {
 ///
 /// NOTE: This function should not be called directly - use the generated
 /// query types like DisplayQuery, PositionQuery, etc.
-fn get_css_property(
-    _db: &rewrite_core::Database,
-    _node: rewrite_core::NodeId,
-    _ctx: &mut rewrite_core::DependencyContext,
-) -> CssValue {
+fn get_css_property(_scoped: &mut rewrite_core::ScopedDb) -> CssValue {
     // This is a placeholder - the macro should generate specialized versions
     // for each property that know which property name to query
     todo!("Property queries need to be individually implemented with property names")

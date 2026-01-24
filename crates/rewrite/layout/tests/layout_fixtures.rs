@@ -7,6 +7,12 @@ use rewrite_css::{DisplayQuery, PositionQuery};
 use rewrite_layout::{build_layout_tree, compute_tree_size, dump_layout_tree};
 use rewrite_page::Page;
 
+// Ensure impl crates are linked
+#[allow(unused_imports)]
+use rewrite_layout_offset_impl as _;
+#[allow(unused_imports)]
+use rewrite_layout_size_impl as _;
+
 /// Helper to load a fixture.
 fn load_fixture(html: &str) -> Page {
     Page::from_html_with_viewport(html, Some((800.0, 600.0)))

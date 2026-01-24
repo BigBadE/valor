@@ -17,6 +17,8 @@ futures-util = "0.3"
 tokio = { version = "1", features = ["full"] }
 urlencoding = "2.1"
 rewrite_layout = { path = "../layout" }
+rewrite_layout_size_impl = { path = "../layout/crates/size/impls" }
+rewrite_layout_offset_impl = { path = "../layout/crates/offset/impls" }
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"

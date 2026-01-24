@@ -7,8 +7,8 @@
 /// - Block and inline axis determination
 ///
 /// Spec: https://www.w3.org/TR/css-writing-modes-3/
-use crate::{BlockMarker, InlineMarker, Subpixels};
-use rewrite_core::{NodeId, ScopedDb};
+use crate::{BlockMarker, Subpixels};
+use rewrite_core::ScopedDb;
 use rewrite_css::{CssKeyword, CssValue, DirectionQuery, WritingModeQuery};
 
 /// Writing mode determines the block and inline flow directions.
@@ -211,7 +211,7 @@ pub fn get_physical_block_offset<Axis>(
     logical_offset: Subpixels,
 ) -> Subpixels
 where
-    Axis: crate::LayoutsMarker + 'static,
+    Axis: rewrite_layout_util::AxisMarker + 'static,
 {
     let writing_mode = get_writing_mode(scoped);
 

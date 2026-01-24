@@ -1,37 +1,70 @@
-// Formatting contexts
-mod formatting_contexts {
-    pub mod bfc;
-    pub mod flex;
-    #[path = "float.rs"]
-    pub mod float_layout;
-    pub mod grid;
-    pub mod table;
-}
+// Re-export MarginQuery from layout_margin
+pub use rewrite_layout_margin::MarginQuery;
 
-// Positioning
-mod positioning {
-    pub mod margin;
-    pub mod position;
-    pub mod sticky;
-}
+// Re-export util types and traits
+pub use rewrite_layout_util::{Axis, Dispatcher};
+
+// Re-export size and offset modes
+pub use rewrite_layout_offset::OffsetMode;
+pub use rewrite_layout_size::SizeMode;
+
+// Re-export marker types
+pub use rewrite_layout_offset_impl::OffsetModeMarker;
+pub use rewrite_layout_size_impl::{ConstrainedMarker, IntrinsicMarker, SizeModeMarker};
+pub use rewrite_layout_util::{BlockMarker, InlineMarker};
+
+// Re-export query types
+pub use rewrite_layout_offset::OffsetQuery;
+
+// Instantiate SizeQuery with concrete FlexSize implementation
+pub type SizeQuery<AxisParam, ModeParam> =
+    rewrite_layout_size::SizeQueryGeneric<AxisParam, ModeParam, rewrite_layout_flex::FlexSize>;
+
+// Type aliases for concrete queries (proc macro generates SizeQuery<Axis, Mode> and OffsetQuery<Axis, Mode>)
+pub type InlineSizeQuery = SizeQuery<InlineMarker, ConstrainedMarker>;
+pub type BlockSizeQuery = SizeQuery<BlockMarker, ConstrainedMarker>;
+pub type IntrinsicInlineSizeQuery = SizeQuery<InlineMarker, IntrinsicMarker>;
+pub type IntrinsicBlockSizeQuery = SizeQuery<BlockMarker, IntrinsicMarker>;
+
+// Offset queries now require a mode parameter
+pub type StaticInlineOffsetQuery =
+    OffsetQuery<InlineMarker, rewrite_layout_offset_impl::StaticMarker>;
+pub type StaticBlockOffsetQuery =
+    OffsetQuery<BlockMarker, rewrite_layout_offset_impl::StaticMarker>;
+
+// Re-export dimensional queries
+pub use rewrite_css_dimensional::PaddingQuery;
+
+pub use rewrite_css::Subpixels;
+
+// Legacy type aliases for compatibility
+pub type InlineOffsetQuery = StaticInlineOffsetQuery;
+pub type BlockOffsetQuery = StaticBlockOffsetQuery;
+
+// Module crates are available as dependencies but not re-exported here to avoid cycles.
+// Downstream crates should import these directly:
+// - rewrite_layout_offset for OffsetQuery
+// - rewrite_layout_size for SizeQuery
+// - rewrite_layout_flex for flex functions
+// - rewrite_layout_grid for grid functions
+// - rewrite_layout_float for float functions
+// - rewrite_layout_positioning for positioning functions
+
+// BFC utilities are now in a separate crate
+// Use rewrite_layout_bfc directly
 
 // Text layout
 mod text {
-    pub mod inline;
+    // pub mod inline;  // Disabled - needs SizeQuery
 }
 
-// Core layout
+// Core layout (kept in base)
 mod builder;
-mod helpers;
+// pub mod helpers; // Disabled - needs refactoring for new marker system
 mod layout_tree;
-mod offset;
 mod scroll;
-mod size;
 pub mod transform;
 mod writing_mode;
-
-pub use offset::compute_offset;
-pub use size::compute_size;
 
 // Re-export layout tree types
 pub use layout_tree::{BoxType, EdgeSizes, LayoutBox, LayoutTreeBuilder, Rect};
@@ -39,32 +72,17 @@ pub use layout_tree::{BoxType, EdgeSizes, LayoutBox, LayoutTreeBuilder, Rect};
 // Re-export builder functions
 pub use builder::{build_layout_tree, compute_tree_size, dump_layout_tree};
 
-// Re-export BFC functions
-pub use formatting_contexts::bfc::{
+// Re-export BFC functions from separate crate
+pub use rewrite_layout_bfc::{
     blocks_margin_collapsing, creates_formatting_context, establishes_bfc, find_bfc_root,
 };
 
-// Re-export margin collapsing functions
-pub use positioning::margin::{
-    compute_collapsed_margin_end, compute_collapsed_margin_start, get_effective_margin_end,
-    get_effective_margin_start,
-};
-
-// Re-export positioned layout functions
-pub use positioning::position::{compute_positioned_offset, establishes_containing_block};
-
-// Re-export float layout functions
-pub use formatting_contexts::float_layout::{
-    FloatBox, FloatDirection, compute_available_width_with_floats, compute_clearance,
-    compute_float_avoiding_offset, compute_float_offset, compute_float_shrink_wrap_size,
-    get_float_direction, is_float,
-};
-
-// Re-export sticky positioning functions
-pub use positioning::sticky::{
-    ScrollState, StickyConstraint, calculate_sticky_boundaries, compute_sticky_offset,
-    get_scroll_state, get_sticky_scroll_container, has_sticky_threshold, is_currently_sticking,
-};
+// Note: margin collapsing, positioning, float, flex, and grid functions
+// are now in separate crates. Users should import them directly:
+// - rewrite_layout_positioning for margin/position/sticky functions
+// - rewrite_layout_float for float functions
+// - rewrite_layout_flex for flex functions
+// - rewrite_layout_grid for grid functions
 
 // Re-export writing mode functions
 pub use writing_mode::{
@@ -76,20 +94,11 @@ pub use writing_mode::{
     resolve_logical_property,
 };
 
-// Re-export inline layout functions
-pub use text::inline::{
-    BaselineAlignment, FontMetrics, InlineBox, InlineBoxType, LineBox, TextAlign, break_line,
-    calculate_inline_content_height, calculate_inline_intrinsic_width, compute_baseline_offset,
-    get_baseline_alignment, get_text_align, layout_inline_content, position_inline_boxes,
-};
+// Inline layout functions disabled - module needs SizeQuery
+// pub use text::inline::{...};
 
-// Re-export table layout functions
-pub use formatting_contexts::table::{
-    TableCell, TableGrid, TableLayoutMode, build_table_grid, calculate_collapsed_border,
-    calculate_table_size, compute_auto_column_widths, compute_fixed_column_widths,
-    compute_row_heights, get_cell_position, get_table_layout_mode, is_border_collapse,
-    layout_table,
-};
+// Table layout functions disabled - module needs SizeQuery
+// pub use formatting_contexts::table::{...};
 
 // Re-export scroll integration
 pub use scroll::{
@@ -103,49 +112,7 @@ pub use transform::{
     DecomposedTransform2D, Transform2D, Transform3D, TransformOrigin, parse_transform,
 };
 
-// Type aliases for commonly used query combinations
-pub type BlockOffsetQuery = OffsetQuery<BlockMarker>;
-pub type InlineOffsetQuery = OffsetQuery<InlineMarker>;
-pub type BlockSizeQuery = SizeQuery<BlockMarker, ConstrainedMarker>;
-pub type InlineSizeQuery = SizeQuery<InlineMarker, ConstrainedMarker>;
-pub type IntrinsicBlockSizeQuery = SizeQuery<BlockMarker, IntrinsicMarker>;
-pub type IntrinsicInlineSizeQuery = SizeQuery<InlineMarker, IntrinsicMarker>;
-
-/// Layout axis in logical coordinates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, rewrite_macros::Markers)]
-pub enum Layouts {
-    /// Block axis (vertical in horizontal writing mode).
-    Block,
-    /// Inline axis (horizontal in horizontal writing mode).
-    Inline,
-}
-
-/// Size computation mode for layout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, rewrite_macros::Markers)]
-pub enum SizeMode {
-    /// Intrinsic size - measures content only (min-content/max-content).
-    Intrinsic,
-    /// Constrained size - considers available space and constraints.
-    Constrained,
-}
-
-/// Subpixel value - 1/64th of a pixel.
-/// Using integer subpixels provides exact arithmetic and avoids floating-point rounding errors.
-pub type Subpixels = i32;
-
-/// Query for layout properties (offset, size).
-#[derive(rewrite_macros::Query)]
-#[value_type(Subpixels)]
-pub enum LayoutQuery {
-    /// Offset (position) along an axis.
-    #[query(compute_offset)]
-    #[params(LayoutsMarker)]
-    Offset,
-    /// Size (dimension) along an axis with computation mode.
-    #[query(compute_size)]
-    #[params(LayoutsMarker, SizeModeMarker)]
-    Size,
-}
+// Type aliases and query types are re-exported from the query crates at the top of this file
 
 /// Available size for layout constraints.
 #[derive(Debug, Clone, Copy, PartialEq)]

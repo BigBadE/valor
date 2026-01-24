@@ -1,0 +1,12 @@
+[package]
+name = "rewrite_layout_util"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../../../core" }
+rewrite_css = { path = "../../../css" }
+rewrite_macros = { path = "../../../macros" }
+
+[lints]
+workspace = true

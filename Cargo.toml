@@ -9,6 +9,10 @@ members = [
     "crates/renderer/wgpu_backend",
     "crates/valor_dsl",
     "crates/rewrite/*",
+    "crates/rewrite/css/crates/*",
+    "crates/rewrite/layout/crates/*",
+    "crates/rewrite/layout/crates/*/impls",
+    "crates/rewrite/layout/crates/util",
 ]
 
 exclude = ["deps/*"]

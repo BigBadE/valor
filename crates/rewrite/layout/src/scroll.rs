@@ -7,8 +7,17 @@
 /// - Integration with sticky positioning
 ///
 /// This provides the bridge between the layout system and the windowing/event system.
-use crate::{Subpixels, positioning::sticky::ScrollState};
+use crate::Subpixels;
 use rewrite_core::{Input, NodeId};
+
+/// Scroll state with offsets in both directions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollState {
+    /// Scroll offset in the block direction (vertical scroll).
+    pub block_scroll: Subpixels,
+    /// Scroll offset in the inline direction (horizontal scroll).
+    pub inline_scroll: Subpixels,
+}
 
 /// Input for scroll position of a scrolling container.
 ///
@@ -259,7 +268,7 @@ pub fn calculate_scroll_into_view(
 /// Integration with sticky positioning.
 ///
 /// This updates the sticky positioning module with current scroll state.
-pub fn update_sticky_scroll_state(container: Option<NodeId>, scroll_state: ScrollState) {
+pub fn update_sticky_scroll_state(_container: Option<NodeId>, _scroll_state: ScrollState) {
     // This would update the scroll state input that sticky positioning reads from
     // The actual implementation would use the database's set_input method
 }

@@ -1,0 +1,11 @@
+[package]
+name = "rewrite_layout_offset_impl"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_macros = { path = "../../../../macros" }
+rewrite_layout_size_impl = { path = "../../size/impls" }
+
+[lints]
+workspace = true

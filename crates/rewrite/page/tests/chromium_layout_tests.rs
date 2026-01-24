@@ -13,6 +13,12 @@ use std::fs::read_to_string;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+// Ensure impl crates are linked
+#[allow(unused_imports)]
+use rewrite_layout_offset_impl as _;
+#[allow(unused_imports)]
+use rewrite_layout_size_impl as _;
+
 /// Serialize layout for a single node.
 fn serialize_node_layout(
     page: &Page,
@@ -67,11 +73,21 @@ fn serialize_node_layout(
         }
         Some(NodeData::Document) => {
             let children = db.query::<ChildrenQuery>(node, ctx);
+            eprintln!("Document has {} children", children.len());
+            for (i, &child) in children.iter().enumerate() {
+                let child_data = db.get_node_data::<NodeData>(child);
+                eprintln!("  Child {}: {:?}", i, child_data);
+            }
             let child_nodes: Vec<JsonValue> = children
                 .iter()
                 .map(|&child| serialize_node_layout(page, child, ctx, body_offset))
                 .filter(|v| !v.is_null())
                 .collect();
+
+            eprintln!(
+                "Document serialized with {} non-null children",
+                child_nodes.len()
+            );
 
             json!({
                 "type": "document",

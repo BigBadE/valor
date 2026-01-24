@@ -70,23 +70,27 @@ fn parse_qualified_rule<'i>(
     let specificity = calculate_specificity(&selector_str);
 
     // Parse the declaration block (we're positioned right after the { token)
-    let declarations = parser
+    let (declarations, important_declarations) = parser
         .parse_nested_block(|parser| {
             Ok::<_, cssparser::ParseError<'i, ()>>(parse_declaration_block(parser))
         })
         .unwrap_or_default();
 
-    Ok(StyleRule::new(
+    Ok(StyleRule::with_important(
         selector_str,
         declarations,
+        important_declarations,
         specificity,
         source_order,
     ))
 }
 
-/// Parse CSS declarations from a block
-fn parse_declaration_block(parser: &mut Parser<'_, '_>) -> HashMap<String, CssValue> {
+/// Parse CSS declarations from a block, returning (normal_decls, important_decls)
+fn parse_declaration_block(
+    parser: &mut Parser<'_, '_>,
+) -> (HashMap<String, CssValue>, HashMap<String, CssValue>) {
     let mut declarations = HashMap::new();
+    let mut important_declarations = HashMap::new();
 
     loop {
         parser.skip_whitespace();
@@ -107,22 +111,26 @@ fn parse_declaration_block(parser: &mut Parser<'_, '_>) -> HashMap<String, CssVa
         }
 
         // Collect value tokens until semicolon or end
-        let value_str = parse_value_string(parser);
+        let (value_str, is_important) = parse_value_with_important(parser);
 
         // Parse the value into a CssValue
         if let Some(css_value) = parse_css_value(&value_str) {
-            declarations.insert(property, css_value);
+            if is_important {
+                important_declarations.insert(property, css_value);
+            } else {
+                declarations.insert(property, css_value);
+            }
         }
 
         // Skip optional semicolon
         let _ = parser.try_parse(|p| p.expect_semicolon());
     }
 
-    declarations
+    (declarations, important_declarations)
 }
 
-/// Parse value tokens into a string
-fn parse_value_string(parser: &mut Parser<'_, '_>) -> String {
+/// Parse value tokens into a string, checking for !important
+fn parse_value_with_important(parser: &mut Parser<'_, '_>) -> (String, bool) {
     let start = parser.position();
     let mut depth = 0;
 
@@ -130,13 +138,15 @@ fn parse_value_string(parser: &mut Parser<'_, '_>) -> String {
     loop {
         match parser.next_including_whitespace() {
             Ok(Token::Semicolon) if depth == 0 => {
-                // Semicolon ends the value - get slice and return
+                // Semicolon ends the value - get slice and check for !important
                 let end = parser.position();
-                return parser
+                let value_str = parser
                     .slice(start..end)
                     .trim_end_matches(';')
                     .trim()
                     .to_string();
+                let (cleaned_value, is_important) = extract_important(&value_str);
+                return (cleaned_value, is_important);
             }
             Ok(Token::ParenthesisBlock | Token::Function(_)) => depth += 1,
             Ok(Token::CloseParenthesis) if depth > 0 => depth -= 1,
@@ -146,10 +156,31 @@ fn parse_value_string(parser: &mut Parser<'_, '_>) -> String {
             Err(_) => {
                 // End of input - return what we have
                 let end = parser.position();
-                return parser.slice(start..end).trim().to_string();
+                let value_str = parser.slice(start..end).trim().to_string();
+                let (cleaned_value, is_important) = extract_important(&value_str);
+                return (cleaned_value, is_important);
             }
         }
     }
+}
+
+/// Extract !important from a value string
+fn extract_important(value_str: &str) -> (String, bool) {
+    // Check if value ends with !important
+    if value_str.ends_with("!important") {
+        let cleaned = value_str.trim_end_matches("!important").trim().to_string();
+        (cleaned, true)
+    } else if value_str.ends_with("! important") {
+        let cleaned = value_str.trim_end_matches("! important").trim().to_string();
+        (cleaned, true)
+    } else {
+        (value_str.to_string(), false)
+    }
+}
+
+/// Parse value tokens into a string (deprecated - use parse_value_with_important)
+fn parse_value_string(parser: &mut Parser<'_, '_>) -> String {
+    parse_value_with_important(parser).0
 }
 
 /// Parse a CSS value string into a CssValue

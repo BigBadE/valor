@@ -159,4 +159,28 @@ impl<'a> ScopedDb<'a> {
     pub fn scoped_to(&mut self, node: NodeId) -> ScopedDb<'_> {
         ScopedDb::new(self.db, node, self.ctx)
     }
+
+    /// Set arbitrary data on the scoped node.
+    pub fn set_node_data<T: Clone + Send + Sync + 'static>(&self, data: T) {
+        self.db
+            .set_input::<crate::NodeDataInput<T>>(self.node, data);
+    }
+
+    /// Get arbitrary data from the scoped node.
+    pub fn get_node_data<T: Clone + Send + Sync + 'static>(&self) -> Option<T> {
+        self.db.get_input::<crate::NodeDataInput<T>>(&self.node)
+    }
+
+    /// Get arbitrary data from a specific node.
+    pub fn get_node_data_for<T: Clone + Send + Sync + 'static>(&self, node: NodeId) -> Option<T> {
+        self.db.get_input::<crate::NodeDataInput<T>>(&node)
+    }
+
+    /// Query with a custom key (for queries that don't use NodeId as the key).
+    pub fn query_with_key<Q: Query>(&mut self, key: Q::Key) -> Q::Value
+    where
+        Q::Value: Clone + Send + Sync,
+    {
+        self.db.query::<Q>(key, self.ctx)
+    }
 }

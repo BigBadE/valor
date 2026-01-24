@@ -13,6 +13,9 @@ pub struct StyleRule {
     /// Property declarations (e.g., "width" -> Length(100px))
     pub declarations: HashMap<String, CssValue>,
 
+    /// Properties marked with !important
+    pub important_declarations: HashMap<String, CssValue>,
+
     /// Specificity value for cascading (higher = higher priority)
     /// Calculated as: (id_count << 16) | (class_count << 8) | tag_count
     pub specificity: u32,
@@ -32,6 +35,24 @@ impl StyleRule {
         Self {
             selector_text,
             declarations,
+            important_declarations: HashMap::new(),
+            specificity,
+            source_order,
+        }
+    }
+
+    /// Create a new style rule with important declarations.
+    pub fn with_important(
+        selector_text: String,
+        declarations: HashMap<String, CssValue>,
+        important_declarations: HashMap<String, CssValue>,
+        specificity: u32,
+        source_order: usize,
+    ) -> Self {
+        Self {
+            selector_text,
+            declarations,
+            important_declarations,
             specificity,
             source_order,
         }

@@ -4,14 +4,12 @@
 //! LayoutBox tree that can be passed to the renderer.
 
 use crate::{
-    BlockMarker, BlockOffsetQuery, BlockSizeQuery, BoxType, EdgeSizes, InlineMarker,
-    InlineOffsetQuery, InlineSizeQuery, LayoutBox, Rect, Subpixels,
+    BlockOffsetQuery, BlockSizeQuery, BoxType, EdgeSizes, InlineOffsetQuery, InlineSizeQuery,
+    LayoutBox, Rect,
 };
 use rewrite_core::{Database, DependencyContext, NodeId, ScopedDb};
-use rewrite_css::{
-    BorderWidthQuery, CssKeyword, CssValue, DisplayQuery, EndMarker, MarginQuery, PaddingQuery,
-    PositionQuery, StartMarker,
-};
+use rewrite_css::{CssKeyword, CssValue, DisplayQuery, EndMarker, PositionQuery, StartMarker};
+use rewrite_css_dimensional::{BorderWidthQuery, MarginQuery, PaddingQuery};
 
 /// Build the layout tree from a DOM node.
 ///
@@ -25,6 +23,12 @@ pub fn build_layout_tree(db: &Database, root: NodeId) -> Option<LayoutBox> {
 /// Build a single layout box for a node and its descendants.
 fn build_layout_box(db: &Database, node: NodeId, ctx: &mut DependencyContext) -> Option<LayoutBox> {
     let mut scoped = ScopedDb::new(db, node, ctx);
+
+    // Skip elements that should not be displayed (UA stylesheet defaults)
+    // TODO: Replace with proper UA stylesheet
+    if should_skip_element(&mut scoped) {
+        return None;
+    }
 
     // Check display property to determine box type
     let display = scoped.query::<DisplayQuery>();
@@ -161,6 +165,25 @@ fn determine_box_type(display: &CssValue, position: &CssValue, float_value: &Css
         CssValue::Keyword(CssKeyword::TableRow) => BoxType::TableRow,
         CssValue::Keyword(CssKeyword::TableCell) => BoxType::TableCell,
         _ => BoxType::Block, // Default to block
+    }
+}
+
+/// Check if an element should be skipped (not displayed) based on element name.
+/// This is a temporary workaround until we have a proper UA stylesheet.
+fn should_skip_element(scoped: &mut ScopedDb) -> bool {
+    // Get the element's tag name
+    use rewrite_html::TagNameQuery;
+    if let Some(tag_name) = scoped.query::<TagNameQuery>() {
+        let should_skip = matches!(
+            tag_name.as_str(),
+            "head" | "script" | "style" | "meta" | "link" | "title"
+        );
+        if should_skip {
+            eprintln!("Skipping element: {}", tag_name);
+        }
+        should_skip
+    } else {
+        false
     }
 }
 

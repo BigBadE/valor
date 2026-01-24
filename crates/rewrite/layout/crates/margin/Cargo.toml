@@ -1,0 +1,15 @@
+[package]
+name = "rewrite_layout_margin"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../../../core" }
+rewrite_css = { path = "../../../css" }
+rewrite_html = { path = "../../../html" }
+rewrite_layout_util = { path = "../util" }
+rewrite_layout_bfc = { path = "../bfc" }
+rewrite_macros = { path = "../../../macros" }
+
+[lints]
+workspace = true

@@ -16,6 +16,16 @@ pub enum LogicalDirection {
     End,
 }
 
+impl LogicalDirection {
+    /// Get the opposite direction.
+    pub fn opposite(self) -> Self {
+        match self {
+            Self::Start => Self::End,
+            Self::End => Self::Start,
+        }
+    }
+}
+
 /// Physical direction (absolute positioning).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PhysicalDirection {

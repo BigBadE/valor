@@ -18,6 +18,12 @@ pub const BORDER_RIGHT_WIDTH: &str = "border-right-width";
 pub const BORDER_BOTTOM_WIDTH: &str = "border-bottom-width";
 pub const BORDER_LEFT_WIDTH: &str = "border-left-width";
 
+// Border Style
+pub const BORDER_TOP_STYLE: &str = "border-top-style";
+pub const BORDER_RIGHT_STYLE: &str = "border-right-style";
+pub const BORDER_BOTTOM_STYLE: &str = "border-bottom-style";
+pub const BORDER_LEFT_STYLE: &str = "border-left-style";
+
 // Position Offsets
 pub const TOP: &str = "top";
 pub const RIGHT: &str = "right";

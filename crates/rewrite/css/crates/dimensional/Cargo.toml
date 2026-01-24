@@ -1,0 +1,13 @@
+[package]
+name = "rewrite_css_dimensional"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../../../core" }
+rewrite_css = { path = "../.." }
+rewrite_layout_margin = { path = "../../../layout/crates/margin" }
+rewrite_macros = { path = "../../../macros" }
+
+[lints]
+workspace = true

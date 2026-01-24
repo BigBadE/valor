@@ -1,6 +1,5 @@
 //! Computed value resolution.
 
-use super::store::get_initial_value;
 use crate::{CssKeyword, CssValue, LengthValue};
 use rewrite_core::NodeId;
 
@@ -76,14 +75,13 @@ fn length_to_subpixels(
 fn get_font_size(node: NodeId, db: &rewrite_core::Database) -> f32 {
     use super::properties::FONT_SIZE;
 
-    // Query font-size as input
-    if let Some(value) = db.get_input::<super::CssPropertyInput>(&(node, FONT_SIZE.to_string())) {
-        match value {
-            CssValue::Length(LengthValue::Px(px)) => px,
-            _ => 16.0,
-        }
-    } else {
-        16.0
+    // Query font-size through cascade
+    let mut ctx = rewrite_core::DependencyContext::new();
+    let value =
+        db.query::<super::cascade::CascadedPropertyQuery>((node, FONT_SIZE.to_string()), &mut ctx);
+    match value {
+        CssValue::Length(LengthValue::Px(px)) => px,
+        _ => 16.0,
     }
 }
 
@@ -94,9 +92,9 @@ pub fn compute_dimensional_value(
     db: &rewrite_core::Database,
     containing_block_size: Option<i32>,
 ) -> i32 {
-    let value = db
-        .get_input::<super::CssPropertyInput>(&(node, property.to_string()))
-        .unwrap_or_else(|| get_initial_value(property));
+    let mut ctx = rewrite_core::DependencyContext::new();
+    let value =
+        db.query::<super::cascade::CascadedPropertyQuery>((node, property.to_string()), &mut ctx);
 
     css_value_to_subpixels(&value, node, db, containing_block_size)
 }

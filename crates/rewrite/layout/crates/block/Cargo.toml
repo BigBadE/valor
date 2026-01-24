@@ -1,0 +1,19 @@
+[package]
+name = "rewrite_layout_block"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../../../core" }
+rewrite_css = { path = "../../../css" }
+rewrite_css_dimensional = { path = "../../../css/crates/dimensional" }
+rewrite_html = { path = "../../../html" }
+rewrite_layout_util = { path = "../util" }
+rewrite_layout_size_impl = { path = "../size/impls" }
+rewrite_layout_offset_impl = { path = "../offset/impls" }
+rewrite_layout_text = { path = "../text" }
+rewrite_layout_margin = { path = "../margin" }
+rewrite_macros = { path = "../../../macros" }
+
+[lints]
+workspace = true

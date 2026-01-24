@@ -4,7 +4,9 @@ mod stylesheet;
 
 use rewrite_core::{Database, DependencyContext, NodeId};
 use rewrite_css::matching::{StyleSheetsInput, parse_css};
-use rewrite_css::storage::CssPropertyInput;
+use rewrite_css::storage::cascade::{
+    InlineDeclarationInput, Origin, Specificity, StyleDeclaration, UserAgentDeclarationInput,
+};
 use rewrite_css::{ColorValue, CssKeyword, CssValue};
 use rewrite_html::{AttributeQuery, ChildrenQuery, TagNameQuery, TextContentQuery, parse_html};
 
@@ -131,86 +133,219 @@ impl Page {
             return;
         };
 
+        // Helper to create UA declaration
+        let ua_decl = |value: CssValue| StyleDeclaration {
+            value,
+            origin: Origin::UserAgent,
+            specificity: Specificity::new(0, 0, 1), // Single element selector
+            source_order: 0,
+            important: false,
+        };
+
         // Apply default styles based on tag name
         match tag_name.as_str() {
-            "head" => {
-                // head { display: none }
-                self.db.set_input::<CssPropertyInput>(
+            // Root html element
+            "html" => {
+                self.db.set_input::<UserAgentDeclarationInput>(
                     (node, "display".to_string()),
-                    CssValue::Keyword(CssKeyword::None),
+                    ua_decl(CssValue::Keyword(CssKeyword::Block)),
                 );
-                eprintln!("Set display:none for <head> node {:?}", node);
             }
+
+            // Hidden elements
+            "head" | "meta" | "title" | "link" | "script" | "style" => {
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "display".to_string()),
+                    ua_decl(CssValue::Keyword(CssKeyword::None)),
+                );
+            }
+
+            // Body with default margin
             "body" => {
-                // body { margin: 8px }
-                let margin_8px = CssValue::Length(LengthValue::Px(8.0));
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "display".to_string()),
+                    ua_decl(CssValue::Keyword(CssKeyword::Block)),
+                );
+
+                let margin_8px = ua_decl(CssValue::Length(LengthValue::Px(8.0)));
                 for property in ["margin-top", "margin-right", "margin-bottom", "margin-left"] {
-                    self.db.set_input::<CssPropertyInput>(
+                    self.db.set_input::<UserAgentDeclarationInput>(
                         (node, property.to_string()),
                         margin_8px.clone(),
                     );
                 }
-
-                // DEBUG: Verify it was set
-                let mut ctx = DependencyContext::new();
-                let readback = self
-                    .db
-                    .query::<rewrite_css::storage::InheritedCssPropertyQuery>(
-                        (node, "margin-top".to_string()),
-                        &mut ctx,
-                    );
-                eprintln!(
-                    "Set margin for <body> node {:?}: {:?}, readback: {:?}",
-                    node, margin_8px, readback
-                );
             }
-            "p" => {
-                // p { display: block; margin: 1em 0; }
 
-                // Set display: block
-                self.db.set_input::<CssPropertyInput>(
+            // Block elements with margins
+            "p" | "blockquote" | "pre" => {
+                self.db.set_input::<UserAgentDeclarationInput>(
                     (node, "display".to_string()),
-                    CssValue::Keyword(CssKeyword::Block),
+                    ua_decl(CssValue::Keyword(CssKeyword::Block)),
                 );
 
-                // Set margins
-                let margin_1em = CssValue::Length(LengthValue::Em(1.0));
-                let margin_0 = CssValue::Length(LengthValue::Px(0.0));
+                let margin_1em = ua_decl(CssValue::Length(LengthValue::Em(1.0)));
+                let margin_0 = ua_decl(CssValue::Length(LengthValue::Px(0.0)));
 
-                self.db.set_input::<CssPropertyInput>(
+                self.db.set_input::<UserAgentDeclarationInput>(
                     (node, "margin-top".to_string()),
                     margin_1em.clone(),
                 );
-
-                // DEBUG: Verify it was set
-                let mut ctx = DependencyContext::new();
-                let readback = self
-                    .db
-                    .query::<rewrite_css::storage::InheritedCssPropertyQuery>(
-                        (node, "margin-top".to_string()),
-                        &mut ctx,
-                    );
-                eprintln!(
-                    "Set margin-top for <p> node {:?}: {:?}, readback: {:?}",
-                    node, margin_1em, readback
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "margin-bottom".to_string()),
+                    margin_1em,
                 );
-                self.db
-                    .set_input::<CssPropertyInput>((node, "margin-bottom".to_string()), margin_1em);
-                self.db.set_input::<CssPropertyInput>(
+                self.db.set_input::<UserAgentDeclarationInput>(
                     (node, "margin-left".to_string()),
                     margin_0.clone(),
                 );
-                self.db
-                    .set_input::<CssPropertyInput>((node, "margin-right".to_string()), margin_0);
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "margin-right".to_string()),
+                    margin_0,
+                );
             }
+
+            // Headings with varying margins
+            "h1" => {
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "display".to_string()),
+                    ua_decl(CssValue::Keyword(CssKeyword::Block)),
+                );
+
+                let margin = ua_decl(CssValue::Length(LengthValue::Em(0.67)));
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "margin-top".to_string()),
+                    margin.clone(),
+                );
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "margin-bottom".to_string()),
+                    margin,
+                );
+
+                // font-size: 2em
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "font-size".to_string()),
+                    ua_decl(CssValue::Length(LengthValue::Em(2.0))),
+                );
+            }
+
+            "h2" => {
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "display".to_string()),
+                    ua_decl(CssValue::Keyword(CssKeyword::Block)),
+                );
+
+                let margin = ua_decl(CssValue::Length(LengthValue::Em(0.83)));
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "margin-top".to_string()),
+                    margin.clone(),
+                );
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "margin-bottom".to_string()),
+                    margin,
+                );
+
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "font-size".to_string()),
+                    ua_decl(CssValue::Length(LengthValue::Em(1.5))),
+                );
+            }
+
+            "h3" => {
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "display".to_string()),
+                    ua_decl(CssValue::Keyword(CssKeyword::Block)),
+                );
+
+                let margin = ua_decl(CssValue::Length(LengthValue::Em(1.0)));
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "margin-top".to_string()),
+                    margin.clone(),
+                );
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "margin-bottom".to_string()),
+                    margin,
+                );
+
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "font-size".to_string()),
+                    ua_decl(CssValue::Length(LengthValue::Em(1.17))),
+                );
+            }
+
+            "h4" | "h5" | "h6" => {
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "display".to_string()),
+                    ua_decl(CssValue::Keyword(CssKeyword::Block)),
+                );
+
+                let margin = ua_decl(CssValue::Length(LengthValue::Em(1.33)));
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "margin-top".to_string()),
+                    margin.clone(),
+                );
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "margin-bottom".to_string()),
+                    margin,
+                );
+            }
+
+            // Generic block elements
+            "div" | "section" | "article" | "aside" | "nav" | "header" | "footer" | "main"
+            | "figure" => {
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "display".to_string()),
+                    ua_decl(CssValue::Keyword(CssKeyword::Block)),
+                );
+            }
+
+            // Lists
+            "ul" | "ol" => {
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "display".to_string()),
+                    ua_decl(CssValue::Keyword(CssKeyword::Block)),
+                );
+
+                let margin = ua_decl(CssValue::Length(LengthValue::Em(1.0)));
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "margin-top".to_string()),
+                    margin.clone(),
+                );
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "margin-bottom".to_string()),
+                    margin,
+                );
+            }
+
+            "li" => {
+                self.db.set_input::<UserAgentDeclarationInput>(
+                    (node, "display".to_string()),
+                    ua_decl(CssValue::Keyword(CssKeyword::Block)),
+                );
+            }
+
+            // Inline elements (explicit for common ones)
+            "span" | "a" | "strong" | "em" | "b" | "i" | "code" | "small" => {
+                // Inline is the default, but we can make it explicit if needed
+                // No styles needed - they inherit display:inline by default
+            }
+
             _ => {
-                // No default styles for other elements yet
+                // No default styles for other elements
             }
         }
     }
 
     /// Parse inline style attribute and set CSS inputs.
     fn parse_inline_style(&mut self, node: NodeId, style: &str) {
+        // Helper to create inline declaration
+        let inline_decl = |value: CssValue| StyleDeclaration {
+            value,
+            origin: Origin::Inline,
+            specificity: Specificity::inline(), // Inline styles have highest specificity
+            source_order: 0,
+            important: false,
+        };
+
         // Split by semicolon to get declarations
         for declaration in style.split(';') {
             let declaration = declaration.trim();
@@ -232,9 +367,9 @@ impl Page {
                     _ => {
                         // Regular property - parse and set
                         if let Some(css_value) = parse_css_value(value) {
-                            self.db.set_input::<CssPropertyInput>(
+                            self.db.set_input::<InlineDeclarationInput>(
                                 (node, property.to_string()),
-                                css_value,
+                                inline_decl(css_value),
                             );
                         }
                     }
@@ -248,21 +383,37 @@ impl Page {
         let values = parse_shorthand_values(value);
         let (top, right, bottom, left) = expand_box_values(&values);
 
+        let inline_decl = |value: CssValue| StyleDeclaration {
+            value,
+            origin: Origin::Inline,
+            specificity: Specificity::inline(),
+            source_order: 0,
+            important: false,
+        };
+
         if let Some(v) = top {
-            self.db
-                .set_input::<CssPropertyInput>((node, "padding-top".to_string()), v);
+            self.db.set_input::<InlineDeclarationInput>(
+                (node, "padding-top".to_string()),
+                inline_decl(v),
+            );
         }
         if let Some(v) = right {
-            self.db
-                .set_input::<CssPropertyInput>((node, "padding-right".to_string()), v);
+            self.db.set_input::<InlineDeclarationInput>(
+                (node, "padding-right".to_string()),
+                inline_decl(v),
+            );
         }
         if let Some(v) = bottom {
-            self.db
-                .set_input::<CssPropertyInput>((node, "padding-bottom".to_string()), v);
+            self.db.set_input::<InlineDeclarationInput>(
+                (node, "padding-bottom".to_string()),
+                inline_decl(v),
+            );
         }
         if let Some(v) = left {
-            self.db
-                .set_input::<CssPropertyInput>((node, "padding-left".to_string()), v);
+            self.db.set_input::<InlineDeclarationInput>(
+                (node, "padding-left".to_string()),
+                inline_decl(v),
+            );
         }
     }
 
@@ -271,21 +422,37 @@ impl Page {
         let values = parse_shorthand_values(value);
         let (top, right, bottom, left) = expand_box_values(&values);
 
+        let inline_decl = |value: CssValue| StyleDeclaration {
+            value,
+            origin: Origin::Inline,
+            specificity: Specificity::inline(),
+            source_order: 0,
+            important: false,
+        };
+
         if let Some(v) = top {
-            self.db
-                .set_input::<CssPropertyInput>((node, "margin-top".to_string()), v);
+            self.db.set_input::<InlineDeclarationInput>(
+                (node, "margin-top".to_string()),
+                inline_decl(v),
+            );
         }
         if let Some(v) = right {
-            self.db
-                .set_input::<CssPropertyInput>((node, "margin-right".to_string()), v);
+            self.db.set_input::<InlineDeclarationInput>(
+                (node, "margin-right".to_string()),
+                inline_decl(v),
+            );
         }
         if let Some(v) = bottom {
-            self.db
-                .set_input::<CssPropertyInput>((node, "margin-bottom".to_string()), v);
+            self.db.set_input::<InlineDeclarationInput>(
+                (node, "margin-bottom".to_string()),
+                inline_decl(v),
+            );
         }
         if let Some(v) = left {
-            self.db
-                .set_input::<CssPropertyInput>((node, "margin-left".to_string()), v);
+            self.db.set_input::<InlineDeclarationInput>(
+                (node, "margin-left".to_string()),
+                inline_decl(v),
+            );
         }
     }
 
@@ -294,21 +461,37 @@ impl Page {
         let values = parse_shorthand_values(value);
         let (top, right, bottom, left) = expand_box_values(&values);
 
+        let inline_decl = |value: CssValue| StyleDeclaration {
+            value,
+            origin: Origin::Inline,
+            specificity: Specificity::inline(),
+            source_order: 0,
+            important: false,
+        };
+
         if let Some(v) = top {
-            self.db
-                .set_input::<CssPropertyInput>((node, "border-top-width".to_string()), v);
+            self.db.set_input::<InlineDeclarationInput>(
+                (node, "border-top-width".to_string()),
+                inline_decl(v),
+            );
         }
         if let Some(v) = right {
-            self.db
-                .set_input::<CssPropertyInput>((node, "border-right-width".to_string()), v);
+            self.db.set_input::<InlineDeclarationInput>(
+                (node, "border-right-width".to_string()),
+                inline_decl(v),
+            );
         }
         if let Some(v) = bottom {
-            self.db
-                .set_input::<CssPropertyInput>((node, "border-bottom-width".to_string()), v);
+            self.db.set_input::<InlineDeclarationInput>(
+                (node, "border-bottom-width".to_string()),
+                inline_decl(v),
+            );
         }
         if let Some(v) = left {
-            self.db
-                .set_input::<CssPropertyInput>((node, "border-left-width".to_string()), v);
+            self.db.set_input::<InlineDeclarationInput>(
+                (node, "border-left-width".to_string()),
+                inline_decl(v),
+            );
         }
     }
 
@@ -320,16 +503,28 @@ impl Page {
             return;
         }
 
+        let inline_decl = |value: CssValue| StyleDeclaration {
+            value,
+            origin: Origin::Inline,
+            specificity: Specificity::inline(),
+            source_order: 0,
+            important: false,
+        };
+
         // gap: <row-gap> <column-gap>
         // If one value: both row and column get same value
         // If two values: first is row-gap, second is column-gap
         let row_gap = &values[0];
         let column_gap = values.get(1).unwrap_or(row_gap);
 
-        self.db
-            .set_input::<CssPropertyInput>((node, "row-gap".to_string()), row_gap.clone());
-        self.db
-            .set_input::<CssPropertyInput>((node, "column-gap".to_string()), column_gap.clone());
+        self.db.set_input::<InlineDeclarationInput>(
+            (node, "row-gap".to_string()),
+            inline_decl(row_gap.clone()),
+        );
+        self.db.set_input::<InlineDeclarationInput>(
+            (node, "column-gap".to_string()),
+            inline_decl(column_gap.clone()),
+        );
     }
 
     /// Compute layout for the page.

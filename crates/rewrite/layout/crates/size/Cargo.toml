@@ -1,0 +1,18 @@
+[package]
+name = "rewrite_layout_size"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../../../core" }
+rewrite_css = { path = "../../../css" }
+rewrite_html = { path = "../../../html" }
+rewrite_layout_util = { path = "../util" }
+rewrite_layout_size_impl = { path = "impls" }
+rewrite_layout_grid = { path = "../grid" }
+rewrite_layout_block = { path = "../block" }
+rewrite_layout_float = { path = "../float" }
+rewrite_macros = { path = "../../../macros" }
+
+[lints]
+workspace = true

@@ -1,10 +1,14 @@
+use crate::PaddingQuery;
 use rewrite_core::ScopedDb;
-use rewrite_css::{EndMarker, PaddingQuery, StartMarker};
+use rewrite_css::{EndMarker, StartMarker};
 
-use crate::{BlockMarker, ConstrainedMarker, LayoutsMarker, OffsetQuery, SizeQuery, Subpixels};
+use crate::{
+    BlockMarker, BlockOffsetQuery, BlockSizeQuery, InlineMarker, InlineOffsetQuery,
+    InlineSizeQuery, Subpixels,
+};
 
-/// Compute the parent start position (offset + leading padding) for any axis.
-pub fn parent_start<Axis: LayoutsMarker + 'static>(scoped: &mut ScopedDb) -> Subpixels {
+/// Compute the parent start position (offset + leading padding) for inline axis.
+pub fn parent_start_inline(scoped: &mut ScopedDb) -> Subpixels {
     use rewrite_core::Relationship;
 
     // Check if we have a parent
@@ -16,16 +20,16 @@ pub fn parent_start<Axis: LayoutsMarker + 'static>(scoped: &mut ScopedDb) -> Sub
         return 0;
     }
 
-    let offset = scoped.parent::<OffsetQuery<Axis>>();
-
-    // Map layout axis to CSS axis marker
-    let padding = if std::any::TypeId::of::<Axis>() == std::any::TypeId::of::<BlockMarker>() {
-        scoped.parent::<PaddingQuery<rewrite_css::BlockMarker, StartMarker>>()
+    // Map layout axis to concrete query types
+    if std::any::TypeId::of::<Axis>() == std::any::TypeId::of::<BlockMarker>() {
+        let offset = scoped.parent::<BlockOffsetQuery>();
+        let padding = scoped.parent::<PaddingQuery<rewrite_css::BlockMarker, StartMarker>>();
+        offset + padding
     } else {
-        scoped.parent::<PaddingQuery<rewrite_css::InlineMarker, StartMarker>>()
-    };
-
-    offset + padding
+        let offset = scoped.parent::<InlineOffsetQuery>();
+        let padding = scoped.parent::<PaddingQuery<rewrite_css::InlineMarker, StartMarker>>();
+        offset + padding
+    }
 }
 
 /// Compute the sum of padding (start + end) for the parent on the inline axis.
@@ -40,8 +44,14 @@ pub fn parent_padding_sum_inline(scoped: &mut ScopedDb) -> Subpixels {
 /// This is the standard static flow offset calculation.
 pub fn get_offset<Axis: LayoutsMarker + 'static>(scoped: &mut ScopedDb) -> Subpixels {
     let parent = parent_start::<Axis>(scoped);
-    let siblings: Subpixels = scoped
-        .prev_siblings::<SizeQuery<Axis, ConstrainedMarker>>()
-        .sum();
+
+    // Map axis to concrete query type
+    let siblings: Subpixels =
+        if std::any::TypeId::of::<Axis>() == std::any::TypeId::of::<BlockMarker>() {
+            scoped.prev_siblings::<BlockSizeQuery>().sum()
+        } else {
+            scoped.prev_siblings::<InlineSizeQuery>().sum()
+        };
+
     parent + siblings
 }

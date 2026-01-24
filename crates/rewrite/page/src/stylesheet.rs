@@ -56,7 +56,7 @@ fn parse_qualified_rule<'i, 't>(
         }
     }
 
-    let selector_end = parser.position();
+    let _selector_end = parser.position();
     let selector = parser
         .slice_from(selector_start)
         .trim_end_matches('{')

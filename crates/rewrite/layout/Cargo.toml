@@ -6,6 +6,15 @@ edition.workspace = true
 [dependencies]
 rewrite_core = { path = "../core", package = "rewrite_core" }
 rewrite_css = { path = "../css", package = "rewrite_css" }
+rewrite_css_dimensional = { path = "../css/crates/dimensional", package = "rewrite_css_dimensional" }
+rewrite_layout_util = { path = "crates/util", package = "rewrite_layout_util" }
+rewrite_layout_size = { path = "crates/size", package = "rewrite_layout_size" }
+rewrite_layout_offset = { path = "crates/offset", package = "rewrite_layout_offset" }
+rewrite_layout_size_impl = { path = "crates/size/impls", package = "rewrite_layout_size_impl" }
+rewrite_layout_offset_impl = { path = "crates/offset/impls", package = "rewrite_layout_offset_impl" }
+rewrite_layout_margin = { path = "crates/margin", package = "rewrite_layout_margin" }
+rewrite_layout_flex = { path = "crates/flex", package = "rewrite_layout_flex" }
+rewrite_layout_bfc = { path = "crates/bfc", package = "rewrite_layout_bfc" }
 rewrite_html = { path = "../html", package = "rewrite_html" }
 rewrite_macros = { path = "../macros", package = "rewrite_macros" }
 

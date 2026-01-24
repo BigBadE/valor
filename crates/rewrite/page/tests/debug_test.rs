@@ -1,7 +1,10 @@
 //! Debug test to check if CSS inputs are being set correctly.
 
 use rewrite_core::DependencyContext;
-use rewrite_css::storage::{CssPropertyInput, CssValueQuery};
+use rewrite_css::storage::{
+    CssValueQuery,
+    cascade::{InlineDeclarationInput, Origin, Specificity, StyleDeclaration},
+};
 use rewrite_css::{CssValue, LengthValue};
 use rewrite_html::{AttributeQuery, ChildrenQuery, TagNameQuery};
 use rewrite_page::Page;
@@ -48,11 +51,13 @@ fn debug_css_input() {
             eprintln!("No style attribute found");
         }
 
-        // Try to get the input directly
-        if let Some(value) = db.get_input::<CssPropertyInput>(&(div, "padding-top".to_string())) {
-            eprintln!("Got padding-top input: {:?}", value);
+        // Try to get the inline declaration directly
+        if let Some(decl) =
+            db.get_input::<InlineDeclarationInput>(&(div, "padding-top".to_string()))
+        {
+            eprintln!("Got padding-top inline declaration: {:?}", decl.value);
         } else {
-            eprintln!("No padding-top input found");
+            eprintln!("No padding-top inline declaration found");
         }
 
         // Try to query it
@@ -71,9 +76,16 @@ fn debug_manual_set() {
     let db = Database::new();
     let node = db.create_node();
 
-    // Manually set a CSS value
+    // Manually set a CSS value using inline declaration (highest priority)
     let value = CssValue::Length(LengthValue::Px(10.0));
-    db.set_input::<CssPropertyInput>((node, "padding-top".to_string()), value);
+    let decl = StyleDeclaration {
+        value,
+        origin: Origin::Inline,
+        specificity: Specificity::inline(),
+        source_order: 0,
+        important: false,
+    };
+    db.set_input::<InlineDeclarationInput>((node, "padding-top".to_string()), decl);
 
     // Query it back
     let mut ctx = DependencyContext::new();

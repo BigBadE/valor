@@ -85,10 +85,23 @@ impl TreeBuilder {
 
     /// Append a child to a parent node.
     pub fn append_child(&self, parent: NodeId, child: NodeId) {
+        // Get existing children to find the last sibling
+        let existing_children = self.db.resolve_relationship(parent, Relationship::Children);
+        let last_child = existing_children.last().copied();
+
+        // Establish parent-child relationship
         self.db
             .establish_relationship(parent, Relationship::Children, child);
         self.db
             .establish_relationship(child, Relationship::Parent, parent);
+
+        // Establish sibling relationships if there's a previous child
+        if let Some(prev) = last_child {
+            self.db
+                .establish_relationship(prev, Relationship::NextSibling, child);
+            self.db
+                .establish_relationship(child, Relationship::PreviousSibling, prev);
+        }
     }
 
     /// Set an attribute on an element.
