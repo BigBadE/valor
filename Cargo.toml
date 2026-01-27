@@ -13,6 +13,8 @@ members = [
     "crates/rewrite/layout/crates/*",
     "crates/rewrite/layout/crates/*/impls",
     "crates/rewrite/layout/crates/util",
+    "crates/rewrite/renderer",
+    "crates/rewrite/renderer/crates/*",
 ]
 
 exclude = ["deps/*"]

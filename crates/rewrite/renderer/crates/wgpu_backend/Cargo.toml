@@ -1,0 +1,14 @@
+[package]
+name = "rewrite_renderer_wgpu"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_renderer = { path = "../.." }
+rewrite_core = { path = "../../../core" }
+wgpu = "22"
+bytemuck = { version = "1.19", features = ["derive"] }
+glam = "0.29"
+
+[lints]
+workspace = true

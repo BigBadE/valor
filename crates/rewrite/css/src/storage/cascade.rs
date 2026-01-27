@@ -303,13 +303,13 @@ impl Query for CascadedPropertyQuery {
 
         // Find the winning declaration
         let mut winner: Option<StyleDeclaration> = None;
-        for candidate in candidates {
+        for candidate in &candidates {
             if let Some(ref current_winner) = winner {
                 if candidate.wins_over(current_winner) {
-                    winner = Some(candidate);
+                    winner = Some(candidate.clone());
                 }
             } else {
-                winner = Some(candidate);
+                winner = Some(candidate.clone());
             }
         }
 

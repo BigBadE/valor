@@ -273,6 +273,10 @@ pub fn create_ua_stylesheet() -> types::Stylesheet {
     rules.push(make_ua_rule("html", source_order, &[("color", "#000")]));
     source_order += 1;
 
+    // Add default body margin per browser defaults (Chrome/Firefox/Safari all use 8px)
+    rules.push(make_ua_rule("body", source_order, &[("margin", "8px")]));
+    source_order += 1;
+
     // Hide HTML metadata elements per HTML5 spec
     // These elements should not be rendered and should not participate in layout
     let hidden_elements = [

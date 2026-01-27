@@ -17,11 +17,15 @@ impl Query for LayoutWidthQuery {
         let width_value = db.query::<CssValueQuery>((node, "width".to_string()), ctx);
 
         // If width is explicit (not auto), use it
+        // BUT we need to treat 0 as auto for elements without explicit width
         if !width_value.is_auto() {
             let width_subpixels = width_value.subpixels_or_zero();
-
-            // Width is the content box, so we're done
-            return width_subpixels;
+            // If width resolves to 0, treat it as auto (no explicit width set)
+            if width_subpixels > 0 {
+                // Width is the content box, so we're done
+                return width_subpixels;
+            }
+            // width is 0, fall through to compute from parent
         }
 
         // Width is auto - need to compute based on parent's width

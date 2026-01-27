@@ -5,13 +5,7 @@ edition.workspace = true
 
 [dependencies]
 rewrite_core = { path = "../../../core" }
-rewrite_css = { path = "../../../css" }
-rewrite_css_dimensional = { path = "../../../css/crates/dimensional" }
-rewrite_layout_util = { path = "../util" }
-rewrite_layout_margin = { path = "../margin" }
 rewrite_layout_size_impl = { path = "../size/impls" }
-rewrite_layout_offset_impl = { path = "../offset/impls" }
-rewrite_macros = { path = "../../../macros" }
 
 [lints]
 workspace = true

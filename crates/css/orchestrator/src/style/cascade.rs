@@ -471,6 +471,10 @@ impl StyleComputer {
                     self.classes_by_node.insert(node, classes);
                 } else if name.eq_ignore_ascii_case("style") {
                     let map = parse_style_attribute_into_map(&value);
+                    eprintln!(
+                        "INLINE STYLE: node={:?}, value='{}', parsed={:?}",
+                        node, value, map
+                    );
                     let custom = extract_custom_properties(&map);
                     self.inline_decls_by_node.insert(node, map);
                     self.inline_custom_props_by_node.insert(node, custom);

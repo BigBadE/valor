@@ -5,6 +5,15 @@ edition.workspace = true
 
 [dependencies]
 dashmap = "6.1"
+smallvec = "1.13"
+crossbeam = "0.8"
+rayon = "1.10"
+
+[dev-dependencies]
+rewrite_html = { path = "../html" }
+rewrite_layout_block = { path = "../layout/crates/block" }
+rewrite_layout_flex = { path = "../layout/crates/flex" }
+rewrite_layout_size_impl = { path = "../layout/crates/size/impls" }
 
 [lints]
 workspace = true

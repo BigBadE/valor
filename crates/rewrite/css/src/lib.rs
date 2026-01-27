@@ -1,19 +1,37 @@
-mod dimensional;
-mod direction;
+//! CSS parsing and rule management.
+//!
+//! This crate provides streaming CSS parsing with automatic categorization
+//! of rules into layout, render, and special categories.
+
 mod keyword;
-pub mod matching;
-mod property;
-mod property_queries;
-pub mod storage;
+mod parser;
+mod rule;
 mod value;
 
-pub use dimensional::*;
-pub use direction::*;
-pub use keyword::CssKeyword;
-pub use matching::{MatchedRulesQuery, StyleRule, StyleSheets, StyleSheetsInput};
-// Note: Don't export property::* to avoid conflicts with property_queries::*
-// The old CssProperty enum is kept for internal use only
-pub use property_queries::*;
-pub use storage::CssStorage;
-pub use storage::input::{ViewportInput, ViewportSize};
+pub use keyword::*;
+pub use parser::{CssUpdate, StreamingCssParser};
+pub use rule::{CategorizedRules, CssRule, PropertyCategory, PropertyValue};
 pub use value::*;
+
+/// Subpixel precision type (64ths of a pixel).
+pub type Subpixels = i32;
+
+/// Viewport size information.
+#[derive(Debug, Clone, Copy)]
+pub struct ViewportSize {
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Default for ViewportSize {
+    fn default() -> Self {
+        Self {
+            width: 1024.0,
+            height: 768.0,
+        }
+    }
+}
+
+/// Viewport input for queries.
+#[derive(Debug, Clone, Copy)]
+pub struct ViewportInput;

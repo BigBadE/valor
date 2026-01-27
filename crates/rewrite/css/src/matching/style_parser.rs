@@ -115,10 +115,15 @@ fn parse_declaration_block(
 
         // Parse the value into a CssValue
         if let Some(css_value) = parse_css_value(&value_str) {
-            if is_important {
-                important_declarations.insert(property, css_value);
-            } else {
-                declarations.insert(property, css_value);
+            // Expand shorthand properties
+            let expanded = expand_shorthand(&property, css_value);
+
+            for (prop_name, prop_value) in expanded {
+                if is_important {
+                    important_declarations.insert(prop_name, prop_value);
+                } else {
+                    declarations.insert(prop_name, prop_value);
+                }
             }
         }
 
@@ -178,13 +183,56 @@ fn extract_important(value_str: &str) -> (String, bool) {
     }
 }
 
-/// Parse value tokens into a string (deprecated - use parse_value_with_important)
-fn parse_value_string(parser: &mut Parser<'_, '_>) -> String {
-    parse_value_with_important(parser).0
-}
-
 /// Parse a CSS value string into a CssValue
 fn parse_css_value(value_str: &str) -> Option<CssValue> {
     use crate::storage::parser::parse_value;
     parse_value(value_str)
+}
+
+/// Expand CSS shorthand properties into longhand properties.
+/// Returns a vector of (property_name, value) pairs.
+fn expand_shorthand(property: &str, value: CssValue) -> Vec<(String, CssValue)> {
+    match property {
+        "margin" => expand_box_shorthand("margin", value),
+        "padding" => expand_box_shorthand("padding", value),
+        "border-width" => expand_box_shorthand("border", value),
+        _ => {
+            // Not a shorthand - return as-is
+            vec![(property.to_string(), value)]
+        }
+    }
+}
+
+/// Expand box model shorthands (margin, padding, border-width).
+/// Handles 1-4 value syntax.
+fn expand_box_shorthand(prefix: &str, value: CssValue) -> Vec<(String, CssValue)> {
+    // For single keyword values (like "auto"), apply to all sides
+    match value {
+        CssValue::Keyword(_) => {
+            vec![
+                (format!("{}-top", prefix), value.clone()),
+                (format!("{}-right", prefix), value.clone()),
+                (format!("{}-bottom", prefix), value.clone()),
+                (format!("{}-left", prefix), value),
+            ]
+        }
+        CssValue::Length(_) | CssValue::Percentage(_) | CssValue::Number(_) => {
+            // Single length value - apply to all sides
+            vec![
+                (format!("{}-top", prefix), value.clone()),
+                (format!("{}-right", prefix), value.clone()),
+                (format!("{}-bottom", prefix), value.clone()),
+                (format!("{}-left", prefix), value),
+            ]
+        }
+        _ => {
+            // Complex values not supported yet - treat as single value
+            vec![
+                (format!("{}-top", prefix), value.clone()),
+                (format!("{}-right", prefix), value.clone()),
+                (format!("{}-bottom", prefix), value.clone()),
+                (format!("{}-left", prefix), value),
+            ]
+        }
+    }
 }
