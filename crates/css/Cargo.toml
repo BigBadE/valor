@@ -1,42 +1,16 @@
 [package]
-name = "css"
+name = "rewrite_css"
+version.workspace = true
 edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../core", package = "rewrite_core" }
+rewrite_html = { path = "../html", package = "rewrite_html" }
+lightningcss = { version = "1.0.0-alpha.70", default-features = false, features = ["into_owned"] }
+parcel_selectors = "0.28"
+cssparser = "0.33"
+lasso = "0.7"
+boxcar = "0.2"
 
 [lints]
 workspace = true
-
-[dependencies]
-html.workspace = true
-js.workspace = true
-
-cssparser.workspace = true
-
-log.workspace = true
-anyhow.workspace = true
-url.workspace = true
-
-# Internal CSS modules (workspace dependencies)
-css_orchestrator.workspace = true
-css_syntax.workspace = true
-#css_style_attr.workspace = true
-#css_media_queries.workspace = true
-#css_conditional_rules.workspace = true
-#css_selectors.workspace = true
-#css_namespaces.workspace = true
-#css_cascade.workspace = true
-#css_values_units.workspace = true
-#css_variables.workspace = true
-#css_display.workspace = true
-#css_box.workspace = true
-#css_color.workspace = true
-#css_backgrounds_borders.workspace = true
-#css_images.workspace = true
-#css_fonts.workspace = true
-#css_writing_modes.workspace = true
-#css_flexbox.workspace = true
-#css_ui.workspace = true
-#css_transforms.workspace = true
-#css_position.workspace = true
-#css_sizing.workspace = true
-#css_text.workspace = true
-#css_text_decoration.workspace = true

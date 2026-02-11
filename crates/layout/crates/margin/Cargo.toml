@@ -1,0 +1,11 @@
+[package]
+name = "rewrite_layout_margin"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../../../core" }
+lightningcss.workspace = true
+
+[lints]
+workspace = true

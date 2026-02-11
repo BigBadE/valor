@@ -1,0 +1,15 @@
+[package]
+name = "renderer"
+edition.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+js.workspace = true
+indextree.workspace = true
+log.workspace = true
+serde.workspace = true
+bincode = "1.3.3"

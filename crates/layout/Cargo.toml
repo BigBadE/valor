@@ -1,0 +1,16 @@
+[package]
+name = "rewrite_layout"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../core", package = "rewrite_core" }
+rewrite_css = { path = "../css", package = "rewrite_css" }
+rewrite_layout_util = { path = "crates/util", package = "rewrite_layout_util" }
+lightningcss = { workspace = true }
+
+[dev-dependencies]
+rewrite_page = { path = "../page", package = "rewrite_page" }
+
+[lints]
+workspace = true

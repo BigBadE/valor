@@ -1,0 +1,12 @@
+[package]
+name = "rewrite_layout_size_impl"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../../../../core" }
+rewrite_macros = { path = "../../../../macros" }
+lightningcss.workspace = true
+
+[lints]
+workspace = true

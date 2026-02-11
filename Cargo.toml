@@ -3,129 +3,58 @@ cargo-features = ["codegen-backend"]
 [workspace]
 resolver = "3"
 members = [
-    "crates/css/modules/*",
-    "crates/css/orchestrator",
-    "crates/js/js_engine_v8",
-    "crates/renderer/wgpu_backend",
-    "crates/valor_dsl",
-    "crates/rewrite/*",
-    "crates/rewrite/css/crates/*",
-    "crates/rewrite/layout/crates/*",
-    "crates/rewrite/layout/crates/*/impls",
-    "crates/rewrite/layout/crates/util",
-    "crates/rewrite/renderer",
-    "crates/rewrite/renderer/crates/*",
+    "crates/core",
+    "crates/css",
+    "crates/html",
+    "crates/macros",
+    "crates/page",
+    "crates/renderer",
+    "crates/layout",
+    "crates/layout/crates/util",
 ]
 
-exclude = ["deps/*"]
+exclude = [
+    "deps/*",
+    "old/*",
+    "crates/layout/crates/block",
+    "crates/layout/crates/flex",
+    "crates/layout/crates/grid",
+    "crates/layout/crates/float",
+    "crates/layout/crates/size",
+    "crates/layout/crates/offset",
+    "crates/layout/crates/bfc",
+    "crates/layout/crates/margin",
+    "crates/layout/crates/positioning",
+    "crates/layout/crates/text",
+    "crates/js",
+]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-# Task handling
-tokio = { version = "1.47.1", features = ["full"] }
-tokio-stream = "0.1.17"
-rayon = "1.11.0"
-num_cpus = "1.16.0"
-
 # Parsing
 html5ever = "0.35.0"
 cssparser = "0.35.0"
-csscolorparser = "0.7.2"
-
-# Rendering
-wgpu = "26.0.1"
-winit = "0.30.12"
-bytemuck = { version = "1.23.2", features = ["derive"] }
-glyphon = { path = "deps/glyphon" }
-cosmic-text = { path = "deps/cosmic-text" }
-pollster = "0.4.0"
-
-# Webpage handling
-url = "2.5.7"
-reqwest = { version = "0.12.23", features = ["stream"] }
+lightningcss = { version = "1.0.0-alpha.70", default-features = false, features = ["into_owned"] }
 
 # Data types
-base64 = "0.22.1"
-bytes = "1.10.1"
-lasso = "0.7.3"
-indextree = "4.7.4"
 smallvec = "2.0.0-alpha.11"
-once_cell = "1.21.3"
 
-# String stuff
-unicode-linebreak = "0.1.5"
-unicode-bidi = "0.3.18"
-
-# Logging and error handling
+# Logging
 log = "0.4.28"
-env_logger = "0.11.8"
-anyhow = { version = "1.0.99", features = ["backtrace"] }
-tracing = "0.1.41"
 
-# Testing
-headless_chrome = { version = "1.0.18", features = ["fetch"] }
-futures = "0.3"
-chromiumoxide = { version = "0.8.0", default-features = false, features = ["tokio-runtime"] }
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.143"
-bincode = "1.3.3"
-urlencoding = "2.1.3"
-criterion = "0.7.0"
-image = { version = "0.25.8", default-features = false, features = ["png", "jpeg", "webp"] }
-zstd = "0.13.3"
-tempfile = "3.14.0"
-
-# JavaScript engine
-v8 = "142.1.0"
-
-# Our crates
-css = { path = "crates/css" }
-html = { path = "crates/html" }
-page_handler = { path = "crates/page_handler", default-features = false }
-renderer = { path = "crates/renderer" }
-wgpu_backend = { path = "crates/renderer/wgpu_backend" }
-js = { path = "crates/js" }
-js_engine_v8 = { path = "crates/js/js_engine_v8" }
-benchhist = { path = "crates/benchhist" }
-
-# CSS modules (internal crates)
-css_orchestrator = { path = "crates/css/orchestrator" }
-css_syntax = { path = "crates/css/modules/syntax" }
-css_selectors = { path = "crates/css/modules/selectors" }
-css_style_attr = { path = "crates/css/modules/style_attr" }
-css_media_queries = { path = "crates/css/modules/media_queries" }
-css_conditional_rules = { path = "crates/css/modules/conditional_rules" }
-css_namespaces = { path = "crates/css/modules/namespaces" }
-css_cascade = { path = "crates/css/modules/cascade" }
-css_values_units = { path = "crates/css/modules/values_units" }
-css_variables = { path = "crates/css/modules/variables" }
-css_display = { path = "crates/css/modules/display" }
-css_box = { path = "crates/css/modules/box" }
-css_color = { path = "crates/css/modules/color" }
-css_backgrounds_borders = { path = "crates/css/modules/backgrounds_borders" }
-css_images = { path = "crates/css/modules/images" }
-css_fonts = { path = "crates/css/modules/fonts" }
-css_writing_modes = { path = "crates/css/modules/writing_modes" }
-css_flexbox = { path = "crates/css/modules/flexbox" }
-css_grid = { path = "crates/css/modules/grid" }
-css_ui = { path = "crates/css/modules/ui" }
-css_transforms = { path = "crates/css/modules/transforms" }
-css_position = { path = "crates/css/modules/position" }
-css_sizing = { path = "crates/css/modules/sizing" }
-css_text = { path = "crates/css/modules/text" }
-css_text_decoration = { path = "crates/css/modules/text_decoration" }
-css_core = { path = "crates/css/modules/core" }
-valor_query = { path = "crates/valor_query" }
+# Proc macros
+syn = { version = "2.0", features = ["full"] }
+quote = "1.0"
+proc-macro2 = "1.0"
 
 [profile.dev]
 opt-level = 1
 debug = 0
 strip = "debuginfo"
 lto = false
-# codegen-backend = "cranelift"  # Temporarily disabled due to ICE
 
 [profile.dev.package."*"]
 opt-level = 3

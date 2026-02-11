@@ -1,266 +1,190 @@
-use crate::display_list::TextBoundsPx;
-use anyhow::Error;
-use core::mem;
-use js::{DOMSubscriber, DOMUpdate, NodeKey};
-use std::collections::HashMap;
+//! Main renderer.
 
-// Keep tuple-heavy types readable and satisfy clippy's type_complexity.
-pub type SnapshotEntry = (NodeKey, RenderNodeKind, Vec<NodeKey>);
+use lightningcss::properties::Property;
+use rewrite_core::{Axis, DomBroadcast, NodeId, ResolveContext, Subpixel, Subscriber};
+use rewrite_css::{NodeStylerContext, Styler, affects_position, affects_size};
+use rewrite_layout::{offset_query, size_query};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-/// A simple rectangle draw command in device-independent pixel space.
-/// Colors are linear RGB [0..1]. This is a temporary bridge until a full display list exists.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DrawRect {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-    pub color: [f32; 3],
+/// Computed layout box values for a single node.
+#[derive(Debug, Clone, Default)]
+pub struct ComputedBox {
+    pub width: Option<Subpixel>,
+    pub height: Option<Subpixel>,
+    pub x: Option<Subpixel>,
+    pub y: Option<Subpixel>,
 }
 
-impl Default for Renderer {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
-    }
+/// Create a static-lifetime node styler context for formula resolution.
+/// The caller must ensure `styler` outlives the resolve context.
+fn make_ctx(styler: &Styler, node: NodeId, vw: u32, vh: u32) -> NodeStylerContext<'static> {
+    NodeStylerContext::new(styler, node, vw, vh).into_static()
 }
 
-/// A simple text draw command in device-independent pixel space.
-/// Text is rendered using a built-in 5x7 bitmap font expanded into colored quads.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DrawText {
-    pub x: f32,
-    pub y: f32,
-    pub text: String,
-    pub color: [f32; 3],
-    pub font_size: f32,
-    /// Requested font weight from CSS (100-900, default 400 = normal, 700 = bold)
-    pub font_weight: u16,
-    /// Matched font weight after CSS font matching (e.g., requested 300 -> matched 400)
-    pub matched_font_weight: u16,
-    /// Font family (e.g., "Courier New", "monospace")
-    pub font_family: Option<String>,
-    /// Line height in pixels (for vertical metrics) - ROUNDED for layout
-    pub line_height: f32,
-    /// Unrounded line height in pixels - for rendering to match layout calculations
-    pub line_height_unrounded: f32,
-    /// Optional bounds for wrapping/clipping: (left, top, right, bottom) in framebuffer pixels.
-    pub bounds: Option<TextBoundsPx>,
-    /// Measured text width from layout (for wrapping during rendering)
-    pub measured_width: f32,
-}
-
-/// `RenderNodeKind` represents the minimal kinds of nodes a renderer cares about
-/// when mirroring the DOM: a document root, elements (by tag), and text nodes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RenderNodeKind {
-    Document,
-    Element { tag: String },
-    Text { text: String },
-}
-
-/// `RenderNode` is a simple scene-graph node that mirrors the DOM structure.
-/// Attributes are preserved to enable later style-to-render mapping.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RenderNode {
-    pub kind: RenderNodeKind,
-    pub attributes: HashMap<String, String>,
-    pub parent: Option<NodeKey>,
-    pub children: Vec<NodeKey>,
-}
-
-impl RenderNode {
-    /// Create a new document root render node.
-    fn new_document() -> Self {
-        Self {
-            kind: RenderNodeKind::Document,
-            attributes: HashMap::new(),
-            parent: None,
-            children: Vec::new(),
-        }
-    }
-
-    /// Create a new element render node for the given tag under the optional parent.
-    fn new_element(tag: String, parent: Option<NodeKey>) -> Self {
-        Self {
-            kind: RenderNodeKind::Element { tag },
-            attributes: HashMap::new(),
-            parent,
-            children: Vec::new(),
-        }
-    }
-
-    /// Create a new text render node with the given text content under the optional parent.
-    fn new_text(text: String, parent: Option<NodeKey>) -> Self {
-        Self {
-            kind: RenderNodeKind::Text { text },
-            attributes: HashMap::new(),
-            parent,
-            children: Vec::new(),
-        }
-    }
-}
-
-/// Renderer mirrors DOM updates into a lightweight scene graph.
+/// Resolve layout values for a node given a property change.
 ///
-/// The scene graph is suitable for translation into GPU-ready draw lists. It does not
-/// perform GPU work itself; `RenderState` or another backend can consume its snapshots.
+/// Returns a `ComputedBox` with whichever fields could be resolved
+/// (size and/or position) based on the property that changed.
+pub fn resolve_layout(
+    styler: &Styler,
+    node: NodeId,
+    property: &Property<'static>,
+    viewport_width: u32,
+    viewport_height: u32,
+) -> ComputedBox {
+    let query_ctx = make_ctx(styler, node, viewport_width, viewport_height);
+    let mut result = ComputedBox::default();
+
+    if affects_size(property) {
+        if let Some(formula_h) = size_query(&query_ctx, Axis::Horizontal) {
+            let mut ctx = ResolveContext::new(
+                viewport_width,
+                viewport_height,
+                make_ctx(styler, node, viewport_width, viewport_height),
+            );
+            result.width = ctx.resolve(formula_h, node);
+        }
+        if let Some(formula_v) = size_query(&query_ctx, Axis::Vertical) {
+            let mut ctx = ResolveContext::new(
+                viewport_width,
+                viewport_height,
+                make_ctx(styler, node, viewport_width, viewport_height),
+            );
+            result.height = ctx.resolve(formula_v, node);
+        }
+    }
+
+    if affects_position(property) {
+        if let Some(formula_h) = offset_query(&query_ctx, Axis::Horizontal) {
+            let mut ctx = ResolveContext::new(
+                viewport_width,
+                viewport_height,
+                make_ctx(styler, node, viewport_width, viewport_height),
+            );
+            result.x = ctx.resolve(formula_h, node);
+        }
+        if let Some(formula_v) = offset_query(&query_ctx, Axis::Vertical) {
+            let mut ctx = ResolveContext::new(
+                viewport_width,
+                viewport_height,
+                make_ctx(styler, node, viewport_width, viewport_height),
+            );
+            result.y = ctx.resolve(formula_v, node);
+        }
+    }
+
+    result
+}
+
+/// Resolve all layout dimensions for a node unconditionally.
+///
+/// Unlike `resolve_layout`, this doesn't check which property changed —
+/// it attempts to resolve width, height, x, and y. Use this when a node
+/// has been attached to the tree and all its styles are already available.
+pub fn resolve_all_layout(
+    styler: &Styler,
+    node: NodeId,
+    viewport_width: u32,
+    viewport_height: u32,
+) -> ComputedBox {
+    let query_ctx = make_ctx(styler, node, viewport_width, viewport_height);
+    let mut result = ComputedBox::default();
+
+    if let Some(formula_h) = size_query(&query_ctx, Axis::Horizontal) {
+        let mut ctx = ResolveContext::new(
+            viewport_width,
+            viewport_height,
+            make_ctx(styler, node, viewport_width, viewport_height),
+        );
+        result.width = ctx.resolve(formula_h, node);
+    }
+    if let Some(formula_v) = size_query(&query_ctx, Axis::Vertical) {
+        let mut ctx = ResolveContext::new(
+            viewport_width,
+            viewport_height,
+            make_ctx(styler, node, viewport_width, viewport_height),
+        );
+        result.height = ctx.resolve(formula_v, node);
+    }
+    if let Some(formula_h) = offset_query(&query_ctx, Axis::Horizontal) {
+        let mut ctx = ResolveContext::new(
+            viewport_width,
+            viewport_height,
+            make_ctx(styler, node, viewport_width, viewport_height),
+        );
+        result.x = ctx.resolve(formula_h, node);
+    }
+    if let Some(formula_v) = offset_query(&query_ctx, Axis::Vertical) {
+        let mut ctx = ResolveContext::new(
+            viewport_width,
+            viewport_height,
+            make_ctx(styler, node, viewport_width, viewport_height),
+        );
+        result.y = ctx.resolve(formula_v, node);
+    }
+
+    result
+}
+
+/// Renderer that receives property notifications and manages layout/GPU state.
 pub struct Renderer {
-    /// Map of node keys to render nodes.
-    nodes: HashMap<NodeKey, RenderNode>,
-    /// Root node key.
-    root: NodeKey,
-    /// Dirty rectangles provided by the layouter for partial redraw.
-    dirty_rects: Vec<DrawRect>,
+    /// Styler reference for CSS property queries.
+    styler: Arc<Styler>,
+    /// Viewport width in pixels.
+    viewport_width: AtomicU32,
+    /// Viewport height in pixels.
+    viewport_height: AtomicU32,
 }
 
 impl Renderer {
-    /// Create a new, empty renderer with a seeded root document node.
-    #[inline]
-    pub fn new() -> Self {
-        let mut nodes = HashMap::new();
-        nodes.insert(NodeKey::ROOT, RenderNode::new_document());
+    pub fn new(styler: Arc<Styler>) -> Self {
         Self {
-            nodes,
-            root: NodeKey::ROOT,
-            dirty_rects: Vec::new(),
+            styler,
+            viewport_width: AtomicU32::new(0),
+            viewport_height: AtomicU32::new(0),
         }
     }
 
-    /// Returns the root node key of the scene graph.
-    #[inline]
-    pub const fn root(&self) -> NodeKey {
-        self.root
+    /// Get the styler for property queries.
+    pub fn styler(&self) -> &Styler {
+        &self.styler
     }
 
-    /// Apply a single `DOMUpdate` to the renderer's scene graph.
-    /// Apply a DOM update to the renderer.
-    ///
-    /// # Errors
-    /// Returns an error if the update fails.
-    fn apply_update_impl(&mut self, update: DOMUpdate) {
-        use DOMUpdate::{
-            EndOfDocument, InsertElement, InsertText, RemoveNode, SetAttr, UpdateText,
-        };
-        match update {
-            InsertElement {
-                parent,
-                node,
-                tag,
-                pos,
-            } => {
-                self.ensure_parent_exists(parent);
-                let entry = self
-                    .nodes
-                    .entry(node)
-                    .or_insert_with(|| RenderNode::new_element(tag.clone(), Some(parent)));
-                entry.kind = RenderNodeKind::Element { tag };
-                entry.parent = Some(parent);
-                self.insert_child_at(parent, node, pos);
-            }
-            InsertText {
-                parent,
-                node,
-                text,
-                pos,
-            } => {
-                self.ensure_parent_exists(parent);
-                let entry = self
-                    .nodes
-                    .entry(node)
-                    .or_insert_with(|| RenderNode::new_text(text.clone(), Some(parent)));
-                entry.parent = Some(parent);
-                self.insert_child_at(parent, node, pos);
-            }
-            SetAttr { node, name, value } => {
-                let entry = self
-                    .nodes
-                    .entry(node)
-                    .or_insert_with(RenderNode::new_document);
-                entry.attributes.insert(name, value);
-            }
-            RemoveNode { node } => {
-                self.remove_node_recursive(node);
-            }
-            UpdateText { node, text } => {
-                // Update the text content of an existing text node in-place
-                if let Some(render_node) = self.nodes.get_mut(&node)
-                    && let RenderNodeKind::Text { text: text_ref } = &mut render_node.kind
-                {
-                    text_ref.clone_from(&text);
-                }
-            }
-            EndOfDocument => {
-                // No-op for now; a backend could trigger finalize hooks here.
-            }
-        }
+    /// Set the viewport dimensions.
+    pub fn set_viewport(&self, width: u32, height: u32) {
+        self.viewport_width.store(width, Ordering::Relaxed);
+        self.viewport_height.store(height, Ordering::Relaxed);
     }
 
-    /// Insert a child under a parent at the given position, appending if pos is beyond the end.
-    fn insert_child_at(&mut self, parent: NodeKey, child: NodeKey, position: usize) {
-        if let Some(parent_node) = self.nodes.get_mut(&parent) {
-            let children = &mut parent_node.children;
-            if position >= children.len() {
-                children.push(child);
-            } else {
-                children.insert(position, child);
-            }
-        }
+    /// Get the current viewport width.
+    pub fn viewport_width(&self) -> u32 {
+        self.viewport_width.load(Ordering::Relaxed)
     }
 
-    /// Ensure a parent node exists in the map; if absent, seed as a document node.
-    fn ensure_parent_exists(&mut self, parent: NodeKey) {
-        self.nodes
-            .entry(parent)
-            .or_insert_with(RenderNode::new_document);
-    }
-
-    /// Recursively remove a node and all of its descendants from the scene graph,
-    /// and detach it from its parent if present.
-    fn remove_node_recursive(&mut self, node: NodeKey) {
-        if let Some(node_entry) = self.nodes.remove(&node) {
-            if let Some(parent_key) = node_entry.parent
-                && let Some(parent_node) = self.nodes.get_mut(&parent_key)
-            {
-                parent_node.children.retain(|child| *child != node);
-            }
-            node_entry
-                .children
-                .into_iter()
-                .for_each(|child| self.remove_node_recursive(child));
-        }
-    }
-
-    /// Returns a stable snapshot of the scene graph as tuples of (key, kind, children).
-    #[inline]
-    pub fn snapshot(&self) -> Vec<SnapshotEntry> {
-        let mut out: Vec<SnapshotEntry> = self
-            .nodes
-            .iter()
-            .map(|(key, node)| (*key, node.kind.clone(), node.children.clone()))
-            .collect();
-        out.sort_by_key(|(key, _, _)| key.0);
-        out
-    }
-
-    /// Replace the current set of dirty rectangles to be used for partial redraws.
-    #[inline]
-    pub fn set_dirty_rects(&mut self, rects: Vec<DrawRect>) {
-        self.dirty_rects = rects;
-    }
-
-    /// Drain and return the current dirty rectangles (for testing/integration).
-    #[inline]
-    pub fn take_dirty_rects(&mut self) -> Vec<DrawRect> {
-        mem::take(&mut self.dirty_rects)
+    /// Get the current viewport height.
+    pub fn viewport_height(&self) -> u32 {
+        self.viewport_height.load(Ordering::Relaxed)
     }
 }
 
-impl DOMSubscriber for Renderer {
-    /// Apply a `DOMUpdate` dispatched by the DOM runtime to keep the render scene in sync.
-    #[inline]
-    fn apply_update(&mut self, update: DOMUpdate) -> Result<(), Error> {
-        self.apply_update_impl(update);
-        Ok(())
+impl Subscriber for Renderer {
+    fn on_property(&self, node: NodeId, property: &Property<'static>) {
+        let _computed = resolve_layout(
+            &self.styler,
+            node,
+            property,
+            self.viewport_width(),
+            self.viewport_height(),
+        );
+        // TODO: Store computed values for GPU rendering
+    }
+
+    fn on_dom(&self, update: DomBroadcast) {
+        match update {
+            DomBroadcast::CreateNode { node: _, parent: _ } => {
+                // TODO: Handle new node
+            }
+        }
     }
 }

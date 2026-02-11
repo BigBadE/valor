@@ -1,0 +1,21 @@
+[package]
+name = "js"
+version = "0.1.0"
+edition = "2021"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+tokio = { workspace = true, features = ["sync", "rt"] }
+url.workspace = true
+reqwest.workspace = true
+base64.workspace = true
+serde_json.workspace = true
+bytes.workspace = true
+
+[lib]
+name = "js"
+path = "src/lib.rs"

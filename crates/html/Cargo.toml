@@ -1,26 +1,16 @@
 [package]
-name = "html"
+name = "rewrite_html"
+version.workspace = true
 edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../core" }
+rewrite_macros = { path = "../macros" }
+html5ever = "0.29"
+markup5ever_rcdom = "0.3"
+tendril = "0.4"
+lasso = { version = "0.7", features = ["multi-threaded"] }
+boxcar = "0.2"
 
 [lints]
 workspace = true
-
-[dependencies]
-html5ever.workspace = true
-js.workspace = true
-
-tokio.workspace = true
-tokio-stream.workspace = true
-
-bytes.workspace = true
-lasso.workspace = true
-indextree.workspace = true
-smallvec.workspace = true
-
-log.workspace = true
-anyhow.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-url.workspace = true
-
-[features]

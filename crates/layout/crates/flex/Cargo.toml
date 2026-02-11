@@ -1,0 +1,12 @@
+[package]
+name = "rewrite_layout_flex"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../../../core" }
+rewrite_css = { path = "../../../css" }
+lightningcss.workspace = true
+
+[lints]
+workspace = true

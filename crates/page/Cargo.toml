@@ -1,0 +1,31 @@
+[package]
+name = "rewrite_page"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rewrite_core = { path = "../core" }
+rewrite_html = { path = "../html" }
+rewrite_css = { path = "../css" }
+rewrite_renderer = { path = "../renderer" }
+lasso = { version = "0.7", features = ["multi-threaded"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync"] }
+futures = "0.3"
+
+[dev-dependencies]
+rewrite_core = { path = "../core" }
+rewrite_renderer = { path = "../renderer" }
+rewrite_css = { path = "../css" }
+serde_json = "1.0"
+chromiumoxide = { version = "0.8.0", default-features = false, features = ["tokio-runtime"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["full"] }
+urlencoding = "2.1"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+num_cpus = "1.16"
+lightningcss = { version = "1.0.0-alpha.70", default-features = false, features = ["into_owned"] }
+
+[lints]
+workspace = true

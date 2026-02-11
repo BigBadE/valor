@@ -1,0 +1,20 @@
+[package]
+name = "rewrite_core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dashmap = "6.1"
+smallvec = "1.13"
+crossbeam = "0.8"
+rayon = "1.10"
+boxcar = "0.2"
+lasso = { version = "0.7", features = ["multi-threaded"] }
+lightningcss = { version = "1.0.0-alpha.70", default-features = false, features = ["into_owned"] }
+tokio = { version = "1", features = ["sync"] }
+
+[dev-dependencies]
+rewrite_html = { path = "../html" }
+
+[lints]
+workspace = true

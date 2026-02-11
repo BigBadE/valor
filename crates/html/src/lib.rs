@@ -1,6 +1,10 @@
-//! HTML parsing and DOM manipulation crate.
+//! HTML parsing and DOM tree building.
 
-extern crate alloc;
+mod builder;
+mod parser;
+mod tree;
+mod types;
 
-pub mod dom;
-pub mod parser;
+pub use parser::HtmlParser;
+pub use tree::DomTree;
+pub use types::{DomUpdate, NodeData};
