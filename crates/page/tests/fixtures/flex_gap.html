@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Gap</title>
+  <style>
+    .item { width: 100px; height: 60px; }
+  </style>
+</head>
+<body>
+  <!-- column-gap in row direction -->
+  <div style="display: flex; width: 500px; height: 100px; column-gap: 20px;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="background: #3498db;"></div>
+    <div class="item" style="background: #2ecc71;"></div>
+  </div>
+  <!-- row-gap in column direction -->
+  <div style="display: flex; flex-direction: column; width: 500px; height: 300px; row-gap: 15px;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="background: #3498db;"></div>
+    <div class="item" style="background: #2ecc71;"></div>
+  </div>
+  <!-- gap with wrap (both row-gap and column-gap) -->
+  <div style="display: flex; flex-wrap: wrap; width: 300px; height: 200px; gap: 10px;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="background: #3498db;"></div>
+    <div class="item" style="background: #2ecc71;"></div>
+  </div>
+</body>
+</html>

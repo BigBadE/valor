@@ -11,21 +11,12 @@ members = [
     "crates/renderer",
     "crates/layout",
     "crates/layout/crates/util",
+    "crates/text",
 ]
 
 exclude = [
     "deps/*",
     "old/*",
-    "crates/layout/crates/block",
-    "crates/layout/crates/flex",
-    "crates/layout/crates/grid",
-    "crates/layout/crates/float",
-    "crates/layout/crates/size",
-    "crates/layout/crates/offset",
-    "crates/layout/crates/bfc",
-    "crates/layout/crates/margin",
-    "crates/layout/crates/positioning",
-    "crates/layout/crates/text",
     "crates/js",
 ]
 

@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Shrink Weighted</title>
+</head>
+<body>
+  <!-- Weighted shrink: items 400+300+300=1000 in 600px container, need to shrink 400px -->
+  <!-- shrink factors: 2, 1, 1 => total=4, item1 shrinks 200, item2 shrinks 100, item3 shrinks 100 -->
+  <div style="display: flex; width: 600px; height: 100px;">
+    <div style="width: 400px; height: 60px; flex-shrink: 2; background: #e74c3c;"></div>
+    <div style="width: 300px; height: 60px; flex-shrink: 1; background: #3498db;"></div>
+    <div style="width: 300px; height: 60px; flex-shrink: 1; background: #2ecc71;"></div>
+  </div>
+</body>
+</html>

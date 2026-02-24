@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Long Stress Test</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 10px; }
+    .container { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
+    .grid { display: flex; flex-direction: column; }
+    .row { display: flex; }
+    .cell { width: 20px; height: 20px; border: 1px solid #333; }
+    .card { width: 100px; padding: 10px; margin: 5px; border: 1px solid #ccc; }
+    .nested { padding: 5px; margin: 2px; border: 1px solid #999; }
+    .deep { padding: 2px; margin: 1px; background: #f0f0f0; }
+    .red { background: #e74c3c; }
+    .blue { background: #3498db; }
+    .green { background: #2ecc71; }
+    .yellow { background: #f1c40f; }
+    .purple { background: #9b59b6; }
+    .orange { background: #e67e22; }
+    .teal { background: #1abc9c; }
+    .pink { background: #fd79a8; }
+    .flex-col { display: flex; flex-direction: column; }
+    .flex-row { display: flex; flex-direction: row; }
+    .justify-center { justify-content: center; }
+    .justify-between { justify-content: space-between; }
+    .align-center { align-items: center; }
+    .w-full { width: 100%; }
+    .h-50 { height: 50px; }
+    .h-30 { height: 30px; }
+    .h-20 { height: 20px; }
+    .p-5 { padding: 5px; }
+    .m-2 { margin: 2px; }
+    .border { border: 1px solid #000; }
+  </style>
+</head>
+<body>
+  <!-- Grid section: 20x20 = 400 cells -->
+  <div class="grid">
+    <div class="row"><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div></div>
+    <div class="row"><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div></div>
+    <div class="row"><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div></div>
+    <div class="row"><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div></div>
+    <div class="row"><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div></div>
+    <div class="row"><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div></div>
+    <div class="row"><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div></div>
+    <div class="row"><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div></div>
+    <div class="row"><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div></div>
+    <div class="row"><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div></div>
+    <div class="row"><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div></div>
+    <div class="row"><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div></div>
+    <div class="row"><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div></div>
+    <div class="row"><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div></div>
+    <div class="row"><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div></div>
+    <div class="row"><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div></div>
+    <div class="row"><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div></div>
+    <div class="row"><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div></div>
+    <div class="row"><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div></div>
+    <div class="row"><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div><div class="cell teal"></div></div>
+  </div>
+
+  <!-- Deeply nested flex containers: 50 cards with 3 levels of nesting each -->
+  <div class="container">
+    <div class="card red"><div class="nested"><div class="deep">Card 1</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card blue"><div class="nested"><div class="deep">Card 2</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card green"><div class="nested"><div class="deep">Card 3</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card yellow"><div class="nested"><div class="deep">Card 4</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card purple"><div class="nested"><div class="deep">Card 5</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card orange"><div class="nested"><div class="deep">Card 6</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card teal"><div class="nested"><div class="deep">Card 7</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card pink"><div class="nested"><div class="deep">Card 8</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card red"><div class="nested"><div class="deep">Card 9</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card blue"><div class="nested"><div class="deep">Card 10</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card green"><div class="nested"><div class="deep">Card 11</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card yellow"><div class="nested"><div class="deep">Card 12</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card purple"><div class="nested"><div class="deep">Card 13</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card orange"><div class="nested"><div class="deep">Card 14</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card teal"><div class="nested"><div class="deep">Card 15</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card pink"><div class="nested"><div class="deep">Card 16</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card red"><div class="nested"><div class="deep">Card 17</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card blue"><div class="nested"><div class="deep">Card 18</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card green"><div class="nested"><div class="deep">Card 19</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+    <div class="card yellow"><div class="nested"><div class="deep">Card 20</div><div class="deep">Content</div></div><div class="nested"><div class="deep">More</div></div></div>
+  </div>
+
+  <!-- Complex nested flexbox layouts -->
+  <div class="flex-row w-full" style="height: 400px;">
+    <div class="flex-col" style="flex: 1; background: #ecf0f1;">
+      <div class="flex-row h-50 justify-between align-center p-5 border"><div class="cell red"></div><div class="cell blue"></div><div class="cell green"></div></div>
+      <div class="flex-row h-50 justify-center align-center p-5 border"><div class="cell yellow"></div><div class="cell purple"></div><div class="cell orange"></div></div>
+      <div class="flex-row h-50 justify-between align-center p-5 border"><div class="cell teal"></div><div class="cell pink"></div><div class="cell red"></div></div>
+      <div class="flex-row h-50 justify-center align-center p-5 border"><div class="cell blue"></div><div class="cell green"></div><div class="cell yellow"></div></div>
+    </div>
+    <div class="flex-col" style="flex: 2; background: #bdc3c7;">
+      <div class="flex-row" style="flex: 1;">
+        <div class="flex-col justify-center align-center border" style="flex: 1;"><div class="cell red"></div><div class="cell blue"></div></div>
+        <div class="flex-col justify-center align-center border" style="flex: 1;"><div class="cell green"></div><div class="cell yellow"></div></div>
+        <div class="flex-col justify-center align-center border" style="flex: 1;"><div class="cell purple"></div><div class="cell orange"></div></div>
+      </div>
+      <div class="flex-row" style="flex: 1;">
+        <div class="flex-col justify-between align-center border" style="flex: 1;"><div class="cell teal"></div><div class="cell pink"></div></div>
+        <div class="flex-col justify-between align-center border" style="flex: 1;"><div class="cell red"></div><div class="cell blue"></div></div>
+        <div class="flex-col justify-between align-center border" style="flex: 1;"><div class="cell green"></div><div class="cell yellow"></div></div>
+      </div>
+    </div>
+    <div class="flex-col" style="flex: 1; background: #95a5a6;">
+      <div class="flex-row h-30 justify-between align-center p-5 border"><div class="cell purple"></div><div class="cell orange"></div></div>
+      <div class="flex-row h-30 justify-center align-center p-5 border"><div class="cell teal"></div><div class="cell pink"></div></div>
+      <div class="flex-row h-30 justify-between align-center p-5 border"><div class="cell red"></div><div class="cell blue"></div></div>
+      <div class="flex-row h-30 justify-center align-center p-5 border"><div class="cell green"></div><div class="cell yellow"></div></div>
+      <div class="flex-row h-30 justify-between align-center p-5 border"><div class="cell purple"></div><div class="cell orange"></div></div>
+      <div class="flex-row h-30 justify-center align-center p-5 border"><div class="cell teal"></div><div class="cell pink"></div></div>
+    </div>
+  </div>
+</body>
+</html>
+</content>
+</invoke>

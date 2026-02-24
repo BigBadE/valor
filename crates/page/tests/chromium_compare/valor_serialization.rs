@@ -1,29 +1,36 @@
 use lightningcss::properties::PropertyId;
-use rewrite_core::{NodeId, Subpixel};
-use rewrite_css::Styler;
+use rewrite_core::{Database, NodeId, Subpixel};
 use rewrite_html::{DomTree, NodeData};
-use rewrite_renderer::ComputedBox;
+use rewrite_renderer::{ComputedBox, LayoutState};
 use serde_json::{Value as JsonValue, json};
-use std::collections::HashMap;
+use std::sync::Mutex;
 
 /// Serialize Valor's layout to JSON matching Chrome's extraction format.
 pub fn serialize_valor_layout(
     tree: &DomTree,
-    styler: &Styler,
-    layouts: &HashMap<NodeId, ComputedBox>,
+    db: &Database,
+    layout: &Mutex<LayoutState>,
 ) -> Result<JsonValue, String> {
     // Find <body> node
     let body_id = find_body(tree)?;
 
+    let ctx = SerCtx {
+        tree,
+        db,
+        layout,
+        body_x: Subpixel::ZERO,
+        body_y: Subpixel::ZERO,
+    };
+
     // Get body offset to make coordinates relative
-    let body_box = layouts.get(&body_id).cloned().unwrap_or_default();
-    let body_x = body_box.x.unwrap_or(0);
-    let body_y = body_box.y.unwrap_or(0);
+    let body_box = get_node_layout(body_id, &ctx);
+    let body_x = body_box.x.unwrap_or(Subpixel::ZERO);
+    let body_y = body_box.y.unwrap_or(Subpixel::ZERO);
 
     let ctx = SerCtx {
         tree,
-        styler,
-        layouts,
+        db,
+        layout,
         body_x,
         body_y,
     };
@@ -37,10 +44,16 @@ pub fn serialize_valor_layout(
 
 struct SerCtx<'ctx> {
     tree: &'ctx DomTree,
-    styler: &'ctx Styler,
-    layouts: &'ctx HashMap<NodeId, ComputedBox>,
+    db: &'ctx Database,
+    layout: &'ctx Mutex<LayoutState>,
     body_x: Subpixel,
     body_y: Subpixel,
+}
+
+/// Read a node's cached layout values. These were resolved eagerly
+/// during `on_property_change` / `on_node_created`.
+fn get_node_layout(node_id: NodeId, ctx: &SerCtx<'_>) -> ComputedBox {
+    ctx.layout.lock().expect("lock poisoned").get_node(node_id)
 }
 
 fn find_body(tree: &DomTree) -> Result<NodeId, String> {
@@ -68,13 +81,13 @@ fn serialize_element(node_id: NodeId, ctx: &SerCtx<'_>) -> JsonValue {
         return JsonValue::Null;
     }
 
-    let computed = ctx.layouts.get(&node_id).cloned().unwrap_or_default();
+    let computed = get_node_layout(node_id, ctx);
 
     let rect = json!({
-        "x": f64::from(computed.x.unwrap_or(0) - ctx.body_x),
-        "y": f64::from(computed.y.unwrap_or(0) - ctx.body_y),
-        "width": f64::from(computed.width.unwrap_or(0)),
-        "height": f64::from(computed.height.unwrap_or(0))
+        "x": (computed.x.unwrap_or(Subpixel::ZERO) - ctx.body_x).to_f64(),
+        "y": (computed.y.unwrap_or(Subpixel::ZERO) - ctx.body_y).to_f64(),
+        "width": computed.width.unwrap_or(Subpixel::ZERO).to_f64(),
+        "height": computed.height.unwrap_or(Subpixel::ZERO).to_f64()
     });
 
     // Extract id and attrs
@@ -164,15 +177,39 @@ fn serialize_children(node_id: NodeId, ctx: &SerCtx<'_>) -> Vec<JsonValue> {
     children
 }
 
+/// Check if a text node is at the start/end of its block for Phase II trimming.
+fn text_block_boundary(node_id: NodeId, tree: &DomTree) -> (bool, bool) {
+    let has_prev = tree
+        .prev_siblings(node_id)
+        .any(|sib| match tree.get_node(sib) {
+            Some(NodeData::Element { .. }) => true,
+            Some(NodeData::Text(t)) => !t.trim().is_empty(),
+            _ => false,
+        });
+    let has_next = tree
+        .next_siblings(node_id)
+        .any(|sib| match tree.get_node(sib) {
+            Some(NodeData::Element { .. }) => true,
+            Some(NodeData::Text(t)) => !t.trim().is_empty(),
+            _ => false,
+        });
+    let sole_content = !has_prev && !has_next;
+    (sole_content, sole_content)
+}
+
 fn serialize_text(node_id: NodeId, text: &str, parent_id: NodeId, ctx: &SerCtx<'_>) -> JsonValue {
-    let computed = ctx.layouts.get(&node_id).cloned().unwrap_or_default();
+    let computed = get_node_layout(node_id, ctx);
 
     let rect = json!({
-        "x": f64::from(computed.x.unwrap_or(0) - ctx.body_x),
-        "y": f64::from(computed.y.unwrap_or(0) - ctx.body_y),
-        "width": f64::from(computed.width.unwrap_or(0)),
-        "height": f64::from(computed.height.unwrap_or(0))
+        "x": (computed.x.unwrap_or(Subpixel::ZERO) - ctx.body_x).to_f64(),
+        "y": (computed.y.unwrap_or(Subpixel::ZERO) - ctx.body_y).to_f64(),
+        "width": computed.width.unwrap_or(Subpixel::ZERO).to_f64(),
+        "height": computed.height.unwrap_or(Subpixel::ZERO).to_f64()
     });
+
+    // CSS Text 3 §4.1.1: collapse whitespace for white-space: normal.
+    let (at_start, at_end) = text_block_boundary(node_id, ctx.tree);
+    let collapsed = rewrite_text::collapse_whitespace(text, at_start, at_end);
 
     // Text nodes use parent's style for font info
     let font_size = query_css_string(parent_id, &PropertyId::FontSize, ctx);
@@ -182,7 +219,7 @@ fn serialize_text(node_id: NodeId, text: &str, parent_id: NodeId, ctx: &SerCtx<'
 
     json!({
         "type": "text",
-        "text": text,
+        "text": collapsed,
         "rect": rect,
         "style": {
             "fontSize": font_size,
@@ -201,7 +238,7 @@ fn serialize_style(node_id: NodeId, ctx: &SerCtx<'_>) -> JsonValue {
         ctx,
     );
     let position = query_css_string(node_id, &PropertyId::Position, ctx);
-    let overflow = query_css_string(node_id, &PropertyId::Overflow, ctx);
+    let overflow = query_css_string(node_id, &PropertyId::OverflowX, ctx);
     let font_size = query_css_string(node_id, &PropertyId::FontSize, ctx);
     let font_weight = query_css_string(node_id, &PropertyId::FontWeight, ctx);
     let font_family = query_css_string(node_id, &PropertyId::FontFamily, ctx);
@@ -254,10 +291,23 @@ fn serialize_style(node_id: NodeId, ctx: &SerCtx<'_>) -> JsonValue {
 }
 
 fn serialize_edges(node_id: NodeId, prefix: &str, ctx: &SerCtx<'_>) -> JsonValue {
-    let top = query_edge(node_id, prefix, "top", ctx);
-    let right = query_edge(node_id, prefix, "right", ctx);
-    let bottom = query_edge(node_id, prefix, "bottom", ctx);
-    let left = query_edge(node_id, prefix, "left", ctx);
+    let props: [PropertyId<'static>; 4] = match prefix {
+        "margin" => [
+            PropertyId::MarginTop,
+            PropertyId::MarginRight,
+            PropertyId::MarginBottom,
+            PropertyId::MarginLeft,
+        ],
+        "padding" => [
+            PropertyId::PaddingTop,
+            PropertyId::PaddingRight,
+            PropertyId::PaddingBottom,
+            PropertyId::PaddingLeft,
+        ],
+        _ => return json!({"top": "0px", "right": "0px", "bottom": "0px", "left": "0px"}),
+    };
+
+    let [top, right, bottom, left] = props.map(|p| resolve_px(node_id, &p, ctx));
 
     json!({
         "top": top,
@@ -267,52 +317,42 @@ fn serialize_edges(node_id: NodeId, prefix: &str, ctx: &SerCtx<'_>) -> JsonValue
     })
 }
 
-fn query_edge(node_id: NodeId, prefix: &str, side: &str, ctx: &SerCtx<'_>) -> String {
-    let prop_id = match (prefix, side) {
-        ("margin", "top") => PropertyId::MarginTop,
-        ("margin", "right") => PropertyId::MarginRight,
-        ("margin", "bottom") => PropertyId::MarginBottom,
-        ("margin", "left") => PropertyId::MarginLeft,
-        ("padding", "top") => PropertyId::PaddingTop,
-        ("padding", "right") => PropertyId::PaddingRight,
-        ("padding", "bottom") => PropertyId::PaddingBottom,
-        ("padding", "left") => PropertyId::PaddingLeft,
-        _ => return "0px".to_string(),
-    };
-
-    let val = query_css_string(node_id, &prop_id, ctx);
-    if val.is_empty() {
-        "0px".to_string()
-    } else {
-        val
-    }
-}
-
 fn serialize_border_edges(node_id: NodeId, ctx: &SerCtx<'_>) -> JsonValue {
-    let top = query_css_string(node_id, &PropertyId::BorderTopWidth, ctx);
-    let right = query_css_string(node_id, &PropertyId::BorderRightWidth, ctx);
-    let bottom = query_css_string(node_id, &PropertyId::BorderBottomWidth, ctx);
-    let left = query_css_string(node_id, &PropertyId::BorderLeftWidth, ctx);
+    let top = resolve_px(node_id, &PropertyId::BorderTopWidth, ctx);
+    let right = resolve_px(node_id, &PropertyId::BorderRightWidth, ctx);
+    let bottom = resolve_px(node_id, &PropertyId::BorderBottomWidth, ctx);
+    let left = resolve_px(node_id, &PropertyId::BorderLeftWidth, ctx);
 
     json!({
-        "top": if top.is_empty() { "0px".to_string() } else { top },
-        "right": if right.is_empty() { "0px".to_string() } else { right },
-        "bottom": if bottom.is_empty() { "0px".to_string() } else { bottom },
-        "left": if left.is_empty() { "0px".to_string() } else { left }
+        "top": top,
+        "right": right,
+        "bottom": bottom,
+        "left": left
     })
+}
+
+/// Read a cached box-model property value as a px string.
+fn resolve_px(node_id: NodeId, prop_id: &PropertyId<'static>, ctx: &SerCtx<'_>) -> String {
+    let val = ctx
+        .layout
+        .lock()
+        .expect("lock poisoned")
+        .get_property(node_id, prop_id)
+        .unwrap_or(Subpixel::ZERO);
+    format!("{}px", val.to_f64())
 }
 
 /// Query a CSS property and format it as a string.
 fn query_css_string(node_id: NodeId, prop_id: &PropertyId<'static>, ctx: &SerCtx<'_>) -> String {
-    let Some(prop) = ctx.styler.get_raw_property(node_id, prop_id) else {
+    let Some(prop) = ctx.db.get_property(node_id, prop_id.clone()) else {
         return String::new();
     };
-    format_property(prop)
+    format_property(&prop)
 }
 
 /// Query a CSS property as a numeric value (for flexGrow/flexShrink).
 fn query_css_number(node_id: NodeId, prop_id: &PropertyId<'static>, ctx: &SerCtx<'_>) -> f64 {
-    let Some(prop) = ctx.styler.get_raw_property(node_id, prop_id) else {
+    let Some(prop) = ctx.db.get_property(node_id, prop_id.clone()) else {
         // Default: flexGrow=0, flexShrink=1
         return match prop_id {
             PropertyId::FlexShrink(_) => 1.0,
@@ -320,7 +360,7 @@ fn query_css_number(node_id: NodeId, prop_id: &PropertyId<'static>, ctx: &SerCtx
         };
     };
 
-    match prop {
+    match &prop {
         lightningcss::properties::Property::FlexGrow(val, _) => f64::from(*val),
         lightningcss::properties::Property::FlexShrink(val, _) => f64::from(*val),
         _ => 0.0,

@@ -46,29 +46,23 @@ impl Browser {
     pub fn new_page(&self) -> (Page<'_>, Arc<Renderer>) {
         let tree = Arc::new(DomTree::new(self.interner.clone()));
         let styler = Arc::new(Styler::new(tree.clone(), self.subscriptions.clone()));
-        let renderer = Arc::new(Renderer::new(styler.clone()));
+        let page = Page::new(&self.runtime, tree, styler, self.subscriptions.clone());
+
+        let renderer = Arc::new(Renderer::new(page.styler.clone(), page.db.clone()));
 
         // Register renderer as subscriber
         self.subscriptions
             .add_subscriber(Box::new(RendererSubscriber(renderer.clone())));
-
-        let page = Page::new(&self.runtime, tree, styler, self.subscriptions.clone());
 
         (page, renderer)
     }
 
     /// Create a new page without a renderer.
     /// The caller can register their own subscriber via `subscriptions()`.
-    pub fn new_page_headless(&self) -> (Page<'_>, Arc<Styler>) {
+    pub fn new_page_headless(&self) -> Page<'_> {
         let tree = Arc::new(DomTree::new(self.interner.clone()));
         let styler = Arc::new(Styler::new(tree.clone(), self.subscriptions.clone()));
-        let page = Page::new(
-            &self.runtime,
-            tree,
-            styler.clone(),
-            self.subscriptions.clone(),
-        );
-        (page, styler)
+        Page::new(&self.runtime, tree, styler, self.subscriptions.clone())
     }
 }
 

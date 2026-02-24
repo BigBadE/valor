@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Box Model</title>
+  <style>
+    .item { height: 60px; }
+  </style>
+</head>
+<body>
+  <!-- Container with padding -->
+  <div style="display: flex; width: 500px; height: 150px; padding: 20px;">
+    <div class="item" style="width: 100px; background: #e74c3c;"></div>
+    <div class="item" style="width: 100px; background: #3498db;"></div>
+  </div>
+  <!-- Container with border -->
+  <div style="display: flex; width: 500px; height: 150px; border-width: 10px; border-style: solid; border-color: #333;">
+    <div class="item" style="width: 100px; background: #e74c3c;"></div>
+    <div class="item" style="width: 100px; background: #3498db;"></div>
+  </div>
+  <!-- Items with padding (border-box includes padding in width) -->
+  <div style="display: flex; width: 400px; height: 100px;">
+    <div style="width: 150px; height: 60px; padding: 15px; background: #e74c3c;"></div>
+    <div style="width: 150px; height: 60px; padding: 10px; background: #3498db;"></div>
+  </div>
+  <!-- Items with border -->
+  <div style="display: flex; width: 400px; height: 100px;">
+    <div style="width: 120px; height: 60px; border-width: 5px; border-style: solid; border-color: #c0392b; background: #e74c3c;"></div>
+    <div style="width: 120px; height: 60px; border-width: 5px; border-style: solid; border-color: #2471a3; background: #3498db;"></div>
+  </div>
+</body>
+</html>

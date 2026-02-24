@@ -1,134 +1,188 @@
 //! Size query - returns formulas for computing size along an axis.
 //!
-//! Ported from `crates/layout/crates/size/src/lib.rs`.
-//! Key change: dispatches to block/flex/grid modules in the same crate,
-//! and provides `size_query_horizontal`/`size_query_vertical` wrappers
-//! that match the `QueryFn` signature for use in `Formula::Related`.
+//! Dispatches to block/flex/grid modules based on the element's display mode.
 
 use lightningcss::properties::PropertyId;
-use lightningcss::properties::display::{Display, DisplayKeyword};
-use rewrite_core::{Axis, Operation, SingleRelationship, StylerAccess};
-use rewrite_css::{Formula, NodeStylerContext};
+use rewrite_core::{Axis, Formula, SingleRelationship, StylerAccess};
+
+use super::DisplayType;
 
 /// Query function that returns a size formula based on the display property.
 /// Returns `None` if the display property isn't available yet.
-pub fn size_query(styler: &NodeStylerContext<'_>, axis: Axis) -> Option<&'static Formula> {
-    // Check for explicit size first
-    let explicit_prop = match axis {
-        Axis::Horizontal => PropertyId::Width,
-        Axis::Vertical => PropertyId::Height,
-    };
-    if styler.get_css_property(&explicit_prop).is_some() {
-        // Node has an explicit size — use CssValue which the resolver will convert
-        match axis {
-            Axis::Horizontal => {
-                static EXPLICIT_W: Formula = Formula::CssValue(PropertyId::Width);
-                return Some(&EXPLICIT_W);
-            }
-            Axis::Vertical => {
-                static EXPLICIT_H: Formula = Formula::CssValue(PropertyId::Height);
-                return Some(&EXPLICIT_H);
-            }
-        }
-    }
-
-    // Root node check: if parent == self, use viewport dimensions
-    let parent = styler.related(SingleRelationship::Parent);
-    if parent.node() == styler.node() {
+pub fn size_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
+    // Intrinsic nodes (text nodes): return InlineWidth/InlineHeight so the
+    // resolver's inline aggregation handles text measurement and line breaking.
+    if styler.is_intrinsic() {
+        DisplayType::of(styler)?;
         return match axis {
-            Axis::Horizontal => {
-                static VW: Formula = Formula::ViewportWidth;
-                Some(&VW)
-            }
-            Axis::Vertical => {
-                static VH: Formula = Formula::ViewportHeight;
-                Some(&VH)
-            }
+            Axis::Horizontal => Some(inline_width!()),
+            Axis::Vertical => Some(inline_height!()),
         };
     }
 
-    // No explicit size — dispatch on display mode
-    let display = styler.get_css_property(&PropertyId::Display)?;
+    // Resolve display type for elements.
+    let display_type = DisplayType::of(styler);
 
-    match display {
-        lightningcss::properties::Property::Display(display) => match display {
-            Display::Keyword(DisplayKeyword::None) => {
-                static ZERO: Formula = Formula::Constant(0);
-                Some(&ZERO)
+    // CSS 2.2 §10.2 / §10.5: width and height do not apply to
+    // non-replaced inline elements. Skip the explicit CSS check
+    // so inline elements size from their content.
+    let is_inline = matches!(display_type, Some(DisplayType::Inline));
+
+    // Root element check: use viewport dimensions if this node is at the top
+    // of the layout tree.
+    let parent = styler.related(SingleRelationship::Parent);
+    let parent_is_root = parent.node_id() == styler.node_id()
+        || parent.get_css_property(&PropertyId::Display).is_none();
+    if parent_is_root {
+        return match axis {
+            Axis::Horizontal => Some(viewport_width!()),
+            Axis::Vertical => Some(viewport_height!()),
+        };
+    }
+
+    // Flex item detection: if the parent is a flex container, this
+    // element is a flex item and should be sized by the flex algorithm.
+    // The flex algorithm handles explicit CSS size via flex-basis.
+    // Per CSS Flexbox §4.1, absolutely/fixed positioned children are
+    // out-of-flow and do not participate in flex layout sizing.
+    if let Some(DisplayType::Flex(dir)) = DisplayType::of_element(parent.as_ref()) {
+        let is_out_of_flow = matches!(
+            styler.get_css_property(&PropertyId::Position),
+            Some(lightningcss::properties::Property::Position(
+                lightningcss::properties::position::Position::Absolute
+                    | lightningcss::properties::position::Position::Fixed
+            ))
+        );
+        if !is_out_of_flow {
+            return Some(super::flex::flex_item_size(dir, axis));
+        }
+    }
+
+    // Check for explicit size (CSS width/height).
+    if !is_inline {
+        let explicit_prop = match axis {
+            Axis::Horizontal => PropertyId::Width,
+            Axis::Vertical => PropertyId::Height,
+        };
+        if let Some(prop) = styler.get_css_property(&explicit_prop) {
+            // Handle keyword sizes (min-content, max-content) which cannot
+            // be resolved to a numeric value by css_val!.
+            if let Some(keyword_formula) = keyword_size_formula(prop, styler, axis) {
+                return Some(keyword_formula);
             }
-            Display::Pair(pair) => match pair.inside {
-                lightningcss::properties::display::DisplayInside::Flex(_) => {
-                    super::flex::flex_size(styler, axis)
-                }
-                lightningcss::properties::display::DisplayInside::Grid => {
-                    super::grid::grid_size(styler, axis)
-                }
-                lightningcss::properties::display::DisplayInside::Flow
-                | lightningcss::properties::display::DisplayInside::FlowRoot => {
-                    Some(super::block::block_size(axis))
-                }
-                _ => Some(super::block::block_size(axis)),
-            },
-            _ => Some(super::block::block_size(axis)),
-        },
+            return match axis {
+                Axis::Horizontal => Some(css_val!(Width)),
+                Axis::Vertical => Some(css_val!(Height)),
+            };
+        }
+    }
+
+    // Inline element containing a block child: per CSS 2.2 §9.2.1.1,
+    // the inline is broken around the block and treated as block-level
+    // for sizing purposes (fills parent content width).
+    if matches!(display_type, Some(DisplayType::Inline)) && super::inline_contains_block(styler) {
+        return Some(super::block::block_size(styler, axis));
+    }
+
+    display_type?.size(styler, axis)
+}
+
+/// Content-area size = border-box size minus padding and border.
+pub fn content_size_query(_styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
+    match axis {
+        Axis::Horizontal => Some(sub!(
+            related!(Self_, size_query, Axis::Horizontal),
+            css_prop!(PaddingLeft),
+            css_prop!(PaddingRight),
+            css_prop!(BorderLeftWidth),
+            css_prop!(BorderRightWidth),
+        )),
+        Axis::Vertical => Some(sub!(
+            related!(Self_, size_query, Axis::Vertical),
+            css_prop!(PaddingTop),
+            css_prop!(PaddingBottom),
+            css_prop!(BorderTopWidth),
+            css_prop!(BorderBottomWidth),
+        )),
+    }
+}
+
+/// Resolve keyword size values (`min-content`, `max-content`) to intrinsic
+/// sizing formulas based on the element's display type.
+///
+/// Returns `None` if the property is not a keyword size (e.g. a length),
+/// in which case the caller should fall back to `css_val!`.
+fn keyword_size_formula(
+    prop: lightningcss::properties::Property<'static>,
+    styler: &dyn StylerAccess,
+    axis: Axis,
+) -> Option<&'static Formula> {
+    use lightningcss::properties::Property::{Height, Width};
+    use lightningcss::properties::size::Size;
+
+    let size = match prop {
+        Width(s) | Height(s) => s,
+        _ => return None,
+    };
+
+    match size {
+        Size::MinContent(_) => {
+            if let Some(DisplayType::Flex(dir)) = DisplayType::of_element(styler) {
+                Some(super::flex::flex_min_content_size(dir, axis, styler))
+            } else {
+                // For non-flex containers, use the inline min-content measurement.
+                Some(match axis {
+                    Axis::Horizontal => add!(
+                        min_content_width!(),
+                        css_prop!(PaddingLeft),
+                        css_prop!(PaddingRight),
+                        css_prop!(BorderLeftWidth),
+                        css_prop!(BorderRightWidth),
+                    ),
+                    // Vertical min-content = auto height (content height).
+                    Axis::Vertical => {
+                        return DisplayType::of_element(styler)
+                            .and_then(|dt| dt.size(styler, axis));
+                    }
+                })
+            }
+        }
+        Size::MaxContent(_) => {
+            if let Some(DisplayType::Flex(dir)) = DisplayType::of_element(styler) {
+                Some(super::flex::flex_size(dir, axis, styler))
+            } else {
+                Some(match axis {
+                    Axis::Horizontal => add!(
+                        max_content_width!(),
+                        css_prop!(PaddingLeft),
+                        css_prop!(PaddingRight),
+                        css_prop!(BorderLeftWidth),
+                        css_prop!(BorderRightWidth),
+                    ),
+                    // Vertical max-content = auto height (content height).
+                    Axis::Vertical => {
+                        return DisplayType::of_element(styler)
+                            .and_then(|dt| dt.size(styler, axis));
+                    }
+                })
+            }
+        }
         _ => None,
     }
 }
 
-/// `QueryFn`-compatible wrapper for horizontal size query.
-///
-/// This is a `fn(&NodeStylerContext<'static>) -> Option<&'static Formula>`
-/// and can be stored in static `Formula::Related` variants.
-pub fn size_query_horizontal(styler: &NodeStylerContext<'_>) -> Option<&'static Formula> {
-    size_query(styler, Axis::Horizontal)
-}
-
-/// `QueryFn`-compatible wrapper for vertical size query.
-pub fn size_query_vertical(styler: &NodeStylerContext<'_>) -> Option<&'static Formula> {
-    size_query(styler, Axis::Vertical)
-}
-
-/// Content-area size = border-box size minus padding and border.
-/// Used by children to determine how much space is available inside the parent.
-pub fn content_size_query(styler: &NodeStylerContext<'_>, axis: Axis) -> Option<&'static Formula> {
-    let _outer = size_query(styler, axis)?;
-
+/// Margin-box size = border-box size + margins.
+pub fn margin_box_size_query(_styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
     match axis {
-        Axis::Horizontal => {
-            static OUTER: Formula =
-                Formula::Related(SingleRelationship::Self_, size_query_horizontal);
-            static PL: Formula = Formula::CssValueOrDefault(PropertyId::PaddingLeft, 0);
-            static PR: Formula = Formula::CssValueOrDefault(PropertyId::PaddingRight, 0);
-            static BL: Formula = Formula::CssValueOrDefault(PropertyId::BorderLeftWidth, 0);
-            static BR: Formula = Formula::CssValueOrDefault(PropertyId::BorderRightWidth, 0);
-            static S1: Formula = Formula::Op(Operation::Sub, &OUTER, &PL);
-            static S2: Formula = Formula::Op(Operation::Sub, &S1, &PR);
-            static S3: Formula = Formula::Op(Operation::Sub, &S2, &BL);
-            static RESULT: Formula = Formula::Op(Operation::Sub, &S3, &BR);
-            Some(&RESULT)
-        }
-        Axis::Vertical => {
-            static OUTER: Formula =
-                Formula::Related(SingleRelationship::Self_, size_query_vertical);
-            static PT: Formula = Formula::CssValueOrDefault(PropertyId::PaddingTop, 0);
-            static PB: Formula = Formula::CssValueOrDefault(PropertyId::PaddingBottom, 0);
-            static BT: Formula = Formula::CssValueOrDefault(PropertyId::BorderTopWidth, 0);
-            static BB: Formula = Formula::CssValueOrDefault(PropertyId::BorderBottomWidth, 0);
-            static S1: Formula = Formula::Op(Operation::Sub, &OUTER, &PT);
-            static S2: Formula = Formula::Op(Operation::Sub, &S1, &PB);
-            static S3: Formula = Formula::Op(Operation::Sub, &S2, &BT);
-            static RESULT: Formula = Formula::Op(Operation::Sub, &S3, &BB);
-            Some(&RESULT)
-        }
+        Axis::Horizontal => Some(add!(
+            related!(Self_, size_query, Axis::Horizontal),
+            css_prop!(MarginLeft),
+            css_prop!(MarginRight),
+        )),
+        Axis::Vertical => Some(add!(
+            related!(Self_, size_query, Axis::Vertical),
+            css_prop!(MarginTop),
+            css_prop!(MarginBottom),
+        )),
     }
-}
-
-/// `QueryFn`-compatible wrapper for horizontal content-area size query.
-pub fn content_size_query_horizontal(styler: &NodeStylerContext<'_>) -> Option<&'static Formula> {
-    content_size_query(styler, Axis::Horizontal)
-}
-
-/// `QueryFn`-compatible wrapper for vertical content-area size query.
-pub fn content_size_query_vertical(styler: &NodeStylerContext<'_>) -> Option<&'static Formula> {
-    content_size_query(styler, Axis::Vertical)
 }

@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 rewrite_core = { path = "../core", package = "rewrite_core" }
 rewrite_html = { path = "../html", package = "rewrite_html" }
+rewrite_text = { path = "../text", package = "rewrite_text" }
 lightningcss = { version = "1.0.0-alpha.70", default-features = false, features = ["into_owned"] }
 parcel_selectors = "0.28"
 cssparser = "0.33"

@@ -9,6 +9,7 @@ use crate::db::property_group::{PropertyGroup, classify};
 use crate::db::sparse_tree::SparseTree;
 use crate::db::tree_access::TreeAccess;
 use crate::{NodeId, Specificity};
+use lightningcss::properties::border::LineStyle;
 use lightningcss::properties::{Property, PropertyId};
 use std::sync::Arc;
 
@@ -91,11 +92,58 @@ impl Database {
         })
     }
 
+    /// Fix sparse-tree relationships for a node after its DOM parent
+    /// has been set.
+    ///
+    /// Call this after `AppendChild` so that nodes which entered a
+    /// sparse tree during `CreateNode` (before having a DOM parent)
+    /// get their sparse parent pointers corrected.
+    pub fn relink_node(&self, node: NodeId) {
+        let dom_tree = &self.tree;
+
+        let find_parent = |tree: &SparseTree, node_id: NodeId| -> Option<NodeId> {
+            let mut current = dom_tree.parent(node_id);
+            while let Some(ancestor) = current {
+                if tree.contains(ancestor) {
+                    return Some(ancestor);
+                }
+                current = dom_tree.parent(ancestor);
+            }
+            None
+        };
+
+        let is_ancestor = |ancestor: NodeId, descendant: NodeId| -> bool {
+            let mut current = dom_tree.parent(descendant);
+            while let Some(candidate) = current {
+                if candidate == ancestor {
+                    return true;
+                }
+                current = dom_tree.parent(candidate);
+            }
+            false
+        };
+
+        for tree in [
+            &self.text,
+            &self.background,
+            &self.box_model,
+            &self.layout,
+            &self.position,
+        ] {
+            tree.relink_node(node, |node_id| find_parent(tree, node_id), &is_ancestor);
+        }
+    }
+
     /// Get a property for a node by `PropertyId`.
     ///
     /// For inherited groups (Text), walks up DOM ancestors via the
-    /// sparse tree until a value is found. For non-inherited groups,
-    /// returns only the value explicitly set on this node.
+    /// sparse tree until a value is found. If no ancestor has the
+    /// property, returns the CSS initial value for well-known
+    /// inherited properties. For non-inherited groups, returns only
+    /// the value explicitly set on this node.
+    ///
+    /// Applies computed-value dependencies: `border-*-width` returns
+    /// `None` when the corresponding `border-*-style` is absent or `none`.
     #[allow(
         clippy::needless_pass_by_value,
         reason = "matches lightningcss property_id() API"
@@ -105,6 +153,11 @@ impl Database {
         node: NodeId,
         prop_id: PropertyId<'static>,
     ) -> Option<Property<'static>> {
+        // CSS spec: border-width computes to 0 when border-style is none.
+        if is_border_width_prop(&prop_id) && !self.has_border_style(node, &prop_id) {
+            return None;
+        }
+
         let group = classify(&prop_id)?;
         let tree = self.tree_for_group(group);
 
@@ -115,9 +168,48 @@ impl Database {
                 tree: dom_tree,
             };
             tree.get_inherited_via_dom(node, &prop_id, ancestors)
+                .or_else(|| css_initial_value(&prop_id))
         } else {
             tree.get_local(node, &prop_id)
         }
+    }
+
+    /// Check if a node has a non-`none` border-style for the side
+    /// corresponding to the given border-width property.
+    fn has_border_style(&self, node: NodeId, width_prop_id: &PropertyId<'static>) -> bool {
+        let style_prop_id = border_style_for_width(width_prop_id);
+        // border-style lives in the Background group.
+        let Some(prop) = self.background.get_local(node, &style_prop_id) else {
+            return false;
+        };
+        !matches!(
+            prop,
+            Property::BorderTopStyle(LineStyle::None)
+                | Property::BorderRightStyle(LineStyle::None)
+                | Property::BorderBottomStyle(LineStyle::None)
+                | Property::BorderLeftStyle(LineStyle::None)
+        )
+    }
+
+    /// Get sparse-tree neighbors (parent, children, siblings) for a
+    /// node in the sparse tree that owns the given property. Returns
+    /// an empty vec if the property isn't classified or the node isn't
+    /// in the relevant tree.
+    pub fn neighbors(&self, node: NodeId, prop_id: &PropertyId<'static>) -> Vec<NodeId> {
+        let Some(group) = classify(prop_id) else {
+            return Vec::new();
+        };
+        self.tree_for_group(group).neighbors(node)
+    }
+
+    /// Get the DOM parent of a node, if any.
+    pub fn dom_parent(&self, node: NodeId) -> Option<NodeId> {
+        self.tree.parent(node)
+    }
+
+    /// Get all direct DOM children of a node.
+    pub fn dom_children(&self, node: NodeId) -> Vec<NodeId> {
+        self.tree.children(node)
     }
 
     /// Remove all properties for a node from every tree.
@@ -127,6 +219,65 @@ impl Database {
         self.box_model.remove_node(node);
         self.layout.remove_node(node);
         self.position.remove_node(node);
+    }
+}
+
+/// Return the CSS initial value for well-known inherited properties.
+///
+/// Per the CSS specification, inherited properties have defined initial
+/// values that apply when no ancestor sets the property. This function
+/// covers the Text property group (the only inherited group).
+fn css_initial_value(prop_id: &PropertyId<'static>) -> Option<Property<'static>> {
+    use lightningcss::properties::display::Visibility;
+    use lightningcss::properties::font::{
+        AbsoluteFontWeight, FontFamily, FontSize, FontStyle, FontWeight, GenericFontFamily,
+        LineHeight,
+    };
+    use lightningcss::properties::text::TextAlign;
+    use lightningcss::values::color::{CssColor, RGBA};
+    use lightningcss::values::length::LengthValue;
+    use lightningcss::values::percentage::DimensionPercentage;
+
+    match prop_id {
+        PropertyId::Color => Some(Property::Color(CssColor::RGBA(RGBA::new(0, 0, 0, 1.0)))),
+        PropertyId::FontWeight => Some(Property::FontWeight(FontWeight::Absolute(
+            AbsoluteFontWeight::Weight(400.0),
+        ))),
+        PropertyId::FontSize => Some(Property::FontSize(FontSize::Length(
+            DimensionPercentage::Dimension(LengthValue::Px(16.0)),
+        ))),
+        PropertyId::LineHeight => Some(Property::LineHeight(LineHeight::Normal)),
+        PropertyId::FontStyle => Some(Property::FontStyle(FontStyle::Normal)),
+        PropertyId::FontFamily => Some(Property::FontFamily(vec![FontFamily::Generic(
+            GenericFontFamily::SansSerif,
+        )])),
+        PropertyId::Visibility => Some(Property::Visibility(Visibility::Visible)),
+        PropertyId::TextAlign => Some(Property::TextAlign(TextAlign::Start)),
+        _ => None,
+    }
+}
+
+/// Check if a property ID is a border-width property.
+fn is_border_width_prop(prop_id: &PropertyId<'static>) -> bool {
+    matches!(
+        prop_id,
+        PropertyId::BorderTopWidth
+            | PropertyId::BorderRightWidth
+            | PropertyId::BorderBottomWidth
+            | PropertyId::BorderLeftWidth
+    )
+}
+
+/// Get the corresponding border-style property ID for a border-width property.
+///
+/// Callers must ensure `prop_id` is a border-width property.
+fn border_style_for_width(prop_id: &PropertyId<'static>) -> PropertyId<'static> {
+    match prop_id {
+        PropertyId::BorderRightWidth => PropertyId::BorderRightStyle,
+        PropertyId::BorderBottomWidth => PropertyId::BorderBottomStyle,
+        PropertyId::BorderLeftWidth => PropertyId::BorderLeftStyle,
+        // BorderTopWidth and any other (unreachable in practice).
+        _ => PropertyId::BorderTopStyle,
     }
 }
 

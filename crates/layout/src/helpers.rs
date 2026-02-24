@@ -17,7 +17,7 @@ pub fn parent_start_inline(scoped: &mut ScopedDb) -> Subpixels {
         .resolve_relationship(scoped.node(), Relationship::Parent);
     if parent_ids.is_empty() {
         // No parent - we're at the root, start at 0
-        return 0;
+        return Subpixels::ZERO;
     }
 
     // Map layout axis to concrete query types

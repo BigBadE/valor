@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Intrinsic Sizing</title>
+  <style>
+    .item { height: 40px; }
+  </style>
+</head>
+<body>
+  <!-- Flex container with width: min-content inside a block -->
+  <div style="width: 400px;">
+    <div style="display: flex; width: min-content;">
+      <div class="item" style="width: 80px; background: #e74c3c;"></div>
+      <div class="item" style="width: 120px; background: #3498db;"></div>
+      <div class="item" style="width: 60px; background: #2ecc71;"></div>
+    </div>
+  </div>
+  <!-- Flex container with width: max-content inside a block -->
+  <div style="width: 400px;">
+    <div style="display: flex; width: max-content;">
+      <div class="item" style="width: 80px; background: #e74c3c;"></div>
+      <div class="item" style="width: 120px; background: #3498db;"></div>
+      <div class="item" style="width: 60px; background: #2ecc71;"></div>
+    </div>
+  </div>
+  <!-- Flex container as flex item with auto basis -->
+  <div style="display: flex; width: 600px; height: 80px;">
+    <div style="display: flex; background: #ddd;">
+      <div class="item" style="width: 50px; background: #e74c3c;"></div>
+      <div class="item" style="width: 70px; background: #3498db;"></div>
+    </div>
+    <div style="width: 100px; height: 40px; background: #2ecc71;"></div>
+  </div>
+</body>
+</html>

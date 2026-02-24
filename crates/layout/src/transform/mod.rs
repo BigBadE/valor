@@ -432,22 +432,26 @@ impl TransformOrigin {
     /// Create transform origin at center (50% 50%).
     pub fn center(width: Subpixels, height: Subpixels) -> Self {
         Self {
-            x: width / 2,
-            y: height / 2,
-            z: 0,
+            x: width / Subpixels::raw(2),
+            y: height / Subpixels::raw(2),
+            z: Subpixels::ZERO,
         }
     }
 
     /// Create transform origin at top-left (0% 0%).
     pub fn top_left() -> Self {
-        Self { x: 0, y: 0, z: 0 }
+        Self {
+            x: Subpixels::ZERO,
+            y: Subpixels::ZERO,
+            z: Subpixels::ZERO,
+        }
     }
 
     /// Apply transform around this origin.
     pub fn apply_transform(&self, transform: &Transform2D) -> Transform2D {
         // Translate to origin, apply transform, translate back
-        let x = self.x as f32 / 64.0; // Convert from subpixels
-        let y = self.y as f32 / 64.0;
+        let x = self.x.to_f32();
+        let y = self.y.to_f32();
 
         Transform2D::translate(-x, -y)
             .multiply(transform)

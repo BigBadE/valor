@@ -10,7 +10,7 @@
 use rewrite_layout_util::BlockMarker;
 
 /// Subpixels type alias for layout calculations.
-pub type Subpixels = i32;
+pub type Subpixels = rewrite_core::Subpixel;
 
 /// Writing mode determines the block and inline flow directions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

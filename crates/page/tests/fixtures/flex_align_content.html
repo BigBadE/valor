@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Align Content</title>
+  <style>
+    .container { display: flex; flex-wrap: wrap; width: 250px; height: 300px; }
+    .item { width: 100px; height: 40px; }
+  </style>
+</head>
+<body>
+  <!-- align-content: flex-start (lines packed at start) -->
+  <div class="container" style="align-content: flex-start;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="background: #3498db;"></div>
+    <div class="item" style="background: #2ecc71;"></div>
+    <div class="item" style="background: #f39c12;"></div>
+  </div>
+  <!-- align-content: flex-end (lines packed at end) -->
+  <div class="container" style="align-content: flex-end;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="background: #3498db;"></div>
+    <div class="item" style="background: #2ecc71;"></div>
+    <div class="item" style="background: #f39c12;"></div>
+  </div>
+  <!-- align-content: center (lines centered) -->
+  <div class="container" style="align-content: center;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="background: #3498db;"></div>
+    <div class="item" style="background: #2ecc71;"></div>
+    <div class="item" style="background: #f39c12;"></div>
+  </div>
+  <!-- align-content: space-between (lines spread with space between) -->
+  <div class="container" style="align-content: space-between;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="background: #3498db;"></div>
+    <div class="item" style="background: #2ecc71;"></div>
+    <div class="item" style="background: #f39c12;"></div>
+  </div>
+  <!-- align-content: space-around (equal space around each line) -->
+  <div class="container" style="align-content: space-around;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="background: #3498db;"></div>
+    <div class="item" style="background: #2ecc71;"></div>
+    <div class="item" style="background: #f39c12;"></div>
+  </div>
+  <!-- align-content: space-evenly (equal space including edges) -->
+  <div class="container" style="align-content: space-evenly;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="background: #3498db;"></div>
+    <div class="item" style="background: #2ecc71;"></div>
+    <div class="item" style="background: #f39c12;"></div>
+  </div>
+</body>
+</html>

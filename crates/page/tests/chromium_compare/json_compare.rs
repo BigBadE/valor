@@ -122,12 +122,26 @@ fn compare_json_recursive(
             }
         }
         (JsonValue::String(actual_str), JsonValue::String(expected_str)) => {
-            if actual_str != expected_str {
+            // For text fields, normalize whitespace before comparing
+            // (CSS white-space:normal collapses sequences into single spaces).
+            let is_text_field = path.last().is_some_and(|seg| seg == ".text");
+            let (a, e) = if is_text_field {
+                (
+                    actual_str.split_whitespace().collect::<Vec<_>>().join(" "),
+                    expected_str
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                )
+            } else {
+                (actual_str.clone(), expected_str.clone())
+            };
+            if a != e {
                 diffs.push(Difference {
                     path: format_path(path),
                     element_path: elem_path.join(" > "),
-                    actual: actual_str.clone(),
-                    expected: expected_str.clone(),
+                    actual: a,
+                    expected: e,
                 });
             }
         }

@@ -47,8 +47,8 @@ impl ScrollEvent {
             container: None,
             block_scroll,
             inline_scroll,
-            block_delta: 0,
-            inline_delta: 0,
+            block_delta: Subpixels::ZERO,
+            inline_delta: Subpixels::ZERO,
         }
     }
 
@@ -96,24 +96,28 @@ impl ScrollBounds {
         viewport_inline_size: Subpixels,
     ) -> Self {
         Self {
-            max_block_scroll: (content_block_size - viewport_block_size).max(0),
-            max_inline_scroll: (content_inline_size - viewport_inline_size).max(0),
+            max_block_scroll: (content_block_size - viewport_block_size).max(Subpixels::ZERO),
+            max_inline_scroll: (content_inline_size - viewport_inline_size).max(Subpixels::ZERO),
         }
     }
 
     /// Clamp a scroll state to these bounds.
     pub fn clamp(&self, scroll: ScrollState) -> ScrollState {
         ScrollState {
-            block_scroll: scroll.block_scroll.clamp(0, self.max_block_scroll),
-            inline_scroll: scroll.inline_scroll.clamp(0, self.max_inline_scroll),
+            block_scroll: scroll
+                .block_scroll
+                .clamp(Subpixels::ZERO, self.max_block_scroll),
+            inline_scroll: scroll
+                .inline_scroll
+                .clamp(Subpixels::ZERO, self.max_inline_scroll),
         }
     }
 
     /// Check if a scroll position is within bounds.
     pub fn contains(&self, scroll: &ScrollState) -> bool {
-        scroll.block_scroll >= 0
+        scroll.block_scroll >= Subpixels::ZERO
             && scroll.block_scroll <= self.max_block_scroll
-            && scroll.inline_scroll >= 0
+            && scroll.inline_scroll >= Subpixels::ZERO
             && scroll.inline_scroll <= self.max_inline_scroll
     }
 }
@@ -206,7 +210,7 @@ pub fn calculate_scroll_into_view(
         }
         ScrollAlignment::Center => {
             // Align element center to container center
-            element_start - (container_size - element_size) / 2
+            element_start - (container_size - element_size) / Subpixels::raw(2)
         }
         ScrollAlignment::End => {
             // Align element end to container end
@@ -238,12 +242,12 @@ pub fn update_sticky_scroll_state(_container: Option<NodeId>, _scroll_state: Scr
 
 /// Check if a scroll container can scroll in a given direction.
 pub fn can_scroll(current_scroll: Subpixels, max_scroll: Subpixels, delta: Subpixels) -> bool {
-    if delta > 0 {
+    if delta > Subpixels::ZERO {
         // Scrolling forward/down
         current_scroll < max_scroll
-    } else if delta < 0 {
+    } else if delta < Subpixels::ZERO {
         // Scrolling backward/up
-        current_scroll > 0
+        current_scroll > Subpixels::ZERO
     } else {
         false
     }
@@ -258,7 +262,7 @@ pub fn apply_scroll_momentum(
     easing_factor: f32, // 0.0 to 1.0, typically 0.1-0.3 for smooth feel
 ) -> Subpixels {
     let delta = target_scroll - current_scroll;
-    let eased_delta = (delta as f32 * easing_factor) as Subpixels;
+    let eased_delta = Subpixels::from_f32(delta.to_f32() * easing_factor);
     current_scroll + eased_delta
 }
 
@@ -341,7 +345,7 @@ impl ScrollAnimation {
 
 /// Interpolate between two values.
 fn interpolate(start: Subpixels, end: Subpixels, t: f32) -> Subpixels {
-    start + ((end - start) as f32 * t) as Subpixels
+    start + Subpixels::from_f32((end - start).to_f32() * t)
 }
 
 #[cfg(test)]
@@ -351,40 +355,40 @@ mod tests {
     #[test]
     fn test_scroll_bounds_clamp() {
         let bounds = ScrollBounds {
-            max_block_scroll: 1000,
-            max_inline_scroll: 500,
+            max_block_scroll: Subpixels::from_px(1000),
+            max_inline_scroll: Subpixels::from_px(500),
         };
 
         let scroll = ScrollState {
-            block_scroll: 1500,
-            inline_scroll: -100,
+            block_scroll: Subpixels::from_px(1500),
+            inline_scroll: Subpixels::from_px(-100),
         };
 
         let clamped = bounds.clamp(scroll);
-        assert_eq!(clamped.block_scroll, 1000);
-        assert_eq!(clamped.inline_scroll, 0);
+        assert_eq!(clamped.block_scroll, Subpixels::from_px(1000));
+        assert_eq!(clamped.inline_scroll, Subpixels::ZERO);
     }
 
     #[test]
     fn test_scroll_into_view_nearest() {
         // Element already visible
         let scroll = calculate_scroll_into_view(
-            500, // element offset
-            100, // element size
-            400, // current scroll
-            200, // viewport size
+            Subpixels::from_px(500), // element offset
+            Subpixels::from_px(100), // element size
+            Subpixels::from_px(400), // current scroll
+            Subpixels::from_px(200), // viewport size
             ScrollAlignment::Nearest,
         );
-        assert_eq!(scroll, 400); // No scroll needed
+        assert_eq!(scroll, Subpixels::from_px(400)); // No scroll needed
 
         // Element below viewport
         let scroll = calculate_scroll_into_view(
-            700, // element offset
-            100, // element size
-            400, // current scroll
-            200, // viewport size
+            Subpixels::from_px(700), // element offset
+            Subpixels::from_px(100), // element size
+            Subpixels::from_px(400), // current scroll
+            Subpixels::from_px(200), // viewport size
             ScrollAlignment::Nearest,
         );
-        assert_eq!(scroll, 600); // Scroll to show bottom
+        assert_eq!(scroll, Subpixels::from_px(600)); // Scroll to show bottom
     }
 }

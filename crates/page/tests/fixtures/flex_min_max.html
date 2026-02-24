@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Min Max</title>
+</head>
+<body>
+  <!-- min-width prevents shrinking below 250px -->
+  <div style="display: flex; width: 600px; height: 100px;">
+    <div style="width: 400px; min-width: 250px; height: 60px; flex-shrink: 1; background: #e74c3c;"></div>
+    <div style="width: 400px; height: 60px; flex-shrink: 1; background: #3498db;"></div>
+  </div>
+  <!-- max-width prevents growing beyond 200px -->
+  <div style="display: flex; width: 600px; height: 100px;">
+    <div style="width: 100px; max-width: 200px; height: 60px; flex-grow: 1; background: #e74c3c;"></div>
+    <div style="width: 100px; height: 60px; flex-grow: 1; background: #3498db;"></div>
+  </div>
+</body>
+</html>

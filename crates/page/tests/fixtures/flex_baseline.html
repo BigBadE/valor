@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>Flex Baseline Alignment</title>
+        <style>
+            .container {
+                display: flex;
+                width: 400px;
+                height: 100px;
+                align-items: baseline;
+            }
+        </style>
+    </head>
+    <body>
+        <!-- Items with same font size (CSS reset forces 13px): baselines should align at y=0 -->
+        <div class="container" style="background: #eee">
+            <div style="background: #e74c3c">Small</div>
+            <div style="background: #3498db">Medium</div>
+            <div style="background: #2ecc71">Large</div>
+        </div>
+        <!-- Baseline offset via padding-top: second item pushed down, others shift to align -->
+        <div class="container" style="background: #ddd">
+            <div style="background: #e74c3c">Text</div>
+            <div style="padding-top: 20px; background: #3498db">Padded</div>
+            <div style="background: #2ecc71">More</div>
+        </div>
+        <!-- align-self: baseline on individual items overriding stretch -->
+        <div
+            style="
+                display: flex;
+                width: 400px;
+                height: 100px;
+                align-items: stretch;
+                background: #ccc;
+            "
+        >
+            <div style="align-self: baseline; background: #e74c3c">Base</div>
+            <div style="align-self: baseline; background: #3498db">Aligned</div>
+            <div style="background: #2ecc71; width: 60px"></div>
+        </div>
+    </body>
+</html>

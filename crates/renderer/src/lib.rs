@@ -35,4 +35,4 @@
 
 pub mod renderer;
 
-pub use renderer::{ComputedBox, Renderer, resolve_all_layout, resolve_layout};
+pub use renderer::{ComputedBox, LayoutState, Renderer};

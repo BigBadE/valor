@@ -1,0 +1,11 @@
+[package]
+name = "rewrite_text"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cosmic-text = "0.17"
+lightningcss = { workspace = true }
+
+[lints]
+workspace = true

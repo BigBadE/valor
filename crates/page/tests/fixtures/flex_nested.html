@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>Flex Nested</title>
+        <style>
+            .inner {
+                display: flex;
+                height: 200px;
+            }
+            .item {
+                width: 60px;
+                height: 60px;
+            }
+        </style>
+    </head>
+    <body>
+        <!-- Outer flex with two inner flex containers using flex-grow -->
+        <div style="display: flex; width: 600px; height: 200px">
+            <div class="inner" style="flex-grow: 1; background: #ddd">
+                <div class="item" style="background: #e74c3c"></div>
+                <div class="item" style="background: #c0392b"></div>
+            </div>
+            <div class="inner" style="flex-grow: 2; background: #ccc">
+                <div class="item" style="background: #3498db"></div>
+                <div class="item" style="background: #2980b9"></div>
+                <div class="item" style="background: #1abc9c"></div>
+            </div>
+        </div>
+    </body>
+</html>

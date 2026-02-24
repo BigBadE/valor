@@ -15,4 +15,7 @@ use crate::NodeId;
 pub trait TreeAccess: Send + Sync {
     /// Get the parent of a node, if it has one.
     fn parent(&self, node: NodeId) -> Option<NodeId>;
+
+    /// Get all direct children of a node.
+    fn children(&self, node: NodeId) -> Vec<NodeId>;
 }

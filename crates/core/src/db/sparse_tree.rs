@@ -214,6 +214,54 @@ impl SparseTree {
         None
     }
 
+    /// Fix sparse-tree relationships for a node after its DOM parent
+    /// has been set (i.e. after `AppendChild`).
+    ///
+    /// When a node enters the sparse tree during `CreateNode`, it may
+    /// not yet have a DOM parent, so its sparse parent is set to None.
+    /// Once the DOM parent link is established, this method:
+    /// 1. Finds the correct sparse parent by walking DOM ancestors.
+    /// 2. Links the node to that parent.
+    /// 3. Adopts any existing root/sibling nodes that are DOM
+    ///    descendants of this node.
+    ///
+    /// `find_sparse_parent` walks DOM ancestors to find the nearest
+    /// one in this sparse tree. `is_dom_ancestor(a, b)` returns true
+    /// if `a` is a DOM ancestor of `b`.
+    pub fn relink_node(
+        &self,
+        node: NodeId,
+        find_sparse_parent: impl FnOnce(NodeId) -> Option<NodeId>,
+        is_dom_ancestor: &impl Fn(NodeId, NodeId) -> bool,
+    ) {
+        let Some(local) = self.local_id(node) else {
+            return;
+        };
+
+        let current_parent = self.relationships[local.0 as usize]
+            .parent
+            .load(Ordering::Acquire);
+
+        // Only fix nodes that have no sparse parent. If they already
+        // have one, it was correctly set at insertion time.
+        if current_parent != NO_NODE {
+            return;
+        }
+
+        let new_parent_local =
+            find_sparse_parent(node).and_then(|parent_dom| self.local_id(parent_dom));
+
+        if let Some(parent) = new_parent_local {
+            self.link_child(parent, local);
+        }
+
+        // Adopt root nodes (sparse parent == None) that are DOM
+        // descendants of this node. This handles the case where
+        // this node's children entered the tree before this node
+        // got its DOM parent.
+        self.adopt_descendants(local, new_parent_local, is_dom_ancestor);
+    }
+
     /// Remove all properties for a DOM node and unlink it from the tree.
     pub fn remove_node(&self, node: NodeId) {
         if let Some((_, local)) = self.dom_to_local.remove(&node) {
@@ -291,6 +339,122 @@ impl SparseTree {
             .map(|entry| entry.property.clone())
     }
 
+    /// Re-parent children of `old_parent` that are DOM descendants of
+    /// the newly inserted node `new_node`.
+    ///
+    /// When a new node is inserted into the sparse tree, some existing
+    /// nodes that were children of the new node's sparse parent may
+    /// actually be DOM descendants of the new node. Those nodes should
+    /// become children of the new node instead.
+    ///
+    /// `old_parent` is the sparse parent of `new_node` (None if root).
+    /// `is_dom_ancestor(ancestor, descendant)` returns true if
+    /// `ancestor` is a DOM ancestor of `descendant`.
+    fn adopt_descendants(
+        &self,
+        new_node: LocalId,
+        old_parent: Option<LocalId>,
+        is_dom_ancestor: &impl Fn(NodeId, NodeId) -> bool,
+    ) {
+        let new_dom = self.dom_id(new_node);
+        let to_adopt = old_parent.map_or_else(
+            || self.collect_orphan_descendants(new_node, new_dom, is_dom_ancestor),
+            |parent| self.steal_children_from(parent, new_node, new_dom, is_dom_ancestor),
+        );
+
+        for child in to_adopt {
+            self.link_child(new_node, child);
+        }
+    }
+
+    /// Scan `parent`'s child list and unlink any child that is a DOM
+    /// descendant of `new_dom`, returning them for re-parenting.
+    /// Skips `skip` (the newly inserted node itself).
+    fn steal_children_from(
+        &self,
+        parent: LocalId,
+        skip: LocalId,
+        new_dom: NodeId,
+        is_dom_ancestor: &impl Fn(NodeId, NodeId) -> bool,
+    ) -> Vec<LocalId> {
+        let mut stolen = Vec::new();
+        let parent_rel = &self.relationships[parent.0 as usize];
+        let mut prev: Option<LocalId> = None;
+        let mut current_raw = parent_rel.first_child.load(Ordering::Acquire);
+
+        while current_raw != NO_NODE {
+            let current = LocalId(current_raw);
+            let next_raw = self.relationships[current_raw as usize]
+                .next_sibling
+                .load(Ordering::Acquire);
+
+            if current == skip {
+                prev = Some(current);
+                current_raw = next_raw;
+                continue;
+            }
+
+            let current_dom = self.dom_id(current);
+            if is_dom_ancestor(new_dom, current_dom) {
+                self.unlink_sibling(parent_rel, prev, current, next_raw);
+                stolen.push(current);
+            } else {
+                prev = Some(current);
+            }
+
+            current_raw = next_raw;
+        }
+
+        stolen
+    }
+
+    /// Scan all root nodes (sparse parent == None) for DOM descendants
+    /// of `new_dom`, returning them for re-parenting.
+    fn collect_orphan_descendants(
+        &self,
+        new_node: LocalId,
+        new_dom: NodeId,
+        is_dom_ancestor: &impl Fn(NodeId, NodeId) -> bool,
+    ) -> Vec<LocalId> {
+        let mut found = Vec::new();
+        for idx in 0..self.relationships.count() {
+            let local = LocalId(idx as u32);
+            if local == new_node {
+                continue;
+            }
+            let parent_raw = self.relationships[idx].parent.load(Ordering::Acquire);
+            if parent_raw != NO_NODE {
+                continue;
+            }
+            let current_dom = self.dom_id(local);
+            if is_dom_ancestor(new_dom, current_dom) {
+                found.push(local);
+            }
+        }
+        found
+    }
+
+    /// Remove `current` from its sibling list by linking `prev` (or the
+    /// parent's `first_child`) to `next_raw`.
+    fn unlink_sibling(
+        &self,
+        parent_rel: &SparseRelationships,
+        prev: Option<LocalId>,
+        current: LocalId,
+        next_raw: u32,
+    ) {
+        if let Some(prev_local) = prev {
+            self.relationships[prev_local.0 as usize]
+                .next_sibling
+                .store(next_raw, Ordering::Release);
+        } else {
+            parent_rel.first_child.store(next_raw, Ordering::Release);
+        }
+        self.relationships[current.0 as usize]
+            .next_sibling
+            .store(NO_NODE, Ordering::Release);
+    }
+
     /// Link `child` as a child of `parent` within the sparse tree.
     fn link_child(&self, parent: LocalId, child: LocalId) {
         let child_rel = &self.relationships[child.0 as usize];
@@ -301,6 +465,48 @@ impl SparseTree {
         if old_first != NO_NODE {
             child_rel.next_sibling.store(old_first, Ordering::Release);
         }
+    }
+
+    /// Collect the sparse-tree neighbors of a node: parent, children,
+    /// and siblings. Returns only nodes present in this sparse tree.
+    pub fn neighbors(&self, node: NodeId) -> Vec<NodeId> {
+        let Some(local) = self.local_id(node) else {
+            return Vec::new();
+        };
+
+        let mut result = Vec::new();
+        let rel = &self.relationships[local.0 as usize];
+
+        // Parent
+        let parent_raw = rel.parent.load(Ordering::Acquire);
+        if parent_raw != NO_NODE {
+            result.push(self.dom_id(LocalId(parent_raw)));
+        }
+
+        // Children
+        let mut child_raw = rel.first_child.load(Ordering::Acquire);
+        while child_raw != NO_NODE {
+            result.push(self.dom_id(LocalId(child_raw)));
+            child_raw = self.relationships[child_raw as usize]
+                .next_sibling
+                .load(Ordering::Acquire);
+        }
+
+        // Siblings (walk parent's children, skip self)
+        if parent_raw != NO_NODE {
+            let parent_rel = &self.relationships[parent_raw as usize];
+            let mut sib_raw = parent_rel.first_child.load(Ordering::Acquire);
+            while sib_raw != NO_NODE {
+                if sib_raw != local.0 {
+                    result.push(self.dom_id(LocalId(sib_raw)));
+                }
+                sib_raw = self.relationships[sib_raw as usize]
+                    .next_sibling
+                    .load(Ordering::Acquire);
+            }
+        }
+
+        result
     }
 }
 

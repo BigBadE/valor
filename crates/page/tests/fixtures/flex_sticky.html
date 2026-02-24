@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>Flex Sticky Positioning</title>
+        <style>
+            .item {
+                width: 100px;
+                height: 60px;
+            }
+        </style>
+    </head>
+    <body>
+        <!-- Sticky items: without scrolling, sticky behaves like static in flex -->
+        <div style="display: flex; width: 400px; height: 100px">
+            <div class="item" style="background: #e74c3c"></div>
+            <div
+                class="item"
+                style="position: sticky; background: #3498db"
+            ></div>
+            <div class="item" style="background: #2ecc71"></div>
+        </div>
+        <!-- Sticky in column direction -->
+        <div
+            style="
+                display: flex;
+                flex-direction: column;
+                width: 200px;
+                height: 300px;
+            "
+        >
+            <div class="item" style="background: #e74c3c"></div>
+            <div
+                class="item"
+                style="position: sticky; top: 0; background: #3498db"
+            ></div>
+            <div class="item" style="background: #2ecc71"></div>
+        </div>
+    </body>
+</html>

@@ -1,14 +1,20 @@
 //! Layout computation crate.
 //!
 //! This crate coordinates layout computation using the formula-based system.
-//! Query modules (size, offset, block, flex, bfc, grid) are consolidated
+//! Query modules (size, offset, block, flex, grid) are consolidated
 //! under `queries/` to eliminate circular dependencies.
+
+// Formula construction macros from rewrite_core
+#[macro_use]
+extern crate rewrite_core;
+
+mod macros;
 
 // Query modules — size/offset dispatch based on display mode
 pub mod queries;
 
 // Re-export query entry points
-pub use queries::{offset_query, size_query};
+pub use queries::{offset_query, property_query, size_query};
 
 // Core layout modules
 mod layout_tree;

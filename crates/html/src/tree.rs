@@ -107,15 +107,23 @@ impl DomTree {
         }
     }
 
-    /// Get the index of a node among its siblings (0-based).
+    /// Get the index of a node among its siblings (0-based, DOM order).
     pub fn sibling_index(&self, node: NodeId) -> usize {
         let Some(parent) = self.parent(node) else {
             return 0;
         };
-        self.children(parent).position(|n| n == node).unwrap_or(0)
+        // children() is in reverse DOM order, so count how many
+        // siblings come AFTER this node in the iterator (= before in DOM).
+        let all: Vec<NodeId> = self.children(parent).collect();
+        let rev_pos = all.iter().position(|&n| n == node).unwrap_or(0);
+        all.len().saturating_sub(1) - rev_pos
     }
 
-    /// Iterate over previous siblings of a node (in reverse order, closest first).
+    /// Iterate over previous siblings of a node in DOM order (closest first).
+    ///
+    /// Note: `children()` iterates in reverse insertion order (last-appended
+    /// first), so DOM-previous siblings are those that appear AFTER `node`
+    /// in the `children()` iterator.
     pub fn prev_siblings(&self, node: NodeId) -> PrevSiblingsIter {
         let Some(parent) = self.parent(node) else {
             return PrevSiblingsIter {
@@ -123,19 +131,53 @@ impl DomTree {
                 index: 0,
             };
         };
-        // Collect all siblings before this node
-        let siblings: Vec<NodeId> = self.children(parent).take_while(|&n| n != node).collect();
+        // children() yields reverse DOM order. Skip until we find `node`,
+        // then everything after it in the iterator is a DOM-previous sibling.
+        let siblings: Vec<NodeId> = self
+            .children(parent)
+            .skip_while(|&n| n != node)
+            .skip(1) // skip `node` itself
+            .collect();
         let index = siblings.len();
         PrevSiblingsIter { siblings, index }
     }
 
-    /// Iterate over next siblings of a node.
-    pub fn next_siblings(&self, node: NodeId) -> NextSiblingsIter<'_> {
-        // Find this node's next sibling and iterate from there
-        NextSiblingsIter {
-            tree: self,
-            current: self.next_sibling(node),
+    /// Get the node data for a node by ID.
+    pub fn get_node(&self, node: NodeId) -> Option<&NodeData> {
+        let idx = node.0 as usize;
+        if idx < self.nodes.count() {
+            Some(&self.nodes[idx])
+        } else {
+            None
         }
+    }
+
+    /// Get the text content of a node, if it is a text node.
+    pub fn text_content(&self, node: NodeId) -> Option<&str> {
+        match self.get_node(node)? {
+            NodeData::Text(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Iterate over next siblings of a node in DOM order.
+    ///
+    /// Note: `children()` iterates in reverse insertion order, so
+    /// DOM-next siblings are those that appear BEFORE `node` in
+    /// the `children()` iterator (collected and reversed).
+    pub fn next_siblings(&self, node: NodeId) -> NextSiblingsIter {
+        let Some(parent) = self.parent(node) else {
+            return NextSiblingsIter {
+                siblings: Vec::new(),
+                index: 0,
+            };
+        };
+        // children() yields reverse DOM order. Nodes before `node`
+        // in the iterator are DOM-later siblings.
+        let mut siblings: Vec<NodeId> = self.children(parent).take_while(|&n| n != node).collect();
+        siblings.reverse(); // reverse so closest-next comes first
+        let index = 0;
+        NextSiblingsIter { siblings, index }
     }
 }
 
@@ -174,17 +216,20 @@ impl Iterator for PrevSiblingsIter {
 }
 
 /// Iterator over next siblings.
-pub struct NextSiblingsIter<'a> {
-    tree: &'a DomTree,
-    current: Option<NodeId>,
+pub struct NextSiblingsIter {
+    siblings: Vec<NodeId>,
+    index: usize,
 }
 
-impl Iterator for NextSiblingsIter<'_> {
+impl Iterator for NextSiblingsIter {
     type Item = NodeId;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let node = self.current?;
-        self.current = self.tree.next_sibling(node);
+        if self.index >= self.siblings.len() {
+            return None;
+        }
+        let node = self.siblings[self.index];
+        self.index += 1;
         Some(node)
     }
 }
@@ -192,5 +237,9 @@ impl Iterator for NextSiblingsIter<'_> {
 impl rewrite_core::TreeAccess for DomTree {
     fn parent(&self, node: NodeId) -> Option<NodeId> {
         self.parent(node)
+    }
+
+    fn children(&self, node: NodeId) -> Vec<NodeId> {
+        self.children(node).collect()
     }
 }

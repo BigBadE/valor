@@ -109,18 +109,14 @@ Located in `crates/valor/tests/chromium_compare/`:
 - **Run command**: `cargo test --test chromium_tests` (no `--all-features`!)
 - **Total fixtures**: 139 HTML test files across CSS modules and application tests
 - **Test types**:
-  - **Layout comparison**: Compares JSON layout tree (rect positions, dimensions, styles) with 0.6px epsilon
+  - **Layout comparison**: Compares JSON layout tree (rect positions, dimensions, styles) with ZERO epsilon — Valor must EXACTLY match Chromium's output with no tolerance for diffs
   - **Graphics comparison**: Pixel-level screenshot comparison with region-aware thresholds
 - **Caching**: Chrome reference outputs cached in `target/test_cache/{layout,graphics}/` using FNV-1a hash
 - **Failure artifacts**: Saved to `target/test_cache/{layout,graphics}/failing/` with:
   - `.error.txt` - Detailed diff of all mismatches
   - `.chrome.json` / `.valor.json` - Reference and actual outputs
   - `.diff.png` - Visual diff (graphics only)
-
-**Current Status (as of Jan 2026)**:
-- 81/139 passing (58% pass rate)
-- 58/139 failing (42% failure rate)
-- Main issues: Text height 3px too short (affects 90% of failures), table display mode not applied
+- **IMPORTANT**: This is a production, spec-compliant browser engine that must EXACTLY match Chromium in EVERY case. There is NO tolerance for layout diffs. Any mismatch is a bug that must be fixed.
 
 #### Other Tests
 - Integration tests in `crates/css/tests/` verify CSS mirror behavior

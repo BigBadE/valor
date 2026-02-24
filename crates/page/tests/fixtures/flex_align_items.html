@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Align Items</title>
+  <style>
+    .container { display: flex; width: 400px; height: 200px; }
+    .item { width: 80px; }
+  </style>
+</head>
+<body>
+  <!-- stretch: items with no explicit height fill container -->
+  <div class="container" style="align-items: stretch;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="background: #3498db;"></div>
+  </div>
+  <!-- flex-start: items at top -->
+  <div class="container" style="align-items: flex-start;">
+    <div class="item" style="height: 60px; background: #e74c3c;"></div>
+    <div class="item" style="height: 100px; background: #3498db;"></div>
+    <div class="item" style="height: 40px; background: #2ecc71;"></div>
+  </div>
+  <!-- flex-end: items at bottom -->
+  <div class="container" style="align-items: flex-end;">
+    <div class="item" style="height: 60px; background: #e74c3c;"></div>
+    <div class="item" style="height: 100px; background: #3498db;"></div>
+    <div class="item" style="height: 40px; background: #2ecc71;"></div>
+  </div>
+  <!-- center: items centered vertically -->
+  <div class="container" style="align-items: center;">
+    <div class="item" style="height: 60px; background: #e74c3c;"></div>
+    <div class="item" style="height: 100px; background: #3498db;"></div>
+    <div class="item" style="height: 40px; background: #2ecc71;"></div>
+  </div>
+</body>
+</html>

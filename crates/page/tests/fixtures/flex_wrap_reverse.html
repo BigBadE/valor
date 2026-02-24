@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>Flex Wrap Reverse</title>
+        <style>
+            .container {
+                width: 300px;
+                height: 200px;
+            }
+            .item {
+                width: 120px;
+                height: 60px;
+            }
+        </style>
+    </head>
+    <body>
+        <!-- wrap + row-reverse: items flow right-to-left and wrap to new lines -->
+        <div
+            class="container"
+            style="display: flex; flex-direction: row-reverse; flex-wrap: wrap"
+        >
+            <div class="item" style="background: #e74c3c"></div>
+            <div class="item" style="background: #3498db"></div>
+            <div class="item" style="background: #2ecc71"></div>
+            <div class="item" style="background: #f39c12"></div>
+        </div>
+    </body>
+</html>

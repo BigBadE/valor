@@ -11,37 +11,6 @@ use std::sync::Arc;
 /// Minimum specificity to be considered "confident" - at least one class or id.
 const CONFIDENCE_THRESHOLD: Specificity = Specificity::new(0, 1, 0);
 
-/// Scoped styler access for a specific node.
-pub struct ScopedStyler<'st> {
-    styler: &'st Styler,
-    node: NodeId,
-}
-
-impl<'st> ScopedStyler<'st> {
-    /// Create a new scoped styler for a node.
-    pub fn new(styler: &'st Styler, node: NodeId) -> Self {
-        Self { styler, node }
-    }
-
-    /// Query a CSS property for the current node (returns the raw Property).
-    pub fn get_css_property(&self, prop_id: &PropertyId<'static>) -> Option<&Property<'static>> {
-        self.styler.get_raw_property(self.node, prop_id)
-    }
-
-    /// Create a scoped styler for the parent node.
-    pub fn parent(&self) -> Option<ScopedStyler<'st>> {
-        self.styler
-            .tree
-            .parent(self.node)
-            .map(|parent| ScopedStyler::new(self.styler, parent))
-    }
-
-    /// Get the node ID this styler is scoped to.
-    pub fn node(&self) -> NodeId {
-        self.node
-    }
-}
-
 /// Holds parsed CSS rules and applies them to the DOM.
 pub struct Styler {
     rules: boxcar::Vec<ParsedRule>,
@@ -200,18 +169,16 @@ impl Styler {
         &self.tree
     }
 
-    /// Query the raw (specified) property value for a node.
-    /// Returns the winning property if set, without inheritance or unit resolution.
-    pub fn get_raw_property(
+    /// Resolve the cascade for a single property on a node.
+    ///
+    /// Returns the winning (highest-specificity) property from matched rules,
+    /// without inheritance or unit resolution. Used internally by `flush()`
+    /// and `apply_rule()`.
+    fn cascade_winner(
         &self,
         node_id: NodeId,
         prop_id: &PropertyId<'static>,
     ) -> Option<&Property<'static>> {
-        // CSS spec: border-width computes to 0 when border-style is none (the default).
-        if is_border_width_prop(prop_id) && !self.has_border_style(node_id, prop_id) {
-            return None;
-        }
-
         let node_rules = &self.matched_rules[node_id.0 as usize];
         let mut winner: Option<&Property<'static>> = None;
         let mut best_spec = Specificity::ZERO;
@@ -248,102 +215,39 @@ impl Styler {
         winner
     }
 
-    /// Flush all low-confidence rules: notify properties not dominated by confident rules.
+    /// Flush all low-confidence rules: resolve the cascade for each property
+    /// and notify only the winning value.
     /// Call this after stylesheet parsing is complete.
     pub fn flush(&self) {
-        for (rule_idx, rule) in self.rules.iter() {
-            let rule_specificity = rule.specificity();
+        // Collect all property IDs from low-confidence rules per node,
+        // then resolve the full cascade to find the winner.
+        for node_idx in 0..self.matched_rules.count() {
+            let node_id = NodeId(node_idx as u32);
+            let node_rules = &self.matched_rules[node_idx];
 
-            // Skip confident rules - they were already notified
-            if rule_specificity >= CONFIDENCE_THRESHOLD {
-                continue;
-            }
-
-            let props = rule.properties();
-
-            // For each node this rule matches
-            for node_idx in 0..self.matched_rules.count() {
-                let node_id = NodeId(node_idx as u32);
-                let node_rules = &self.matched_rules[node_idx];
-
-                // Check if this rule is in the node's matched rules
-                let matches = node_rules.iter().any(|(_, &idx)| idx == rule_idx);
-                if !matches {
+            // Collect unique property IDs from low-confidence rules for this node.
+            let mut prop_ids: Vec<PropertyId<'static>> = Vec::new();
+            for (_, &rule_idx) in node_rules.iter() {
+                let rule = &self.rules[rule_idx];
+                if rule.specificity() >= CONFIDENCE_THRESHOLD {
                     continue;
                 }
-
-                // Notify for normal properties not dominated by confident rules
-                for prop in &props.normal {
-                    let prop_id = prop.property_id();
-                    if !self.is_dominated_by_confident(node_rules, &prop_id, false) {
-                        self.subscriptions.notify_property(node_id, prop);
-                    }
-                }
-
-                // Notify for important properties not dominated by confident important rules
-                for prop in &props.important {
-                    let prop_id = prop.property_id();
-                    if !self.is_dominated_by_confident(node_rules, &prop_id, true) {
-                        self.subscriptions.notify_property(node_id, prop);
+                let props = rule.properties();
+                for prop in props.normal.iter().chain(props.important.iter()) {
+                    let pid = prop.property_id();
+                    if !prop_ids.contains(&pid) {
+                        prop_ids.push(pid);
                     }
                 }
             }
-        }
-    }
-}
 
-/// Check if a property ID is a border-width property.
-fn is_border_width_prop(prop_id: &PropertyId<'static>) -> bool {
-    matches!(
-        prop_id,
-        PropertyId::BorderTopWidth
-            | PropertyId::BorderRightWidth
-            | PropertyId::BorderBottomWidth
-            | PropertyId::BorderLeftWidth
-    )
-}
-
-/// Get the corresponding border-style property ID for a border-width property.
-fn border_style_for_width(prop_id: &PropertyId<'static>) -> PropertyId<'static> {
-    match prop_id {
-        PropertyId::BorderTopWidth => PropertyId::BorderTopStyle,
-        PropertyId::BorderRightWidth => PropertyId::BorderRightStyle,
-        PropertyId::BorderBottomWidth => PropertyId::BorderBottomStyle,
-        PropertyId::BorderLeftWidth => PropertyId::BorderLeftStyle,
-        _ => PropertyId::BorderTopStyle,
-    }
-}
-
-impl Styler {
-    /// Check if a node has a border-style set (other than none) for the
-    /// corresponding side of a border-width property.
-    fn has_border_style(&self, node_id: NodeId, width_prop_id: &PropertyId<'static>) -> bool {
-        let style_prop_id = border_style_for_width(width_prop_id);
-        let node_rules = &self.matched_rules[node_id.0 as usize];
-
-        for (_, &rule_idx) in node_rules.iter() {
-            let rule = &self.rules[rule_idx];
-            let props = rule.properties();
-            for prop in props.normal.iter().chain(props.important.iter()) {
-                if prop.property_id() == style_prop_id {
-                    // border-style is set — check if it's not "none"
-                    return !matches!(
-                        prop,
-                        Property::BorderTopStyle(lightningcss::properties::border::LineStyle::None)
-                            | Property::BorderRightStyle(
-                                lightningcss::properties::border::LineStyle::None
-                            )
-                            | Property::BorderBottomStyle(
-                                lightningcss::properties::border::LineStyle::None
-                            )
-                            | Property::BorderLeftStyle(
-                                lightningcss::properties::border::LineStyle::None
-                            )
-                    );
+            // For each property, resolve the full cascade and notify the winner.
+            for prop_id in &prop_ids {
+                if let Some(winner) = self.cascade_winner(node_id, prop_id) {
+                    self.subscriptions.notify_property(node_id, winner);
                 }
             }
         }
-        false
     }
 }
 

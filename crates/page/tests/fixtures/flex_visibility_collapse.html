@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Visibility Collapse</title>
+  <style>
+    .item { width: 100px; height: 60px; }
+  </style>
+</head>
+<body>
+  <!-- Collapsed item between two visible items: should take 0 main-axis space -->
+  <div style="display: flex; width: 400px; height: 80px;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="visibility: collapse; background: #3498db;"></div>
+    <div class="item" style="background: #2ecc71;"></div>
+  </div>
+  <!-- visibility: hidden for comparison: takes up space normally -->
+  <div style="display: flex; width: 400px; height: 80px;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="visibility: hidden; background: #3498db;"></div>
+    <div class="item" style="background: #2ecc71;"></div>
+  </div>
+  <!-- Collapsed item in wrap: should preserve cross-size contribution -->
+  <div style="display: flex; flex-wrap: wrap; width: 250px; height: 200px;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div style="width: 100px; height: 90px; visibility: collapse; background: #3498db;"></div>
+    <div class="item" style="background: #2ecc71;"></div>
+  </div>
+</body>
+</html>

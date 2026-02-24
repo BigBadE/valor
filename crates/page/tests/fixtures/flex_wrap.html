@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Wrap</title>
+  <style>
+    .container { display: flex; width: 300px; height: 200px; }
+    .item { width: 120px; height: 60px; }
+  </style>
+</head>
+<body>
+  <!-- Nowrap: 4 items shrink to fit (480 > 300) -->
+  <div class="container" style="flex-wrap: nowrap;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="background: #3498db;"></div>
+    <div class="item" style="background: #2ecc71;"></div>
+    <div class="item" style="background: #f39c12;"></div>
+  </div>
+  <!-- Wrap: items wrap to new lines (2 per line at 120px + 120px = 240px < 300px) -->
+  <div class="container" style="flex-wrap: wrap;">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="background: #3498db;"></div>
+    <div class="item" style="background: #2ecc71;"></div>
+    <div class="item" style="background: #f39c12;"></div>
+  </div>
+</body>
+</html>

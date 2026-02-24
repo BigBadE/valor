@@ -66,7 +66,7 @@ impl Rect {
 
     /// Create a rectangle at the origin with given size.
     pub fn from_size(width: Subpixels, height: Subpixels) -> Self {
-        Self::new(0, 0, width, height)
+        Self::new(Subpixels::ZERO, Subpixels::ZERO, width, height)
     }
 
     /// Get the right edge (x + width).

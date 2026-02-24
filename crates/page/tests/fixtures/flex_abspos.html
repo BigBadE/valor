@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Abspos</title>
+  <style>
+    .container { display: flex; width: 400px; height: 200px; position: relative; }
+    .item { width: 100px; height: 60px; }
+  </style>
+</head>
+<body>
+  <!-- Absolutely positioned child should not participate in flex layout.
+       The two in-flow items should be laid out as if the abspos child doesn't exist. -->
+  <div class="container">
+    <div class="item" style="background: #e74c3c;"></div>
+    <div class="item" style="position: absolute; top: 10px; left: 10px; background: #9b59b6;"></div>
+    <div class="item" style="background: #3498db;"></div>
+  </div>
+  <!-- Fixed positioned child should also be excluded from flex layout -->
+  <div class="container">
+    <div class="item" style="background: #2ecc71;"></div>
+    <div class="item" style="position: fixed; top: 0; left: 0; background: #e67e22;"></div>
+    <div class="item" style="background: #1abc9c;"></div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Min Max Redistribution</title>
+  <style>
+    .container {
+      display: flex;
+      width: 600px;
+      height: 80px;
+    }
+  </style>
+</head>
+<body>
+  <!-- Iterative redistribution: item A hits max, remaining free space
+       is redistributed to B and C -->
+  <div class="container">
+    <div style="width: 100px; max-width: 150px; flex-grow: 1; height: 60px; background: #e74c3c;"></div>
+    <div style="width: 100px; flex-grow: 1; height: 60px; background: #3498db;"></div>
+    <div style="width: 100px; flex-grow: 1; height: 60px; background: #2ecc71;"></div>
+  </div>
+  <!-- Multiple items hit min: both A and B have min-width, C absorbs
+       all the shrinkage -->
+  <div class="container">
+    <div style="width: 300px; min-width: 250px; flex-shrink: 1; height: 60px; background: #e74c3c;"></div>
+    <div style="width: 300px; min-width: 250px; flex-shrink: 1; height: 60px; background: #3498db;"></div>
+    <div style="width: 300px; flex-shrink: 1; height: 60px; background: #2ecc71;"></div>
+  </div>
+  <!-- Both min and max: item A has both min and max constraints -->
+  <div class="container">
+    <div style="width: 100px; min-width: 80px; max-width: 120px; flex-grow: 1; height: 60px; background: #e74c3c;"></div>
+    <div style="width: 100px; flex-grow: 1; height: 60px; background: #3498db;"></div>
+    <div style="width: 100px; flex-grow: 1; height: 60px; background: #2ecc71;"></div>
+  </div>
+  <!-- Weighted shrink with min: different flex-shrink values,
+       one item hits its min constraint -->
+  <div class="container">
+    <div style="width: 300px; min-width: 200px; flex-shrink: 3; height: 60px; background: #e74c3c;"></div>
+    <div style="width: 300px; flex-shrink: 1; height: 60px; background: #3498db;"></div>
+  </div>
+</body>
+</html>

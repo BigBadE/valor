@@ -103,9 +103,9 @@ impl FontMetrics {
 
         // Estimate ascent/descent based on typical font proportions
         // Real implementation would query font metrics from a font library
-        let ascent = (font_size as f32 * 0.75) as Subpixels; // ~75% above baseline
-        let descent = (font_size as f32 * 0.25) as Subpixels; // ~25% below baseline
-        let x_height = (font_size as f32 * 0.5) as Subpixels; // ~50% of font size
+        let ascent = Subpixels::from_f32(font_size.to_f32() * 0.75); // ~75% above baseline
+        let descent = Subpixels::from_f32(font_size.to_f32() * 0.25); // ~25% below baseline
+        let x_height = Subpixels::from_f32(font_size.to_f32() * 0.5); // ~50% of font size
 
         Self {
             font_size,
@@ -123,7 +123,7 @@ impl FontMetrics {
 
     /// Get the baseline offset from the top of a line box.
     pub fn baseline_from_top(&self) -> Subpixels {
-        let half_leading = (self.line_height - self.total_height()) / 2;
+        let half_leading = (self.line_height - self.total_height()) / Subpixels::raw(2);
         half_leading + self.ascent
     }
 }
@@ -139,22 +139,22 @@ fn get_font_size(scoped: &mut ScopedDb) -> Subpixels {
             // Convert length to subpixels
             use rewrite_css::LengthValue;
             match len {
-                LengthValue::Px(px) => (px * 64.0) as Subpixels,
+                LengthValue::Px(px) => Subpixels::from_f32(px),
                 LengthValue::Em(em) => {
                     // Em is relative to parent font size
                     let parent_size = scoped.parent::<FontSizeQuery>();
                     match parent_size {
                         CssValue::Length(LengthValue::Px(parent_px)) => {
-                            (em * parent_px * 64.0) as Subpixels
+                            Subpixels::from_f32(em * parent_px)
                         }
-                        _ => (em * 16.0 * 64.0) as Subpixels, // Default 16px base
+                        _ => Subpixels::from_f32(em * 16.0), // Default 16px base
                     }
                 }
-                LengthValue::Rem(rem) => (rem * 16.0 * 64.0) as Subpixels, // Assume 16px root
-                _ => 16 * 64,                                              // Default 16px
+                LengthValue::Rem(rem) => Subpixels::from_f32(rem * 16.0), // Assume 16px root
+                _ => Subpixels::from_px(16),                              // Default 16px
             }
         }
-        _ => 16 * 64, // Default 16px = 1024 subpixels
+        _ => Subpixels::from_px(16), // Default 16px
     }
 }
 
@@ -165,20 +165,20 @@ fn get_line_height(scoped: &mut ScopedDb, font_size: Subpixels) -> Subpixels {
     match line_height_value {
         CssValue::Number(factor) => {
             // Unitless number is multiplied by font size
-            (font_size as f32 * factor) as Subpixels
+            Subpixels::from_f32(font_size.to_f32() * factor)
         }
         CssValue::Length(len) => {
             // Absolute length
             use rewrite_css::LengthValue;
             match len {
-                LengthValue::Px(px) => (px * 64.0) as Subpixels,
-                LengthValue::Em(em) => (em * font_size as f32) as Subpixels,
-                _ => (font_size as f32 * 1.2) as Subpixels, // Default 1.2x
+                LengthValue::Px(px) => Subpixels::from_f32(px),
+                LengthValue::Em(em) => Subpixels::from_f32(em * font_size.to_f32()),
+                _ => Subpixels::from_f32(font_size.to_f32() * 1.2), // Default 1.2x
             }
         }
         CssValue::Keyword(CssKeyword::Normal) | _ => {
             // Default: 1.2x font size
-            (font_size as f32 * 1.2) as Subpixels
+            Subpixels::from_f32(font_size.to_f32() * 1.2)
         }
     }
 }
@@ -200,12 +200,12 @@ pub fn get_baseline_alignment(scoped: &mut ScopedDb) -> BaselineAlignment {
             // Custom offset
             use rewrite_css::LengthValue;
             let offset = match len {
-                LengthValue::Px(px) => (px * 64.0) as Subpixels,
+                LengthValue::Px(px) => Subpixels::from_f32(px),
                 LengthValue::Em(em) => {
                     let font_size = get_font_size(scoped);
-                    (em * font_size as f32) as Subpixels
+                    Subpixels::from_f32(em * font_size.to_f32())
                 }
-                _ => 0,
+                _ => Subpixels::ZERO,
             };
             BaselineAlignment::Custom(offset)
         }
@@ -227,7 +227,7 @@ pub fn compute_baseline_offset(
         }
         BaselineAlignment::Top => {
             // Align to top of line box
-            0
+            Subpixels::ZERO
         }
         BaselineAlignment::Bottom => {
             // Align to bottom of line box
@@ -235,7 +235,7 @@ pub fn compute_baseline_offset(
         }
         BaselineAlignment::Middle => {
             // Align to middle of line box
-            (line_box_height - font_metrics.total_height()) / 2
+            (line_box_height - font_metrics.total_height()) / Subpixels::raw(2)
         }
         BaselineAlignment::TextTop => {
             // Align to top of the em box
@@ -247,12 +247,12 @@ pub fn compute_baseline_offset(
         }
         BaselineAlignment::Sub => {
             // Subscript: ~0.2em below baseline
-            let offset = (font_metrics.font_size as f32 * 0.2) as Subpixels;
+            let offset = Subpixels::from_f32(font_metrics.font_size.to_f32() * 0.2);
             line_box_baseline - font_metrics.ascent + offset
         }
         BaselineAlignment::Super => {
             // Superscript: ~0.4em above baseline
-            let offset = (font_metrics.font_size as f32 * 0.4) as Subpixels;
+            let offset = Subpixels::from_f32(font_metrics.font_size.to_f32() * 0.4);
             line_box_baseline - font_metrics.ascent - offset
         }
         BaselineAlignment::Custom(offset) => {
@@ -276,10 +276,13 @@ pub fn break_line(
 ) -> Vec<&str> {
     let mut lines = Vec::new();
     let mut current_line_start = 0;
-    let mut current_width = 0;
+    let mut current_width = Subpixels::ZERO;
     let mut last_break_opportunity = 0;
 
-    let chars_per_line = (available_width / char_width).max(1) as usize;
+    let chars_per_line = {
+        let raw = available_width / char_width;
+        raw.max(Subpixels::raw(1))
+    };
 
     for (idx, ch) in text.char_indices() {
         current_width += char_width;
@@ -300,7 +303,7 @@ pub fn break_line(
                 lines.push(&text[current_line_start..idx]);
                 current_line_start = idx;
             }
-            current_width = 0;
+            current_width = Subpixels::ZERO;
             last_break_opportunity = current_line_start;
         }
     }
@@ -337,8 +340,8 @@ pub fn layout_inline_content(scoped: &mut ScopedDb, available_width: Subpixels) 
     if text_content.is_empty() {
         // Empty content: create one empty line box
         line_boxes.push(LineBox {
-            block_offset: 0,
-            inline_offset: 0,
+            block_offset: Subpixels::ZERO,
+            inline_offset: Subpixels::ZERO,
             height: font_metrics.line_height,
             baseline_offset: font_metrics.baseline_from_top(),
             inline_boxes: vec![],
@@ -347,19 +350,20 @@ pub fn layout_inline_content(scoped: &mut ScopedDb, available_width: Subpixels) 
     }
 
     // Simple character width estimation (real implementation uses font shaping)
-    let char_width = (font_metrics.font_size as f32 * 0.6) as Subpixels; // ~60% of font size
+    let char_width = Subpixels::from_f32(font_metrics.font_size.to_f32() * 0.6); // ~60% of font size
 
     // Break text into lines
     let lines = break_line(&text_content, available_width, char_width);
 
-    let mut current_block_offset = 0;
+    let mut current_block_offset = Subpixels::ZERO;
 
     for line_text in lines {
-        let line_width = (line_text.len() as i32 * char_width).min(available_width);
+        let line_width =
+            Subpixels::from_f32(line_text.len() as f32 * char_width.to_f32()).min(available_width);
 
         let inline_box = InlineBox {
             node: scoped.node(),
-            inline_offset: 0,
+            inline_offset: Subpixels::ZERO,
             width: line_width,
             height: font_metrics.total_height(),
             baseline_offset: font_metrics.ascent,
@@ -368,7 +372,7 @@ pub fn layout_inline_content(scoped: &mut ScopedDb, available_width: Subpixels) 
 
         let line_box = LineBox {
             block_offset: current_block_offset,
-            inline_offset: 0,
+            inline_offset: Subpixels::ZERO,
             height: font_metrics.line_height,
             baseline_offset: font_metrics.baseline_from_top(),
             inline_boxes: vec![inline_box],
@@ -411,9 +415,9 @@ pub fn calculate_inline_intrinsic_width(scoped: &mut ScopedDb) -> Subpixels {
     let text_content = get_text_content(scoped);
 
     // Simple character width estimation
-    let char_width = (font_metrics.font_size as f32 * 0.6) as Subpixels;
+    let char_width = Subpixels::from_f32(font_metrics.font_size.to_f32() * 0.6);
 
-    (text_content.len() as i32 * char_width)
+    Subpixels::from_f32(text_content.len() as f32 * char_width.to_f32())
 }
 
 /// Calculate positions for inline-level elements within a line box.
@@ -427,12 +431,12 @@ pub fn position_inline_boxes(
         let free_space = available_width - total_inline_width;
 
         let start_offset = match text_align {
-            TextAlign::Left => 0,
-            TextAlign::Right => free_space.max(0),
-            TextAlign::Center => (free_space.max(0)) / 2,
+            TextAlign::Left => Subpixels::ZERO,
+            TextAlign::Right => free_space.max(Subpixels::ZERO),
+            TextAlign::Center => free_space.max(Subpixels::ZERO) / Subpixels::raw(2),
             TextAlign::Justify => {
                 // Justify: distribute space between words (simplified)
-                0 // Would need word counting and space distribution
+                Subpixels::ZERO // Would need word counting and space distribution
             }
         };
 

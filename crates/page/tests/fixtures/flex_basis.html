@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flex Basis</title>
+  <style>
+    .container { display: flex; width: 600px; height: 100px; }
+    .item { height: 60px; }
+  </style>
+</head>
+<body>
+  <!-- Explicit flex-basis overrides width -->
+  <div class="container">
+    <div class="item" style="flex-basis: 200px; width: 100px; background: #e74c3c;"></div>
+    <div class="item" style="flex-basis: 150px; background: #3498db;"></div>
+  </div>
+  <!-- Auto flex-basis uses width -->
+  <div class="container">
+    <div class="item" style="width: 200px; background: #e74c3c;"></div>
+    <div class="item" style="width: 150px; background: #3498db;"></div>
+  </div>
+  <!-- Basis + grow: basis is starting point -->
+  <div class="container">
+    <div class="item" style="flex-basis: 100px; flex-grow: 1; background: #e74c3c;"></div>
+    <div class="item" style="flex-basis: 200px; flex-grow: 1; background: #3498db;"></div>
+  </div>
+</body>
+</html>
