@@ -24,7 +24,9 @@ pub use size::size_query;
 pub enum DisplayType {
     Block,
     Inline,
-    Flex(FlexDirection),
+    /// Flex container: (direction, is_inline).
+    /// `is_inline` is true for `inline-flex`, false for `flex` (block-level).
+    Flex(FlexDirection, bool),
     Grid,
 }
 
@@ -55,7 +57,8 @@ impl DisplayType {
                             Some(lightningcss::properties::Property::FlexDirection(dir, _)) => dir,
                             _ => FlexDirection::Row,
                         };
-                        Some(Self::Flex(dir))
+                        let is_inline = matches!(pair.outside, DisplayOutside::Inline);
+                        Some(Self::Flex(dir, is_inline))
                     }
                     DisplayInside::Grid => Some(Self::Grid),
                     DisplayInside::Flow if matches!(pair.outside, DisplayOutside::Inline) => {
@@ -74,7 +77,15 @@ impl DisplayType {
         match self {
             Self::Block => Some(block::block_size(styler, axis)),
             Self::Inline => Some(inline_size(axis)),
-            Self::Flex(dir) => Some(flex::flex_size(*dir, axis, styler)),
+            Self::Flex(dir, is_inline) => {
+                // Block-level flex containers (`display: flex`) fill parent width
+                // like normal blocks. Only inline-flex uses content-based sizing.
+                if !is_inline && axis == Axis::Horizontal {
+                    Some(block::block_size(styler, axis))
+                } else {
+                    Some(flex::flex_size(*dir, axis, styler))
+                }
+            }
             Self::Grid => Some(grid::grid_size(axis)),
         }
     }
@@ -84,7 +95,7 @@ impl DisplayType {
         match self {
             Self::Block => Some(block::block_offset(styler, axis)),
             Self::Inline => Some(inline_offset(axis)),
-            Self::Flex(dir) => Some(flex::flex_offset(*dir, axis)),
+            Self::Flex(dir, _is_inline) => Some(flex::flex_offset(*dir, axis)),
             Self::Grid => Some(grid::grid_offset(axis)),
         }
     }

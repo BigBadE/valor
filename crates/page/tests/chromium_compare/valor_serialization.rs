@@ -14,6 +14,16 @@ pub fn serialize_valor_layout(
     // Find <body> node
     let body_id = find_body(tree)?;
 
+    // Collect all nodes that need to be serialized
+    let mut all_nodes = Vec::new();
+    collect_all_nodes(body_id, tree, &mut all_nodes);
+
+    // Resolve all nodes fresh before serialization
+    layout
+        .lock()
+        .expect("lock poisoned")
+        .resolve_nodes(&all_nodes);
+
     let ctx = SerCtx {
         tree,
         db,
@@ -40,6 +50,29 @@ pub fn serialize_valor_layout(
         "layout": body_json,
         "asserts": []
     }))
+}
+
+/// Recursively collect all node IDs starting from a root.
+fn collect_all_nodes(node_id: NodeId, tree: &DomTree, out: &mut Vec<NodeId>) {
+    out.push(node_id);
+    for child_id in tree.children(node_id) {
+        collect_all_nodes(child_id, tree, out);
+    }
+}
+
+/// Debug: print node tree with tags
+#[allow(dead_code)]
+fn debug_print_nodes(tree: &DomTree, nodes: &[NodeId]) {
+    for node_id in nodes {
+        let tag = match &tree.nodes[node_id.0 as usize] {
+            NodeData::Element { tag, .. } => tree.interner.resolve(tag).to_string(),
+            NodeData::Text(t) => format!("TEXT({})", t.chars().take(20).collect::<String>()),
+            _ => "OTHER".to_string(),
+        };
+        // Find parent
+        let parent = tree.parent(*node_id);
+        eprintln!("DEBUG Node {:?}: {} (parent: {:?})", node_id, tag, parent);
+    }
 }
 
 struct SerCtx<'ctx> {

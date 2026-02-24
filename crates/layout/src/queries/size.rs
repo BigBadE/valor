@@ -29,11 +29,12 @@ pub fn size_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Form
     let is_inline = matches!(display_type, Some(DisplayType::Inline));
 
     // Root element check: use viewport dimensions if this node is at the top
-    // of the layout tree.
+    // of the layout tree. The root is detected by checking if the parent is
+    // NodeId(0) (the DOM root) or if the node is its own parent.
     let parent = styler.related(SingleRelationship::Parent);
-    let parent_is_root = parent.node_id() == styler.node_id()
-        || parent.get_css_property(&PropertyId::Display).is_none();
-    if parent_is_root {
+    let parent_is_document_root = parent.node_id() == rewrite_core::NodeId::ROOT;
+    let node_is_own_parent = parent.node_id() == styler.node_id();
+    if parent_is_document_root || node_is_own_parent {
         return match axis {
             Axis::Horizontal => Some(viewport_width!()),
             Axis::Vertical => Some(viewport_height!()),
@@ -45,7 +46,8 @@ pub fn size_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Form
     // The flex algorithm handles explicit CSS size via flex-basis.
     // Per CSS Flexbox §4.1, absolutely/fixed positioned children are
     // out-of-flow and do not participate in flex layout sizing.
-    if let Some(DisplayType::Flex(dir)) = DisplayType::of_element(parent.as_ref()) {
+    let parent_display = DisplayType::of_element(parent.as_ref());
+    if let Some(DisplayType::Flex(dir, _)) = parent_display {
         let is_out_of_flow = matches!(
             styler.get_css_property(&PropertyId::Position),
             Some(lightningcss::properties::Property::Position(
@@ -127,7 +129,7 @@ fn keyword_size_formula(
 
     match size {
         Size::MinContent(_) => {
-            if let Some(DisplayType::Flex(dir)) = DisplayType::of_element(styler) {
+            if let Some(DisplayType::Flex(dir, _)) = DisplayType::of_element(styler) {
                 Some(super::flex::flex_min_content_size(dir, axis, styler))
             } else {
                 // For non-flex containers, use the inline min-content measurement.
@@ -148,7 +150,7 @@ fn keyword_size_formula(
             }
         }
         Size::MaxContent(_) => {
-            if let Some(DisplayType::Flex(dir)) = DisplayType::of_element(styler) {
+            if let Some(DisplayType::Flex(dir, _)) = DisplayType::of_element(styler) {
                 Some(super::flex::flex_size(dir, axis, styler))
             } else {
                 Some(match axis {

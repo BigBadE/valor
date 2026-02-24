@@ -114,13 +114,20 @@ impl ResolveContext {
         }
     }
 
-    /// Invalidate all cached values for a node. O(1) amortized.
+    /// Invalidate cached values for specific formulas on a node.
     ///
-    /// Called when a CSS property changes on this node, since formulas
-    /// that read CSS values (e.g. `CssValue(Width)`) may now return
-    /// different results.
-    pub fn invalidate_node(&mut self, node: NodeId) {
-        self.cache.remove(&node);
+    /// Given a list of formulas, removes only those formulas' cached values
+    /// for the specified node. Used for selective invalidation when only
+    /// certain CSS properties change.
+    pub fn invalidate_formulas(&mut self, node: NodeId, formulas: &[&'static Formula]) {
+        if let Some(node_cache) = self.cache.get_mut(&node) {
+            for formula in formulas {
+                let formula_ptr = from_ref::<Formula>(*formula) as usize;
+                node_cache.remove(&formula_ptr);
+            }
+        }
+        // Also invalidate line cache if any formula affects line breaking
+        // (conservative: invalidate all line caches for this node)
         self.line_cache.retain(|key, _| key.parent != node);
     }
 
@@ -132,6 +139,12 @@ impl ResolveContext {
             .get(&node)
             .and_then(|nc| nc.get(&formula_ptr))
             .copied()
+    }
+
+    /// Clear all caches. Call before starting a fresh resolution pass.
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+        self.line_cache.clear();
     }
 
     /// Resolve a formula for a node, using cache if available.
@@ -154,6 +167,7 @@ impl ResolveContext {
         }
         let value = self.resolve_inner(formula, node, styler);
         self.depth -= 1;
+
         if let Some(val) = value {
             self.cache.entry(node).or_default().insert(formula_ptr, val);
             Some(val)

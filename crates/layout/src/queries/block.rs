@@ -12,7 +12,7 @@ use lightningcss::properties::PropertyId;
 use lightningcss::values::length::LengthPercentageOrAuto;
 use rewrite_core::{Axis, Formula, SingleRelationship, StylerAccess, Subpixel};
 
-use super::size::{content_size_query, margin_box_size_query};
+use super::size::{content_size_query, margin_box_size_query, size_query};
 
 // ============================================================================
 // Margin auto detection helpers
@@ -86,8 +86,9 @@ fn inline_main_size_query(styler: &dyn StylerAccess) -> Option<&'static Formula>
 /// Per-child height query for block containers.
 ///
 /// Returns `InlineHeight` for inline-level children so their height
-/// is measured via text measurement. Returns `margin_box_size` for
-/// block-level children so they stack vertically.
+/// is measured via text measurement. Returns collapsed-margin-aware
+/// height for block-level children so they stack vertically with
+/// proper margin collapsing between adjacent siblings.
 fn block_child_height_query(styler: &dyn StylerAccess) -> Option<&'static Formula> {
     // Intrinsic nodes (text, replaced elements) are always inline content.
     if styler.is_intrinsic() {
@@ -100,8 +101,62 @@ fn block_child_height_query(styler: &dyn StylerAccess) -> Option<&'static Formul
     ) {
         return Some(inline_height!());
     }
-    // Block-level children use margin-box height.
-    margin_box_size_query(styler, Axis::Vertical)
+    // Block-level children use height with sibling margin collapse.
+    collapsed_margin_box_height(styler)
+}
+
+/// Height contribution of a block child, accounting for sibling margin collapse.
+///
+/// For the first child: margin-box height (mt + height + mb)
+/// For subsequent children: height + collapsed(prev.mb, this.mt) + mb
+///   where collapsed margin replaces the raw mt to avoid double-counting.
+///
+/// The collapsed margin formula handles positive/negative margins per CSS spec:
+///   collapsed(a, b) = max(max(a, b), 0) + min(min(a, b), 0)
+fn collapsed_margin_box_height(styler: &dyn StylerAccess) -> Option<&'static Formula> {
+    let prev = styler.related(SingleRelationship::PrevSibling);
+    if prev.node_id() == styler.node_id() {
+        // First child: full margin-box.
+        return margin_box_size_query(styler, Axis::Vertical);
+    }
+
+    // Non-first child: replace mt with (collapsed_margin - prev.mb).
+    // The sum includes prev.mb already, so our contribution is:
+    //   height + mb + collapsed(prev.mb, this.mt) - prev.mb
+    //
+    // Equivalently: height + mb + extra, where:
+    //   extra = max(max(prev.mb, mt), 0) + min(min(prev.mb, mt), 0) - prev.mb
+    //
+    // When both positive: extra = max(prev.mb, mt) - prev.mb = max(0, mt - prev.mb)
+    // When both negative: extra = min(prev.mb, mt) - prev.mb = min(0, mt - prev.mb)
+    // When mixed: extra = prev.mb + mt - prev.mb = mt (or similar)
+    //
+    // Simplified: contribution = height + mb + max(0, mt - prev.mb) for positive case.
+    // For full spec compliance with negative margins, use the full formula.
+    Some(add!(
+        related!(Self_, size_query, Axis::Vertical),
+        css_prop!(MarginBottom),
+        // collapsed(prev.mb, mt) - prev.mb
+        sub!(
+            add!(
+                max!(
+                    max!(
+                        related_val!(PrevSibling, css_prop!(MarginBottom)),
+                        css_prop!(MarginTop),
+                    ),
+                    constant!(Subpixel::ZERO),
+                ),
+                min!(
+                    min!(
+                        related_val!(PrevSibling, css_prop!(MarginBottom)),
+                        css_prop!(MarginTop),
+                    ),
+                    constant!(Subpixel::ZERO),
+                ),
+            ),
+            related_val!(PrevSibling, css_prop!(MarginBottom)),
+        ),
+    ))
 }
 
 /// Available content width formula for the container (used for inline line-breaking).
@@ -241,9 +296,19 @@ fn has_bfc_overflow(styler: &dyn StylerAccess) -> bool {
     false
 }
 
+/// Check if display type establishes a new formatting context (flex, grid).
+/// Flex and grid containers establish a new BFC for their contents,
+/// preventing margin collapsing with ancestors.
+fn establishes_formatting_context(styler: &dyn StylerAccess) -> bool {
+    matches!(
+        super::DisplayType::of_element(styler),
+        Some(super::DisplayType::Flex(_, _) | super::DisplayType::Grid)
+    )
+}
+
 /// Check if a block element prevents top margin collapsing with its first child.
 /// Per CSS 2.2 §8.3.1: no collapsing if parent has padding-top, border-top,
-/// or establishes a new BFC.
+/// or establishes a new BFC (overflow != visible, flex, grid).
 fn prevents_top_margin_collapse(styler: &dyn StylerAccess) -> bool {
     let has_padding = styler
         .get_property(&PropertyId::PaddingTop)
@@ -251,7 +316,7 @@ fn prevents_top_margin_collapse(styler: &dyn StylerAccess) -> bool {
     let has_border = styler
         .get_property(&PropertyId::BorderTopWidth)
         .is_some_and(|v| v != Subpixel::ZERO);
-    has_padding || has_border || has_bfc_overflow(styler)
+    has_padding || has_border || has_bfc_overflow(styler) || establishes_formatting_context(styler)
 }
 
 /// Check if a block element should have parent-child margin collapsing

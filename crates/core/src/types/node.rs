@@ -95,15 +95,9 @@ impl Div for Subpixel {
         if rhs.0 == 0 {
             Self(0)
         } else {
-            // Round-half-away-from-zero division to match Chromium's LayoutUnit.
-            let quot = self.0 / rhs.0;
-            let rem = self.0 % rhs.0;
-            // Round if remainder ≥ half the divisor (magnitude-wise).
-            if rem.abs() * 2 >= rhs.0.abs() {
-                Self(quot + if (self.0 ^ rhs.0) < 0 { -1 } else { 1 })
-            } else {
-                Self(quot)
-            }
+            // Truncate toward zero (standard integer division).
+            // Chromium's LayoutUnit uses this for most operations.
+            Self(self.0 / rhs.0)
         }
     }
 }

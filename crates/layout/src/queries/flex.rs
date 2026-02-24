@@ -132,8 +132,9 @@ pub fn flex_size(
         // Wrap: cross size = sum of per-line max cross sizes + cross gaps.
         flex_container_cross_size_wrap(flex_direction, axis)
     } else {
-        // Nowrap: cross size = max of all children's cross sizes.
-        aggregate!(Max, OrderedChildren, flex_item_cross_query, axis)
+        // Nowrap: cross size = max of all children's margin-box cross sizes.
+        // Use margin-box so container height includes child margins.
+        aggregate!(Max, OrderedChildren, flex_item_cross_margin_box_query, axis)
     }
 }
 
@@ -164,7 +165,14 @@ pub fn flex_min_content_size(
     } else if is_wrapping(wrap) {
         flex_container_cross_size_wrap(flex_direction, axis)
     } else {
-        aggregate!(Max, OrderedChildren, flex_item_cross_query, axis)
+        // Use min-content cross margin-box to avoid circular dependencies
+        // when computing automatic minimum sizes of nested flex containers.
+        aggregate!(
+            Max,
+            OrderedChildren,
+            flex_item_min_content_cross_margin_box_query,
+            axis
+        )
     }
 }
 
@@ -229,7 +237,7 @@ fn flex_item_main_dispatch_query(
     let parent = styler.related(SingleRelationship::Parent);
     let parent_display = super::DisplayType::of_element(parent.as_ref());
     let direction = match parent_display {
-        Some(super::DisplayType::Flex(dir)) => dir,
+        Some(super::DisplayType::Flex(dir, _)) => dir,
         _ => return None,
     };
 
@@ -422,17 +430,18 @@ macro_rules! lbp_item_main_size {
     }};
 }
 
-/// Query function returning each item's cross-axis size.
+/// Query function returning each item's cross-axis margin-box size.
+/// Uses margin-box so container cross size includes child margins.
 macro_rules! lbp_cross_query {
     (Row) => {{
         fn q(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-            flex_item_cross_query(sty, Axis::Vertical)
+            flex_item_cross_margin_box_query(sty, Axis::Vertical)
         }
         q as QueryFn
     }};
     (Column) => {{
         fn q(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-            flex_item_cross_query(sty, Axis::Horizontal)
+            flex_item_cross_margin_box_query(sty, Axis::Horizontal)
         }
         q as QueryFn
     }};
@@ -600,7 +609,7 @@ pub fn flex_auto_margin_value(
     let parent = styler.related(SingleRelationship::Parent);
     let parent_display = super::DisplayType::of_element(parent.as_ref())?;
     let direction = match parent_display {
-        super::DisplayType::Flex(dir) => dir,
+        super::DisplayType::Flex(dir, _) => dir,
         _ => return None,
     };
 
@@ -941,12 +950,25 @@ fn flex_item_basis_query_for_lines(
     flex_item_basis_query(styler, axis)
 }
 
-/// Query: returns the item's resolved main size for offset aggregation.
+/// Query: returns the item's resolved main size (margin-box) for offset aggregation.
+/// Per CSS Flexbox spec, flex items are laid out using their outer (margin-box) size.
 fn flex_item_main_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
     if is_flex_excluded(styler) {
         return None;
     }
-    size_query(styler, axis)
+    // Return margin-box size: border-box + start margin + end margin
+    Some(match axis {
+        Axis::Horizontal => add!(
+            related!(Self_, size_query, Axis::Horizontal),
+            css_prop!(MarginLeft),
+            css_prop!(MarginRight),
+        ),
+        Axis::Vertical => add!(
+            related!(Self_, size_query, Axis::Vertical),
+            css_prop!(MarginTop),
+            css_prop!(MarginBottom),
+        ),
+    })
 }
 
 /// Query: returns the item's cross size, handling stretch.
@@ -958,15 +980,32 @@ fn flex_item_cross_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'stat
         Axis::Horizontal => PropertyId::Width,
         Axis::Vertical => PropertyId::Height,
     };
-    if styler.get_css_property(&size_prop).is_some() {
+    if let Some(prop) = styler.get_css_property(&size_prop) {
+        // Check if this is a percentage value that needs to resolve against
+        // the flex container's content size (not the generic containing block).
+        if let Some(formula) = flex_cross_percentage_formula(&prop, axis) {
+            return Some(formula);
+        }
+        // For absolute lengths or keywords, use the standard CSS value formula.
         return Some(match axis {
             Axis::Horizontal => css_val!(Width),
             Axis::Vertical => css_val!(Height),
         });
     }
 
-    // Stretch: fill the container's cross content size.
+    // Stretch: fill the flex line's cross size.
+    // Per CSS Flexbox §9.4, stretched items fill the line's cross size, not
+    // the container's cross size. For single-line (nowrap) containers, the line
+    // is the container, but for multi-line (wrap), each line is independent.
     if effective_cross_alignment(styler) == CrossAlign::Stretch {
+        let wrap = parent_flex_wrap(styler);
+        if is_wrapping(wrap) {
+            // For wrapping containers, use content-based sizing instead of stretch.
+            // The item's cross size is its natural content size.
+            // TODO: implement proper line-based stretch for wrapping containers
+            return content_based_size(styler, axis);
+        }
+        // For nowrap containers, stretch to fill the container's cross size.
         return Some(match axis {
             Axis::Horizontal => sub!(
                 related!(Parent, size_query, Axis::Horizontal),
@@ -974,6 +1013,8 @@ fn flex_item_cross_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'stat
                 related_val!(Parent, css_prop!(PaddingRight)),
                 related_val!(Parent, css_prop!(BorderLeftWidth)),
                 related_val!(Parent, css_prop!(BorderRightWidth)),
+                css_prop!(MarginLeft),
+                css_prop!(MarginRight),
             ),
             Axis::Vertical => sub!(
                 related!(Parent, size_query, Axis::Vertical),
@@ -981,11 +1022,187 @@ fn flex_item_cross_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'stat
                 related_val!(Parent, css_prop!(PaddingBottom)),
                 related_val!(Parent, css_prop!(BorderTopWidth)),
                 related_val!(Parent, css_prop!(BorderBottomWidth)),
+                css_prop!(MarginTop),
+                css_prop!(MarginBottom),
             ),
         });
     }
 
     content_based_size(styler, axis)
+}
+
+/// Check if a size property is a percentage and return a formula that resolves
+/// it against the flex container's content size.
+///
+/// CSS Flexbox §4.5: Percentage values in the flex item's width/height resolve
+/// against the flex container, not the generic containing block. This matters
+/// when the flex container's size is determined by flex layout (not explicit CSS).
+fn flex_cross_percentage_formula(prop: &Property<'static>, axis: Axis) -> Option<&'static Formula> {
+    use lightningcss::properties::size::Size;
+    use lightningcss::values::percentage::DimensionPercentage;
+
+    let size = match prop {
+        Property::Width(s) | Property::Height(s) => s,
+        _ => return None,
+    };
+
+    // Only handle pure percentage values; mixed calc() uses standard resolution.
+    if !matches!(
+        size,
+        Size::LengthPercentage(DimensionPercentage::Percentage(_))
+    ) {
+        return None;
+    }
+
+    // Return an imperative formula that reads the percentage at runtime and
+    // resolves it against the parent's content size.
+    Some(match axis {
+        Axis::Horizontal => &FLEX_CROSS_PCT_WIDTH,
+        Axis::Vertical => &FLEX_CROSS_PCT_HEIGHT,
+    })
+}
+
+/// Imperative formula for percentage width on flex items.
+/// Reads the Width property, extracts the percentage, and resolves against
+/// the parent flex container's content width.
+static FLEX_CROSS_PCT_WIDTH: Formula = Formula::Imperative(flex_cross_pct_width_impl);
+
+fn flex_cross_pct_width_impl(
+    node: NodeId,
+    styler: &dyn StylerAccess,
+    resolve: &mut dyn FnMut(&'static Formula, NodeId, &dyn StylerAccess) -> Option<Subpixel>,
+) -> Option<Vec<(NodeId, Subpixel)>> {
+    use lightningcss::properties::size::Size;
+    use lightningcss::values::percentage::DimensionPercentage;
+
+    // Extract percentage value from the element's Width property.
+    let prop = styler.get_css_property(&PropertyId::Width)?;
+    let pct = match prop {
+        Property::Width(Size::LengthPercentage(DimensionPercentage::Percentage(p))) => p.0,
+        _ => return None,
+    };
+
+    // Get parent's resolved size using the formula system.
+    let parent = styler.related(SingleRelationship::Parent);
+    let parent_size_formula = size_query(parent.as_ref(), Axis::Horizontal)?;
+    let parent_size = resolve(parent_size_formula, parent.node_id(), parent.as_ref())?;
+
+    // Get parent's padding and border.
+    let pad_left = parent
+        .get_property(&PropertyId::PaddingLeft)
+        .unwrap_or(Subpixel::ZERO);
+    let pad_right = parent
+        .get_property(&PropertyId::PaddingRight)
+        .unwrap_or(Subpixel::ZERO);
+    let border_left = parent
+        .get_property(&PropertyId::BorderLeftWidth)
+        .unwrap_or(Subpixel::ZERO);
+    let border_right = parent
+        .get_property(&PropertyId::BorderRightWidth)
+        .unwrap_or(Subpixel::ZERO);
+    let parent_content = parent_size - pad_left - pad_right - border_left - border_right;
+    let result = Subpixel::from_f32(parent_content.to_f32() * pct);
+    Some(vec![(node, result)])
+}
+
+/// Imperative formula for percentage height on flex items.
+/// Reads the Height property, extracts the percentage, and resolves against
+/// the parent flex container's content height.
+static FLEX_CROSS_PCT_HEIGHT: Formula = Formula::Imperative(flex_cross_pct_height_impl);
+
+fn flex_cross_pct_height_impl(
+    node: NodeId,
+    styler: &dyn StylerAccess,
+    resolve: &mut dyn FnMut(&'static Formula, NodeId, &dyn StylerAccess) -> Option<Subpixel>,
+) -> Option<Vec<(NodeId, Subpixel)>> {
+    use lightningcss::properties::size::Size;
+    use lightningcss::values::percentage::DimensionPercentage;
+
+    // Extract percentage value from the element's Height property.
+    let prop = styler.get_css_property(&PropertyId::Height)?;
+    let pct = match prop {
+        Property::Height(Size::LengthPercentage(DimensionPercentage::Percentage(p))) => p.0,
+        _ => return None,
+    };
+
+    // Get parent's resolved size using the formula system.
+    let parent = styler.related(SingleRelationship::Parent);
+    let parent_size_formula = size_query(parent.as_ref(), Axis::Vertical)?;
+    let parent_size = resolve(parent_size_formula, parent.node_id(), parent.as_ref())?;
+
+    // Get parent's padding and border.
+    let pad_top = parent
+        .get_property(&PropertyId::PaddingTop)
+        .unwrap_or(Subpixel::ZERO);
+    let pad_bottom = parent
+        .get_property(&PropertyId::PaddingBottom)
+        .unwrap_or(Subpixel::ZERO);
+    let border_top = parent
+        .get_property(&PropertyId::BorderTopWidth)
+        .unwrap_or(Subpixel::ZERO);
+    let border_bottom = parent
+        .get_property(&PropertyId::BorderBottomWidth)
+        .unwrap_or(Subpixel::ZERO);
+    let parent_content = parent_size - pad_top - pad_bottom - border_top - border_bottom;
+    let result = Subpixel::from_f32(parent_content.to_f32() * pct);
+    Some(vec![(node, result)])
+}
+
+/// Query: returns the item's cross size as margin-box for container sizing.
+/// The container's cross size should be based on the margin-boxes of its children.
+fn flex_item_cross_margin_box_query(
+    styler: &dyn StylerAccess,
+    axis: Axis,
+) -> Option<&'static Formula> {
+    if is_flex_excluded(styler) {
+        return None;
+    }
+    // Return margin-box: border-box cross size + cross margins
+    Some(match axis {
+        Axis::Horizontal => add!(
+            related!(Self_, flex_item_cross_query, Axis::Horizontal),
+            css_prop!(MarginLeft),
+            css_prop!(MarginRight),
+        ),
+        Axis::Vertical => add!(
+            related!(Self_, flex_item_cross_query, Axis::Vertical),
+            css_prop!(MarginTop),
+            css_prop!(MarginBottom),
+        ),
+    })
+}
+
+/// Query: returns the item's MIN-CONTENT cross size as margin-box.
+/// Used for computing the min-content cross size of a flex container,
+/// avoiding circular dependencies by not using resolved flex item sizes.
+fn flex_item_min_content_cross_margin_box_query(
+    styler: &dyn StylerAccess,
+    axis: Axis,
+) -> Option<&'static Formula> {
+    if is_flex_excluded(styler) {
+        return None;
+    }
+    // Return margin-box: min-content size + margins + padding + border
+    Some(match axis {
+        Axis::Horizontal => add!(
+            min_content_width!(),
+            css_prop!(MarginLeft),
+            css_prop!(MarginRight),
+            css_prop!(PaddingLeft),
+            css_prop!(PaddingRight),
+            css_prop!(BorderLeftWidth),
+            css_prop!(BorderRightWidth),
+        ),
+        Axis::Vertical => add!(
+            min_content_height!(),
+            css_prop!(MarginTop),
+            css_prop!(MarginBottom),
+            css_prop!(PaddingTop),
+            css_prop!(PaddingBottom),
+            css_prop!(BorderTopWidth),
+            css_prop!(BorderBottomWidth),
+        ),
+    })
 }
 
 /// Baseline query: returns the item's baseline distance from its top
@@ -1191,7 +1408,8 @@ fn auto_minimum_size(
         resolve(content_formula, child.node_id(), child)
             .unwrap_or(Subpixel::ZERO)
             .to_f32()
-    } else if let Some(super::DisplayType::Flex(child_dir)) = super::DisplayType::of_element(child)
+    } else if let Some(super::DisplayType::Flex(child_dir, _)) =
+        super::DisplayType::of_element(child)
     {
         // Flex container child: use flex min-content formula.
         let content_formula = flex_min_content_size(child_dir, main_axis, child);
@@ -1788,10 +2006,12 @@ fn build_main_auto_margin_offset_v_col(start_auto: bool) -> &'static Formula {
 /// Then add justify-content spacing.
 fn build_main_offset_normal_h_row(jc: JustifyMode) -> &'static Formula {
     // Shared sub-formulas as inline macro calls (each produces a distinct static).
+    // Add this item's start margin to position the border-box correctly.
     match jc {
         JustifyMode::FlexStart | JustifyMode::Stretch => {
-            // offset = prev_sizes + prev_count * gap
+            // offset = margin_left + prev_sizes + prev_count * gap
             add!(
+                css_prop!(MarginLeft),
                 aggregate!(
                     Sum,
                     OrderedPrevSiblings,
@@ -1805,8 +2025,9 @@ fn build_main_offset_normal_h_row(jc: JustifyMode) -> &'static Formula {
             )
         }
         JustifyMode::FlexEnd => {
-            // offset = justify_free + prev_sizes + prev_count * gap
+            // offset = margin_left + justify_free + prev_sizes + prev_count * gap
             add!(
+                css_prop!(MarginLeft),
                 max!(justify_free_h_row!(), constant!(Subpixel::ZERO)),
                 aggregate!(
                     Sum,
@@ -1822,6 +2043,7 @@ fn build_main_offset_normal_h_row(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::Center => {
             add!(
+                css_prop!(MarginLeft),
                 div!(
                     max!(justify_free_h_row!(), constant!(Subpixel::ZERO)),
                     constant!(Subpixel::raw(2))
@@ -1840,8 +2062,9 @@ fn build_main_offset_normal_h_row(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::SpaceBetween => {
             // per_gap = free / max(1, count - 1)
-            // offset = prev_sizes + prev_count * (gap + per_gap)
+            // offset = margin_left + prev_sizes + prev_count * (gap + per_gap)
             add!(
+                css_prop!(MarginLeft),
                 aggregate!(
                     Sum,
                     OrderedPrevSiblings,
@@ -1872,8 +2095,9 @@ fn build_main_offset_normal_h_row(jc: JustifyMode) -> &'static Formula {
         JustifyMode::SpaceAround => {
             // per_gap = free / max(1, count)
             // start = per_gap / 2
-            // offset = start + prev_sizes + prev_count * (gap + per_gap)
+            // offset = margin_left + start + prev_sizes + prev_count * (gap + per_gap)
             add!(
+                css_prop!(MarginLeft),
                 div!(
                     div!(
                         max!(justify_free_h_row!(), constant!(Subpixel::ZERO)),
@@ -1911,8 +2135,9 @@ fn build_main_offset_normal_h_row(jc: JustifyMode) -> &'static Formula {
         JustifyMode::SpaceEvenly => {
             // per_gap = free / max(1, count + 1)
             // start = per_gap (one gap before first item)
-            // offset = (prev_count + 1) * per_gap + prev_sizes + prev_count * gap
+            // offset = margin_left + (prev_count + 1) * per_gap + prev_sizes + prev_count * gap
             add!(
+                css_prop!(MarginLeft),
                 mul!(
                     add!(
                         aggregate!(Count, OrderedPrevSiblings, always_query),
@@ -1952,9 +2177,11 @@ fn build_main_offset_normal_h_row(jc: JustifyMode) -> &'static Formula {
 // ============================================================================
 
 fn build_main_offset_normal_v_col(jc: JustifyMode) -> &'static Formula {
+    // Add this item's start margin to position the border-box correctly.
     match jc {
         JustifyMode::FlexStart | JustifyMode::Stretch => {
             add!(
+                css_prop!(MarginTop),
                 aggregate!(
                     Sum,
                     OrderedPrevSiblings,
@@ -1969,6 +2196,7 @@ fn build_main_offset_normal_v_col(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::FlexEnd => {
             add!(
+                css_prop!(MarginTop),
                 max!(justify_free_v_col!(), constant!(Subpixel::ZERO)),
                 aggregate!(
                     Sum,
@@ -1984,6 +2212,7 @@ fn build_main_offset_normal_v_col(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::Center => {
             add!(
+                css_prop!(MarginTop),
                 div!(
                     max!(justify_free_v_col!(), constant!(Subpixel::ZERO)),
                     constant!(Subpixel::raw(2))
@@ -2002,6 +2231,7 @@ fn build_main_offset_normal_v_col(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::SpaceBetween => {
             add!(
+                css_prop!(MarginTop),
                 aggregate!(
                     Sum,
                     OrderedPrevSiblings,
@@ -2031,6 +2261,7 @@ fn build_main_offset_normal_v_col(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::SpaceAround => {
             add!(
+                css_prop!(MarginTop),
                 div!(
                     div!(
                         max!(justify_free_v_col!(), constant!(Subpixel::ZERO)),
@@ -2067,6 +2298,7 @@ fn build_main_offset_normal_v_col(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::SpaceEvenly => {
             add!(
+                css_prop!(MarginTop),
                 mul!(
                     add!(
                         aggregate!(Count, OrderedPrevSiblings, always_query),
@@ -2246,15 +2478,19 @@ fn build_main_offset_wrap_h_row(jc: JustifyMode) -> &'static Formula {
         };
     }
 
+    // Add this item's start margin to position the border-box correctly.
+    // prev_sum aggregates margin-box sizes, so we need to add our margin-left.
     match jc {
         JustifyMode::FlexStart | JustifyMode::Stretch => {
             add!(
+                css_prop!(MarginLeft),
                 prev_sum!(),
                 mul!(prev_count!(), related_val!(Parent, css_prop!(ColumnGap)))
             )
         }
         JustifyMode::FlexEnd => {
             add!(
+                css_prop!(MarginLeft),
                 max!(justify_free_wrap_h_row!(), constant!(Subpixel::ZERO)),
                 prev_sum!(),
                 mul!(prev_count!(), related_val!(Parent, css_prop!(ColumnGap)))
@@ -2262,6 +2498,7 @@ fn build_main_offset_wrap_h_row(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::Center => {
             add!(
+                css_prop!(MarginLeft),
                 div!(
                     max!(justify_free_wrap_h_row!(), constant!(Subpixel::ZERO)),
                     constant!(Subpixel::raw(2))
@@ -2272,6 +2509,7 @@ fn build_main_offset_wrap_h_row(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::SpaceBetween => {
             add!(
+                css_prop!(MarginLeft),
                 prev_sum!(),
                 mul!(
                     prev_count!(),
@@ -2290,6 +2528,7 @@ fn build_main_offset_wrap_h_row(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::SpaceAround => {
             add!(
+                css_prop!(MarginLeft),
                 div!(
                     div!(
                         max!(justify_free_wrap_h_row!(), constant!(Subpixel::ZERO)),
@@ -2312,6 +2551,7 @@ fn build_main_offset_wrap_h_row(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::SpaceEvenly => {
             add!(
+                css_prop!(MarginLeft),
                 mul!(
                     add!(prev_count!(), constant!(Subpixel::raw(1))),
                     div!(
@@ -2374,15 +2614,18 @@ fn build_main_offset_wrap_v_col(jc: JustifyMode) -> &'static Formula {
         };
     }
 
+    // Add this item's start margin to position the border-box correctly.
     match jc {
         JustifyMode::FlexStart | JustifyMode::Stretch => {
             add!(
+                css_prop!(MarginTop),
                 prev_sum!(),
                 mul!(prev_count!(), related_val!(Parent, css_prop!(RowGap)))
             )
         }
         JustifyMode::FlexEnd => {
             add!(
+                css_prop!(MarginTop),
                 max!(justify_free_wrap_v_col!(), constant!(Subpixel::ZERO)),
                 prev_sum!(),
                 mul!(prev_count!(), related_val!(Parent, css_prop!(RowGap)))
@@ -2390,6 +2633,7 @@ fn build_main_offset_wrap_v_col(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::Center => {
             add!(
+                css_prop!(MarginTop),
                 div!(
                     max!(justify_free_wrap_v_col!(), constant!(Subpixel::ZERO)),
                     constant!(Subpixel::raw(2))
@@ -2400,6 +2644,7 @@ fn build_main_offset_wrap_v_col(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::SpaceBetween => {
             add!(
+                css_prop!(MarginTop),
                 prev_sum!(),
                 mul!(
                     prev_count!(),
@@ -2418,6 +2663,7 @@ fn build_main_offset_wrap_v_col(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::SpaceAround => {
             add!(
+                css_prop!(MarginTop),
                 div!(
                     div!(
                         max!(justify_free_wrap_v_col!(), constant!(Subpixel::ZERO)),
@@ -2440,6 +2686,7 @@ fn build_main_offset_wrap_v_col(jc: JustifyMode) -> &'static Formula {
         }
         JustifyMode::SpaceEvenly => {
             add!(
+                css_prop!(MarginTop),
                 mul!(
                     add!(prev_count!(), constant!(Subpixel::raw(1))),
                     div!(
@@ -3639,92 +3886,190 @@ fn build_cross_offset_wrap_row(
         };
     }
 
+    // Add the item's cross-axis start margin to position the border-box correctly.
+    // line_position aggregates margin-boxes, so we need to add margin-top.
+    macro_rules! cross_margin {
+        () => {
+            css_prop!(MarginTop)
+        };
+    }
+
     // Full cartesian product: (alignment, ac) → formula.
     // Each arm must be a top-level return so the match is outside all static contexts.
     match (alignment, ac) {
         (CrossAlign::FlexStart | CrossAlign::Stretch, AlignContentMode::FlexStart) => {
-            maybe_rev!(line_position!())
+            maybe_rev!(add!(cross_margin!(), line_position!()))
         }
         (CrossAlign::FlexStart | CrossAlign::Stretch, AlignContentMode::Stretch) => {
-            maybe_rev!(add!(line_position!(), ac_stretch!()))
+            maybe_rev!(add!(cross_margin!(), line_position!(), ac_stretch!()))
         }
         (CrossAlign::FlexStart | CrossAlign::Stretch, AlignContentMode::FlexEnd) => {
-            maybe_rev!(add!(line_position!(), ac_flex_end!()))
+            maybe_rev!(add!(cross_margin!(), line_position!(), ac_flex_end!()))
         }
         (CrossAlign::FlexStart | CrossAlign::Stretch, AlignContentMode::Center) => {
-            maybe_rev!(add!(line_position!(), ac_center!()))
+            maybe_rev!(add!(cross_margin!(), line_position!(), ac_center!()))
         }
         (CrossAlign::FlexStart | CrossAlign::Stretch, AlignContentMode::SpaceBetween) => {
-            maybe_rev!(add!(line_position!(), ac_space_between!()))
+            maybe_rev!(add!(cross_margin!(), line_position!(), ac_space_between!()))
         }
         (CrossAlign::FlexStart | CrossAlign::Stretch, AlignContentMode::SpaceAround) => {
-            maybe_rev!(add!(line_position!(), ac_space_around!()))
+            maybe_rev!(add!(cross_margin!(), line_position!(), ac_space_around!()))
         }
         (CrossAlign::FlexStart | CrossAlign::Stretch, AlignContentMode::SpaceEvenly) => {
-            maybe_rev!(add!(line_position!(), ac_space_evenly!()))
+            maybe_rev!(add!(cross_margin!(), line_position!(), ac_space_evenly!()))
         }
         (CrossAlign::FlexEnd, AlignContentMode::FlexStart) => {
-            maybe_rev!(add!(line_position!(), wl_flex_end!()))
+            maybe_rev!(add!(cross_margin!(), line_position!(), wl_flex_end!()))
         }
         (CrossAlign::FlexEnd, AlignContentMode::Stretch) => {
-            maybe_rev!(add!(line_position!(), ac_stretch!(), wl_flex_end!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_stretch!(),
+                wl_flex_end!()
+            ))
         }
         (CrossAlign::FlexEnd, AlignContentMode::FlexEnd) => {
-            maybe_rev!(add!(line_position!(), ac_flex_end!(), wl_flex_end!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_flex_end!(),
+                wl_flex_end!()
+            ))
         }
         (CrossAlign::FlexEnd, AlignContentMode::Center) => {
-            maybe_rev!(add!(line_position!(), ac_center!(), wl_flex_end!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_center!(),
+                wl_flex_end!()
+            ))
         }
         (CrossAlign::FlexEnd, AlignContentMode::SpaceBetween) => {
-            maybe_rev!(add!(line_position!(), ac_space_between!(), wl_flex_end!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_space_between!(),
+                wl_flex_end!()
+            ))
         }
         (CrossAlign::FlexEnd, AlignContentMode::SpaceAround) => {
-            maybe_rev!(add!(line_position!(), ac_space_around!(), wl_flex_end!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_space_around!(),
+                wl_flex_end!()
+            ))
         }
         (CrossAlign::FlexEnd, AlignContentMode::SpaceEvenly) => {
-            maybe_rev!(add!(line_position!(), ac_space_evenly!(), wl_flex_end!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_space_evenly!(),
+                wl_flex_end!()
+            ))
         }
         (CrossAlign::Center, AlignContentMode::FlexStart) => {
-            maybe_rev!(add!(line_position!(), wl_center!()))
+            maybe_rev!(add!(cross_margin!(), line_position!(), wl_center!()))
         }
         (CrossAlign::Center, AlignContentMode::Stretch) => {
-            maybe_rev!(add!(line_position!(), ac_stretch!(), wl_center!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_stretch!(),
+                wl_center!()
+            ))
         }
         (CrossAlign::Center, AlignContentMode::FlexEnd) => {
-            maybe_rev!(add!(line_position!(), ac_flex_end!(), wl_center!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_flex_end!(),
+                wl_center!()
+            ))
         }
         (CrossAlign::Center, AlignContentMode::Center) => {
-            maybe_rev!(add!(line_position!(), ac_center!(), wl_center!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_center!(),
+                wl_center!()
+            ))
         }
         (CrossAlign::Center, AlignContentMode::SpaceBetween) => {
-            maybe_rev!(add!(line_position!(), ac_space_between!(), wl_center!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_space_between!(),
+                wl_center!()
+            ))
         }
         (CrossAlign::Center, AlignContentMode::SpaceAround) => {
-            maybe_rev!(add!(line_position!(), ac_space_around!(), wl_center!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_space_around!(),
+                wl_center!()
+            ))
         }
         (CrossAlign::Center, AlignContentMode::SpaceEvenly) => {
-            maybe_rev!(add!(line_position!(), ac_space_evenly!(), wl_center!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_space_evenly!(),
+                wl_center!()
+            ))
         }
         (CrossAlign::Baseline, AlignContentMode::FlexStart) => {
-            maybe_rev!(add!(line_position!(), wl_baseline!()))
+            maybe_rev!(add!(cross_margin!(), line_position!(), wl_baseline!()))
         }
         (CrossAlign::Baseline, AlignContentMode::Stretch) => {
-            maybe_rev!(add!(line_position!(), ac_stretch!(), wl_baseline!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_stretch!(),
+                wl_baseline!()
+            ))
         }
         (CrossAlign::Baseline, AlignContentMode::FlexEnd) => {
-            maybe_rev!(add!(line_position!(), ac_flex_end!(), wl_baseline!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_flex_end!(),
+                wl_baseline!()
+            ))
         }
         (CrossAlign::Baseline, AlignContentMode::Center) => {
-            maybe_rev!(add!(line_position!(), ac_center!(), wl_baseline!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_center!(),
+                wl_baseline!()
+            ))
         }
         (CrossAlign::Baseline, AlignContentMode::SpaceBetween) => {
-            maybe_rev!(add!(line_position!(), ac_space_between!(), wl_baseline!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_space_between!(),
+                wl_baseline!()
+            ))
         }
         (CrossAlign::Baseline, AlignContentMode::SpaceAround) => {
-            maybe_rev!(add!(line_position!(), ac_space_around!(), wl_baseline!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_space_around!(),
+                wl_baseline!()
+            ))
         }
         (CrossAlign::Baseline, AlignContentMode::SpaceEvenly) => {
-            maybe_rev!(add!(line_position!(), ac_space_evenly!(), wl_baseline!()))
+            maybe_rev!(add!(
+                cross_margin!(),
+                line_position!(),
+                ac_space_evenly!(),
+                wl_baseline!()
+            ))
         }
     }
 }
@@ -4073,7 +4418,7 @@ fn content_based_size(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static 
     // If this node is itself a flex container, compute its auto size
     // using flex layout (sum of children bases + gaps) rather than
     // falling through to block sizing.
-    if let Some(super::DisplayType::Flex(dir)) = super::DisplayType::of_element(styler) {
+    if let Some(super::DisplayType::Flex(dir, _)) = super::DisplayType::of_element(styler) {
         return Some(flex_size(dir, axis, styler));
     }
 

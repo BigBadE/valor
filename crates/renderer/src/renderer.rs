@@ -3,7 +3,6 @@
 use lightningcss::properties::{Property, PropertyId};
 use rewrite_core::{
     Axis, Database, DomBroadcast, Formula, NodeId, ResolveContext, Subpixel, Subscriber,
-    classify_property,
 };
 use rewrite_css::{NodeStylerContext, Styler};
 use rewrite_layout::{offset_query, property_query, size_query};
@@ -148,72 +147,103 @@ impl LayoutState {
         result
     }
 
-    /// Handle a new DOM node being created. Resolves the node and
-    /// re-resolves all ancestors whose sizes depend on children.
-    pub fn on_node_created(&mut self, node: NodeId, parent: NodeId) {
-        // Resolve this node — confident properties (inline styles, class
-        // selectors) are already in the DB from restyle_node().
+    /// Handle a new DOM node being created.
+    ///
+    /// Clears cache and resolves the node fresh.
+    pub fn on_node_created(&mut self, node: NodeId, _parent: NodeId) {
+        // Clear cache to ensure fresh computation
+        self.ctx.clear_cache();
         self.resolve_node(node);
-
-        // Re-resolve ancestors — their content-based sizes changed.
-        self.re_resolve_ancestors(parent);
     }
 
     /// Handle a property change on a node.
     ///
-    /// Re-resolves the node, affected descendants, ancestors, and neighbors.
-    pub fn on_property_change(&mut self, node: NodeId, property: &Property<'static>) {
-        let prop_id = property.property_id();
-
-        // Re-resolve this node with current properties.
-        self.ctx.invalidate_node(node);
+    /// Clears cache and re-resolves the node fresh.
+    pub fn on_property_change(&mut self, node: NodeId, _property: &Property<'static>) {
+        // Clear cache to ensure fresh computation
+        self.ctx.clear_cache();
         self.resolve_node(node);
+    }
 
-        // Inherited properties cascade to all descendants.
-        // Non-inherited only affect direct children.
-        let inherited = classify_property(&prop_id).is_some_and(|group| group.is_inherited());
-        if inherited {
-            self.re_resolve_descendants(node);
-        } else {
-            let children = self.db.dom_children(node);
-            for child in children {
-                self.ctx.invalidate_node(child);
-                self.resolve_node(child);
+    /// Propagate changes from a node to all nodes that depend on it.
+    ///
+    /// Generic propagation: for any node whose value changed, find all nodes
+    /// whose formulas might depend on it (based on relationships), re-resolve
+    /// them, and recursively propagate if their values changed.
+    fn propagate_changes(&mut self, node: NodeId) {
+        // Collect nodes that might depend on this node
+        let mut dependents: Vec<NodeId> = Vec::new();
+
+        // Parent might depend on children
+        if let Some(parent) = self.db.dom_parent(node) {
+            if self.node_depends_on(parent, rewrite_core::FormulaDependency::Children) {
+                dependents.push(parent);
             }
         }
 
-        // Re-resolve ancestors — this node's size may have changed.
+        // Siblings might depend on siblings
         if let Some(parent) = self.db.dom_parent(node) {
-            self.re_resolve_ancestors(parent);
+            for sibling in self.db.dom_children(parent) {
+                if sibling != node
+                    && self.node_depends_on(sibling, rewrite_core::FormulaDependency::Siblings)
+                {
+                    dependents.push(sibling);
+                }
+            }
         }
 
-        // Re-resolve sparse tree neighbors.
-        let neighbors = self.db.neighbors(node, &prop_id);
-        for neighbor in neighbors {
-            self.ctx.invalidate_node(neighbor);
-            self.resolve_node(neighbor);
+        // Children might depend on parent
+        for child in self.db.dom_children(node) {
+            if self.node_depends_on(child, rewrite_core::FormulaDependency::Parent) {
+                dependents.push(child);
+            }
+        }
+
+        // Re-resolve each dependent and recursively propagate if changed
+        for dependent in dependents {
+            self.re_resolve_and_propagate(dependent);
         }
     }
 
-    /// Re-resolve each ancestor from `start` up to the root.
-    fn re_resolve_ancestors(&mut self, start: NodeId) {
-        let mut ancestor = Some(start);
-        while let Some(anc) = ancestor {
-            self.ctx.invalidate_node(anc);
-            self.resolve_node(anc);
-            ancestor = self.db.dom_parent(anc);
+    /// Check if any of a node's formulas depend on the given relationship.
+    fn node_depends_on(&self, node: NodeId, dep_type: rewrite_core::FormulaDependency) -> bool {
+        let vw = self.ctx.viewport_width;
+        let vh = self.ctx.viewport_height;
+        let ctx = make_ctx(&self.styler, &self.db, node, vw, vh);
+
+        // Check all formula types for this node
+        let formulas: [Option<&'static Formula>; 4] = [
+            size_query(&ctx, Axis::Horizontal),
+            size_query(&ctx, Axis::Vertical),
+            offset_query(&ctx, Axis::Horizontal),
+            offset_query(&ctx, Axis::Vertical),
+        ];
+
+        for formula in formulas.into_iter().flatten() {
+            for dep in formula.dependencies() {
+                if *dep == dep_type {
+                    return true;
+                }
+            }
         }
+
+        false
     }
 
-    /// Recursively invalidate and re-resolve all descendants (post-order).
-    fn re_resolve_descendants(&mut self, node: NodeId) {
-        let children = self.db.dom_children(node);
-        for child in children {
-            self.re_resolve_descendants(child);
-        }
-        // Re-resolve after children so content-based sizes are correct.
-        self.ctx.invalidate_node(node);
+    /// Re-resolve a node and propagate if its values changed.
+    fn re_resolve_and_propagate(&mut self, node: NodeId) {
+        let old_values = self.get_node(node);
         self.resolve_node(node);
+        let new_values = self.get_node(node);
+
+        // If values changed, propagate to this node's dependents
+        if old_values.width != new_values.width
+            || old_values.height != new_values.height
+            || old_values.x != new_values.x
+            || old_values.y != new_values.y
+        {
+            self.propagate_changes(node);
+        }
     }
 
     /// Read a cached box-model property value. Returns `None` if not cached.
@@ -223,6 +253,18 @@ impl LayoutState {
         let query_ctx = make_ctx(&self.styler, &self.db, node, vw, vh);
         let formula = property_query(&query_ctx, prop_id)?;
         self.ctx.get_cached(formula, node)
+    }
+
+    /// Resolve a list of nodes fresh. Clears cache first, then resolves each node.
+    ///
+    /// Call this after loading/changes are complete to ensure all layout values
+    /// are computed with consistent state.
+    pub fn resolve_nodes(&mut self, nodes: &[NodeId]) {
+        self.ctx.clear_cache();
+
+        for &node in nodes {
+            self.resolve_node(node);
+        }
     }
 }
 

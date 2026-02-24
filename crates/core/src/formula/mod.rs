@@ -290,3 +290,169 @@ pub struct PrevLinesAggregateParams {
     /// Formula for gap between lines (resolved on the parent).
     pub line_gap: &'static Formula,
 }
+
+/// Dependency information for a formula - describes what relationships affect it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormulaDependency {
+    /// Depends on the node's own CSS properties.
+    SelfCss,
+    /// Depends on the parent node.
+    Parent,
+    /// Depends on children.
+    Children,
+    /// Depends on siblings (prev, next, or all).
+    Siblings,
+    /// Depends on viewport dimensions.
+    Viewport,
+    /// No external dependencies (constant).
+    None,
+}
+
+impl Formula {
+    /// Collect all CSS property IDs that this formula reads.
+    ///
+    /// Walks the formula tree and collects all `CssValue` and `CssValueOrDefault`
+    /// property IDs. Used to determine which cached values need re-evaluation
+    /// when a CSS property changes.
+    pub fn css_dependencies(&self, out: &mut Vec<PropertyId<'static>>) {
+        match self {
+            Formula::CssValue(prop_id) | Formula::CssValueOrDefault(prop_id, _) => {
+                if !out.contains(prop_id) {
+                    out.push(prop_id.clone());
+                }
+            }
+            Formula::BinOp(_, lhs, rhs) => {
+                lhs.css_dependencies(out);
+                rhs.css_dependencies(out);
+            }
+            Formula::Related(_, _query_fn) => {
+                // Query functions return formulas dynamically - we can't statically
+                // determine their CSS dependencies without running them.
+                // This is a limitation; for now we assume Related formulas might
+                // depend on any property.
+            }
+            Formula::Aggregate(_, _list) => {
+                // Similarly, aggregate query functions are dynamic.
+            }
+            Formula::LineAggregate(params) => {
+                params.available_main.css_dependencies(out);
+                params.gap.css_dependencies(out);
+                params.line_gap.css_dependencies(out);
+            }
+            Formula::LineItemAggregate(params) => {
+                params.available_main.css_dependencies(out);
+                params.gap.css_dependencies(out);
+            }
+            Formula::PrevLinesAggregate(params) => {
+                params.available_main.css_dependencies(out);
+                params.gap.css_dependencies(out);
+                params.line_gap.css_dependencies(out);
+            }
+            // These don't read CSS properties directly
+            Formula::Constant(_)
+            | Formula::ViewportWidth
+            | Formula::ViewportHeight
+            | Formula::InlineMeasure(_, _)
+            | Formula::Imperative(_) => {}
+        }
+    }
+
+    /// Check if this formula depends on a specific CSS property.
+    pub fn depends_on_css_property(&self, prop_id: &PropertyId<'static>) -> bool {
+        match self {
+            Formula::CssValue(p) | Formula::CssValueOrDefault(p, _) => p == prop_id,
+            Formula::BinOp(_, lhs, rhs) => {
+                lhs.depends_on_css_property(prop_id) || rhs.depends_on_css_property(prop_id)
+            }
+            Formula::LineAggregate(params) => {
+                params.available_main.depends_on_css_property(prop_id)
+                    || params.gap.depends_on_css_property(prop_id)
+                    || params.line_gap.depends_on_css_property(prop_id)
+            }
+            Formula::LineItemAggregate(params) => {
+                params.available_main.depends_on_css_property(prop_id)
+                    || params.gap.depends_on_css_property(prop_id)
+            }
+            Formula::PrevLinesAggregate(params) => {
+                params.available_main.depends_on_css_property(prop_id)
+                    || params.gap.depends_on_css_property(prop_id)
+                    || params.line_gap.depends_on_css_property(prop_id)
+            }
+            // These don't read CSS properties directly, but Related/Aggregate
+            // might through their query functions - we can't know statically
+            Formula::Related(_, _) | Formula::Aggregate(_, _) | Formula::Imperative(_) => {
+                // Conservative: assume they might depend on any property
+                true
+            }
+            Formula::Constant(_)
+            | Formula::ViewportWidth
+            | Formula::ViewportHeight
+            | Formula::InlineMeasure(_, _) => false,
+        }
+    }
+
+    /// Returns what this formula depends on.
+    ///
+    /// This is used to determine which nodes need re-resolution when
+    /// a node is added or a property changes.
+    pub fn dependencies(&self) -> &'static [FormulaDependency] {
+        match self {
+            Formula::Constant(_) => &[FormulaDependency::None],
+            Formula::ViewportWidth | Formula::ViewportHeight => &[FormulaDependency::Viewport],
+            Formula::CssValue(_) | Formula::CssValueOrDefault(_, _) => {
+                &[FormulaDependency::SelfCss]
+            }
+            Formula::Related(rel, _) => match rel {
+                SingleRelationship::Parent | SingleRelationship::BlockContainer => {
+                    &[FormulaDependency::Parent]
+                }
+                SingleRelationship::Self_ => &[FormulaDependency::SelfCss],
+                SingleRelationship::PrevSibling => &[FormulaDependency::Siblings],
+            },
+            Formula::Aggregate(_, list) => {
+                let FormulaList::Related(rel, _) = list;
+                match rel {
+                    MultiRelationship::Children | MultiRelationship::OrderedChildren => {
+                        &[FormulaDependency::Children]
+                    }
+                    MultiRelationship::PrevSiblings
+                    | MultiRelationship::NextSiblings
+                    | MultiRelationship::OrderedPrevSiblings
+                    | MultiRelationship::Siblings => &[FormulaDependency::Siblings],
+                }
+            }
+            Formula::BinOp(_, lhs, rhs) => {
+                // For binop, we'd need to combine dependencies - simplified for now
+                let _ = (lhs, rhs);
+                &[
+                    FormulaDependency::SelfCss,
+                    FormulaDependency::Parent,
+                    FormulaDependency::Children,
+                    FormulaDependency::Siblings,
+                ]
+            }
+            Formula::InlineMeasure(_, _) => {
+                &[FormulaDependency::SelfCss, FormulaDependency::Children]
+            }
+            Formula::LineAggregate(_) => &[FormulaDependency::Children],
+            Formula::LineItemAggregate(params) => match params.relationship {
+                MultiRelationship::Children | MultiRelationship::OrderedChildren => {
+                    &[FormulaDependency::Children, FormulaDependency::Parent]
+                }
+                _ => &[FormulaDependency::Siblings, FormulaDependency::Parent],
+            },
+            Formula::PrevLinesAggregate(_) => {
+                &[FormulaDependency::Siblings, FormulaDependency::Parent]
+            }
+            Formula::Imperative(_) => {
+                // Imperative functions can depend on anything
+                &[
+                    FormulaDependency::SelfCss,
+                    FormulaDependency::Parent,
+                    FormulaDependency::Children,
+                    FormulaDependency::Siblings,
+                ]
+            }
+        }
+    }
+}

@@ -13,9 +13,9 @@ pub mod types;
 pub use css::*;
 pub use db::*;
 pub use formula::{
-    Aggregation, Formula, FormulaList, ImperativeFn, LineAggregateParams, LineItemAggregateParams,
-    MeasureAxis, MeasureMode, Operation, PrevLinesAggregateParams, QueryFn, ResolveContext,
-    StylerAccess, TextMeasurement,
+    Aggregation, Formula, FormulaDependency, FormulaList, ImperativeFn, LineAggregateParams,
+    LineItemAggregateParams, MeasureAxis, MeasureMode, Operation, PrevLinesAggregateParams,
+    QueryFn, ResolveContext, StylerAccess, TextMeasurement,
 };
 pub use rayon_dispatch::rayon_dispatch;
 pub use types::*;

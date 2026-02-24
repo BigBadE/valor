@@ -51,7 +51,9 @@ fn expand_shorthands(props: Vec<Property<'_>>) -> Vec<Property<'static>> {
     let mut result = Vec::with_capacity(props.len());
     for prop in props {
         let owned = prop.into_owned();
-        if let Some(longhands) = owned.property_id().longhands() {
+        let prop_id = owned.property_id();
+
+        if let Some(longhands) = prop_id.longhands() {
             for longhand_id in &longhands {
                 if let Some(longhand) = owned.longhand(longhand_id) {
                     result.push(longhand.into_owned());
