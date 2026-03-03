@@ -7,6 +7,7 @@ use lightningcss::stylesheet::ParserOptions;
 use rewrite_core::{NodeId, Specificity, Subscriptions};
 use rewrite_html::{DomTree, NodeData};
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Minimum specificity to be considered "confident" - at least one class or id.
 const CONFIDENCE_THRESHOLD: Specificity = Specificity::new(0, 1, 0);
@@ -34,13 +35,33 @@ impl Styler {
 
     /// Add a rule and apply it to all existing nodes in the tree.
     pub fn add_rule(&self, rule: ParsedRule) {
+        let t0 = Instant::now();
         let rule_idx = self.rules.count();
+        let node_count = self.tree.nodes.count();
         self.rules.push(rule);
 
-        (0..self.tree.nodes.count())
+        let t_match_start = Instant::now();
+        let matching_nodes: Vec<NodeId> = (0..node_count)
             .map(|idx| NodeId(idx as u32))
             .filter(|&node_id| self.rules[rule_idx].matches(node_id, &self.tree))
-            .for_each(|node_id| self.apply_rule(node_id, rule_idx));
+            .collect();
+        let t_match_end = Instant::now();
+
+        let t_apply_start = Instant::now();
+        for &node_id in &matching_nodes {
+            self.apply_rule(node_id, rule_idx);
+        }
+        let t_apply_end = Instant::now();
+
+        let elapsed = t0.elapsed();
+        if elapsed.as_millis() >= 100 {
+            let matches = matching_nodes.len();
+            eprintln!(
+                "          [add_rule] rule #{rule_idx}: {node_count} nodes, {matches} matches, total={elapsed:.2?} (match={:.2?}, apply={:.2?})",
+                t_match_end - t_match_start,
+                t_apply_end - t_apply_start
+            );
+        }
     }
 
     /// Apply all rules to a newly added node, including its inline styles.
@@ -86,6 +107,13 @@ impl Styler {
     /// Apply a rule to a node: record the match and notify for winning properties.
     /// Only notifies if the rule is confident (high specificity).
     fn apply_rule(&self, node_id: NodeId, rule_idx: usize) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static DOMINATED_NS: AtomicU64 = AtomicU64::new(0);
+        static NOTIFY_NS: AtomicU64 = AtomicU64::new(0);
+        static PUSH_NS: AtomicU64 = AtomicU64::new(0);
+        static CALL_COUNT: AtomicU64 = AtomicU64::new(0);
+        static NOTIFY_COUNT: AtomicU64 = AtomicU64::new(0);
+
         let rule = &self.rules[rule_idx];
         let rule_specificity = rule.specificity();
         let props = rule.properties();
@@ -95,23 +123,46 @@ impl Styler {
         // Check each normal property - notify if confident and not dominated
         for prop in &props.normal {
             let prop_id = prop.property_id();
+            let t0 = Instant::now();
             let dominated = self.is_dominated(node_rules, &prop_id, rule_specificity, false);
+            DOMINATED_NS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
             if is_confident && !dominated {
+                let t1 = Instant::now();
                 self.subscriptions.notify_property(node_id, prop);
+                NOTIFY_NS.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                NOTIFY_COUNT.fetch_add(1, Ordering::Relaxed);
             }
         }
 
         // Check each important property - notify if confident and not dominated
         for prop in &props.important {
             let prop_id = prop.property_id();
+            let t0 = Instant::now();
             let dominated = self.is_dominated(node_rules, &prop_id, rule_specificity, true);
+            DOMINATED_NS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
             if is_confident && !dominated {
+                let t1 = Instant::now();
                 self.subscriptions.notify_property(node_id, prop);
+                NOTIFY_NS.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                NOTIFY_COUNT.fetch_add(1, Ordering::Relaxed);
             }
         }
 
         // Record the match
+        let t0 = Instant::now();
         self.matched_rules[node_id.0 as usize].push(rule_idx);
+        PUSH_NS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        let calls = CALL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        if calls % 5000 == 0 {
+            eprintln!(
+                "            [apply_rule] calls={calls}, notifies={}, dominated={:.2?}, notify={:.2?}, push={:.2?}",
+                NOTIFY_COUNT.load(Ordering::Relaxed),
+                std::time::Duration::from_nanos(DOMINATED_NS.load(Ordering::Relaxed)),
+                std::time::Duration::from_nanos(NOTIFY_NS.load(Ordering::Relaxed)),
+                std::time::Duration::from_nanos(PUSH_NS.load(Ordering::Relaxed)),
+            );
+        }
     }
 
     /// Check if there's an existing rule with higher specificity for this property.
@@ -219,6 +270,9 @@ impl Styler {
     /// and notify only the winning value.
     /// Call this after stylesheet parsing is complete.
     pub fn flush(&self) {
+        let t0 = Instant::now();
+        let mut total_notifications = 0usize;
+
         // Collect all property IDs from low-confidence rules per node,
         // then resolve the full cascade to find the winner.
         for node_idx in 0..self.matched_rules.count() {
@@ -245,7 +299,20 @@ impl Styler {
             for prop_id in &prop_ids {
                 if let Some(winner) = self.cascade_winner(node_id, prop_id) {
                     self.subscriptions.notify_property(node_id, winner);
+                    total_notifications += 1;
                 }
+            }
+        }
+
+        let elapsed = t0.elapsed();
+        if elapsed.as_secs() >= 1 {
+            let node_count = self.matched_rules.count();
+            eprintln!(
+                "          [flush stats] nodes={node_count}, notifications={total_notifications}, time={elapsed:.2?}"
+            );
+            if total_notifications > 0 {
+                let per_notify = elapsed / total_notifications as u32;
+                eprintln!("          [flush stats] per notification: {per_notify:.2?}");
             }
         }
     }

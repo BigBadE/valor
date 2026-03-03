@@ -11,6 +11,7 @@ use rewrite_renderer::LayoutState;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// Manages layout state and receives incremental updates from the
 /// CSS subscriber pipeline. Nodes are resolved eagerly during property
@@ -122,14 +123,18 @@ fn run_all_fixtures(fixtures: &[&str]) {
             None
         };
 
-        match run_fixture_test(fixture_path, chrome_page.as_ref(), &rt) {
+        let start = Instant::now();
+        let result = run_fixture_test(fixture_path, chrome_page.as_ref(), &rt);
+        let elapsed = start.elapsed();
+
+        match result {
             TestResult::Pass => {
                 passed += 1;
-                println!("\u{2713} {fixture_path}");
+                println!("\u{2713} {fixture_path} ({elapsed:.2?})");
             }
             TestResult::Fail(err) => {
                 failed += 1;
-                eprintln!("\u{2717} {fixture_path}:\n{err}");
+                eprintln!("\u{2717} {fixture_path} ({elapsed:.2?}):\n{err}");
             }
             TestResult::Skip(reason) => {
                 skipped += 1;
@@ -153,6 +158,8 @@ fn run_fixture_test(
     chrome_page: Option<&chromiumoxide::page::Page>,
     rt: &tokio::runtime::Runtime,
 ) -> TestResult {
+    let is_long_test = fixture_path.contains("long_test");
+
     let html = match fs::read_to_string(fixture_path) {
         Ok(html) => html,
         Err(err) => return TestResult::Fail(format!("Failed to read fixture: {err}")),
@@ -161,6 +168,7 @@ fn run_fixture_test(
     let html_with_reset = common::prepend_css_reset(&html);
 
     // Valor side
+    let t0 = Instant::now();
     let browser = Browser::default();
     let page = browser.new_page_headless();
 
@@ -173,8 +181,10 @@ fn run_fixture_test(
     browser
         .subscriptions()
         .add_subscriber(Box::new(CollectorSubscriber(collector.clone())));
+    let t1 = Instant::now();
 
     page.load_html(stream::iter(vec![html_with_reset]));
+    let t2 = Instant::now();
 
     let valor_json = match valor_serialization::serialize_valor_layout(
         &page.tree,
@@ -184,6 +194,7 @@ fn run_fixture_test(
         Ok(json) => json,
         Err(err) => return TestResult::Fail(format!("Valor serialization failed: {err}")),
     };
+    let t3 = Instant::now();
 
     // Chrome side
     let fixture = Path::new(fixture_path);
@@ -197,12 +208,13 @@ fn run_fixture_test(
     } else {
         return TestResult::Skip("no Chrome and no cache".to_string());
     };
+    let t4 = Instant::now();
 
     // Compare
     let valor_layout = &valor_json["layout"];
     let chrome_layout = &chrome_json["layout"];
 
-    match json_compare::compare_json_with_epsilon(valor_layout, chrome_layout, 0.0) {
+    let result = match json_compare::compare_json_with_epsilon(valor_layout, chrome_layout, 0.0) {
         Ok(()) => TestResult::Pass,
         Err(err) => {
             // Save failure artifacts
@@ -213,7 +225,20 @@ fn run_fixture_test(
             cache::write_failure_artifacts(fixture_name, &chrome_json, &valor_json, &err);
             TestResult::Fail(err)
         }
+    };
+    let t5 = Instant::now();
+
+    if is_long_test {
+        eprintln!("\n  [long_test timing breakdown]");
+        eprintln!("    Browser/page setup:    {:>8.2?}", t1 - t0);
+        eprintln!("    load_html (parse+layout): {:>8.2?}", t2 - t1);
+        eprintln!("    Valor serialization:   {:>8.2?}", t3 - t2);
+        eprintln!("    Chrome cache read:     {:>8.2?}", t4 - t3);
+        eprintln!("    JSON compare:          {:>8.2?}", t5 - t4);
+        eprintln!("    TOTAL:                 {:>8.2?}", t5 - t0);
     }
+
+    result
 }
 
 // Include generated tests

@@ -6,6 +6,7 @@ use rewrite_core::{Database, DomBroadcast, NodeId, Parser, Specificity, Subscrip
 use rewrite_css::{CssParser, ParsedRule, Styler};
 use rewrite_html::{DomTree, DomUpdate, HtmlParser, NodeData};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::runtime::Runtime;
 use tokio::task::LocalSet;
 
@@ -58,6 +59,8 @@ impl<'br> Page<'br> {
 
             local
                 .run_until(async move {
+                    let t0 = Instant::now();
+
                     // Load UA stylesheet first so its rules have the lowest
                     // source-order priority in the cascade.
                     let ua_styler = self.styler.clone();
@@ -68,6 +71,8 @@ impl<'br> Page<'br> {
                     );
                     ua_parser.push_chunk(ua_stylesheet::UA_CSS).await;
                     ua_parser.finish().await;
+
+                    let t1 = Instant::now();
 
                     // Buffer CSS text from <style> elements during HTML parsing.
                     // Each entry is a complete CSS chunk from a text node.
@@ -117,6 +122,8 @@ impl<'br> Page<'br> {
 
                     parser.finish();
 
+                    let t2 = Instant::now();
+
                     // Feed buffered CSS into the streaming parser.
                     let chunks = css_chunks.lock().unwrap().clone();
                     if !chunks.is_empty() {
@@ -133,8 +140,22 @@ impl<'br> Page<'br> {
                         css_parser.finish().await;
                     }
 
+                    let t3 = Instant::now();
+
                     // Flush low-confidence rules now that all stylesheets are loaded.
                     self.styler.flush();
+
+                    let t4 = Instant::now();
+
+                    // Timing output for debugging (only if slow)
+                    let total = t4 - t0;
+                    if total.as_secs() >= 1 {
+                        eprintln!("      [load_html internal breakdown]");
+                        eprintln!("        UA stylesheet parse:  {:>8.2?}", t1 - t0);
+                        eprintln!("        HTML parse + styling: {:>8.2?}", t2 - t1);
+                        eprintln!("        <style> CSS parse:    {:>8.2?}", t3 - t2);
+                        eprintln!("        styler.flush():       {:>8.2?}", t4 - t3);
+                    }
                 })
                 .await;
         });
