@@ -18,7 +18,7 @@ rewrite_renderer = { path = "../renderer" }
 rewrite_css = { path = "../css" }
 rewrite_text = { path = "../text" }
 serde_json = "1.0"
-chromiumoxide = { version = "0.8.0", default-features = false, features = ["tokio-runtime"] }
+chromiumoxide = { version = "0.8.0", default-features = false, features = ["tokio-runtime", "_fetcher-rustls-tokio"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["full"] }
 urlencoding = "2.1"

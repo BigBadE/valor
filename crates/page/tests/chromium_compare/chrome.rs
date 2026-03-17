@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use chromiumoxide::browser::Browser;
 use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+use chromiumoxide::fetcher::{BrowserFetcher, BrowserFetcherOptions};
 use chromiumoxide::page::Page;
 use futures_util::StreamExt;
 use serde_json::{Value as JsonValue, from_str};
@@ -37,26 +38,52 @@ impl Drop for BrowserWithHandler {
     }
 }
 
-/// Check if Chrome is available on the system.
+/// Chrome is always available — the fetcher will download it if needed.
 pub fn chrome_available() -> bool {
-    Command::new("google-chrome")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    true
 }
 
-fn find_chrome() -> Result<PathBuf> {
+fn find_chrome_local() -> Option<PathBuf> {
     for candidate in ["google-chrome", "chromium", "chromium-browser"] {
         if let Ok(output) = Command::new(candidate).arg("--version").output() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if stdout.contains("Chrome") || stdout.contains("Chromium") {
-                return Ok(PathBuf::from(candidate));
+                return Some(PathBuf::from(candidate));
             }
         }
     }
-    Err(anyhow!("Chrome not found"))
+    None
+}
+
+/// Download Chrome via the chromiumoxide fetcher and return the binary path.
+async fn fetch_chrome() -> Result<PathBuf> {
+    // Ensure the default cache directory exists before the fetcher tries to write.
+    if let Some(home) = std::env::var_os("HOME") {
+        let cache_dir = PathBuf::from(home).join(".cache").join("chromiumoxide");
+        let _ = std::fs::create_dir_all(&cache_dir);
+    }
+    let options = BrowserFetcherOptions::default()
+        .map_err(|err| anyhow!("BrowserFetcher options: {err}"))?;
+    let fetcher = BrowserFetcher::new(options);
+    let info = fetcher.fetch().await.map_err(|err| {
+        let mut msg = format!("BrowserFetcher failed: {err}");
+        let mut source: Option<&dyn std::error::Error> = std::error::Error::source(&err);
+        while let Some(cause) = source {
+            msg.push_str(&format!("\n  caused by: {cause}"));
+            source = std::error::Error::source(cause);
+        }
+        anyhow!("{msg}")
+    })?;
+    eprintln!("  Downloaded to: {}", info.executable_path.display());
+    Ok(info.executable_path)
+}
+
+async fn find_chrome() -> Result<PathBuf> {
+    if let Some(local) = find_chrome_local() {
+        return Ok(local);
+    }
+    eprintln!("Chrome not found locally, downloading via fetcher...");
+    fetch_chrome().await
 }
 
 fn is_chrome_running() -> bool {
@@ -99,7 +126,7 @@ pub async fn start_and_connect() -> Result<BrowserWithHandler> {
         kill_existing_chrome().await;
     }
 
-    let chrome_bin = find_chrome()?;
+    let chrome_bin = find_chrome().await?;
 
     let target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")

@@ -131,6 +131,16 @@ impl ResolveContext {
         self.line_cache.retain(|key, _| key.parent != node);
     }
 
+    /// Invalidate all cached values for a single node.
+    ///
+    /// Removes every cached formula result for this node and any line
+    /// cache entries where this node is the parent. Other nodes' caches
+    /// are untouched.
+    pub fn invalidate_node(&mut self, node: NodeId) {
+        self.cache.remove(&node);
+        self.line_cache.retain(|key, _| key.parent != node);
+    }
+
     /// Look up a previously resolved value from the cache.
     /// Returns `None` if the formula was never resolved for this node.
     pub fn get_cached(&self, formula: &'static Formula, node: NodeId) -> Option<Subpixel> {

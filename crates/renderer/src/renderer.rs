@@ -6,7 +6,7 @@ use rewrite_core::{
 };
 use rewrite_css::{NodeStylerContext, Styler};
 use rewrite_layout::{offset_query, property_query, size_query};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -149,34 +149,46 @@ impl LayoutState {
 
     /// Handle a new DOM node being created.
     ///
-    /// Clears cache and resolves the node fresh.
-    pub fn on_node_created(&mut self, node: NodeId, _parent: NodeId) {
-        // Clear cache to ensure fresh computation
-        self.ctx.clear_cache();
+    /// Invalidates and resolves the new node, then propagates to its
+    /// parent (whose child-dependent formulas like auto-height change).
+    pub fn on_node_created(&mut self, node: NodeId, parent: NodeId) {
+        // The node may have been partially resolved during on_property_change
+        // calls that fired before the DOM parent link was established.
+        // Invalidate to recompute with correct parent context.
+        self.ctx.invalidate_node(node);
         self.resolve_node(node);
+
+        // Parent's child-dependent formulas (auto-height, flex sizing) and
+        // siblings' offset formulas may now be stale.
+        let mut visited = HashSet::new();
+        visited.insert(node);
+        self.propagate_changes(parent, &mut visited);
     }
 
     /// Handle a property change on a node.
     ///
-    /// Clears cache and re-resolves the node fresh.
+    /// Invalidates only this node's cached formulas, re-resolves, and
+    /// propagates to nodes that depend on it.
     pub fn on_property_change(&mut self, node: NodeId, _property: &Property<'static>) {
-        // Clear cache to ensure fresh computation
-        self.ctx.clear_cache();
+        self.ctx.invalidate_node(node);
         self.resolve_node(node);
+
+        let mut visited = HashSet::new();
+        visited.insert(node);
+        self.propagate_changes(node, &mut visited);
     }
 
     /// Propagate changes from a node to all nodes that depend on it.
     ///
-    /// Generic propagation: for any node whose value changed, find all nodes
-    /// whose formulas might depend on it (based on relationships), re-resolve
-    /// them, and recursively propagate if their values changed.
-    fn propagate_changes(&mut self, node: NodeId) {
-        // Collect nodes that might depend on this node
+    /// Walks parent, siblings, and children to find dependents, then
+    /// invalidates and re-resolves each. If a dependent's values changed,
+    /// recursively propagates further. Uses `visited` to prevent cycles.
+    fn propagate_changes(&mut self, node: NodeId, visited: &mut HashSet<NodeId>) {
         let mut dependents: Vec<NodeId> = Vec::new();
 
         // Parent might depend on children
         if let Some(parent) = self.db.dom_parent(node) {
-            if self.node_depends_on(parent, rewrite_core::FormulaDependency::Children) {
+            if !visited.contains(&parent) {
                 dependents.push(parent);
             }
         }
@@ -184,9 +196,7 @@ impl LayoutState {
         // Siblings might depend on siblings
         if let Some(parent) = self.db.dom_parent(node) {
             for sibling in self.db.dom_children(parent) {
-                if sibling != node
-                    && self.node_depends_on(sibling, rewrite_core::FormulaDependency::Siblings)
-                {
+                if sibling != node && !visited.contains(&sibling) {
                     dependents.push(sibling);
                 }
             }
@@ -194,55 +204,33 @@ impl LayoutState {
 
         // Children might depend on parent
         for child in self.db.dom_children(node) {
-            if self.node_depends_on(child, rewrite_core::FormulaDependency::Parent) {
+            if !visited.contains(&child) {
                 dependents.push(child);
             }
         }
 
-        // Re-resolve each dependent and recursively propagate if changed
         for dependent in dependents {
-            self.re_resolve_and_propagate(dependent);
+            self.re_resolve_and_propagate(dependent, visited);
         }
     }
 
-    /// Check if any of a node's formulas depend on the given relationship.
-    fn node_depends_on(&self, node: NodeId, dep_type: rewrite_core::FormulaDependency) -> bool {
-        let vw = self.ctx.viewport_width;
-        let vh = self.ctx.viewport_height;
-        let ctx = make_ctx(&self.styler, &self.db, node, vw, vh);
-
-        // Check all formula types for this node
-        let formulas: [Option<&'static Formula>; 4] = [
-            size_query(&ctx, Axis::Horizontal),
-            size_query(&ctx, Axis::Vertical),
-            offset_query(&ctx, Axis::Horizontal),
-            offset_query(&ctx, Axis::Vertical),
-        ];
-
-        for formula in formulas.into_iter().flatten() {
-            for dep in formula.dependencies() {
-                if *dep == dep_type {
-                    return true;
-                }
-            }
+    /// Invalidate, re-resolve a node, and propagate if its values changed.
+    fn re_resolve_and_propagate(&mut self, node: NodeId, visited: &mut HashSet<NodeId>) {
+        if !visited.insert(node) {
+            return; // Already visited
         }
 
-        false
-    }
-
-    /// Re-resolve a node and propagate if its values changed.
-    fn re_resolve_and_propagate(&mut self, node: NodeId) {
         let old_values = self.get_node(node);
+        self.ctx.invalidate_node(node);
         self.resolve_node(node);
         let new_values = self.get_node(node);
 
-        // If values changed, propagate to this node's dependents
         if old_values.width != new_values.width
             || old_values.height != new_values.height
             || old_values.x != new_values.x
             || old_values.y != new_values.y
         {
-            self.propagate_changes(node);
+            self.propagate_changes(node, visited);
         }
     }
 
@@ -255,13 +243,12 @@ impl LayoutState {
         self.ctx.get_cached(formula, node)
     }
 
-    /// Resolve a list of nodes fresh. Clears cache first, then resolves each node.
+    /// Resolve all nodes, reusing cached values from incremental updates.
     ///
-    /// Call this after loading/changes are complete to ensure all layout values
-    /// are computed with consistent state.
+    /// Nodes already resolved during `on_property_change` /
+    /// `on_node_created` will be cache hits. Only uncached or
+    /// never-resolved nodes are computed fresh.
     pub fn resolve_nodes(&mut self, nodes: &[NodeId]) {
-        self.ctx.clear_cache();
-
         for &node in nodes {
             self.resolve_node(node);
         }
