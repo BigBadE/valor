@@ -19,6 +19,10 @@ use std::ptr::from_ref;
 /// Per-node cache: maps formula pointer → resolved value.
 type NodeCache = HashMap<usize, Subpixel>;
 
+/// Font-size formula resolved explicitly by InlineMeasure.
+/// Public so the renderer can use the same pointer for invalidation.
+pub static FONT_SIZE_FORMULA: Formula = Formula::CssValue(PropertyId::FontSize);
+
 /// Key for cached line assignments: (parent_node, item_main_size_fn_ptr, available_main_ptr, gap_ptr).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct LineCacheKey {
@@ -105,17 +109,6 @@ impl ResolveContext {
         self.prefix_cache.retain(|key, _| key.parent != node);
     }
 
-    /// Invalidate all cached values for a single node.
-    ///
-    /// Removes every cached formula result for this node and any line
-    /// cache entries where this node is the parent. Other nodes' caches
-    /// are untouched.
-    pub fn invalidate_node(&mut self, node: NodeId) {
-        self.cache.remove(&node);
-        self.line_cache.retain(|key, _| key.parent != node);
-        self.prefix_cache.retain(|key, _| key.parent != node);
-    }
-
     /// Look up a previously resolved value from the cache.
     /// Returns `None` if the formula was never resolved for this node.
     pub fn get_cached(&self, formula: &'static Formula, node: NodeId) -> Option<Subpixel> {
@@ -126,6 +119,12 @@ impl ResolveContext {
             .copied()
     }
 
+    /// Invalidate aggregate caches (prefix sums, line assignments) for a parent.
+    pub fn invalidate_parent_aggregates(&mut self, parent: NodeId) {
+        self.prefix_cache.retain(|key, _| key.parent != parent);
+        self.line_cache.retain(|key, _| key.parent != parent);
+    }
+
     /// Clear all caches. Call before starting a fresh resolution pass.
     pub fn clear_cache(&mut self) {
         self.cache.clear();
@@ -133,19 +132,13 @@ impl ResolveContext {
         self.prefix_cache.clear();
     }
 
-    /// Resolve a formula for a node, using cache if available.
+    /// Resolve a formula for a node. No caching.
     pub fn resolve(
         &mut self,
         formula: &'static Formula,
         node: NodeId,
         ctx: &dyn PropertyResolver,
     ) -> Option<Subpixel> {
-        let formula_ptr = from_ref::<Formula>(formula) as usize;
-
-        if let Some(&cached) = self.cache.get(&node).and_then(|nc| nc.get(&formula_ptr)) {
-            return Some(cached);
-        }
-
         self.depth += 1;
         if self.depth > 200 {
             self.depth -= 1;
@@ -153,13 +146,7 @@ impl ResolveContext {
         }
         let value = self.resolve_inner(formula, node, ctx);
         self.depth -= 1;
-
-        if let Some(val) = value {
-            self.cache.entry(node).or_default().insert(formula_ptr, val);
-            Some(val)
-        } else {
-            None
-        }
+        value
     }
 
     /// Navigate to a related node from `node` using a `SingleRelationship`.
@@ -428,13 +415,17 @@ impl ResolveContext {
                 return None;
             }
 
+            // Resolve font-size through the formula cache — explicit dependency.
+            let font_size = self
+                .resolve(&FONT_SIZE_FORMULA, node, ctx)
+                .unwrap_or(Subpixel::from_px(16))
+                .to_f32();
+
             // For MinContent width, we need the longest word's width.
-            // measure_text with max_width=0 would break at every glyph,
-            // so we split on whitespace and measure each word unwrapped.
             if mode == MeasureMode::MinContent && axis == MeasureAxis::Width {
                 let mut max_word_width: f32 = 0.0;
                 for word in text.split_whitespace() {
-                    if let Some(wm) = ctx.measure_text(node, word, None) {
+                    if let Some(wm) = ctx.measure_text(node, word, font_size, None) {
                         if wm.width > max_word_width {
                             max_word_width = wm.width;
                         }
@@ -445,11 +436,11 @@ impl ResolveContext {
 
             let max_width = match mode {
                 MeasureMode::FitAvailable => Some(self.containing_block_width(node, ctx)),
-                MeasureMode::MinContent => Some(0.0), // height at narrowest
+                MeasureMode::MinContent => Some(0.0),
                 MeasureMode::MaxContent | MeasureMode::Baseline => None,
             };
 
-            let m = ctx.measure_text(node, &text, max_width)?;
+            let m = ctx.measure_text(node, &text, font_size, max_width)?;
 
             return Some(Subpixel::from_f32(match (axis, mode) {
                 (MeasureAxis::Width, _) => m.width,

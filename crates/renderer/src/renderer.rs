@@ -6,7 +6,7 @@ use rewrite_core::{
 };
 use rewrite_css::{CssPropertyResolver, Styler};
 use rewrite_layout::{offset_query, property_query, size_query};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -146,79 +146,98 @@ impl LayoutState {
     }
 
     /// Handle a new DOM node being created.
-    pub fn on_node_created(&mut self, node: NodeId, parent: NodeId) {
-        self.ctx.invalidate_node(node);
-        self.resolve_node(node);
+    pub fn on_node_created(&mut self, node: NodeId, _parent: NodeId) {
 
-        let mut visited = HashSet::new();
-        visited.insert(node);
-        self.propagate_changes(parent, &mut visited);
+        self.resolve_node(node);
+        self.propagate_changes(node);
     }
 
     /// Handle a property change on a node.
-    ///
-    /// Skips non-layout properties (background-color, border-color, etc.)
-    /// entirely since they don't affect formula results. For layout-relevant
-    /// properties, invalidates and re-resolves with targeted propagation.
     pub fn on_property_change(&mut self, node: NodeId, property: &Property<'static>) {
-        // Fast path: background/visual-only properties have no layout impact.
-        let group = rewrite_core::classify_property(&property.property_id());
+        let prop_id = property.property_id();
+        let group = rewrite_core::classify_property(&prop_id);
         if matches!(group, Some(rewrite_core::PropertyGroup::Background)) {
             return;
         }
 
-        self.ctx.invalidate_node(node);
-        self.resolve_node(node);
-
-        let mut visited = HashSet::new();
-        visited.insert(node);
-        self.propagate_changes(node, &mut visited);
-    }
-
-    /// Propagate changes from a node to dependents.
-    ///
-    /// Visits parent, siblings, and children. For each, invalidates and
-    /// re-resolves. Only continues propagating if layout values actually
-    /// changed (preventing cascading no-op updates).
-    fn propagate_changes(&mut self, node: NodeId, visited: &mut HashSet<NodeId>) {
-        let mut dependents: Vec<NodeId> = Vec::new();
-
-        // Parent might depend on children (auto-height, flex sizing).
-        if let Some(parent) = self.db.dom_parent(node) {
-            if !visited.contains(&parent) {
-                dependents.push(parent);
+        // Check if any layout formula on this node reads the changed property.
+        // If the node has no formulas yet, resolve it fully (first time).
+        if let Some(nf) = self.formulas.get(&node) {
+            let any_affected = [nf.width, nf.height, nf.offset_x, nf.offset_y]
+                .iter()
+                .flatten()
+                .any(|f| f.depends_on_css_property(&prop_id));
+            if !any_affected {
+                return;
             }
-        }
-
-        // Siblings might depend on siblings (offset aggregates).
-        if let Some(parent) = self.db.dom_parent(node) {
-            for sibling in self.db.dom_children(parent) {
-                if sibling != node && !visited.contains(&sibling) {
-                    dependents.push(sibling);
-                }
-            }
-        }
-
-        // Children might depend on parent (size constraints).
-        for child in self.db.dom_children(node) {
-            if !visited.contains(&child) {
-                dependents.push(child);
-            }
-        }
-
-        for dependent in dependents {
-            self.re_resolve_and_propagate(dependent, visited);
-        }
-    }
-
-    /// Invalidate, re-resolve a node, and propagate if its values changed.
-    fn re_resolve_and_propagate(&mut self, node: NodeId, visited: &mut HashSet<NodeId>) {
-        if !visited.insert(node) {
-            return;
         }
 
         let old_values = self.get_node(node);
-        self.ctx.invalidate_node(node);
+
+        self.resolve_node(node);
+        let new_values = self.get_node(node);
+
+        let changed = old_values.width != new_values.width
+            || old_values.height != new_values.height
+            || old_values.x != new_values.x
+            || old_values.y != new_values.y;
+
+        if changed {
+            self.propagate_changes(node);
+        }
+
+        // Inherited properties (font-size, etc.) affect descendants via
+        // inheritance even if this node's layout values didn't change.
+        // A wrapper div's size doesn't change when font-size changes,
+        // but its text node grandchildren measure differently.
+        if matches!(group, Some(rewrite_core::PropertyGroup::Text)) {
+            self.propagate_inherited_down(node);
+        }
+    }
+
+    /// Propagate inherited property changes to ALL descendants.
+    /// Inherited properties bypass intermediate nodes — a font-size
+    /// change on a grandparent affects text nodes even if the parent
+    /// div's layout values are unchanged.
+    fn propagate_inherited_down(&mut self, node: NodeId) {
+        for child in self.db.dom_children(node) {
+            let old_values = self.get_node(child);
+            self.resolve_node(child);
+            let new_values = self.get_node(child);
+
+            // Always recurse — inheritance goes through entire subtree.
+            self.propagate_inherited_down(child);
+
+            // If size changed, propagate to parent and siblings.
+            if old_values.width != new_values.width
+                || old_values.height != new_values.height
+            {
+                self.propagate_changes(child);
+            }
+        }
+    }
+
+    /// Propagate changes from a node to all dependents.
+    fn propagate_changes(&mut self, node: NodeId) {
+        if let Some(parent) = self.db.dom_parent(node) {
+            self.re_resolve_and_propagate(parent);
+        }
+        if let Some(parent) = self.db.dom_parent(node) {
+            for sibling in self.db.dom_children(parent) {
+                if sibling != node {
+                    self.re_resolve_and_propagate(sibling);
+                }
+            }
+        }
+        for child in self.db.dom_children(node) {
+            self.re_resolve_and_propagate(child);
+        }
+    }
+
+    /// Invalidate, re-resolve, and propagate if values changed.
+    fn re_resolve_and_propagate(&mut self, node: NodeId) {
+        let old_values = self.get_node(node);
+
         self.resolve_node(node);
         let new_values = self.get_node(node);
 
@@ -227,7 +246,7 @@ impl LayoutState {
             || old_values.x != new_values.x
             || old_values.y != new_values.y
         {
-            self.propagate_changes(node, visited);
+            self.propagate_changes(node);
         }
     }
 

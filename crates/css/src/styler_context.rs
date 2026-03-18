@@ -124,18 +124,12 @@ impl PropertyResolver for CssPropertyResolver {
         &self,
         node: NodeId,
         text: &str,
+        font_size: f32,
         max_width: Option<f32>,
     ) -> Option<TextMeasurement> {
         let font_family = self.db.get_property(node, PropertyId::FontFamily);
         let font_weight = self.db.get_property(node, PropertyId::FontWeight);
         let font_style = self.db.get_property(node, PropertyId::FontStyle);
-        let font_size_prop = self.db.get_property(node, PropertyId::FontSize);
-
-        let font_size = font_size_prop
-            .as_ref()
-            .and_then(|prop| property_to_subpixel(prop, node, self))
-            .unwrap_or(Subpixel::from_px(16))
-            .to_f32();
 
         let attrs = rewrite_text::build_attrs(
             font_family.as_ref(),

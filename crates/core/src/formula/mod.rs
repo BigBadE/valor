@@ -19,7 +19,7 @@
 mod macros;
 mod resolver;
 
-pub use resolver::ResolveContext;
+pub use resolver::{ResolveContext, FONT_SIZE_FORMULA};
 
 use lightningcss::properties::PropertyId;
 
@@ -77,11 +77,15 @@ pub trait PropertyResolver: Send + Sync {
     /// Get the text content of a node, if it is a text node.
     fn text_content(&self, node: NodeId) -> Option<String>;
 
-    /// Measure text with the node's font properties.
+    /// Measure text with explicitly provided font size.
+    ///
+    /// Font size is resolved by the caller through the formula cache,
+    /// making the dependency on inherited font-size explicit.
     fn measure_text(
         &self,
         node: NodeId,
         text: &str,
+        font_size: f32,
         max_width: Option<f32>,
     ) -> Option<TextMeasurement>;
 }
@@ -448,10 +452,16 @@ impl Formula {
                 // Conservative: assume they might depend on any property
                 true
             }
-            Formula::Constant(_)
-            | Formula::ViewportWidth
-            | Formula::ViewportHeight
-            | Formula::InlineMeasure(_, _) => false,
+            Formula::InlineMeasure(_, _) => matches!(
+                prop_id,
+                PropertyId::FontSize
+                    | PropertyId::FontFamily
+                    | PropertyId::FontWeight
+                    | PropertyId::FontStyle
+                    | PropertyId::LineHeight
+                    | PropertyId::WhiteSpace
+            ),
+            Formula::Constant(_) | Formula::ViewportWidth | Formula::ViewportHeight => false,
         }
     }
 
@@ -514,7 +524,11 @@ impl Formula {
                 ]
             }
             Formula::InlineMeasure(_, _) => {
-                &[FormulaDependency::SelfCss, FormulaDependency::Children]
+                &[
+                    FormulaDependency::SelfCss,
+                    FormulaDependency::Children,
+                    FormulaDependency::Parent,
+                ]
             }
             Formula::LineAggregate(_) => &[FormulaDependency::Children],
             Formula::LineItemAggregate(params) => match params.relationship {
