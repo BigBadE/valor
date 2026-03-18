@@ -4,7 +4,7 @@ use lightningcss::properties::{Property, PropertyId};
 use rewrite_core::{
     Axis, Database, DomBroadcast, Formula, NodeId, ResolveContext, Subpixel, Subscriber,
 };
-use rewrite_css::{NodeStylerContext, Styler};
+use rewrite_css::{CssPropertyResolver, Styler};
 use rewrite_layout::{offset_query, property_query, size_query};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -28,15 +28,14 @@ struct NodeFormulas {
     offset_y: Option<&'static Formula>,
 }
 
-/// Create a `NodeStylerContext` from shared state.
-fn make_ctx(
+/// Create a `CssPropertyResolver` from shared state.
+fn make_resolver(
     styler: &Arc<Styler>,
     db: &Arc<Database>,
-    node: NodeId,
     vw: u32,
     vh: u32,
-) -> NodeStylerContext {
-    NodeStylerContext::new(styler.clone(), db.clone(), node, vw, vh)
+) -> CssPropertyResolver {
+    CssPropertyResolver::new(styler.clone(), db.clone(), vw, vh)
 }
 
 /// Persistent layout state that owns a `ResolveContext` and tracks
@@ -64,24 +63,23 @@ impl LayoutState {
         }
     }
 
-    /// Read cached layout values for a node. The node must have been
-    /// previously resolved via `on_property_change` or `on_node_created`.
+    /// Read cached layout values for a node.
     pub fn get_node(&self, node: NodeId) -> ComputedBox {
         let vw = self.ctx.viewport_width;
         let vh = self.ctx.viewport_height;
-        let query_ctx = make_ctx(&self.styler, &self.db, node, vw, vh);
+        let resolver = make_resolver(&self.styler, &self.db, vw, vh);
         let mut result = ComputedBox::default();
 
-        if let Some(formula) = size_query(&query_ctx, Axis::Horizontal) {
+        if let Some(formula) = size_query(node, &resolver, Axis::Horizontal) {
             result.width = self.ctx.get_cached(formula, node);
         }
-        if let Some(formula) = size_query(&query_ctx, Axis::Vertical) {
+        if let Some(formula) = size_query(node, &resolver, Axis::Vertical) {
             result.height = self.ctx.get_cached(formula, node);
         }
-        if let Some(formula) = offset_query(&query_ctx, Axis::Horizontal) {
+        if let Some(formula) = offset_query(node, &resolver, Axis::Horizontal) {
             result.x = self.ctx.get_cached(formula, node);
         }
-        if let Some(formula) = offset_query(&query_ctx, Axis::Vertical) {
+        if let Some(formula) = offset_query(node, &resolver, Axis::Vertical) {
             result.y = self.ctx.get_cached(formula, node);
         }
 
@@ -108,39 +106,39 @@ impl LayoutState {
     pub fn resolve_node(&mut self, node: NodeId) -> ComputedBox {
         let vw = self.ctx.viewport_width;
         let vh = self.ctx.viewport_height;
-        let query_ctx = make_ctx(&self.styler, &self.db, node, vw, vh);
+        let resolver = make_resolver(&self.styler, &self.db, vw, vh);
         let nf = self.formulas.entry(node).or_default();
         let mut result = ComputedBox::default();
 
-        let width_formula = size_query(&query_ctx, Axis::Horizontal);
+        let width_formula = size_query(node, &resolver, Axis::Horizontal);
         nf.width = width_formula;
         if let Some(formula) = width_formula {
-            result.width = self.ctx.resolve(formula, node, &query_ctx);
+            result.width = self.ctx.resolve(formula, node, &resolver);
         }
 
-        let height_formula = size_query(&query_ctx, Axis::Vertical);
+        let height_formula = size_query(node, &resolver, Axis::Vertical);
         nf.height = height_formula;
         if let Some(formula) = height_formula {
-            result.height = self.ctx.resolve(formula, node, &query_ctx);
+            result.height = self.ctx.resolve(formula, node, &resolver);
         }
 
-        let offset_x_formula = offset_query(&query_ctx, Axis::Horizontal);
+        let offset_x_formula = offset_query(node, &resolver, Axis::Horizontal);
         nf.offset_x = offset_x_formula;
         if let Some(formula) = offset_x_formula {
-            result.x = self.ctx.resolve(formula, node, &query_ctx);
+            result.x = self.ctx.resolve(formula, node, &resolver);
         }
 
-        let offset_y_formula = offset_query(&query_ctx, Axis::Vertical);
+        let offset_y_formula = offset_query(node, &resolver, Axis::Vertical);
         nf.offset_y = offset_y_formula;
         if let Some(formula) = offset_y_formula {
-            result.y = self.ctx.resolve(formula, node, &query_ctx);
+            result.y = self.ctx.resolve(formula, node, &resolver);
         }
 
         // Resolve box-model properties (margin, padding, border) so they
         // are cached for later reads.
         for prop_id in &Self::BOX_MODEL_PROPS {
-            if let Some(formula) = property_query(&query_ctx, prop_id) {
-                self.ctx.resolve(formula, node, &query_ctx);
+            if let Some(formula) = property_query(node, &resolver, prop_id) {
+                self.ctx.resolve(formula, node, &resolver);
             }
         }
 
@@ -148,18 +146,10 @@ impl LayoutState {
     }
 
     /// Handle a new DOM node being created.
-    ///
-    /// Invalidates and resolves the new node, then propagates to its
-    /// parent (whose child-dependent formulas like auto-height change).
     pub fn on_node_created(&mut self, node: NodeId, parent: NodeId) {
-        // The node may have been partially resolved during on_property_change
-        // calls that fired before the DOM parent link was established.
-        // Invalidate to recompute with correct parent context.
         self.ctx.invalidate_node(node);
         self.resolve_node(node);
 
-        // Parent's child-dependent formulas (auto-height, flex sizing) and
-        // siblings' offset formulas may now be stale.
         let mut visited = HashSet::new();
         visited.insert(node);
         self.propagate_changes(parent, &mut visited);
@@ -167,9 +157,16 @@ impl LayoutState {
 
     /// Handle a property change on a node.
     ///
-    /// Invalidates only this node's cached formulas, re-resolves, and
-    /// propagates to nodes that depend on it.
-    pub fn on_property_change(&mut self, node: NodeId, _property: &Property<'static>) {
+    /// Skips non-layout properties (background-color, border-color, etc.)
+    /// entirely since they don't affect formula results. For layout-relevant
+    /// properties, invalidates and re-resolves with targeted propagation.
+    pub fn on_property_change(&mut self, node: NodeId, property: &Property<'static>) {
+        // Fast path: background/visual-only properties have no layout impact.
+        let group = rewrite_core::classify_property(&property.property_id());
+        if matches!(group, Some(rewrite_core::PropertyGroup::Background)) {
+            return;
+        }
+
         self.ctx.invalidate_node(node);
         self.resolve_node(node);
 
@@ -178,22 +175,22 @@ impl LayoutState {
         self.propagate_changes(node, &mut visited);
     }
 
-    /// Propagate changes from a node to all nodes that depend on it.
+    /// Propagate changes from a node to dependents.
     ///
-    /// Walks parent, siblings, and children to find dependents, then
-    /// invalidates and re-resolves each. If a dependent's values changed,
-    /// recursively propagates further. Uses `visited` to prevent cycles.
+    /// Visits parent, siblings, and children. For each, invalidates and
+    /// re-resolves. Only continues propagating if layout values actually
+    /// changed (preventing cascading no-op updates).
     fn propagate_changes(&mut self, node: NodeId, visited: &mut HashSet<NodeId>) {
         let mut dependents: Vec<NodeId> = Vec::new();
 
-        // Parent might depend on children
+        // Parent might depend on children (auto-height, flex sizing).
         if let Some(parent) = self.db.dom_parent(node) {
             if !visited.contains(&parent) {
                 dependents.push(parent);
             }
         }
 
-        // Siblings might depend on siblings
+        // Siblings might depend on siblings (offset aggregates).
         if let Some(parent) = self.db.dom_parent(node) {
             for sibling in self.db.dom_children(parent) {
                 if sibling != node && !visited.contains(&sibling) {
@@ -202,7 +199,7 @@ impl LayoutState {
             }
         }
 
-        // Children might depend on parent
+        // Children might depend on parent (size constraints).
         for child in self.db.dom_children(node) {
             if !visited.contains(&child) {
                 dependents.push(child);
@@ -217,7 +214,7 @@ impl LayoutState {
     /// Invalidate, re-resolve a node, and propagate if its values changed.
     fn re_resolve_and_propagate(&mut self, node: NodeId, visited: &mut HashSet<NodeId>) {
         if !visited.insert(node) {
-            return; // Already visited
+            return;
         }
 
         let old_values = self.get_node(node);
@@ -234,34 +231,35 @@ impl LayoutState {
         }
     }
 
-    /// Read a cached box-model property value. Returns `None` if not cached.
+
+    /// Read a cached box-model property value.
     pub fn get_property(&self, node: NodeId, prop_id: &PropertyId<'static>) -> Option<Subpixel> {
         let vw = self.ctx.viewport_width;
         let vh = self.ctx.viewport_height;
-        let query_ctx = make_ctx(&self.styler, &self.db, node, vw, vh);
-        let formula = property_query(&query_ctx, prop_id)?;
+        let resolver = make_resolver(&self.styler, &self.db, vw, vh);
+        let formula = property_query(node, &resolver, prop_id)?;
         self.ctx.get_cached(formula, node)
     }
 
     /// Resolve all nodes, reusing cached values from incremental updates.
-    ///
-    /// Nodes already resolved during `on_property_change` /
-    /// `on_node_created` will be cache hits. Only uncached or
-    /// never-resolved nodes are computed fresh.
     pub fn resolve_nodes(&mut self, nodes: &[NodeId]) {
         for &node in nodes {
             self.resolve_node(node);
         }
     }
+
+    /// Clear all cached layout values. Used for benchmarking to force
+    /// a complete re-resolution.
+    pub fn clear_cache(&mut self) {
+        self.ctx.clear_cache();
+        self.formulas.clear();
+    }
 }
 
 /// Renderer that receives property notifications and manages layout/GPU state.
 pub struct Renderer {
-    /// Persistent layout state with incremental resolution.
     layout: Mutex<LayoutState>,
-    /// Viewport width in pixels.
     viewport_width: AtomicU32,
-    /// Viewport height in pixels.
     viewport_height: AtomicU32,
 }
 
@@ -274,18 +272,15 @@ impl Renderer {
         }
     }
 
-    /// Set the viewport dimensions.
     pub fn set_viewport(&self, width: u32, height: u32) {
         self.viewport_width.store(width, Ordering::Relaxed);
         self.viewport_height.store(height, Ordering::Relaxed);
     }
 
-    /// Get the current viewport width.
     pub fn viewport_width(&self) -> u32 {
         self.viewport_width.load(Ordering::Relaxed)
     }
 
-    /// Get the current viewport height.
     pub fn viewport_height(&self) -> u32 {
         self.viewport_height.load(Ordering::Relaxed)
     }
@@ -295,7 +290,6 @@ impl Subscriber for Renderer {
     fn on_property(&self, node: NodeId, property: &Property<'static>) {
         let mut layout = self.layout.lock().expect("lock poisoned");
         layout.on_property_change(node, property);
-        // TODO: Store computed values for GPU rendering
     }
 
     fn on_dom(&self, update: DomBroadcast) {

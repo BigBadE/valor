@@ -31,6 +31,11 @@ pub struct Database {
     pub position: SparseTree,
     /// DOM tree access for parent lookups.
     tree: Arc<dyn TreeAccess>,
+    /// Per-node style fingerprint for detecting identical siblings.
+    /// Nodes with the same fingerprint have the same set of non-inherited
+    /// CSS properties (box-model + layout + position + background).
+    /// Updated on each `set_property` call.
+    fingerprints: boxcar::Vec<std::sync::atomic::AtomicU64>,
 }
 
 impl Database {
@@ -43,6 +48,7 @@ impl Database {
             layout: SparseTree::new(),
             position: SparseTree::new(),
             tree,
+            fingerprints: boxcar::Vec::new(),
         }
     }
 
@@ -79,7 +85,7 @@ impl Database {
         let tree = self.tree_for_group(group);
         let dom_tree = &self.tree;
 
-        tree.set_property(node, property, specificity, |node_id| {
+        let changed = tree.set_property(node, property.clone(), specificity, |node_id| {
             // Walk up DOM ancestors to find the nearest one already in this sparse tree.
             let mut current = dom_tree.parent(node_id);
             while let Some(ancestor) = current {
@@ -89,7 +95,52 @@ impl Database {
                 current = dom_tree.parent(ancestor);
             }
             None
-        })
+        });
+
+        // Update style fingerprint when a non-inherited property changes.
+        if changed && !group.is_inherited() {
+            self.update_fingerprint(node, &prop_id);
+        }
+
+        changed
+    }
+
+    /// Get the style fingerprint for a node.
+    ///
+    /// Nodes with the same fingerprint have identical non-inherited CSS
+    /// properties. Used by the resolver to detect uniform sibling groups
+    /// and batch their layout computation.
+    pub fn style_fingerprint(&self, node: NodeId) -> u64 {
+        let idx = node.0 as usize;
+        if idx < self.fingerprints.count() {
+            self.fingerprints[idx].load(std::sync::atomic::Ordering::Relaxed)
+        } else {
+            0
+        }
+    }
+
+    /// Update the fingerprint for a node by mixing in a property ID.
+    fn update_fingerprint(&self, node: NodeId, prop_id: &PropertyId<'static>) {
+        let idx = node.0 as usize;
+        // Ensure storage exists.
+        while self.fingerprints.count() <= idx {
+            self.fingerprints
+                .push(std::sync::atomic::AtomicU64::new(0));
+        }
+        // Mix in the property ID discriminant using FNV-1a-like hashing.
+        let prop_hash = {
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            let disc = std::mem::discriminant(prop_id);
+            let bytes: [u8; std::mem::size_of::<std::mem::Discriminant<PropertyId<'static>>>()]  =
+                unsafe { std::mem::transmute_copy(&disc) };
+            for byte in bytes {
+                h ^= u64::from(byte);
+                h = h.wrapping_mul(0x0100_0000_01b3);
+            }
+            h
+        };
+        // XOR into existing fingerprint (order-independent).
+        self.fingerprints[idx].fetch_xor(prop_hash, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Fix sparse-tree relationships for a node after its DOM parent
@@ -255,6 +306,26 @@ fn css_initial_value(prop_id: &PropertyId<'static>) -> Option<Property<'static>>
         PropertyId::TextAlign => Some(Property::TextAlign(TextAlign::Start)),
         _ => None,
     }
+}
+
+/// Check if a property value is the CSS initial value for its property.
+///
+/// Properties at their initial value don't need to be stored in the database —
+/// the formula system treats missing properties as having their default value.
+/// Skipping storage makes the sparse trees genuinely sparse, enabling
+/// optimizations like uniform-region detection and tree-skip traversal.
+pub fn is_css_initial_value(property: &Property<'static>) -> bool {
+    use lightningcss::properties::display::{Display, DisplayInside, DisplayOutside, DisplayPair};
+    use lightningcss::properties::size::Size;
+
+    matches!(
+        property,
+        // display: block is the default for flow elements
+        Property::Display(Display::Pair(DisplayPair { outside: DisplayOutside::Block, inside: DisplayInside::Flow, .. }))
+        // width/height: auto is the initial value
+        | Property::Width(Size::Auto)
+        | Property::Height(Size::Auto)
+    )
 }
 
 /// Check if a property ID is a border-width property.

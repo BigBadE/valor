@@ -3,20 +3,21 @@
 use lightningcss::properties::PropertyId;
 use lightningcss::properties::display::Display;
 use lightningcss::values::length::LengthPercentageOrAuto;
-use rewrite_core::{Formula, StylerAccess, Subpixel};
+use rewrite_core::{Formula, NodeId, PropertyResolver, Subpixel};
 
 use super::size::content_size_query;
 
 /// Return a formula that resolves a box-model property to its used px value.
 pub fn property_query(
-    styler: &dyn StylerAccess,
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
     prop_id: &PropertyId<'static>,
 ) -> Option<&'static Formula> {
     match prop_id {
-        PropertyId::MarginTop => Some(margin_query(styler, MarginSide::Top)),
-        PropertyId::MarginRight => Some(margin_query(styler, MarginSide::Right)),
-        PropertyId::MarginBottom => Some(margin_query(styler, MarginSide::Bottom)),
-        PropertyId::MarginLeft => Some(margin_query(styler, MarginSide::Left)),
+        PropertyId::MarginTop => Some(margin_query(node, ctx, MarginSide::Top)),
+        PropertyId::MarginRight => Some(margin_query(node, ctx, MarginSide::Right)),
+        PropertyId::MarginBottom => Some(margin_query(node, ctx, MarginSide::Bottom)),
+        PropertyId::MarginLeft => Some(margin_query(node, ctx, MarginSide::Left)),
 
         PropertyId::PaddingTop => Some(css_prop!(PaddingTop)),
         PropertyId::PaddingRight => Some(css_prop!(PaddingRight)),
@@ -59,9 +60,9 @@ impl MarginSide {
     }
 }
 
-fn is_auto(styler: &dyn StylerAccess, prop_id: &PropertyId<'static>) -> bool {
+fn is_auto(node: NodeId, ctx: &dyn PropertyResolver, prop_id: &PropertyId<'static>) -> bool {
     matches!(
-        styler.get_css_property(prop_id),
+        ctx.get_css_property(node, prop_id),
         Some(lightningcss::properties::Property::MarginLeft(
             LengthPercentageOrAuto::Auto
         )) | Some(lightningcss::properties::Property::MarginRight(
@@ -74,16 +75,19 @@ fn is_auto(styler: &dyn StylerAccess, prop_id: &PropertyId<'static>) -> bool {
     )
 }
 
-fn has_explicit_width(styler: &dyn StylerAccess) -> bool {
-    styler.get_css_property(&PropertyId::Width).is_some()
+fn has_explicit_width(node: NodeId, ctx: &dyn PropertyResolver) -> bool {
+    ctx.get_css_property(node, &PropertyId::Width).is_some()
 }
 
-fn is_block(styler: &dyn StylerAccess) -> bool {
+fn is_block(node: NodeId, ctx: &dyn PropertyResolver) -> bool {
+    let Some(prop) = ctx.get_css_property(node, &PropertyId::Display) else {
+        return true;
+    };
     matches!(
-        styler.get_css_property(&PropertyId::Display),
-        Some(lightningcss::properties::Property::Display(
+        prop,
+        lightningcss::properties::Property::Display(
             Display::Pair(pair)
-        )) if matches!(
+        ) if matches!(
             pair.inside,
             lightningcss::properties::display::DisplayInside::Flow
             | lightningcss::properties::display::DisplayInside::FlowRoot
@@ -92,10 +96,14 @@ fn is_block(styler: &dyn StylerAccess) -> bool {
 }
 
 /// Return a formula for the used margin value on the given side.
-fn margin_query(styler: &dyn StylerAccess, side: MarginSide) -> &'static Formula {
+fn margin_query(
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
+    side: MarginSide,
+) -> &'static Formula {
     let prop_id = side.prop_id();
 
-    if !is_auto(styler, &prop_id) {
+    if !is_auto(node, ctx, &prop_id) {
         return match side {
             MarginSide::Top => css_prop!(MarginTop),
             MarginSide::Right => css_prop!(MarginRight),
@@ -104,21 +112,20 @@ fn margin_query(styler: &dyn StylerAccess, side: MarginSide) -> &'static Formula
         };
     }
 
-    // Flex item auto margins: delegate to flex module which computes
-    // used auto margin values per CSS Flexbox §8.1.
-    if let Some(formula) = super::flex::flex_auto_margin_value(styler, &prop_id) {
+    // Flex item auto margins: delegate to flex module.
+    if let Some(formula) = super::flex::flex_auto_margin_value(node, ctx, &prop_id) {
         return formula;
     }
 
-    // Auto margin — vertical auto margins resolve to 0 per spec (block layout)
+    // Auto margin — vertical auto margins resolve to 0 per spec
     if !side.is_horizontal() {
         return constant!(Subpixel::ZERO);
     }
 
     // Horizontal auto margin on a block with explicit width
-    if is_block(styler) && has_explicit_width(styler) {
-        let ml_auto = is_auto(styler, &PropertyId::MarginLeft);
-        let mr_auto = is_auto(styler, &PropertyId::MarginRight);
+    if is_block(node, ctx) && has_explicit_width(node, ctx) {
+        let ml_auto = is_auto(node, ctx, &PropertyId::MarginLeft);
+        let mr_auto = is_auto(node, ctx, &PropertyId::MarginRight);
 
         match (side, ml_auto, mr_auto) {
             // Both auto -> each gets half

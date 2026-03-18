@@ -9,8 +9,8 @@
 //!
 //! Key design:
 //! - Formulas are pure arithmetic over values from self/parent/children
-//! - `StylerAccess` trait provides CSS property access and tree navigation
-//! - Formulas are non-generic — they use `&dyn StylerAccess` for dispatch
+//! - `PropertyResolver` trait provides CSS property access and tree navigation
+//! - Formulas are non-generic — they use `NodeId` + `&dyn PropertyResolver`
 //! - No separate dependency tracking — the formula tree is the dependency graph
 //! - **Construct formulas using the macros only** — never build `Formula`
 //!   variants directly in query code.
@@ -19,11 +19,72 @@
 mod macros;
 mod resolver;
 
-pub use resolver::{ResolveContext, StylerAccess};
+pub use resolver::ResolveContext;
 
 use lightningcss::properties::PropertyId;
 
 use crate::{MultiRelationship, NodeId, SingleRelationship, Subpixel};
+
+// ============================================================================
+// PropertyResolver trait
+// ============================================================================
+
+/// Trait for resolving CSS properties and navigating the DOM tree.
+///
+/// This replaces the previous `StylerAccess` trait by separating node
+/// identity from property resolution. Instead of boxing trait objects
+/// for each node, callers pass `NodeId` values and the resolver looks
+/// up properties directly from the database and tree.
+///
+/// Implemented in `rewrite_css` (as `CssPropertyResolver`) to avoid
+/// circular dependencies — `rewrite_core` defines the trait but does
+/// not depend on `rewrite_css` or `rewrite_html`.
+pub trait PropertyResolver: Send + Sync {
+    /// Query a CSS property for a node, converted to pixels.
+    fn get_property(&self, node: NodeId, prop_id: &PropertyId<'static>) -> Option<Subpixel>;
+
+    /// Query the raw CSS property for a node (for display-mode dispatch).
+    fn get_css_property(
+        &self,
+        node: NodeId,
+        prop_id: &PropertyId<'static>,
+    ) -> Option<lightningcss::properties::Property<'static>>;
+
+    /// Get the parent of a node, or `None` if it's the root.
+    fn parent(&self, node: NodeId) -> Option<NodeId>;
+
+    /// Get all direct children of a node (in reverse DOM order, as stored).
+    fn children(&self, node: NodeId) -> Vec<NodeId>;
+
+    /// Get previous siblings (closest first, DOM order).
+    fn prev_siblings(&self, node: NodeId) -> Vec<NodeId>;
+
+    /// Get next siblings (closest first, DOM order).
+    fn next_siblings(&self, node: NodeId) -> Vec<NodeId>;
+
+    /// Get the viewport width in pixels.
+    fn viewport_width(&self) -> u32;
+
+    /// Get the viewport height in pixels.
+    fn viewport_height(&self) -> u32;
+
+    /// Whether a node is intrinsic (text node, replaced element).
+    fn is_intrinsic(&self, node: NodeId) -> bool;
+
+    /// Whether a node is a DOM element (not text, comment, or document).
+    fn is_element(&self, node: NodeId) -> bool;
+
+    /// Get the text content of a node, if it is a text node.
+    fn text_content(&self, node: NodeId) -> Option<String>;
+
+    /// Measure text with the node's font properties.
+    fn measure_text(
+        &self,
+        node: NodeId,
+        text: &str,
+        max_width: Option<f32>,
+    ) -> Option<TextMeasurement>;
+}
 
 // ============================================================================
 // Inline measurement parameters
@@ -93,9 +154,12 @@ pub enum Operation {
 // Query function type
 // ============================================================================
 
-/// Query function type - takes a styler trait object and returns a formula.
-/// Returns None if the query lacks confidence (missing CSS properties).
-pub type QueryFn = fn(&dyn StylerAccess) -> Option<&'static Formula>;
+/// Query function type — takes a node ID and property resolver, returns a formula.
+///
+/// Returns `None` if the query cannot determine a formula (e.g., missing CSS
+/// properties). Function pointers are `'static` so they can be stored in
+/// static `Formula` values.
+pub type QueryFn = fn(NodeId, &dyn PropertyResolver) -> Option<&'static Formula>;
 
 /// Batch-returning imperative resolver function.
 ///
@@ -108,8 +172,8 @@ pub type QueryFn = fn(&dyn StylerAccess) -> Option<&'static Formula>;
 /// the same cache context.
 pub type ImperativeFn = fn(
     node: NodeId,
-    styler: &dyn StylerAccess,
-    resolve: &mut dyn FnMut(&'static Formula, NodeId, &dyn StylerAccess) -> Option<Subpixel>,
+    ctx: &dyn PropertyResolver,
+    resolve: &mut dyn FnMut(&'static Formula, NodeId) -> Option<Subpixel>,
 ) -> Option<Vec<(NodeId, Subpixel)>>;
 
 // ============================================================================
@@ -388,6 +452,24 @@ impl Formula {
             | Formula::ViewportWidth
             | Formula::ViewportHeight
             | Formula::InlineMeasure(_, _) => false,
+        }
+    }
+
+    /// Collect all dependency types by walking the formula tree.
+    ///
+    /// Unlike `dependencies()` which returns a static slice (and must
+    /// be conservative for `BinOp`), this walks both sides of binary
+    /// operations and deduplicates.
+    pub fn collect_dependencies(&self, out: &mut Vec<FormulaDependency>) {
+        for &dep in self.dependencies() {
+            if !out.contains(&dep) {
+                out.push(dep);
+            }
+        }
+        // Walk into BinOp children for precise dependencies.
+        if let Formula::BinOp(_, lhs, rhs) = self {
+            lhs.collect_dependencies(out);
+            rhs.collect_dependencies(out);
         }
     }
 

@@ -12,56 +12,48 @@
 
 use lightningcss::properties::position::Position;
 use lightningcss::properties::{Property, PropertyId};
-use rewrite_core::{Axis, Formula, SingleRelationship, StylerAccess, Subpixel};
+use rewrite_core::{Axis, Formula, NodeId, PropertyResolver, Subpixel};
 
 use super::DisplayType;
 
 /// Determine the CSS `position` value for a node.
-fn position_of(styler: &dyn StylerAccess) -> Position {
-    match styler.get_css_property(&PropertyId::Position) {
+fn position_of(node: NodeId, ctx: &dyn PropertyResolver) -> Position {
+    match ctx.get_css_property(node, &PropertyId::Position) {
         Some(Property::Position(pos)) => pos,
         _ => Position::Static,
     }
 }
 
 /// Check if a node is a positioned ancestor (position != static).
-fn is_positioned(styler: &dyn StylerAccess) -> bool {
-    !matches!(position_of(styler), Position::Static)
+fn is_positioned(node: NodeId, ctx: &dyn PropertyResolver) -> bool {
+    !matches!(position_of(node, ctx), Position::Static)
 }
 
 /// Query function that returns a formula for the node's absolute position.
-///
-/// For `position: static` (default):
-///   absolute_offset = parent.absolute_offset + parent.padding + parent.border + local_offset
-///
-/// For `position: relative`:
-///   same as static, plus top/left offset
-///
-/// For `position: absolute`:
-///   containing_block.offset + containing_block.padding + containing_block.border + top/left
-///
-/// For `position: fixed`:
-///   top/left from viewport origin (or right→x computed from viewport width)
-///
-/// For root-level nodes (no parent display), returns constant 0.
-pub fn offset_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
-    let pos = position_of(styler);
+pub fn offset_query(
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
+    axis: Axis,
+) -> Option<&'static Formula> {
+    let pos = position_of(node, ctx);
 
     match pos {
-        Position::Fixed => Some(fixed_offset(styler, axis)),
-        Position::Absolute => Some(absolute_offset(styler, axis)),
-        Position::Relative => Some(relative_offset(styler, axis)),
-        Position::Sticky(_) => sticky_offset(styler, axis),
-        _ => static_offset(styler, axis),
+        Position::Fixed => Some(fixed_offset(node, ctx, axis)),
+        Position::Absolute => Some(absolute_offset(node, ctx, axis)),
+        Position::Relative => Some(relative_offset(node, ctx, axis)),
+        Position::Sticky(_) => sticky_offset(node, ctx, axis),
+        _ => static_offset(node, ctx, axis),
     }
 }
 
 /// Normal flow offset (position: static).
-fn static_offset(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
-    let parent = styler.related(SingleRelationship::Parent);
-    if parent.node_id() == styler.node_id()
-        || parent.get_css_property(&PropertyId::Display).is_none()
-    {
+fn static_offset(
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
+    axis: Axis,
+) -> Option<&'static Formula> {
+    let parent = ctx.parent(node);
+    if parent.is_none() || parent == Some(rewrite_core::NodeId::ROOT) || parent == Some(node) {
         return Some(constant!(Subpixel::ZERO));
     }
 
@@ -82,10 +74,11 @@ fn static_offset(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formu
 }
 
 /// Relative positioning: normal flow + top/left offset.
-///
-/// Uses a self-referential query: resolves `static_offset_query` for the
-/// current node (which computes the normal flow position), then adds top/left.
-fn relative_offset(_styler: &dyn StylerAccess, axis: Axis) -> &'static Formula {
+fn relative_offset(
+    _node: NodeId,
+    _ctx: &dyn PropertyResolver,
+    axis: Axis,
+) -> &'static Formula {
     match axis {
         Axis::Horizontal => add!(
             related!(Self_, static_offset_query, Axis::Horizontal),
@@ -99,33 +92,35 @@ fn relative_offset(_styler: &dyn StylerAccess, axis: Axis) -> &'static Formula {
 }
 
 /// Query function that always computes the static (normal flow) offset,
-/// ignoring the element's own `position` property. Used by `relative_offset`
-/// to get the base position before adding top/left.
-fn static_offset_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
-    static_offset(styler, axis)
+/// ignoring the element's own `position` property.
+fn static_offset_query(
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
+    axis: Axis,
+) -> Option<&'static Formula> {
+    static_offset(node, ctx, axis)
 }
 
 /// Sticky positioning: normal flow position (CSS Position §2.3).
-///
-/// A sticky element occupies its normal flow position. The inset values
-/// (top/left/right/bottom) define scroll-triggered constraints that only
-/// take effect when the element's scroll container is actively scrolled.
-/// Without scroll state, sticky is identical to static positioning.
-///
-/// Full scroll-aware clamping will be added when the scroll infrastructure
-/// feeds scroll offsets into the formula resolver.
-fn sticky_offset(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
-    static_offset(styler, axis)
+fn sticky_offset(
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
+    axis: Axis,
+) -> Option<&'static Formula> {
+    static_offset(node, ctx, axis)
 }
 
 /// Fixed positioning: offset from viewport origin.
-fn fixed_offset(styler: &dyn StylerAccess, axis: Axis) -> &'static Formula {
+fn fixed_offset(
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
+    axis: Axis,
+) -> &'static Formula {
     match axis {
         Axis::Horizontal => {
-            // If `left` is set, use it. If `right` is set, compute from viewport width.
-            if styler.get_css_property(&PropertyId::Left).is_some() {
+            if ctx.get_css_property(node, &PropertyId::Left).is_some() {
                 css_prop!(Left)
-            } else if styler.get_css_property(&PropertyId::Right).is_some() {
+            } else if ctx.get_css_property(node, &PropertyId::Right).is_some() {
                 sub!(
                     viewport_width!(),
                     css_prop!(Right),
@@ -136,9 +131,9 @@ fn fixed_offset(styler: &dyn StylerAccess, axis: Axis) -> &'static Formula {
             }
         }
         Axis::Vertical => {
-            if styler.get_css_property(&PropertyId::Top).is_some() {
+            if ctx.get_css_property(node, &PropertyId::Top).is_some() {
                 css_prop!(Top)
-            } else if styler.get_css_property(&PropertyId::Bottom).is_some() {
+            } else if ctx.get_css_property(node, &PropertyId::Bottom).is_some() {
                 sub!(
                     viewport_height!(),
                     css_prop!(Bottom),
@@ -152,25 +147,25 @@ fn fixed_offset(styler: &dyn StylerAccess, axis: Axis) -> &'static Formula {
 }
 
 /// Absolute positioning: offset from the nearest positioned ancestor.
-///
-/// Walks up the parent chain to find the containing block (nearest ancestor
-/// with position != static). Falls back to the viewport if none found.
-fn absolute_offset(styler: &dyn StylerAccess, axis: Axis) -> &'static Formula {
-    // Check if the parent is the containing block (positioned).
-    let parent = styler.related(SingleRelationship::Parent);
-    let parent_is_root = parent.node_id() == styler.node_id()
-        || parent.get_css_property(&PropertyId::Display).is_none();
+fn absolute_offset(
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
+    axis: Axis,
+) -> &'static Formula {
+    let parent = ctx.parent(node);
+    let parent_is_root = parent.is_none()
+        || parent == Some(node)
+        || parent == Some(rewrite_core::NodeId::ROOT);
 
     if parent_is_root {
-        // No positioned ancestor → position from viewport origin
         return match axis {
             Axis::Horizontal => css_prop!(Left),
             Axis::Vertical => css_prop!(Top),
         };
     }
 
-    if is_positioned(parent.as_ref()) {
-        // Parent is the containing block
+    let parent_id = parent.unwrap_or(NodeId(0));
+    if is_positioned(parent_id, ctx) {
         return match axis {
             Axis::Horizontal => add!(
                 related!(Parent, offset_query, Axis::Horizontal),
@@ -187,11 +182,7 @@ fn absolute_offset(styler: &dyn StylerAccess, axis: Axis) -> &'static Formula {
         };
     }
 
-    // Parent is not positioned — the containing block is further up.
-    // Use the parent's offset query to "pass through" the parent's
-    // contribution, then add the absolute position offsets.
-    // Since we can't walk arbitrary ancestors in a static formula tree,
-    // we propagate through the parent's offset and add top/left.
+    // Parent is not positioned — pass through parent's contribution.
     match axis {
         Axis::Horizontal => add!(
             related!(Parent, offset_query, Axis::Horizontal),
@@ -209,9 +200,6 @@ fn absolute_offset(styler: &dyn StylerAccess, axis: Axis) -> &'static Formula {
 }
 
 /// Local offset for an inline child within a block parent.
-///
-/// Inline children flow horizontally: x = sum of previous siblings' widths,
-/// y = 0 (single-line simplification).
 fn inline_child_offset(axis: Axis) -> &'static Formula {
     match axis {
         Axis::Horizontal => {
@@ -222,41 +210,35 @@ fn inline_child_offset(axis: Axis) -> &'static Formula {
 }
 
 /// Local offset within parent's content area, based on parent's layout mode.
-///
-/// If the child is an inline element inside a block parent, use inline
-/// flow positioning (horizontal stacking) instead of the parent's
-/// default block stacking.
-///
-/// If the child is a block element inside an inline parent (block-in-inline,
-/// CSS 2.2 §9.2.1.1), use block stacking relative to the nearest block
-/// container ancestor.
-fn local_offset_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
+fn local_offset_query(
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
+    axis: Axis,
+) -> Option<&'static Formula> {
     // Block-in-inline: position as a block child of the block container.
-    if super::is_block_in_inline(styler) {
-        return Some(super::block::block_offset(styler, axis));
+    if super::is_block_in_inline(node, ctx) {
+        return Some(super::block::block_offset(node, ctx, axis));
     }
 
-    let parent = styler.related(SingleRelationship::Parent);
-    let parent_display = DisplayType::of(parent.as_ref())?;
+    let parent = ctx.parent(node).unwrap_or(NodeId(0));
+    let parent_display = DisplayType::of(parent, ctx)?;
 
     // Inline parent containing block children: the inline acts as a block
     // container, so children use block stacking (CSS 2.2 §9.2.1.1).
     if matches!(parent_display, DisplayType::Inline)
-        && super::inline_contains_block(parent.as_ref())
+        && super::inline_contains_block(parent, ctx)
     {
-        return Some(super::block::block_offset(styler, axis));
+        return Some(super::block::block_offset(node, ctx, axis));
     }
 
     // Check if this child is inline within a block parent.
-    // If the inline contains block children, it's treated as block-level
-    // and uses block offset instead of inline flow (CSS 2.2 §9.2.1.1).
-    if matches!(parent_display, DisplayType::Block) && !styler.is_intrinsic() {
-        if let Some(DisplayType::Inline) = DisplayType::of_element(styler) {
-            if !super::inline_contains_block(styler) {
+    if matches!(parent_display, DisplayType::Block) && !ctx.is_intrinsic(node) {
+        if let Some(DisplayType::Inline) = DisplayType::of_element(node, ctx) {
+            if !super::inline_contains_block(node, ctx) {
                 return Some(inline_child_offset(axis));
             }
         }
     }
 
-    parent_display.offset(styler, axis)
+    parent_display.offset(node, ctx, axis)
 }

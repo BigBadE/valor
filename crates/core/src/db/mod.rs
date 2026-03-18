@@ -9,5 +9,5 @@ pub mod tree_access;
 pub use property_group::{PropertyGroup, classify as classify_property};
 pub use query::{Query, ScopedDb};
 pub use sparse_tree::SparseTree;
-pub use storage::Database;
+pub use storage::{Database, is_css_initial_value};
 pub use tree_access::TreeAccess;

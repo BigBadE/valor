@@ -8,61 +8,16 @@
 
 use crate::{
     Aggregation, Formula, FormulaList, LineAggregateParams, LineItemAggregateParams, MeasureAxis,
-    MeasureMode, MultiRelationship, NodeId, Operation, PrevLinesAggregateParams, QueryFn,
-    SingleRelationship, Subpixel, TextMeasurement,
+    MeasureMode, MultiRelationship, NodeId, Operation, PrevLinesAggregateParams,
+    PropertyResolver, QueryFn, SingleRelationship, Subpixel,
 };
 use lightningcss::properties::{Property, PropertyId};
+use lightningcss::vendor_prefix::VendorPrefix;
 use std::collections::HashMap;
 use std::ptr::from_ref;
 
 /// Per-node cache: maps formula pointer → resolved value.
 type NodeCache = HashMap<usize, Subpixel>;
-
-/// Trait for the interface the resolver needs from a styler.
-///
-/// This covers both the resolver's needs (property resolution, tree
-/// navigation) and the query functions' needs (CSS property inspection,
-/// intrinsic node detection).
-pub trait StylerAccess {
-    /// Query a CSS property for the current node, converted to pixels.
-    fn get_property(&self, prop_id: &PropertyId<'static>) -> Option<Subpixel>;
-
-    /// Query the raw CSS property for the current node (for display-mode dispatch).
-    fn get_css_property(&self, prop_id: &PropertyId<'static>) -> Option<Property<'static>>;
-
-    /// Get a boxed styler for a related node.
-    fn related(&self, rel: SingleRelationship) -> Box<dyn StylerAccess>;
-
-    /// Get boxed stylers for all nodes in a multi-relationship.
-    fn related_iter(&self, rel: MultiRelationship) -> Vec<Box<dyn StylerAccess>>;
-
-    /// Get the node ID this styler is scoped to.
-    fn node_id(&self) -> NodeId;
-
-    /// Get the viewport width in pixels.
-    fn viewport_width(&self) -> u32;
-
-    /// Get the viewport height in pixels.
-    fn viewport_height(&self) -> u32;
-
-    /// Get a styler for the root element (the `<html>` element).
-    fn root(&self) -> Box<dyn StylerAccess>;
-
-    /// Whether this node is an intrinsic node (text node, replaced element).
-    /// Intrinsic nodes don't own their display type — they inherit layout
-    /// behavior from their parent.
-    fn is_intrinsic(&self) -> bool;
-
-    /// Get the text content of this node, if it is a text node.
-    fn text_content(&self) -> Option<String>;
-
-    /// Measure text with the node's font properties.
-    ///
-    /// Returns full text metrics (width, height, ascent, descent).
-    /// If `max_width` is `Some`, the text is wrapped at that width.
-    /// If `None`, text is measured as a single unwrapped line.
-    fn measure_text(&self, text: &str, max_width: Option<f32>) -> Option<TextMeasurement>;
-}
 
 /// Key for cached line assignments: (parent_node, item_main_size_fn_ptr, available_main_ptr, gap_ptr).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -79,12 +34,25 @@ struct LineAssignment {
     lines: Vec<Vec<usize>>,
 }
 
+/// Key for cached prefix-sum computations: (parent_node, aggregate_formula_ptr).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct PrefixKey {
+    parent: NodeId,
+    formula_ptr: usize,
+}
+
+/// Cached prefix values for all children of a parent.
+/// Each child's value is the aggregate of all previous siblings.
+struct PrefixValues {
+    /// Map from child NodeId to the prefix aggregate up to (not including) that child.
+    values: HashMap<NodeId, Subpixel>,
+}
+
 /// Context for formula resolution with memoization.
 ///
-/// Caches resolved values keyed by `(NodeId, formula_ptr)`. The styler
-/// is passed to each `resolve` call, keeping the context free of
-/// lifetime parameters and allowing it to persist across resolution
-/// passes.
+/// Caches resolved values keyed by `(NodeId, formula_ptr)`. The property
+/// resolver is passed to each `resolve` call, keeping the context free of
+/// lifetime parameters and allowing it to persist across resolution passes.
 pub struct ResolveContext {
     /// Cached resolved values: node → (formula_ptr → pixels).
     cache: HashMap<NodeId, NodeCache>,
@@ -92,6 +60,10 @@ pub struct ResolveContext {
     /// Cached line assignments: computed once per (parent, line-breaking params),
     /// reused by both `LineAggregate` and `LineItemAggregate`.
     line_cache: HashMap<LineCacheKey, LineAssignment>,
+
+    /// Cached prefix-sum/count/max computations for aggregates over PrevSiblings.
+    /// Computed once per (parent, aggregate_formula), reused for all children.
+    prefix_cache: HashMap<PrefixKey, PrefixValues>,
 
     /// Viewport width in pixels.
     pub viewport_width: u32,
@@ -108,6 +80,7 @@ impl ResolveContext {
         Self {
             cache: HashMap::new(),
             line_cache: HashMap::new(),
+            prefix_cache: HashMap::new(),
             viewport_width,
             viewport_height,
             depth: 0,
@@ -126,9 +99,10 @@ impl ResolveContext {
                 node_cache.remove(&formula_ptr);
             }
         }
-        // Also invalidate line cache if any formula affects line breaking
-        // (conservative: invalidate all line caches for this node)
+        // Invalidate line cache and prefix cache for this node as parent,
+        // since children's values may have changed.
         self.line_cache.retain(|key, _| key.parent != node);
+        self.prefix_cache.retain(|key, _| key.parent != node);
     }
 
     /// Invalidate all cached values for a single node.
@@ -139,6 +113,7 @@ impl ResolveContext {
     pub fn invalidate_node(&mut self, node: NodeId) {
         self.cache.remove(&node);
         self.line_cache.retain(|key, _| key.parent != node);
+        self.prefix_cache.retain(|key, _| key.parent != node);
     }
 
     /// Look up a previously resolved value from the cache.
@@ -155,6 +130,7 @@ impl ResolveContext {
     pub fn clear_cache(&mut self) {
         self.cache.clear();
         self.line_cache.clear();
+        self.prefix_cache.clear();
     }
 
     /// Resolve a formula for a node, using cache if available.
@@ -162,7 +138,7 @@ impl ResolveContext {
         &mut self,
         formula: &'static Formula,
         node: NodeId,
-        styler: &dyn StylerAccess,
+        ctx: &dyn PropertyResolver,
     ) -> Option<Subpixel> {
         let formula_ptr = from_ref::<Formula>(formula) as usize;
 
@@ -175,7 +151,7 @@ impl ResolveContext {
             self.depth -= 1;
             return None;
         }
-        let value = self.resolve_inner(formula, node, styler);
+        let value = self.resolve_inner(formula, node, ctx);
         self.depth -= 1;
 
         if let Some(val) = value {
@@ -186,27 +162,120 @@ impl ResolveContext {
         }
     }
 
-    /// Resolve a formula in the context of a different node.
-    fn resolve_for_node(
-        &mut self,
-        formula: &'static Formula,
-        target: &dyn StylerAccess,
-    ) -> Option<Subpixel> {
-        let target_node = target.node_id();
-        self.resolve(formula, target_node, target)
+    /// Navigate to a related node from `node` using a `SingleRelationship`.
+    fn navigate_single(
+        &self,
+        node: NodeId,
+        rel: SingleRelationship,
+        ctx: &dyn PropertyResolver,
+    ) -> NodeId {
+        match rel {
+            SingleRelationship::Self_ => node,
+            SingleRelationship::Parent => ctx.parent(node).unwrap_or(NodeId(0)),
+            SingleRelationship::PrevSibling => {
+                // Find the closest previous element sibling that participates
+                // in layout (must be a DOM element, not text/comment/display:none).
+                ctx.prev_siblings(node)
+                    .into_iter()
+                    .find(|&id| {
+                        ctx.is_element(id)
+                            && !matches!(
+                                ctx.get_css_property(id, &PropertyId::Display),
+                                Some(Property::Display(
+                                    lightningcss::properties::display::Display::Keyword(
+                                        lightningcss::properties::display::DisplayKeyword::None,
+                                    ),
+                                ))
+                            )
+                    })
+                    .unwrap_or(node)
+            }
+            SingleRelationship::BlockContainer => {
+                // Walk up ancestors to find the nearest block container
+                // (an ancestor whose display is not inline).
+                let mut current = node;
+                while let Some(parent_id) = ctx.parent(current) {
+                    let display = ctx.get_css_property(parent_id, &PropertyId::Display);
+                    let is_inline = matches!(
+                        display,
+                        Some(Property::Display(
+                            lightningcss::properties::display::Display::Pair(pair)
+                        )) if matches!(
+                            pair.outside,
+                            lightningcss::properties::display::DisplayOutside::Inline
+                        ) && matches!(
+                            pair.inside,
+                            lightningcss::properties::display::DisplayInside::Flow
+                        )
+                    );
+                    if !is_inline {
+                        return parent_id;
+                    }
+                    current = parent_id;
+                }
+                // Fallback: root node.
+                NodeId::ROOT
+            }
+        }
+    }
+
+    /// Navigate to multiple related nodes from `node` using a `MultiRelationship`.
+    fn navigate_multi(
+        &self,
+        node: NodeId,
+        rel: MultiRelationship,
+        ctx: &dyn PropertyResolver,
+    ) -> Vec<NodeId> {
+        /// Get CSS `order` property value for a node (defaults to 0).
+        fn get_order(node: NodeId, ctx: &dyn PropertyResolver) -> i32 {
+            match ctx.get_css_property(node, &PropertyId::Order(VendorPrefix::None)) {
+                Some(Property::Order(val, _)) => val,
+                _ => 0,
+            }
+        }
+
+        match rel {
+            MultiRelationship::Children => ctx.children(node),
+            MultiRelationship::PrevSiblings => ctx.prev_siblings(node),
+            MultiRelationship::NextSiblings => ctx.next_siblings(node),
+            MultiRelationship::Siblings => {
+                let mut all = ctx.prev_siblings(node);
+                all.extend(ctx.next_siblings(node));
+                all
+            }
+            MultiRelationship::OrderedChildren => {
+                // children() returns reverse DOM order; reverse to DOM order
+                // before sorting so items with equal `order` keep DOM order.
+                let mut children = ctx.children(node);
+                children.reverse();
+                children.sort_by_key(|&id| get_order(id, ctx));
+                children
+            }
+            MultiRelationship::OrderedPrevSiblings => {
+                // Get parent, then all siblings sorted by order.
+                // "Previous" = all siblings before this node in sorted order.
+                let parent = ctx.parent(node).unwrap_or(node);
+                let mut siblings = ctx.children(parent);
+                siblings.reverse(); // reverse DOM order → DOM order
+                siblings.sort_by_key(|&id| get_order(id, ctx));
+                let pos = siblings.iter().position(|&id| id == node).unwrap_or(0);
+                siblings[..pos].to_vec()
+            }
+        }
     }
 
     /// Resolve a `Related` formula — navigate to a related node, query it
     /// for a formula, and resolve that formula in the target's context.
     fn resolve_related(
         &mut self,
+        node: NodeId,
         rel: SingleRelationship,
         query_fn: QueryFn,
-        styler: &dyn StylerAccess,
+        ctx: &dyn PropertyResolver,
     ) -> Option<Subpixel> {
-        let target = styler.related(rel);
-        let result_formula = query_fn(target.as_ref())?;
-        self.resolve_for_node(result_formula, target.as_ref())
+        let target = self.navigate_single(node, rel, ctx);
+        let result_formula = query_fn(target, ctx)?;
+        self.resolve(result_formula, target, ctx)
     }
 
     /// Internal resolve function.
@@ -214,15 +283,15 @@ impl ResolveContext {
         &mut self,
         formula: &'static Formula,
         node: NodeId,
-        styler: &dyn StylerAccess,
+        ctx: &dyn PropertyResolver,
     ) -> Option<Subpixel> {
         match formula {
             Formula::Constant(value) => Some(*value),
             Formula::ViewportWidth => Some(Subpixel::from_px(self.viewport_width as i32)),
             Formula::ViewportHeight => Some(Subpixel::from_px(self.viewport_height as i32)),
             Formula::BinOp(oper, lhs, rhs) => {
-                let lhs_val = self.resolve(lhs, node, styler)?;
-                let rhs_val = self.resolve(rhs, node, styler)?;
+                let lhs_val = self.resolve(lhs, node, ctx)?;
+                let rhs_val = self.resolve(rhs, node, ctx)?;
                 Some(match oper {
                     Operation::Add => lhs_val + rhs_val,
                     Operation::Sub => lhs_val - rhs_val,
@@ -250,22 +319,26 @@ impl ResolveContext {
                     }
                 })
             }
-            Formula::CssValue(prop_id) => styler.get_property(prop_id),
+            Formula::CssValue(prop_id) => ctx.get_property(node, prop_id),
             Formula::CssValueOrDefault(prop_id, default) => {
-                Some(styler.get_property(prop_id).unwrap_or(*default))
+                Some(ctx.get_property(node, prop_id).unwrap_or(*default))
             }
-            Formula::Related(rel, query_fn) => self.resolve_related(*rel, *query_fn, styler),
-            Formula::Aggregate(agg, list) => self.resolve_aggregate(*agg, list, styler),
-            Formula::InlineMeasure(axis, mode) => self.resolve_inline_measure(*axis, *mode, styler),
-            Formula::LineAggregate(params) => self.resolve_line_aggregate(params, node, styler),
+            Formula::Related(rel, query_fn) => {
+                self.resolve_related(node, *rel, *query_fn, ctx)
+            }
+            Formula::Aggregate(agg, list) => self.resolve_aggregate(*agg, list, node, ctx),
+            Formula::InlineMeasure(axis, mode) => {
+                self.resolve_inline_measure(*axis, *mode, node, ctx)
+            }
+            Formula::LineAggregate(params) => self.resolve_line_aggregate(params, node, ctx),
             Formula::LineItemAggregate(params) => {
-                self.resolve_line_item_aggregate(params, node, styler)
+                self.resolve_line_item_aggregate(params, node, ctx)
             }
             Formula::PrevLinesAggregate(params) => {
-                self.resolve_prev_lines_aggregate(params, node, styler)
+                self.resolve_prev_lines_aggregate(params, node, ctx)
             }
             Formula::Imperative(func) => {
-                let results = func(node, styler, &mut |f, n, s| self.resolve(f, n, s))?;
+                let results = func(node, ctx, &mut |f, n| self.resolve(f, n, ctx))?;
                 let formula_ptr = from_ref::<Formula>(formula) as usize;
                 let mut my_value = None;
                 for &(n, val) in &results {
@@ -285,11 +358,11 @@ impl ResolveContext {
     /// (the containing block per CSS 2.2 §10.1), then computes its
     /// content width (explicit width minus padding and border).
     /// Falls back to viewport width if no block ancestor is found.
-    fn containing_block_width(&self, styler: &dyn StylerAccess) -> f32 {
-        let mut current = styler.related(SingleRelationship::Parent);
+    fn containing_block_width(&self, node: NodeId, ctx: &dyn PropertyResolver) -> f32 {
+        let mut current = ctx.parent(node).unwrap_or(NodeId(0));
         loop {
             // Check if this ancestor has a Display property.
-            let display = current.get_css_property(&PropertyId::Display);
+            let display = ctx.get_css_property(current, &PropertyId::Display);
             let is_block = match &display {
                 Some(Property::Display(display)) => {
                     use lightningcss::properties::display::{
@@ -307,32 +380,31 @@ impl ResolveContext {
             };
 
             if is_block {
-                let raw_width = current
-                    .get_property(&PropertyId::Width)
+                let raw_width = ctx
+                    .get_property(current, &PropertyId::Width)
                     .unwrap_or_else(|| Subpixel::from_px(self.viewport_width as i32));
-                let padding_left = current
-                    .get_property(&PropertyId::PaddingLeft)
+                let padding_left = ctx
+                    .get_property(current, &PropertyId::PaddingLeft)
                     .unwrap_or(Subpixel::ZERO);
-                let padding_right = current
-                    .get_property(&PropertyId::PaddingRight)
+                let padding_right = ctx
+                    .get_property(current, &PropertyId::PaddingRight)
                     .unwrap_or(Subpixel::ZERO);
-                let border_left = current
-                    .get_property(&PropertyId::BorderLeftWidth)
+                let border_left = ctx
+                    .get_property(current, &PropertyId::BorderLeftWidth)
                     .unwrap_or(Subpixel::ZERO);
-                let border_right = current
-                    .get_property(&PropertyId::BorderRightWidth)
+                let border_right = ctx
+                    .get_property(current, &PropertyId::BorderRightWidth)
                     .unwrap_or(Subpixel::ZERO);
                 return (raw_width - padding_left - padding_right - border_left - border_right)
                     .max(Subpixel::ZERO)
                     .to_f32();
             }
 
-            let parent = current.related(SingleRelationship::Parent);
-            if parent.node_id() == current.node_id() {
-                // Reached the root without finding a block ancestor.
-                return self.viewport_width as f32;
+            let parent = ctx.parent(current);
+            match parent {
+                Some(p) if p != current => current = p,
+                _ => return self.viewport_width as f32,
             }
-            current = parent;
         }
     }
 
@@ -347,10 +419,11 @@ impl ResolveContext {
         &mut self,
         axis: MeasureAxis,
         mode: MeasureMode,
-        styler: &dyn StylerAccess,
+        node: NodeId,
+        ctx: &dyn PropertyResolver,
     ) -> Option<Subpixel> {
         // Text node: measure directly.
-        if let Some(text) = styler.text_content() {
+        if let Some(text) = ctx.text_content(node) {
             if text.trim().is_empty() {
                 return None;
             }
@@ -361,7 +434,7 @@ impl ResolveContext {
             if mode == MeasureMode::MinContent && axis == MeasureAxis::Width {
                 let mut max_word_width: f32 = 0.0;
                 for word in text.split_whitespace() {
-                    if let Some(wm) = styler.measure_text(word, None) {
+                    if let Some(wm) = ctx.measure_text(node, word, None) {
                         if wm.width > max_word_width {
                             max_word_width = wm.width;
                         }
@@ -371,12 +444,12 @@ impl ResolveContext {
             }
 
             let max_width = match mode {
-                MeasureMode::FitAvailable => Some(self.containing_block_width(styler)),
+                MeasureMode::FitAvailable => Some(self.containing_block_width(node, ctx)),
                 MeasureMode::MinContent => Some(0.0), // height at narrowest
                 MeasureMode::MaxContent | MeasureMode::Baseline => None,
             };
 
-            let m = styler.measure_text(&text, max_width)?;
+            let m = ctx.measure_text(node, &text, max_width)?;
 
             return Some(Subpixel::from_f32(match (axis, mode) {
                 (MeasureAxis::Width, _) => m.width,
@@ -386,7 +459,7 @@ impl ResolveContext {
         }
 
         // Inline element (e.g. <span>): recurse into children.
-        let children = styler.related_iter(MultiRelationship::Children);
+        let children = ctx.children(node);
         if children.is_empty() {
             return None;
         }
@@ -395,8 +468,8 @@ impl ResolveContext {
             MeasureAxis::Width => {
                 // Sum children's widths (inline elements flow horizontally).
                 let mut total = Subpixel::ZERO;
-                for child in &children {
-                    if let Some(val) = self.resolve_inline_measure(axis, mode, child.as_ref()) {
+                for &child in &children {
+                    if let Some(val) = self.resolve_inline_measure(axis, mode, child, ctx) {
                         total = total + val;
                     }
                 }
@@ -405,8 +478,8 @@ impl ResolveContext {
             MeasureAxis::Height => {
                 // Max of children's heights (tallest child determines line height).
                 let mut max_val = Subpixel::ZERO;
-                for child in &children {
-                    if let Some(val) = self.resolve_inline_measure(axis, mode, child.as_ref())
+                for &child in &children {
+                    if let Some(val) = self.resolve_inline_measure(axis, mode, child, ctx)
                         && val > max_val
                     {
                         max_val = val;
@@ -418,20 +491,94 @@ impl ResolveContext {
     }
 
     /// Resolve an aggregate formula.
+    ///
+    /// For `Sum` and `Count` aggregates over `PrevSiblings` / `OrderedPrevSiblings`,
+    /// uses prefix caching: compute prefix sums for ALL children of the parent
+    /// in one pass, then look up the result for any child in O(1).
     fn resolve_aggregate(
         &mut self,
         agg: Aggregation,
         list: &'static FormulaList,
-        styler: &dyn StylerAccess,
+        node: NodeId,
+        ctx: &dyn PropertyResolver,
     ) -> Option<Subpixel> {
         let FormulaList::Related(rel, query_fn) = list;
-        let targets = styler.related_iter(*rel);
 
-        // Standard aggregation: resolve each formula and aggregate.
+        // Check if this is a prefix-cacheable pattern: Sum or Count over PrevSiblings.
+        let is_prev_sibling_agg = matches!(
+            rel,
+            MultiRelationship::PrevSiblings | MultiRelationship::OrderedPrevSiblings
+        );
+        let is_prefix_cacheable =
+            is_prev_sibling_agg && matches!(agg, Aggregation::Sum | Aggregation::Count);
+
+        if is_prefix_cacheable {
+            // Use the aggregate formula's list pointer as part of the cache key.
+            // This uniquely identifies this specific aggregate (same query_fn + relationship).
+            let formula_ptr = from_ref::<FormulaList>(list) as usize;
+
+            if let Some(parent) = ctx.parent(node) {
+                let prefix_key = PrefixKey {
+                    parent,
+                    formula_ptr,
+                };
+
+                // Check if prefix values are already computed for this parent.
+                if let Some(prefix) = self.prefix_cache.get(&prefix_key) {
+                    if let Some(&val) = prefix.values.get(&node) {
+                        return Some(val);
+                    }
+                }
+
+                // Compute prefix values for all children of the parent.
+                let all_children = if matches!(rel, MultiRelationship::OrderedPrevSiblings) {
+                    self.navigate_multi(parent, MultiRelationship::OrderedChildren, ctx)
+                } else {
+                    // PrevSiblings: need children in DOM order.
+                    let mut c = ctx.children(parent);
+                    c.reverse();
+                    c
+                };
+
+                let mut prefix_values = HashMap::new();
+                let mut running = Subpixel::ZERO;
+
+                for &child in &all_children {
+                    // Store the prefix value BEFORE this child's contribution.
+                    prefix_values.insert(child, running);
+
+                    // Compute this child's contribution.
+                    if let Some(formula) = query_fn(child, ctx) {
+                        if let Some(val) = self.resolve(formula, child, ctx) {
+                            match agg {
+                                Aggregation::Sum => running = running + val,
+                                Aggregation::Count => {
+                                    running = running + Subpixel::raw(1);
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                    }
+                }
+
+                self.prefix_cache.insert(prefix_key, PrefixValues {
+                    values: prefix_values,
+                });
+
+                // Return the value for the requested node.
+                return self
+                    .prefix_cache
+                    .get(&prefix_key)
+                    .and_then(|pv| pv.values.get(&node).copied());
+            }
+        }
+
+        // Non-prefix path: standard aggregation.
+        let targets = self.navigate_multi(node, *rel, ctx);
         let mut values = Vec::new();
-        for target in &targets {
-            if let Some(formula) = query_fn(target.as_ref()) {
-                if let Some(val) = self.resolve_for_node(formula, target.as_ref()) {
+        for &target in &targets {
+            if let Some(formula) = query_fn(target, ctx) {
+                if let Some(val) = self.resolve(formula, target, ctx) {
                     values.push(val);
                 }
             }
@@ -452,11 +599,11 @@ impl ResolveContext {
     fn compute_line_assignments(
         &mut self,
         parent_node: NodeId,
-        parent_styler: &dyn StylerAccess,
-        children: &[Box<dyn StylerAccess>],
+        children: &[NodeId],
         item_main_size: QueryFn,
         available_main: &'static Formula,
         gap: &'static Formula,
+        ctx: &dyn PropertyResolver,
     ) -> Vec<Vec<usize>> {
         let line_key = LineCacheKey {
             parent: parent_node,
@@ -470,11 +617,11 @@ impl ResolveContext {
         }
 
         let available = self
-            .resolve(available_main, parent_node, parent_styler)
+            .resolve(available_main, parent_node, ctx)
             .unwrap_or(Subpixel::from_px(self.viewport_width as i32))
             .to_f32();
         let gap_val = self
-            .resolve(gap, parent_node, parent_styler)
+            .resolve(gap, parent_node, ctx)
             .unwrap_or(Subpixel::ZERO)
             .to_f32();
 
@@ -488,8 +635,8 @@ impl ResolveContext {
         let dom_order: Vec<usize> = (0..children.len()).rev().collect();
 
         for &idx in &dom_order {
-            let child = &children[idx];
-            let child_formula = item_main_size(child.as_ref());
+            let child = children[idx];
+            let child_formula = item_main_size(child, ctx);
 
             // If the main-size query returns None, this item forces a line
             // break (e.g., a block item inside an inline formatting context).
@@ -506,7 +653,7 @@ impl ResolveContext {
             };
 
             let child_size = self
-                .resolve_for_node(formula, child.as_ref())
+                .resolve(formula, child, ctx)
                 .unwrap_or(Subpixel::ZERO)
                 .to_f32();
 
@@ -554,24 +701,24 @@ impl ResolveContext {
         &mut self,
         params: &LineAggregateParams,
         node: NodeId,
-        styler: &dyn StylerAccess,
+        ctx: &dyn PropertyResolver,
     ) -> Option<Subpixel> {
-        let children = styler.related_iter(MultiRelationship::Children);
+        let children = ctx.children(node);
         if children.is_empty() {
             return Some(Subpixel::ZERO);
         }
 
         let lines = self.compute_line_assignments(
             node,
-            styler,
             &children,
             params.item_main_size,
             params.available_main,
             params.gap,
+            ctx,
         );
 
         let line_gap_val = self
-            .resolve(params.line_gap, node, styler)
+            .resolve(params.line_gap, node, ctx)
             .unwrap_or(Subpixel::ZERO);
 
         let mut line_values: Vec<Subpixel> = Vec::new();
@@ -580,9 +727,9 @@ impl ResolveContext {
             let mut item_values: Vec<Subpixel> = Vec::new();
 
             for &child_idx in line_indices {
-                let child = children[child_idx].as_ref();
-                if let Some(formula) = (params.item_value)(child) {
-                    if let Some(val) = self.resolve_for_node(formula, child) {
+                let child = children[child_idx];
+                if let Some(formula) = (params.item_value)(child, ctx) {
+                    if let Some(val) = self.resolve(formula, child, ctx) {
                         item_values.push(val);
                     }
                 }
@@ -612,12 +759,11 @@ impl ResolveContext {
         &mut self,
         params: &LineItemAggregateParams,
         node: NodeId,
-        styler: &dyn StylerAccess,
+        ctx: &dyn PropertyResolver,
     ) -> Option<Subpixel> {
         // Get the parent to compute line assignments.
-        let parent = styler.related(SingleRelationship::Parent);
-        let parent_node = parent.node_id();
-        let all_children = parent.related_iter(MultiRelationship::Children);
+        let parent_node = ctx.parent(node).unwrap_or(NodeId(0));
+        let all_children = ctx.children(parent_node);
 
         if all_children.is_empty() {
             return Some(Subpixel::ZERO);
@@ -625,11 +771,11 @@ impl ResolveContext {
 
         let lines = self.compute_line_assignments(
             parent_node,
-            parent.as_ref(),
             &all_children,
             params.item_main_size,
             params.available_main,
             params.gap,
+            ctx,
         );
 
         // Find which line the current node is on and its position within.
@@ -637,7 +783,7 @@ impl ResolveContext {
         let mut my_pos_in_line = 0;
         'outer: for (line_idx, line) in lines.iter().enumerate() {
             for (pos, &child_idx) in line.iter().enumerate() {
-                if all_children[child_idx].node_id() == node {
+                if all_children[child_idx] == node {
                     my_line_idx = line_idx;
                     my_pos_in_line = pos;
                     break 'outer;
@@ -668,7 +814,7 @@ impl ResolveContext {
                     my_line
                         .iter()
                         .copied()
-                        .filter(|&idx| all_children[idx].node_id() != node)
+                        .filter(|&idx| all_children[idx] != node)
                         .collect()
                 } else {
                     my_line.to_vec()
@@ -677,10 +823,10 @@ impl ResolveContext {
         };
 
         let mut values: Vec<Subpixel> = Vec::new();
-        for child_idx in &target_indices {
-            let child = all_children[*child_idx].as_ref();
-            if let Some(formula) = (params.query)(child) {
-                if let Some(val) = self.resolve_for_node(formula, child) {
+        for &child_idx in &target_indices {
+            let child = all_children[child_idx];
+            if let Some(formula) = (params.query)(child, ctx) {
+                if let Some(val) = self.resolve(formula, child, ctx) {
                     values.push(val);
                 }
             }
@@ -704,11 +850,10 @@ impl ResolveContext {
         &mut self,
         params: &PrevLinesAggregateParams,
         node: NodeId,
-        styler: &dyn StylerAccess,
+        ctx: &dyn PropertyResolver,
     ) -> Option<Subpixel> {
-        let parent = styler.related(SingleRelationship::Parent);
-        let parent_node = parent.node_id();
-        let all_children = parent.related_iter(MultiRelationship::Children);
+        let parent_node = ctx.parent(node).unwrap_or(NodeId(0));
+        let all_children = ctx.children(parent_node);
 
         if all_children.is_empty() {
             return Some(Subpixel::ZERO);
@@ -716,18 +861,18 @@ impl ResolveContext {
 
         let lines = self.compute_line_assignments(
             parent_node,
-            parent.as_ref(),
             &all_children,
             params.item_main_size,
             params.available_main,
             params.gap,
+            ctx,
         );
 
         // Find which line the current node is on.
         let mut my_line_idx = 0;
         'outer: for (line_idx, line) in lines.iter().enumerate() {
             for &child_idx in line {
-                if all_children[child_idx].node_id() == node {
+                if all_children[child_idx] == node {
                     my_line_idx = line_idx;
                     break 'outer;
                 }
@@ -744,9 +889,9 @@ impl ResolveContext {
         for line_indices in &lines[..my_line_idx] {
             let mut item_values: Vec<Subpixel> = Vec::new();
             for &child_idx in line_indices {
-                let child = all_children[child_idx].as_ref();
-                if let Some(formula) = (params.item_value)(child)
-                    && let Some(val) = self.resolve_for_node(formula, child)
+                let child = all_children[child_idx];
+                if let Some(formula) = (params.item_value)(child, ctx)
+                    && let Some(val) = self.resolve(formula, child, ctx)
                 {
                     item_values.push(val);
                 }
@@ -756,7 +901,7 @@ impl ResolveContext {
         }
 
         let line_gap_val = self
-            .resolve(params.line_gap, parent_node, parent.as_ref())
+            .resolve(params.line_gap, parent_node, ctx)
             .unwrap_or(Subpixel::ZERO);
 
         // Add line gaps between previous lines.

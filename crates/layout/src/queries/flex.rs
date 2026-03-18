@@ -24,9 +24,7 @@ use lightningcss::properties::flex::{FlexDirection, FlexWrap};
 use lightningcss::properties::{Property, PropertyId};
 use lightningcss::values::length::LengthPercentageOrAuto;
 use lightningcss::vendor_prefix::VendorPrefix;
-use rewrite_core::{
-    Axis, Formula, MultiRelationship, NodeId, QueryFn, SingleRelationship, StylerAccess, Subpixel,
-};
+use rewrite_core::{Axis, Formula, NodeId, PropertyResolver, QueryFn, Subpixel};
 
 use super::size::size_query;
 
@@ -122,9 +120,9 @@ macro_rules! justify_free_v_col {
 pub fn flex_size(
     flex_direction: FlexDirection,
     axis: Axis,
-    styler: &dyn StylerAccess,
+    node: NodeId, ctx: &dyn PropertyResolver,
 ) -> &'static Formula {
-    let wrap = flex_wrap_of(styler);
+    let wrap = flex_wrap_of(node, ctx);
 
     if is_main_axis(axis, flex_direction) {
         flex_container_main_size(flex_direction, axis)
@@ -147,9 +145,9 @@ pub fn flex_size(
 pub fn flex_min_content_size(
     flex_direction: FlexDirection,
     axis: Axis,
-    styler: &dyn StylerAccess,
+    node: NodeId, ctx: &dyn PropertyResolver,
 ) -> &'static Formula {
-    let wrap = flex_wrap_of(styler);
+    let wrap = flex_wrap_of(node, ctx);
     if is_main_axis(axis, flex_direction) {
         if is_wrapping(wrap) {
             // Wrap: each item can go on its own line → largest item's
@@ -179,10 +177,10 @@ pub fn flex_min_content_size(
 /// Per-item min-content contribution for the main axis.
 /// Returns the item's min-content size plus its padding and border.
 fn flex_item_min_content_main_query(
-    styler: &dyn StylerAccess,
+    node: NodeId, ctx: &dyn PropertyResolver,
     axis: Axis,
 ) -> Option<&'static Formula> {
-    if is_flex_excluded(styler) {
+    if is_flex_excluded(node, ctx) {
         return None;
     }
     Some(match axis {
@@ -230,12 +228,12 @@ pub fn flex_item_size(parent_direction: FlexDirection, axis: Axis) -> &'static F
 
 /// Query that dispatches to the imperative §9.7 resolver for main-axis sizing.
 fn flex_item_main_dispatch_query(
-    styler: &dyn StylerAccess,
+    node: NodeId, ctx: &dyn PropertyResolver,
     axis: Axis,
 ) -> Option<&'static Formula> {
-    let wrap = parent_flex_wrap(styler);
-    let parent = styler.related(SingleRelationship::Parent);
-    let parent_display = super::DisplayType::of_element(parent.as_ref());
+    let wrap = parent_flex_wrap(node, ctx);
+    let parent_id = ctx.parent(node).unwrap_or(NodeId(0));
+    let parent_display = super::DisplayType::of_element(parent_id, ctx);
     let direction = match parent_display {
         Some(super::DisplayType::Flex(dir, _)) => dir,
         _ => return None,
@@ -293,17 +291,17 @@ fn is_reversed(direction: FlexDirection) -> bool {
 }
 
 /// Read the flex-wrap value from the container's CSS.
-fn flex_wrap_of(styler: &dyn StylerAccess) -> FlexWrap {
-    match styler.get_css_property(&PropertyId::FlexWrap(VendorPrefix::None)) {
+fn flex_wrap_of(node: NodeId, ctx: &dyn PropertyResolver) -> FlexWrap {
+    match ctx.get_css_property(node, &PropertyId::FlexWrap(VendorPrefix::None)) {
         Some(lightningcss::properties::Property::FlexWrap(wrap, _)) => wrap,
         _ => FlexWrap::NoWrap,
     }
 }
 
 /// Read the flex-wrap value from an item's parent container.
-fn parent_flex_wrap(styler: &dyn StylerAccess) -> FlexWrap {
-    let parent = styler.related(SingleRelationship::Parent);
-    flex_wrap_of(parent.as_ref())
+fn parent_flex_wrap(node: NodeId, ctx: &dyn PropertyResolver) -> FlexWrap {
+    let parent_id = ctx.parent(node).unwrap_or(NodeId(0));
+    flex_wrap_of(parent_id, ctx)
 }
 
 /// Whether wrapping is enabled (wrap or wrap-reverse).
@@ -329,8 +327,8 @@ static ROW_AVAILABLE_MAIN: Formula = Formula::BinOp(
             &Formula::BinOp(
                 rewrite_core::Operation::Sub,
                 &Formula::Related(rewrite_core::SingleRelationship::Self_, {
-                    fn wrap(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-                        size_query(sty, Axis::Horizontal)
+                    fn wrap(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+                        size_query(node, ctx, Axis::Horizontal)
                     }
                     wrap as QueryFn
                 }),
@@ -353,8 +351,8 @@ static COL_AVAILABLE_MAIN: Formula = Formula::BinOp(
             &Formula::BinOp(
                 rewrite_core::Operation::Sub,
                 &Formula::Related(rewrite_core::SingleRelationship::Self_, {
-                    fn wrap(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-                        size_query(sty, Axis::Vertical)
+                    fn wrap(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+                        size_query(node, ctx, Axis::Vertical)
                     }
                     wrap as QueryFn
                 }),
@@ -417,14 +415,14 @@ macro_rules! lbp_cross_gap {
 /// (that behaviour is for block children in inline formatting contexts).
 macro_rules! lbp_item_main_size {
     (Row) => {{
-        fn q(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-            flex_item_basis_query_for_lines(sty, Axis::Horizontal)
+        fn q(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+            flex_item_basis_query_for_lines(node, ctx, Axis::Horizontal)
         }
         q as QueryFn
     }};
     (Column) => {{
-        fn q(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-            flex_item_basis_query_for_lines(sty, Axis::Vertical)
+        fn q(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+            flex_item_basis_query_for_lines(node, ctx, Axis::Vertical)
         }
         q as QueryFn
     }};
@@ -434,14 +432,14 @@ macro_rules! lbp_item_main_size {
 /// Uses margin-box so container cross size includes child margins.
 macro_rules! lbp_cross_query {
     (Row) => {{
-        fn q(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-            flex_item_cross_margin_box_query(sty, Axis::Vertical)
+        fn q(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+            flex_item_cross_margin_box_query(node, ctx, Axis::Vertical)
         }
         q as QueryFn
     }};
     (Column) => {{
-        fn q(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-            flex_item_cross_margin_box_query(sty, Axis::Horizontal)
+        fn q(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+            flex_item_cross_margin_box_query(node, ctx, Axis::Horizontal)
         }
         q as QueryFn
     }};
@@ -450,14 +448,14 @@ macro_rules! lbp_cross_query {
 /// Query function returning each item's baseline offset (for baseline alignment).
 macro_rules! lbp_baseline_query {
     (Row) => {{
-        fn q(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-            flex_item_baseline_query(sty, Axis::Vertical)
+        fn q(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+            flex_item_baseline_query(node, ctx, Axis::Vertical)
         }
         q as QueryFn
     }};
     (Column) => {{
-        fn q(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-            flex_item_baseline_query(sty, Axis::Horizontal)
+        fn q(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+            flex_item_baseline_query(node, ctx, Axis::Horizontal)
         }
         q as QueryFn
     }};
@@ -468,9 +466,9 @@ macro_rules! lbp_baseline_query {
 // ============================================================================
 
 /// Check if the item has an explicit `flex-basis` (not `auto`).
-fn has_explicit_flex_basis(styler: &dyn StylerAccess) -> bool {
+fn has_explicit_flex_basis(node: NodeId, ctx: &dyn PropertyResolver) -> bool {
     use lightningcss::values::length::LengthPercentageOrAuto;
-    match styler.get_css_property(&PropertyId::FlexBasis(VendorPrefix::None)) {
+    match ctx.get_css_property(node, &PropertyId::FlexBasis(VendorPrefix::None)) {
         Some(lightningcss::properties::Property::FlexBasis(basis, _)) => {
             !matches!(basis, LengthPercentageOrAuto::Auto)
         }
@@ -483,8 +481,8 @@ fn has_explicit_flex_basis(styler: &dyn StylerAccess) -> bool {
 // ============================================================================
 
 /// Check if a margin property is `auto`.
-fn is_margin_auto(styler: &dyn StylerAccess, prop_id: &PropertyId<'static>) -> bool {
-    match styler.get_css_property(prop_id) {
+fn is_margin_auto(node: NodeId, ctx: &dyn PropertyResolver, prop_id: &PropertyId<'static>) -> bool {
+    match ctx.get_css_property(node, prop_id) {
         Some(lightningcss::properties::Property::MarginLeft(LengthPercentageOrAuto::Auto))
         | Some(lightningcss::properties::Property::MarginRight(LengthPercentageOrAuto::Auto))
         | Some(lightningcss::properties::Property::MarginTop(LengthPercentageOrAuto::Auto))
@@ -503,12 +501,12 @@ fn is_margin_auto(styler: &dyn StylerAccess, prop_id: &PropertyId<'static>) -> b
 /// Used in aggregate(Sum, OrderedChildren, ...) to get total auto margin count.
 ///
 /// Row direction: checks margin-left and margin-right.
-fn flex_auto_margin_count_row_query(styler: &dyn StylerAccess) -> Option<&'static Formula> {
-    if is_flex_excluded(styler) {
+fn flex_auto_margin_count_row_query(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+    if is_flex_excluded(node, ctx) {
         return None;
     }
-    let ml = is_margin_auto(styler, &PropertyId::MarginLeft);
-    let mr = is_margin_auto(styler, &PropertyId::MarginRight);
+    let ml = is_margin_auto(node, ctx, &PropertyId::MarginLeft);
+    let mr = is_margin_auto(node, ctx, &PropertyId::MarginRight);
     match (ml, mr) {
         (true, true) => Some(constant!(Subpixel::raw(2))),
         (true, false) | (false, true) => Some(constant!(Subpixel::raw(1))),
@@ -517,12 +515,12 @@ fn flex_auto_margin_count_row_query(styler: &dyn StylerAccess) -> Option<&'stati
 }
 
 /// Column direction: checks margin-top and margin-bottom.
-fn flex_auto_margin_count_col_query(styler: &dyn StylerAccess) -> Option<&'static Formula> {
-    if is_flex_excluded(styler) {
+fn flex_auto_margin_count_col_query(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+    if is_flex_excluded(node, ctx) {
         return None;
     }
-    let mt = is_margin_auto(styler, &PropertyId::MarginTop);
-    let mb = is_margin_auto(styler, &PropertyId::MarginBottom);
+    let mt = is_margin_auto(node, ctx, &PropertyId::MarginTop);
+    let mb = is_margin_auto(node, ctx, &PropertyId::MarginBottom);
     match (mt, mb) {
         (true, true) => Some(constant!(Subpixel::raw(2))),
         (true, false) | (false, true) => Some(constant!(Subpixel::raw(1))),
@@ -534,12 +532,12 @@ fn flex_auto_margin_count_col_query(styler: &dyn StylerAccess) -> Option<&'stati
 /// = auto_count * (max(0, free_space) / max(1, total_auto_count))
 ///
 /// Row direction (horizontal main axis).
-fn flex_item_auto_margin_row_query(styler: &dyn StylerAccess) -> Option<&'static Formula> {
-    if is_flex_excluded(styler) {
+fn flex_item_auto_margin_row_query(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+    if is_flex_excluded(node, ctx) {
         return None;
     }
-    let ml = is_margin_auto(styler, &PropertyId::MarginLeft);
-    let mr = is_margin_auto(styler, &PropertyId::MarginRight);
+    let ml = is_margin_auto(node, ctx, &PropertyId::MarginLeft);
+    let mr = is_margin_auto(node, ctx, &PropertyId::MarginRight);
 
     macro_rules! per_auto_row {
         () => {
@@ -564,12 +562,12 @@ fn flex_item_auto_margin_row_query(styler: &dyn StylerAccess) -> Option<&'static
 }
 
 /// Column direction (vertical main axis).
-fn flex_item_auto_margin_col_query(styler: &dyn StylerAccess) -> Option<&'static Formula> {
-    if is_flex_excluded(styler) {
+fn flex_item_auto_margin_col_query(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+    if is_flex_excluded(node, ctx) {
         return None;
     }
-    let mt = is_margin_auto(styler, &PropertyId::MarginTop);
-    let mb = is_margin_auto(styler, &PropertyId::MarginBottom);
+    let mt = is_margin_auto(node, ctx, &PropertyId::MarginTop);
+    let mb = is_margin_auto(node, ctx, &PropertyId::MarginBottom);
 
     macro_rules! per_auto_col {
         () => {
@@ -602,19 +600,19 @@ fn flex_item_auto_margin_col_query(styler: &dyn StylerAccess) -> Option<&'static
 /// Returns `None` if the element is not a flex item or the margin is not auto.
 /// Returns `Some(formula)` that computes the used auto margin px value.
 pub fn flex_auto_margin_value(
-    styler: &dyn StylerAccess,
+    node: NodeId, ctx: &dyn PropertyResolver,
     prop_id: &PropertyId<'static>,
 ) -> Option<&'static Formula> {
     // Check parent is flex
-    let parent = styler.related(SingleRelationship::Parent);
-    let parent_display = super::DisplayType::of_element(parent.as_ref())?;
+    let parent_id = ctx.parent(node).unwrap_or(NodeId(0));
+    let parent_display = super::DisplayType::of_element(parent_id, ctx)?;
     let direction = match parent_display {
         super::DisplayType::Flex(dir, _) => dir,
         _ => return None,
     };
 
     // Check the specific margin property is auto
-    if !is_margin_auto(styler, prop_id) {
+    if !is_margin_auto(node, ctx, prop_id) {
         return None;
     }
 
@@ -698,13 +696,13 @@ pub fn flex_auto_margin_value(
         let both_auto = match direction {
             FlexDirection::Row | FlexDirection::RowReverse => {
                 // Cross is vertical
-                is_margin_auto(styler, &PropertyId::MarginTop)
-                    && is_margin_auto(styler, &PropertyId::MarginBottom)
+                is_margin_auto(node, ctx, &PropertyId::MarginTop)
+                    && is_margin_auto(node, ctx, &PropertyId::MarginBottom)
             }
             FlexDirection::Column | FlexDirection::ColumnReverse => {
                 // Cross is horizontal
-                is_margin_auto(styler, &PropertyId::MarginLeft)
-                    && is_margin_auto(styler, &PropertyId::MarginRight)
+                is_margin_auto(node, ctx, &PropertyId::MarginLeft)
+                    && is_margin_auto(node, ctx, &PropertyId::MarginRight)
             }
         };
 
@@ -790,12 +788,12 @@ fn self_position_to_cross(pos: lightningcss::properties::align::SelfPosition) ->
 
 /// Determine the effective cross-axis alignment for a flex item.
 /// Checks align-self first; if auto/absent, falls back to parent's align-items.
-fn effective_cross_alignment(styler: &dyn StylerAccess) -> CrossAlign {
+fn effective_cross_alignment(node: NodeId, ctx: &dyn PropertyResolver) -> CrossAlign {
     use lightningcss::properties::Property;
     use lightningcss::properties::align::*;
 
     if let Some(Property::AlignSelf(align_self, _)) =
-        styler.get_css_property(&PropertyId::AlignSelf(VendorPrefix::None))
+        ctx.get_css_property(node, &PropertyId::AlignSelf(VendorPrefix::None))
     {
         match align_self {
             AlignSelf::Auto | AlignSelf::Normal => {}
@@ -805,9 +803,9 @@ fn effective_cross_alignment(styler: &dyn StylerAccess) -> CrossAlign {
         }
     }
 
-    let parent = styler.related(SingleRelationship::Parent);
+    let parent_id = ctx.parent(node).unwrap_or(NodeId(0));
     if let Some(Property::AlignItems(align_items, _)) =
-        parent.get_css_property(&PropertyId::AlignItems(VendorPrefix::None))
+        ctx.get_css_property(parent_id, &PropertyId::AlignItems(VendorPrefix::None))
     {
         match align_items {
             AlignItems::Normal | AlignItems::Stretch => return CrossAlign::Stretch,
@@ -820,13 +818,13 @@ fn effective_cross_alignment(styler: &dyn StylerAccess) -> CrossAlign {
 }
 
 /// Determine the justify-content mode from the parent's CSS.
-fn justify_content_of(styler: &dyn StylerAccess) -> JustifyMode {
+fn justify_content_of(node: NodeId, ctx: &dyn PropertyResolver) -> JustifyMode {
     use lightningcss::properties::Property;
     use lightningcss::properties::align::*;
 
-    let parent = styler.related(SingleRelationship::Parent);
+    let parent_id = ctx.parent(node).unwrap_or(NodeId(0));
     if let Some(Property::JustifyContent(jc, _)) =
-        parent.get_css_property(&PropertyId::JustifyContent(VendorPrefix::None))
+        ctx.get_css_property(parent_id, &PropertyId::JustifyContent(VendorPrefix::None))
     {
         match jc {
             JustifyContent::Normal => JustifyMode::FlexStart,
@@ -851,13 +849,13 @@ fn justify_content_of(styler: &dyn StylerAccess) -> JustifyMode {
 
 /// Determine the effective align-content mode for a flex container.
 /// Reads align-content from the parent container.
-fn align_content_of_parent(styler: &dyn StylerAccess) -> AlignContentMode {
+fn align_content_of_parent(node: NodeId, ctx: &dyn PropertyResolver) -> AlignContentMode {
     use lightningcss::properties::Property;
     use lightningcss::properties::align::*;
 
-    let parent = styler.related(SingleRelationship::Parent);
+    let parent_id = ctx.parent(node).unwrap_or(NodeId(0));
     if let Some(Property::AlignContent(ac, _)) =
-        parent.get_css_property(&PropertyId::AlignContent(VendorPrefix::None))
+        ctx.get_css_property(parent_id, &PropertyId::AlignContent(VendorPrefix::None))
     {
         match ac {
             AlignContent::Normal => AlignContentMode::Stretch,
@@ -888,14 +886,14 @@ fn align_content_of_parent(styler: &dyn StylerAccess) -> AlignContentMode {
 /// from flex item aggregation:
 /// - Whitespace-only text runs (§4, collapsed anonymous items)
 /// - Absolutely/fixed positioned children (§4.1, out-of-flow)
-fn is_flex_excluded(styler: &dyn StylerAccess) -> bool {
+fn is_flex_excluded(node: NodeId, ctx: &dyn PropertyResolver) -> bool {
     // Whitespace-only text nodes
-    if styler.is_intrinsic() && styler.text_content().is_none() {
+    if ctx.is_intrinsic(node) && ctx.text_content(node).is_none() {
         return true;
     }
     // Absolutely or fixed positioned children are out-of-flow per §4.1
     matches!(
-        styler.get_css_property(&PropertyId::Position),
+        ctx.get_css_property(node, &PropertyId::Position),
         Some(lightningcss::properties::Property::Position(
             lightningcss::properties::position::Position::Absolute
                 | lightningcss::properties::position::Position::Fixed
@@ -905,19 +903,19 @@ fn is_flex_excluded(styler: &dyn StylerAccess) -> bool {
 
 /// Query: always returns Some (used for Count aggregation to count children).
 /// Excludes whitespace-only text nodes per CSS Flexbox §4.
-fn always_query(styler: &dyn StylerAccess) -> Option<&'static Formula> {
-    if is_flex_excluded(styler) {
+fn always_query(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+    if is_flex_excluded(node, ctx) {
         return None;
     }
     Some(constant!(Subpixel::ZERO))
 }
 
 /// Query: returns the flex-basis of an item for aggregation.
-fn flex_item_basis_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
-    if is_flex_excluded(styler) {
+fn flex_item_basis_query(node: NodeId, ctx: &dyn PropertyResolver, axis: Axis) -> Option<&'static Formula> {
+    if is_flex_excluded(node, ctx) {
         return None;
     }
-    if has_explicit_flex_basis(styler) {
+    if has_explicit_flex_basis(node, ctx) {
         return Some(&FLEX_BASIS);
     }
 
@@ -925,14 +923,14 @@ fn flex_item_basis_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'stat
         Axis::Horizontal => PropertyId::Width,
         Axis::Vertical => PropertyId::Height,
     };
-    if styler.get_css_property(&size_prop).is_some() {
+    if ctx.get_css_property(node, &size_prop).is_some() {
         return Some(match axis {
             Axis::Horizontal => css_val!(Width),
             Axis::Vertical => css_val!(Height),
         });
     }
 
-    content_based_size(styler, axis)
+    content_based_size(node, ctx, axis)
 }
 
 /// Like `flex_item_basis_query` but returns `Some(ZERO)` for whitespace
@@ -941,19 +939,19 @@ fn flex_item_basis_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'stat
 /// (intended for block children in inline formatting contexts, not for
 /// excluded flex items).
 fn flex_item_basis_query_for_lines(
-    styler: &dyn StylerAccess,
+    node: NodeId, ctx: &dyn PropertyResolver,
     axis: Axis,
 ) -> Option<&'static Formula> {
-    if is_flex_excluded(styler) {
+    if is_flex_excluded(node, ctx) {
         return Some(constant!(Subpixel::ZERO));
     }
-    flex_item_basis_query(styler, axis)
+    flex_item_basis_query(node, ctx, axis)
 }
 
 /// Query: returns the item's resolved main size (margin-box) for offset aggregation.
 /// Per CSS Flexbox spec, flex items are laid out using their outer (margin-box) size.
-fn flex_item_main_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
-    if is_flex_excluded(styler) {
+fn flex_item_main_query(node: NodeId, ctx: &dyn PropertyResolver, axis: Axis) -> Option<&'static Formula> {
+    if is_flex_excluded(node, ctx) {
         return None;
     }
     // Return margin-box size: border-box + start margin + end margin
@@ -972,15 +970,15 @@ fn flex_item_main_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'stati
 }
 
 /// Query: returns the item's cross size, handling stretch.
-fn flex_item_cross_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
-    if is_flex_excluded(styler) {
+fn flex_item_cross_query(node: NodeId, ctx: &dyn PropertyResolver, axis: Axis) -> Option<&'static Formula> {
+    if is_flex_excluded(node, ctx) {
         return None;
     }
     let size_prop = match axis {
         Axis::Horizontal => PropertyId::Width,
         Axis::Vertical => PropertyId::Height,
     };
-    if let Some(prop) = styler.get_css_property(&size_prop) {
+    if let Some(prop) = ctx.get_css_property(node, &size_prop) {
         // Check if this is a percentage value that needs to resolve against
         // the flex container's content size (not the generic containing block).
         if let Some(formula) = flex_cross_percentage_formula(&prop, axis) {
@@ -997,13 +995,13 @@ fn flex_item_cross_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'stat
     // Per CSS Flexbox §9.4, stretched items fill the line's cross size, not
     // the container's cross size. For single-line (nowrap) containers, the line
     // is the container, but for multi-line (wrap), each line is independent.
-    if effective_cross_alignment(styler) == CrossAlign::Stretch {
-        let wrap = parent_flex_wrap(styler);
+    if effective_cross_alignment(node, ctx) == CrossAlign::Stretch {
+        let wrap = parent_flex_wrap(node, ctx);
         if is_wrapping(wrap) {
             // For wrapping containers, use content-based sizing instead of stretch.
             // The item's cross size is its natural content size.
             // TODO: implement proper line-based stretch for wrapping containers
-            return content_based_size(styler, axis);
+            return content_based_size(node, ctx, axis);
         }
         // For nowrap containers, stretch to fill the container's cross size.
         return Some(match axis {
@@ -1028,7 +1026,7 @@ fn flex_item_cross_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'stat
         });
     }
 
-    content_based_size(styler, axis)
+    content_based_size(node, ctx, axis)
 }
 
 /// Check if a size property is a percentage and return a formula that resolves
@@ -1069,80 +1067,59 @@ static FLEX_CROSS_PCT_WIDTH: Formula = Formula::Imperative(flex_cross_pct_width_
 
 fn flex_cross_pct_width_impl(
     node: NodeId,
-    styler: &dyn StylerAccess,
-    resolve: &mut dyn FnMut(&'static Formula, NodeId, &dyn StylerAccess) -> Option<Subpixel>,
+    ctx: &dyn PropertyResolver,
+    resolve: &mut dyn FnMut(&'static Formula, NodeId) -> Option<Subpixel>,
 ) -> Option<Vec<(NodeId, Subpixel)>> {
     use lightningcss::properties::size::Size;
     use lightningcss::values::percentage::DimensionPercentage;
 
     // Extract percentage value from the element's Width property.
-    let prop = styler.get_css_property(&PropertyId::Width)?;
+    let prop = ctx.get_css_property(node, &PropertyId::Width)?;
     let pct = match prop {
         Property::Width(Size::LengthPercentage(DimensionPercentage::Percentage(p))) => p.0,
         _ => return None,
     };
 
     // Get parent's resolved size using the formula system.
-    let parent = styler.related(SingleRelationship::Parent);
-    let parent_size_formula = size_query(parent.as_ref(), Axis::Horizontal)?;
-    let parent_size = resolve(parent_size_formula, parent.node_id(), parent.as_ref())?;
+    let parent_id = ctx.parent(node).unwrap_or(NodeId(0));
+    let parent_size_formula = size_query(parent_id, ctx, Axis::Horizontal)?;
+    let parent_size = resolve(parent_size_formula, parent_id)?;
 
     // Get parent's padding and border.
-    let pad_left = parent
-        .get_property(&PropertyId::PaddingLeft)
-        .unwrap_or(Subpixel::ZERO);
-    let pad_right = parent
-        .get_property(&PropertyId::PaddingRight)
-        .unwrap_or(Subpixel::ZERO);
-    let border_left = parent
-        .get_property(&PropertyId::BorderLeftWidth)
-        .unwrap_or(Subpixel::ZERO);
-    let border_right = parent
-        .get_property(&PropertyId::BorderRightWidth)
-        .unwrap_or(Subpixel::ZERO);
+    let pad_left = ctx.get_property(parent_id, &PropertyId::PaddingLeft).unwrap_or(Subpixel::ZERO);
+    let pad_right = ctx.get_property(parent_id, &PropertyId::PaddingRight).unwrap_or(Subpixel::ZERO);
+    let border_left = ctx.get_property(parent_id, &PropertyId::BorderLeftWidth).unwrap_or(Subpixel::ZERO);
+    let border_right = ctx.get_property(parent_id, &PropertyId::BorderRightWidth).unwrap_or(Subpixel::ZERO);
     let parent_content = parent_size - pad_left - pad_right - border_left - border_right;
     let result = Subpixel::from_f32(parent_content.to_f32() * pct);
     Some(vec![(node, result)])
 }
 
 /// Imperative formula for percentage height on flex items.
-/// Reads the Height property, extracts the percentage, and resolves against
-/// the parent flex container's content height.
 static FLEX_CROSS_PCT_HEIGHT: Formula = Formula::Imperative(flex_cross_pct_height_impl);
 
 fn flex_cross_pct_height_impl(
     node: NodeId,
-    styler: &dyn StylerAccess,
-    resolve: &mut dyn FnMut(&'static Formula, NodeId, &dyn StylerAccess) -> Option<Subpixel>,
+    ctx: &dyn PropertyResolver,
+    resolve: &mut dyn FnMut(&'static Formula, NodeId) -> Option<Subpixel>,
 ) -> Option<Vec<(NodeId, Subpixel)>> {
     use lightningcss::properties::size::Size;
     use lightningcss::values::percentage::DimensionPercentage;
 
-    // Extract percentage value from the element's Height property.
-    let prop = styler.get_css_property(&PropertyId::Height)?;
+    let prop = ctx.get_css_property(node, &PropertyId::Height)?;
     let pct = match prop {
         Property::Height(Size::LengthPercentage(DimensionPercentage::Percentage(p))) => p.0,
         _ => return None,
     };
 
-    // Get parent's resolved size using the formula system.
-    let parent = styler.related(SingleRelationship::Parent);
-    let parent_size_formula = size_query(parent.as_ref(), Axis::Vertical)?;
-    let parent_size = resolve(parent_size_formula, parent.node_id(), parent.as_ref())?;
+    let parent_id = ctx.parent(node).unwrap_or(NodeId(0));
+    let parent_size_formula = size_query(parent_id, ctx, Axis::Vertical)?;
+    let parent_size = resolve(parent_size_formula, parent_id)?;
 
-    // Get parent's padding and border.
-    let pad_top = parent
-        .get_property(&PropertyId::PaddingTop)
-        .unwrap_or(Subpixel::ZERO);
-    let pad_bottom = parent
-        .get_property(&PropertyId::PaddingBottom)
-        .unwrap_or(Subpixel::ZERO);
-    let border_top = parent
-        .get_property(&PropertyId::BorderTopWidth)
-        .unwrap_or(Subpixel::ZERO);
-    let border_bottom = parent
-        .get_property(&PropertyId::BorderBottomWidth)
-        .unwrap_or(Subpixel::ZERO);
+    let pad_top = ctx.get_property(parent_id, &PropertyId::PaddingTop).unwrap_or(Subpixel::ZERO);
+    let pad_bottom = ctx.get_property(parent_id, &PropertyId::PaddingBottom).unwrap_or(Subpixel::ZERO);
+    let border_top = ctx.get_property(parent_id, &PropertyId::BorderTopWidth).unwrap_or(Subpixel::ZERO);
+    let border_bottom = ctx.get_property(parent_id, &PropertyId::BorderBottomWidth).unwrap_or(Subpixel::ZERO);
     let parent_content = parent_size - pad_top - pad_bottom - border_top - border_bottom;
     let result = Subpixel::from_f32(parent_content.to_f32() * pct);
     Some(vec![(node, result)])
@@ -1151,10 +1128,10 @@ fn flex_cross_pct_height_impl(
 /// Query: returns the item's cross size as margin-box for container sizing.
 /// The container's cross size should be based on the margin-boxes of its children.
 fn flex_item_cross_margin_box_query(
-    styler: &dyn StylerAccess,
+    node: NodeId, ctx: &dyn PropertyResolver,
     axis: Axis,
 ) -> Option<&'static Formula> {
-    if is_flex_excluded(styler) {
+    if is_flex_excluded(node, ctx) {
         return None;
     }
     // Return margin-box: border-box cross size + cross margins
@@ -1176,10 +1153,10 @@ fn flex_item_cross_margin_box_query(
 /// Used for computing the min-content cross size of a flex container,
 /// avoiding circular dependencies by not using resolved flex item sizes.
 fn flex_item_min_content_cross_margin_box_query(
-    styler: &dyn StylerAccess,
+    node: NodeId, ctx: &dyn PropertyResolver,
     axis: Axis,
 ) -> Option<&'static Formula> {
-    if is_flex_excluded(styler) {
+    if is_flex_excluded(node, ctx) {
         return None;
     }
     // Return margin-box: min-content size + margins + padding + border
@@ -1216,29 +1193,29 @@ fn flex_item_min_content_cross_margin_box_query(
 /// Only returns a value for items that participate in baseline alignment
 /// (i.e. `align-self: baseline`). Other items return `None` so they are
 /// excluded from the max-baseline aggregation.
-fn flex_item_baseline_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
-    if is_flex_excluded(styler) {
+fn flex_item_baseline_query(node: NodeId, ctx: &dyn PropertyResolver, axis: Axis) -> Option<&'static Formula> {
+    if is_flex_excluded(node, ctx) {
         return None;
     }
     // Only include items that participate in baseline alignment.
-    if effective_cross_alignment(styler) != CrossAlign::Baseline {
+    if effective_cross_alignment(node, ctx) != CrossAlign::Baseline {
         return None;
     }
-    flex_item_baseline_value(styler, axis)
+    flex_item_baseline_value(node, ctx, axis)
 }
 
 /// Returns the baseline value for a flex item regardless of its alignment.
 /// Used both by `flex_item_baseline_query` (for baseline-aligned items)
 /// and by the cross-offset formula (for `related!(Self_, ...)`).
-fn flex_item_baseline_value(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
+fn flex_item_baseline_value(node: NodeId, ctx: &dyn PropertyResolver, axis: Axis) -> Option<&'static Formula> {
     // Intrinsic (text) nodes: the baseline is the ascent.
-    if styler.is_intrinsic() {
+    if ctx.is_intrinsic(node) {
         return Some(inline_baseline!());
     }
     // Non-intrinsic element: check if it has any children.
     // If it does, the baseline is the first child's text baseline
     // plus padding and border on the cross-start edge.
-    let children = styler.related_iter(MultiRelationship::Children);
+    let children = ctx.children(node);
     if !children.is_empty() {
         return Some(match axis {
             Axis::Vertical => add!(
@@ -1254,12 +1231,12 @@ fn flex_item_baseline_value(styler: &dyn StylerAccess, axis: Axis) -> Option<&'s
         });
     }
     // Empty element: synthesized baseline = item's cross size.
-    flex_item_cross_query(styler, axis)
+    flex_item_cross_query(node, ctx, axis)
 }
 
 /// Max baseline query: resolved on the flex container (parent),
 /// returns the maximum baseline across all ordered children.
-fn max_baseline_query(_styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
+fn max_baseline_query(_node: NodeId, _ctx: &dyn PropertyResolver, axis: Axis) -> Option<&'static Formula> {
     Some(aggregate!(
         Max,
         OrderedChildren,
@@ -1376,20 +1353,19 @@ const MAX_MAIN_SENTINEL: f32 = 1_000_000.0;
 ///
 /// The content size is the min-content size in the main axis.
 fn auto_minimum_size(
-    child: &dyn StylerAccess,
+    child_id: NodeId,
+    ctx: &dyn PropertyResolver,
     main_axis: Axis,
     _basis: f32,
     max_main: f32,
-    resolve: &mut dyn FnMut(&'static Formula, NodeId, &dyn StylerAccess) -> Option<Subpixel>,
+    resolve: &mut dyn FnMut(&'static Formula, NodeId) -> Option<Subpixel>,
 ) -> f32 {
-    // §4.5: If the item's overflow is not visible in the main axis,
-    // the automatic minimum size is 0.
     let overflow_prop = match main_axis {
         Axis::Horizontal => PropertyId::OverflowX,
         Axis::Vertical => PropertyId::OverflowY,
     };
     if let Some(Property::OverflowX(ov)) | Some(Property::OverflowY(ov)) =
-        child.get_css_property(&overflow_prop)
+        ctx.get_css_property(child_id, &overflow_prop)
     {
         use lightningcss::properties::overflow::OverflowKeyword;
         if ov != OverflowKeyword::Visible {
@@ -1397,30 +1373,23 @@ fn auto_minimum_size(
         }
     }
 
-    // Compute min-content size in the main axis.
-    // For intrinsic (text) nodes, use min-content measurement directly.
-    // For element nodes, compute the min-content size of their children.
-    let content_size = if child.is_intrinsic() {
+    let content_size = if ctx.is_intrinsic(child_id) {
         let content_formula = match main_axis {
             Axis::Horizontal => min_content_width!(),
             Axis::Vertical => min_content_height!(),
         };
-        resolve(content_formula, child.node_id(), child)
+        resolve(content_formula, child_id)
             .unwrap_or(Subpixel::ZERO)
             .to_f32()
     } else if let Some(super::DisplayType::Flex(child_dir, _)) =
-        super::DisplayType::of_element(child)
+        super::DisplayType::of_element(child_id, ctx)
     {
-        // Flex container child: use flex min-content formula.
-        let content_formula = flex_min_content_size(child_dir, main_axis, child);
-        resolve(content_formula, child.node_id(), child)
+        let content_formula = flex_min_content_size(child_dir, main_axis, child_id, ctx);
+        resolve(content_formula, child_id)
             .unwrap_or(Subpixel::ZERO)
             .to_f32()
     } else {
-        // Element node: compute min-content from children.
-        // Walk children and find the max min-content width (for the
-        // horizontal axis) since each child is a potential line-breaker.
-        let el_children = child.related_iter(MultiRelationship::Children);
+        let el_children = ctx.children(child_id);
         if el_children.is_empty() {
             0.0
         } else {
@@ -1429,12 +1398,8 @@ fn auto_minimum_size(
                 Axis::Vertical => min_content_height!(),
             };
             let mut max_child_min: f32 = 0.0;
-            for grandchild in &el_children {
-                if let Some(val) = resolve(
-                    min_content_formula,
-                    grandchild.node_id(),
-                    grandchild.as_ref(),
-                ) {
+            for &grandchild in &el_children {
+                if let Some(val) = resolve(min_content_formula, grandchild) {
                     max_child_min = max_child_min.max(val.to_f32());
                 }
             }
@@ -1442,23 +1407,17 @@ fn auto_minimum_size(
         }
     };
 
-    // §4.5: The automatic minimum is:
-    //   min(specified_size_suggestion, content_size_suggestion)
-    // where specified_size_suggestion is the item's explicit width/height
-    // (NOT the flex-basis). If no explicit size is set, the auto minimum
-    // is just the content size.
     let size_prop = match main_axis {
         Axis::Horizontal => PropertyId::Width,
         Axis::Vertical => PropertyId::Height,
     };
-    let specified_size = child.get_property(&size_prop);
+    let specified_size = ctx.get_property(child_id, &size_prop);
 
     let min = match specified_size {
         Some(specified) => content_size.min(specified.to_f32()),
         None => content_size,
     };
 
-    // Clamp to the specified max constraint if any.
     min.min(max_main)
 }
 
@@ -1470,9 +1429,10 @@ fn auto_minimum_size(
 /// Implements CSS Flexbox §4.5 for automatic minimum sizes when
 /// `min-width`/`min-height` is `auto`.
 fn collect_flex_items(
-    children: &[Box<dyn StylerAccess>],
+    children: &[NodeId],
+    ctx: &dyn PropertyResolver,
     main_axis: Axis,
-    resolve: &mut dyn FnMut(&'static Formula, NodeId, &dyn StylerAccess) -> Option<Subpixel>,
+    resolve: &mut dyn FnMut(&'static Formula, NodeId) -> Option<Subpixel>,
 ) -> Vec<FlexItemInfo> {
     let (min_prop, max_prop) = match main_axis {
         Axis::Horizontal => (PropertyId::MinWidth, PropertyId::MaxWidth),
@@ -1480,40 +1440,38 @@ fn collect_flex_items(
     };
 
     let mut items = Vec::with_capacity(children.len());
-    for child in children {
-        if is_flex_excluded(child.as_ref()) {
+    for &child_id in children {
+        if is_flex_excluded(child_id, ctx) {
             continue;
         }
 
-        let basis_formula = flex_item_basis_query(child.as_ref(), main_axis);
+        let basis_formula = flex_item_basis_query(child_id, ctx, main_axis);
         let basis = basis_formula
-            .and_then(|f| resolve(f, child.node_id(), child.as_ref()))
+            .and_then(|f| resolve(f, child_id))
             .unwrap_or(Subpixel::ZERO)
             .to_f32();
 
-        let grow = child
-            .get_property(&PropertyId::FlexGrow(VendorPrefix::None))
+        let grow = ctx
+            .get_property(child_id, &PropertyId::FlexGrow(VendorPrefix::None))
             .unwrap_or(Subpixel::ZERO)
             .to_f32();
 
-        let shrink = child
-            .get_property(&PropertyId::FlexShrink(VendorPrefix::None))
+        let shrink = ctx
+            .get_property(child_id, &PropertyId::FlexShrink(VendorPrefix::None))
             .unwrap_or(Subpixel::from_f32(1.0))
             .to_f32();
 
-        // Explicit max constraint (unset → effectively infinity).
-        let max_main = child
-            .get_property(&max_prop)
+        let max_main = ctx
+            .get_property(child_id, &max_prop)
             .map_or(MAX_MAIN_SENTINEL, Subpixel::to_f32);
 
-        // Min constraint: explicit value or §4.5 automatic minimum.
-        let min_main = match child.get_property(&min_prop) {
+        let min_main = match ctx.get_property(child_id, &min_prop) {
             Some(explicit) => explicit.to_f32(),
-            None => auto_minimum_size(child.as_ref(), main_axis, basis, max_main, resolve),
+            None => auto_minimum_size(child_id, ctx, main_axis, basis, max_main, resolve),
         };
 
         items.push(FlexItemInfo {
-            node_id: child.node_id(),
+            node_id: child_id,
             basis,
             grow,
             shrink,
@@ -1595,12 +1553,13 @@ fn resolve_flexible_lengths(items: &mut [FlexItemInfo], container_main: f32, gap
 
 /// Compute the parent's content-box main size for a given axis.
 fn resolve_container_content_main(
-    parent: &dyn StylerAccess,
+    parent_id: NodeId,
+    ctx: &dyn PropertyResolver,
     axis: Axis,
-    resolve: &mut dyn FnMut(&'static Formula, NodeId, &dyn StylerAccess) -> Option<Subpixel>,
+    resolve: &mut dyn FnMut(&'static Formula, NodeId) -> Option<Subpixel>,
 ) -> Option<f32> {
-    let size_formula = size_query(parent, axis)?;
-    let total = resolve(size_formula, parent.node_id(), parent)?.to_f32();
+    let size_formula = size_query(parent_id, ctx, axis)?;
+    let total = resolve(size_formula, parent_id)?.to_f32();
 
     let (pad_a, pad_b, bdr_a, bdr_b) = match axis {
         Axis::Horizontal => (
@@ -1617,34 +1576,21 @@ fn resolve_container_content_main(
         ),
     };
 
-    let pa = parent
-        .get_property(&pad_a)
-        .unwrap_or(Subpixel::ZERO)
-        .to_f32();
-    let pb = parent
-        .get_property(&pad_b)
-        .unwrap_or(Subpixel::ZERO)
-        .to_f32();
-    let ba = parent
-        .get_property(&bdr_a)
-        .unwrap_or(Subpixel::ZERO)
-        .to_f32();
-    let bb = parent
-        .get_property(&bdr_b)
-        .unwrap_or(Subpixel::ZERO)
-        .to_f32();
+    let pa = ctx.get_property(parent_id, &pad_a).unwrap_or(Subpixel::ZERO).to_f32();
+    let pb = ctx.get_property(parent_id, &pad_b).unwrap_or(Subpixel::ZERO).to_f32();
+    let ba = ctx.get_property(parent_id, &bdr_a).unwrap_or(Subpixel::ZERO).to_f32();
+    let bb = ctx.get_property(parent_id, &bdr_b).unwrap_or(Subpixel::ZERO).to_f32();
 
     Some((total - pa - pb - ba - bb).max(0.0))
 }
 
 /// Get the gap value for the main axis.
-fn resolve_main_gap(parent: &dyn StylerAccess, axis: Axis) -> f32 {
+fn resolve_main_gap(parent_id: NodeId, ctx: &dyn PropertyResolver, axis: Axis) -> f32 {
     let gap_prop = match axis {
         Axis::Horizontal => PropertyId::ColumnGap,
         Axis::Vertical => PropertyId::RowGap,
     };
-    parent
-        .get_property(&gap_prop)
+    ctx.get_property(parent_id, &gap_prop)
         .unwrap_or(Subpixel::ZERO)
         .to_f32()
 }
@@ -1661,38 +1607,48 @@ fn build_batch_result(items: &[FlexItemInfo]) -> Vec<(NodeId, Subpixel)> {
 
 /// §9.7 resolver for row nowrap.
 fn flex_resolve_main_row(
-    _node: NodeId,
-    styler: &dyn StylerAccess,
-    resolve: &mut dyn FnMut(&'static Formula, NodeId, &dyn StylerAccess) -> Option<Subpixel>,
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
+    resolve: &mut dyn FnMut(&'static Formula, NodeId) -> Option<Subpixel>,
 ) -> Option<Vec<(NodeId, Subpixel)>> {
-    flex_resolve_main_nowrap_impl(styler, Axis::Horizontal, resolve)
+    flex_resolve_main_nowrap_impl(node, ctx, Axis::Horizontal, resolve)
 }
 
 /// §9.7 resolver for column nowrap.
 fn flex_resolve_main_col(
-    _node: NodeId,
-    styler: &dyn StylerAccess,
-    resolve: &mut dyn FnMut(&'static Formula, NodeId, &dyn StylerAccess) -> Option<Subpixel>,
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
+    resolve: &mut dyn FnMut(&'static Formula, NodeId) -> Option<Subpixel>,
 ) -> Option<Vec<(NodeId, Subpixel)>> {
-    flex_resolve_main_nowrap_impl(styler, Axis::Vertical, resolve)
+    flex_resolve_main_nowrap_impl(node, ctx, Axis::Vertical, resolve)
 }
 
 /// Shared nowrap implementation for both row and column.
 fn flex_resolve_main_nowrap_impl(
-    styler: &dyn StylerAccess,
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
     axis: Axis,
-    resolve: &mut dyn FnMut(&'static Formula, NodeId, &dyn StylerAccess) -> Option<Subpixel>,
+    resolve: &mut dyn FnMut(&'static Formula, NodeId) -> Option<Subpixel>,
 ) -> Option<Vec<(NodeId, Subpixel)>> {
-    let parent = styler.related(SingleRelationship::Parent);
-    let children = parent.related_iter(MultiRelationship::OrderedChildren);
+    let parent_id = ctx.parent(node).unwrap_or(NodeId(0));
+    // Get ordered children of parent
+    let mut children: Vec<NodeId> = ctx.children(parent_id);
+    children.reverse();
+    let get_order = |n: NodeId| -> i32 {
+        match ctx.get_css_property(n, &PropertyId::Order(VendorPrefix::None)) {
+            Some(Property::Order(val, _)) => val,
+            _ => 0,
+        }
+    };
+    children.sort_by_key(|&id| get_order(id));
 
-    let mut items = collect_flex_items(&children, axis, resolve);
+    let mut items = collect_flex_items(&children, ctx, axis, resolve);
     if items.is_empty() {
         return Some(Vec::new());
     }
 
-    let container_main = resolve_container_content_main(parent.as_ref(), axis, resolve)?;
-    let gap = resolve_main_gap(parent.as_ref(), axis);
+    let container_main = resolve_container_content_main(parent_id, ctx, axis, resolve)?;
+    let gap = resolve_main_gap(parent_id, ctx, axis);
 
     resolve_flexible_lengths(&mut items, container_main, gap);
     Some(build_batch_result(&items))
@@ -1702,41 +1658,47 @@ fn flex_resolve_main_nowrap_impl(
 
 /// §9.7 resolver for row wrap.
 fn flex_resolve_main_row_wrap(
-    _node: NodeId,
-    styler: &dyn StylerAccess,
-    resolve: &mut dyn FnMut(&'static Formula, NodeId, &dyn StylerAccess) -> Option<Subpixel>,
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
+    resolve: &mut dyn FnMut(&'static Formula, NodeId) -> Option<Subpixel>,
 ) -> Option<Vec<(NodeId, Subpixel)>> {
-    flex_resolve_main_wrap_impl(styler, Axis::Horizontal, resolve)
+    flex_resolve_main_wrap_impl(node, ctx, Axis::Horizontal, resolve)
 }
 
 /// §9.7 resolver for column wrap.
 fn flex_resolve_main_col_wrap(
-    _node: NodeId,
-    styler: &dyn StylerAccess,
-    resolve: &mut dyn FnMut(&'static Formula, NodeId, &dyn StylerAccess) -> Option<Subpixel>,
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
+    resolve: &mut dyn FnMut(&'static Formula, NodeId) -> Option<Subpixel>,
 ) -> Option<Vec<(NodeId, Subpixel)>> {
-    flex_resolve_main_wrap_impl(styler, Axis::Vertical, resolve)
+    flex_resolve_main_wrap_impl(node, ctx, Axis::Vertical, resolve)
 }
 
 /// Shared wrap implementation for both row and column.
-///
-/// Computes line assignments (greedy line breaking on basis sizes),
-/// then runs §9.7 independently per line.
 fn flex_resolve_main_wrap_impl(
-    styler: &dyn StylerAccess,
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
     axis: Axis,
-    resolve: &mut dyn FnMut(&'static Formula, NodeId, &dyn StylerAccess) -> Option<Subpixel>,
+    resolve: &mut dyn FnMut(&'static Formula, NodeId) -> Option<Subpixel>,
 ) -> Option<Vec<(NodeId, Subpixel)>> {
-    let parent = styler.related(SingleRelationship::Parent);
-    let children = parent.related_iter(MultiRelationship::OrderedChildren);
+    let parent_id = ctx.parent(node).unwrap_or(NodeId(0));
+    let mut children: Vec<NodeId> = ctx.children(parent_id);
+    children.reverse();
+    let get_order = |n: NodeId| -> i32 {
+        match ctx.get_css_property(n, &PropertyId::Order(VendorPrefix::None)) {
+            Some(Property::Order(val, _)) => val,
+            _ => 0,
+        }
+    };
+    children.sort_by_key(|&id| get_order(id));
 
-    let all_items = collect_flex_items(&children, axis, resolve);
+    let all_items = collect_flex_items(&children, ctx, axis, resolve);
     if all_items.is_empty() {
         return Some(Vec::new());
     }
 
-    let container_main = resolve_container_content_main(parent.as_ref(), axis, resolve)?;
-    let gap = resolve_main_gap(parent.as_ref(), axis);
+    let container_main = resolve_container_content_main(parent_id, ctx, axis, resolve)?;
+    let gap = resolve_main_gap(parent_id, ctx, axis);
 
     // Greedy line breaking: accumulate basis sizes, break when exceeding
     // available main. This matches the resolver's compute_line_assignments.
@@ -1823,17 +1785,17 @@ fn flex_main_offset(direction: FlexDirection, axis: Axis) -> &'static Formula {
 }
 
 /// Offset query for row (horizontal main, normal order).
-fn flex_offset_row_query(styler: &dyn StylerAccess, _axis: Axis) -> Option<&'static Formula> {
+fn flex_offset_row_query(node: NodeId, ctx: &dyn PropertyResolver, _axis: Axis) -> Option<&'static Formula> {
     // Per CSS Flexbox §8.1: auto margins on the main axis absorb free space
     // before justify-content is applied.
-    let ml_auto = is_margin_auto(styler, &PropertyId::MarginLeft);
-    let mr_auto = is_margin_auto(styler, &PropertyId::MarginRight);
+    let ml_auto = is_margin_auto(node, ctx, &PropertyId::MarginLeft);
+    let mr_auto = is_margin_auto(node, ctx, &PropertyId::MarginRight);
     if ml_auto || mr_auto {
         return Some(build_main_auto_margin_offset_h_row(ml_auto));
     }
 
-    let jc = justify_content_of(styler);
-    let wrap = parent_flex_wrap(styler);
+    let jc = justify_content_of(node, ctx);
+    let wrap = parent_flex_wrap(node, ctx);
     if is_wrapping(wrap) {
         Some(build_main_offset_wrap_h_row(jc))
     } else {
@@ -1842,16 +1804,16 @@ fn flex_offset_row_query(styler: &dyn StylerAccess, _axis: Axis) -> Option<&'sta
 }
 
 /// Offset query for column (vertical main, normal order).
-fn flex_offset_col_query(styler: &dyn StylerAccess, _axis: Axis) -> Option<&'static Formula> {
+fn flex_offset_col_query(node: NodeId, ctx: &dyn PropertyResolver, _axis: Axis) -> Option<&'static Formula> {
     // Per CSS Flexbox §8.1: auto margins on the main axis.
-    let mt_auto = is_margin_auto(styler, &PropertyId::MarginTop);
-    let mb_auto = is_margin_auto(styler, &PropertyId::MarginBottom);
+    let mt_auto = is_margin_auto(node, ctx, &PropertyId::MarginTop);
+    let mb_auto = is_margin_auto(node, ctx, &PropertyId::MarginBottom);
     if mt_auto || mb_auto {
         return Some(build_main_auto_margin_offset_v_col(mt_auto));
     }
 
-    let jc = justify_content_of(styler);
-    let wrap = parent_flex_wrap(styler);
+    let jc = justify_content_of(node, ctx);
+    let wrap = parent_flex_wrap(node, ctx);
     if is_wrapping(wrap) {
         Some(build_main_offset_wrap_v_col(jc))
     } else {
@@ -1861,11 +1823,11 @@ fn flex_offset_col_query(styler: &dyn StylerAccess, _axis: Axis) -> Option<&'sta
 
 /// Offset query for row-reverse.
 fn flex_offset_row_reverse_query(
-    styler: &dyn StylerAccess,
+    node: NodeId, ctx: &dyn PropertyResolver,
     _axis: Axis,
 ) -> Option<&'static Formula> {
-    let jc = justify_content_of(styler);
-    let wrap = parent_flex_wrap(styler);
+    let jc = justify_content_of(node, ctx);
+    let wrap = parent_flex_wrap(node, ctx);
     if is_wrapping(wrap) {
         Some(build_main_offset_wrap_reversed_h_row(jc))
     } else {
@@ -1875,11 +1837,11 @@ fn flex_offset_row_reverse_query(
 
 /// Offset query for column-reverse.
 fn flex_offset_col_reverse_query(
-    styler: &dyn StylerAccess,
+    node: NodeId, ctx: &dyn PropertyResolver,
     _axis: Axis,
 ) -> Option<&'static Formula> {
-    let jc = justify_content_of(styler);
-    let wrap = parent_flex_wrap(styler);
+    let jc = justify_content_of(node, ctx);
+    let wrap = parent_flex_wrap(node, ctx);
     if is_wrapping(wrap) {
         Some(build_main_offset_wrap_reversed_v_col(jc))
     } else {
@@ -2356,8 +2318,8 @@ macro_rules! justify_free_wrap_h_row {
                 agg: Sum,
                 rel: OrderedChildren,
                 query: {
-                    fn q(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-                        flex_item_main_query(sty, Axis::Horizontal)
+                    fn q(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+                        flex_item_main_query(node, ctx, Axis::Horizontal)
                     }
                     q as QueryFn
                 },
@@ -2401,8 +2363,8 @@ macro_rules! justify_free_wrap_v_col {
                 agg: Sum,
                 rel: OrderedChildren,
                 query: {
-                    fn q(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-                        flex_item_main_query(sty, Axis::Vertical)
+                    fn q(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+                        flex_item_main_query(node, ctx, Axis::Vertical)
                     }
                     q as QueryFn
                 },
@@ -2442,8 +2404,8 @@ fn build_main_offset_wrap_h_row(jc: JustifyMode) -> &'static Formula {
                 agg: Sum,
                 rel: OrderedPrevSiblings,
                 query: {
-                    fn q(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-                        flex_item_main_query(sty, Axis::Horizontal)
+                    fn q(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+                        flex_item_main_query(node, ctx, Axis::Horizontal)
                     }
                     q as QueryFn
                 },
@@ -2578,8 +2540,8 @@ fn build_main_offset_wrap_v_col(jc: JustifyMode) -> &'static Formula {
                 agg: Sum,
                 rel: OrderedPrevSiblings,
                 query: {
-                    fn q(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-                        flex_item_main_query(sty, Axis::Vertical)
+                    fn q(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+                        flex_item_main_query(node, ctx, Axis::Vertical)
                     }
                     q as QueryFn
                 },
@@ -2730,8 +2692,8 @@ fn build_main_offset_wrap_reversed_h_row(jc: JustifyMode) -> &'static Formula {
                 agg: Sum,
                 rel: OrderedPrevSiblings,
                 query: {
-                    fn q(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-                        flex_item_main_query(sty, Axis::Horizontal)
+                    fn q(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+                        flex_item_main_query(node, ctx, Axis::Horizontal)
                     }
                     q as QueryFn
                 },
@@ -2881,8 +2843,8 @@ fn build_main_offset_wrap_reversed_v_col(jc: JustifyMode) -> &'static Formula {
                 agg: Sum,
                 rel: OrderedPrevSiblings,
                 query: {
-                    fn q(sty: &dyn StylerAccess) -> Option<&'static Formula> {
-                        flex_item_main_query(sty, Axis::Vertical)
+                    fn q(node: NodeId, ctx: &dyn PropertyResolver) -> Option<&'static Formula> {
+                        flex_item_main_query(node, ctx, Axis::Vertical)
                     }
                     q as QueryFn
                 },
@@ -3442,11 +3404,11 @@ fn flex_cross_offset(parent_direction: FlexDirection, axis: Axis) -> &'static Fo
 }
 
 /// Cross-offset query for row containers (cross = vertical).
-fn flex_cross_offset_row_query(styler: &dyn StylerAccess, _axis: Axis) -> Option<&'static Formula> {
+fn flex_cross_offset_row_query(node: NodeId, ctx: &dyn PropertyResolver, _axis: Axis) -> Option<&'static Formula> {
     // Per CSS Flexbox §8.1: auto margins on the cross axis are resolved
     // before alignment via align-self.
-    let mt_auto = is_margin_auto(styler, &PropertyId::MarginTop);
-    let mb_auto = is_margin_auto(styler, &PropertyId::MarginBottom);
+    let mt_auto = is_margin_auto(node, ctx, &PropertyId::MarginTop);
+    let mb_auto = is_margin_auto(node, ctx, &PropertyId::MarginBottom);
     if mt_auto || mb_auto {
         return Some(build_cross_auto_margin_offset(
             mt_auto,
@@ -3455,12 +3417,12 @@ fn flex_cross_offset_row_query(styler: &dyn StylerAccess, _axis: Axis) -> Option
         ));
     }
 
-    let wrap = parent_flex_wrap(styler);
-    let alignment = effective_cross_alignment(styler);
+    let wrap = parent_flex_wrap(node, ctx);
+    let alignment = effective_cross_alignment(node, ctx);
     let reverse = wrap == FlexWrap::WrapReverse;
 
     if is_wrapping(wrap) {
-        let ac = align_content_of_parent(styler);
+        let ac = align_content_of_parent(node, ctx);
         Some(build_cross_offset_wrap_row(alignment, ac, reverse))
     } else {
         Some(build_cross_offset_nowrap(alignment, Axis::Vertical))
@@ -3468,10 +3430,10 @@ fn flex_cross_offset_row_query(styler: &dyn StylerAccess, _axis: Axis) -> Option
 }
 
 /// Cross-offset query for column containers (cross = horizontal).
-fn flex_cross_offset_col_query(styler: &dyn StylerAccess, _axis: Axis) -> Option<&'static Formula> {
+fn flex_cross_offset_col_query(node: NodeId, ctx: &dyn PropertyResolver, _axis: Axis) -> Option<&'static Formula> {
     // Per CSS Flexbox §8.1: auto margins on the cross axis.
-    let ml_auto = is_margin_auto(styler, &PropertyId::MarginLeft);
-    let mr_auto = is_margin_auto(styler, &PropertyId::MarginRight);
+    let ml_auto = is_margin_auto(node, ctx, &PropertyId::MarginLeft);
+    let mr_auto = is_margin_auto(node, ctx, &PropertyId::MarginRight);
     if ml_auto || mr_auto {
         return Some(build_cross_auto_margin_offset(
             ml_auto,
@@ -3480,12 +3442,12 @@ fn flex_cross_offset_col_query(styler: &dyn StylerAccess, _axis: Axis) -> Option
         ));
     }
 
-    let wrap = parent_flex_wrap(styler);
-    let alignment = effective_cross_alignment(styler);
+    let wrap = parent_flex_wrap(node, ctx);
+    let alignment = effective_cross_alignment(node, ctx);
     let reverse = wrap == FlexWrap::WrapReverse;
 
     if is_wrapping(wrap) {
-        let ac = align_content_of_parent(styler);
+        let ac = align_content_of_parent(node, ctx);
         Some(build_cross_offset_wrap_col(alignment, ac, reverse))
     } else {
         Some(build_cross_offset_nowrap(alignment, Axis::Horizontal))
@@ -4407,8 +4369,8 @@ fn build_cross_offset_wrap_col(
 ///
 /// For flex containers, returns the container's auto main/cross size formula
 /// so that nested flex containers correctly report their content width.
-fn content_based_size(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
-    if styler.is_intrinsic() {
+fn content_based_size(node: NodeId, ctx: &dyn PropertyResolver, axis: Axis) -> Option<&'static Formula> {
+    if ctx.is_intrinsic(node) {
         return Some(match axis {
             Axis::Horizontal => inline_width!(),
             Axis::Vertical => inline_height!(),
@@ -4418,8 +4380,8 @@ fn content_based_size(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static 
     // If this node is itself a flex container, compute its auto size
     // using flex layout (sum of children bases + gaps) rather than
     // falling through to block sizing.
-    if let Some(super::DisplayType::Flex(dir, _)) = super::DisplayType::of_element(styler) {
-        return Some(flex_size(dir, axis, styler));
+    if let Some(super::DisplayType::Flex(dir, _)) = super::DisplayType::of_element(node, ctx) {
+        return Some(flex_size(dir, axis, node, ctx));
     }
 
     // For block-level elements used as flex items, the horizontal
@@ -4435,6 +4397,6 @@ fn content_based_size(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static 
             css_prop!(BorderLeftWidth),
             css_prop!(BorderRightWidth),
         )),
-        Axis::Vertical => Some(super::block::block_size(styler, axis)),
+        Axis::Vertical => Some(super::block::block_size(node, ctx, axis)),
     }
 }

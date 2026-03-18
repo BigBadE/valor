@@ -3,17 +3,17 @@
 //! Dispatches to block/flex/grid modules based on the element's display mode.
 
 use lightningcss::properties::PropertyId;
-use rewrite_core::{Axis, Formula, SingleRelationship, StylerAccess};
+use rewrite_core::{Axis, Formula, NodeId, PropertyResolver};
 
 use super::DisplayType;
 
 /// Query function that returns a size formula based on the display property.
 /// Returns `None` if the display property isn't available yet.
-pub fn size_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
+pub fn size_query(node: NodeId, ctx: &dyn PropertyResolver, axis: Axis) -> Option<&'static Formula> {
     // Intrinsic nodes (text nodes): return InlineWidth/InlineHeight so the
     // resolver's inline aggregation handles text measurement and line breaking.
-    if styler.is_intrinsic() {
-        DisplayType::of(styler)?;
+    if ctx.is_intrinsic(node) {
+        DisplayType::of(node, ctx)?;
         return match axis {
             Axis::Horizontal => Some(inline_width!()),
             Axis::Vertical => Some(inline_height!()),
@@ -21,7 +21,7 @@ pub fn size_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Form
     }
 
     // Resolve display type for elements.
-    let display_type = DisplayType::of(styler);
+    let display_type = DisplayType::of(node, ctx);
 
     // CSS 2.2 §10.2 / §10.5: width and height do not apply to
     // non-replaced inline elements. Skip the explicit CSS check
@@ -29,27 +29,26 @@ pub fn size_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Form
     let is_inline = matches!(display_type, Some(DisplayType::Inline));
 
     // Root element check: use viewport dimensions if this node is at the top
-    // of the layout tree. The root is detected by checking if the parent is
-    // NodeId(0) (the DOM root) or if the node is its own parent.
-    let parent = styler.related(SingleRelationship::Parent);
-    let parent_is_document_root = parent.node_id() == rewrite_core::NodeId::ROOT;
-    let node_is_own_parent = parent.node_id() == styler.node_id();
-    if parent_is_document_root || node_is_own_parent {
+    // of the layout tree.
+    let parent = ctx.parent(node);
+    let parent_is_document_root = parent == Some(rewrite_core::NodeId::ROOT);
+    let node_is_own_parent = parent == Some(node);
+    let no_parent = parent.is_none();
+    if parent_is_document_root || node_is_own_parent || no_parent {
         return match axis {
             Axis::Horizontal => Some(viewport_width!()),
             Axis::Vertical => Some(viewport_height!()),
         };
     }
 
+    let parent_id = parent.unwrap_or(NodeId(0));
+
     // Flex item detection: if the parent is a flex container, this
     // element is a flex item and should be sized by the flex algorithm.
-    // The flex algorithm handles explicit CSS size via flex-basis.
-    // Per CSS Flexbox §4.1, absolutely/fixed positioned children are
-    // out-of-flow and do not participate in flex layout sizing.
-    let parent_display = DisplayType::of_element(parent.as_ref());
+    let parent_display = DisplayType::of_element(parent_id, ctx);
     if let Some(DisplayType::Flex(dir, _)) = parent_display {
         let is_out_of_flow = matches!(
-            styler.get_css_property(&PropertyId::Position),
+            ctx.get_css_property(node, &PropertyId::Position),
             Some(lightningcss::properties::Property::Position(
                 lightningcss::properties::position::Position::Absolute
                     | lightningcss::properties::position::Position::Fixed
@@ -66,10 +65,10 @@ pub fn size_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Form
             Axis::Horizontal => PropertyId::Width,
             Axis::Vertical => PropertyId::Height,
         };
-        if let Some(prop) = styler.get_css_property(&explicit_prop) {
+        if let Some(prop) = ctx.get_css_property(node, &explicit_prop) {
             // Handle keyword sizes (min-content, max-content) which cannot
             // be resolved to a numeric value by css_val!.
-            if let Some(keyword_formula) = keyword_size_formula(prop, styler, axis) {
+            if let Some(keyword_formula) = keyword_size_formula(prop, node, ctx, axis) {
                 return Some(keyword_formula);
             }
             return match axis {
@@ -82,15 +81,21 @@ pub fn size_query(styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Form
     // Inline element containing a block child: per CSS 2.2 §9.2.1.1,
     // the inline is broken around the block and treated as block-level
     // for sizing purposes (fills parent content width).
-    if matches!(display_type, Some(DisplayType::Inline)) && super::inline_contains_block(styler) {
-        return Some(super::block::block_size(styler, axis));
+    if matches!(display_type, Some(DisplayType::Inline))
+        && super::inline_contains_block(node, ctx)
+    {
+        return Some(super::block::block_size(node, ctx, axis));
     }
 
-    display_type?.size(styler, axis)
+    display_type?.size(node, ctx, axis)
 }
 
 /// Content-area size = border-box size minus padding and border.
-pub fn content_size_query(_styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
+pub fn content_size_query(
+    _node: NodeId,
+    _ctx: &dyn PropertyResolver,
+    axis: Axis,
+) -> Option<&'static Formula> {
     match axis {
         Axis::Horizontal => Some(sub!(
             related!(Self_, size_query, Axis::Horizontal),
@@ -111,12 +116,10 @@ pub fn content_size_query(_styler: &dyn StylerAccess, axis: Axis) -> Option<&'st
 
 /// Resolve keyword size values (`min-content`, `max-content`) to intrinsic
 /// sizing formulas based on the element's display type.
-///
-/// Returns `None` if the property is not a keyword size (e.g. a length),
-/// in which case the caller should fall back to `css_val!`.
 fn keyword_size_formula(
     prop: lightningcss::properties::Property<'static>,
-    styler: &dyn StylerAccess,
+    node: NodeId,
+    ctx: &dyn PropertyResolver,
     axis: Axis,
 ) -> Option<&'static Formula> {
     use lightningcss::properties::Property::{Height, Width};
@@ -129,8 +132,8 @@ fn keyword_size_formula(
 
     match size {
         Size::MinContent(_) => {
-            if let Some(DisplayType::Flex(dir, _)) = DisplayType::of_element(styler) {
-                Some(super::flex::flex_min_content_size(dir, axis, styler))
+            if let Some(DisplayType::Flex(dir, _)) = DisplayType::of_element(node, ctx) {
+                Some(super::flex::flex_min_content_size(dir, axis, node, ctx))
             } else {
                 // For non-flex containers, use the inline min-content measurement.
                 Some(match axis {
@@ -143,15 +146,15 @@ fn keyword_size_formula(
                     ),
                     // Vertical min-content = auto height (content height).
                     Axis::Vertical => {
-                        return DisplayType::of_element(styler)
-                            .and_then(|dt| dt.size(styler, axis));
+                        return DisplayType::of_element(node, ctx)
+                            .and_then(|dt| dt.size(node, ctx, axis));
                     }
                 })
             }
         }
         Size::MaxContent(_) => {
-            if let Some(DisplayType::Flex(dir, _)) = DisplayType::of_element(styler) {
-                Some(super::flex::flex_size(dir, axis, styler))
+            if let Some(DisplayType::Flex(dir, _)) = DisplayType::of_element(node, ctx) {
+                Some(super::flex::flex_size(dir, axis, node, ctx))
             } else {
                 Some(match axis {
                     Axis::Horizontal => add!(
@@ -163,8 +166,8 @@ fn keyword_size_formula(
                     ),
                     // Vertical max-content = auto height (content height).
                     Axis::Vertical => {
-                        return DisplayType::of_element(styler)
-                            .and_then(|dt| dt.size(styler, axis));
+                        return DisplayType::of_element(node, ctx)
+                            .and_then(|dt| dt.size(node, ctx, axis));
                     }
                 })
             }
@@ -174,7 +177,11 @@ fn keyword_size_formula(
 }
 
 /// Margin-box size = border-box size + margins.
-pub fn margin_box_size_query(_styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
+pub fn margin_box_size_query(
+    _node: NodeId,
+    _ctx: &dyn PropertyResolver,
+    axis: Axis,
+) -> Option<&'static Formula> {
     match axis {
         Axis::Horizontal => Some(add!(
             related!(Self_, size_query, Axis::Horizontal),

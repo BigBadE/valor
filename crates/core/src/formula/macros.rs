@@ -156,7 +156,7 @@ macro_rules! inline_baseline {
 ///
 /// Two forms:
 /// - `related!(Rel, query_fn)` — direct function pointer
-/// - `related!(Rel, base_fn, axis)` — dispatches `base_fn(styler, axis)` via axis match
+/// - `related!(Rel, base_fn, axis)` — dispatches `base_fn(node, ctx, axis)` via axis match
 #[macro_export]
 macro_rules! related {
     ($rel:ident, $query:expr) => {{
@@ -170,9 +170,10 @@ macro_rules! related {
                 static F: $crate::Formula =
                     $crate::Formula::Related($crate::SingleRelationship::$rel, {
                         fn wrap(
-                            sty: &dyn $crate::StylerAccess,
+                            node: $crate::NodeId,
+                            ctx: &dyn $crate::PropertyResolver,
                         ) -> ::core::option::Option<&'static $crate::Formula> {
-                            $base(sty, $crate::Axis::Horizontal)
+                            $base(node, ctx, $crate::Axis::Horizontal)
                         }
                         wrap as $crate::QueryFn
                     });
@@ -182,9 +183,10 @@ macro_rules! related {
                 static F: $crate::Formula =
                     $crate::Formula::Related($crate::SingleRelationship::$rel, {
                         fn wrap(
-                            sty: &dyn $crate::StylerAccess,
+                            node: $crate::NodeId,
+                            ctx: &dyn $crate::PropertyResolver,
                         ) -> ::core::option::Option<&'static $crate::Formula> {
-                            $base(sty, $crate::Axis::Vertical)
+                            $base(node, ctx, $crate::Axis::Vertical)
                         }
                         wrap as $crate::QueryFn
                     });
@@ -204,7 +206,8 @@ macro_rules! related_val {
     ($rel:ident, $formula:expr) => {{
         static F: $crate::Formula = $crate::Formula::Related($crate::SingleRelationship::$rel, {
             fn wrap(
-                _sty: &dyn $crate::StylerAccess,
+                _node: $crate::NodeId,
+                _ctx: &dyn $crate::PropertyResolver,
             ) -> ::core::option::Option<&'static $crate::Formula> {
                 ::core::option::Option::Some($formula)
             }
@@ -234,9 +237,10 @@ macro_rules! aggregate {
                 static LIST: $crate::FormulaList =
                     $crate::FormulaList::Related($crate::MultiRelationship::$rel, {
                         fn wrap(
-                            sty: &dyn $crate::StylerAccess,
+                            node: $crate::NodeId,
+                            ctx: &dyn $crate::PropertyResolver,
                         ) -> ::core::option::Option<&'static $crate::Formula> {
-                            $base(sty, $crate::Axis::Horizontal)
+                            $base(node, ctx, $crate::Axis::Horizontal)
                         }
                         wrap as $crate::QueryFn
                     });
@@ -248,9 +252,10 @@ macro_rules! aggregate {
                 static LIST: $crate::FormulaList =
                     $crate::FormulaList::Related($crate::MultiRelationship::$rel, {
                         fn wrap(
-                            sty: &dyn $crate::StylerAccess,
+                            node: $crate::NodeId,
+                            ctx: &dyn $crate::PropertyResolver,
                         ) -> ::core::option::Option<&'static $crate::Formula> {
-                            $base(sty, $crate::Axis::Vertical)
+                            $base(node, ctx, $crate::Axis::Vertical)
                         }
                         wrap as $crate::QueryFn
                     });
@@ -337,18 +342,6 @@ macro_rules! min {
 /// Groups children into lines by accumulating `item_main_size` per child,
 /// breaking when the sum exceeds `available_main`. Then aggregates within
 /// each line using `within_line_agg`, and across lines using `line_agg`.
-///
-/// ```ignore
-/// line_aggregate!(
-///     line_agg: Sum,           // across lines
-///     within_line_agg: Max,    // within each line
-///     item_main_size: basis_query,  // for line-breaking
-///     item_value: cross_query,      // value to aggregate
-///     available_main: parent_content_width_formula,
-///     gap: column_gap_formula,
-///     line_gap: row_gap_formula,
-/// )
-/// ```
 #[macro_export]
 macro_rules! line_aggregate {
     (
@@ -375,24 +368,6 @@ macro_rules! line_aggregate {
 }
 
 /// Aggregate over all lines before the current item's line.
-///
-/// Computes line assignments, finds which line the current item is on,
-/// then aggregates values from all previous lines. Within each previous
-/// line, values are combined using `within_line_agg`; across lines,
-/// the per-line results are combined using `line_agg`. Line gaps are
-/// added between previous lines.
-///
-/// ```ignore
-/// prev_lines_aggregate!(
-///     line_agg: Sum,           // across previous lines
-///     within_line_agg: Max,    // within each previous line
-///     item_main_size: basis_query,  // for line-breaking
-///     item_value: cross_query,      // value to aggregate
-///     available_main: parent_content_width_formula,
-///     gap: column_gap_formula,
-///     line_gap: row_gap_formula,
-/// )
-/// ```
 #[macro_export]
 macro_rules! prev_lines_aggregate {
     (
@@ -419,21 +394,6 @@ macro_rules! prev_lines_aggregate {
 }
 
 /// Line-aware aggregate over same-line siblings.
-///
-/// Like `aggregate!`, but only considers siblings on the same flex/inline line
-/// as the current item. Line assignments are computed using the same parameters
-/// as `line_aggregate!`.
-///
-/// ```ignore
-/// line_item_aggregate!(
-///     agg: Sum,
-///     rel: PrevSiblings,
-///     query: size_query,
-///     item_main_size: basis_query,
-///     available_main: parent_content_width_formula,
-///     gap: column_gap_formula,
-/// )
-/// ```
 #[macro_export]
 macro_rules! line_item_aggregate {
     (
@@ -463,14 +423,6 @@ macro_rules! line_item_aggregate {
 
 /// Imperative formula: delegates to a Rust function for computation that
 /// cannot be expressed declaratively (e.g., iterative algorithms).
-///
-/// The function receives the current node, its styler, and a `resolve`
-/// callback for evaluating sub-formulas. It returns results for multiple
-/// nodes (batch caching).
-///
-/// ```ignore
-/// imperative!(my_resolver_fn)
-/// ```
 #[macro_export]
 macro_rules! imperative {
     ($fn:expr) => {{

@@ -15,7 +15,7 @@ pub use db::*;
 pub use formula::{
     Aggregation, Formula, FormulaDependency, FormulaList, ImperativeFn, LineAggregateParams,
     LineItemAggregateParams, MeasureAxis, MeasureMode, Operation, PrevLinesAggregateParams,
-    QueryFn, ResolveContext, StylerAccess, TextMeasurement,
+    PropertyResolver, QueryFn, ResolveContext, TextMeasurement,
 };
 pub use rayon_dispatch::rayon_dispatch;
 pub use types::*;

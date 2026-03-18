@@ -7,7 +7,7 @@ use lightningcss::properties::PropertyId;
 use lightningcss::properties::display::{Display, DisplayInside, DisplayKeyword, DisplayOutside};
 use lightningcss::properties::flex::FlexDirection;
 use lightningcss::vendor_prefix::VendorPrefix;
-use rewrite_core::{Axis, Formula, SingleRelationship, StylerAccess};
+use rewrite_core::{Axis, Formula, NodeId, PropertyResolver};
 
 pub mod block;
 pub mod flex;
@@ -31,28 +31,35 @@ pub enum DisplayType {
 }
 
 impl DisplayType {
-    /// Determine the display type from a styler's Display property.
+    /// Determine the display type from a node's Display property.
     ///
     /// For intrinsic nodes (text, replaced elements), checks the parent's
     /// display type instead, since intrinsic nodes don't own their layout mode.
-    pub fn of(styler: &dyn StylerAccess) -> Option<Self> {
-        if styler.is_intrinsic() {
-            let parent = styler.related(SingleRelationship::Parent);
-            return Self::of_element(parent.as_ref());
+    pub fn of(node: NodeId, ctx: &dyn PropertyResolver) -> Option<Self> {
+        if ctx.is_intrinsic(node) {
+            let parent = ctx.parent(node).unwrap_or(NodeId(0));
+            return Self::of_element(parent, ctx);
         }
-        Self::of_element(styler)
+        Self::of_element(node, ctx)
     }
 
     /// Determine the display type from an element's own Display property.
-    pub(crate) fn of_element(styler: &dyn StylerAccess) -> Option<Self> {
-        let prop = styler.get_css_property(&PropertyId::Display)?;
+    ///
+    /// If no Display property is stored, the element is treated as `block`
+    /// (the CSS initial value). Only non-block display values are stored
+    /// in the database.
+    pub(crate) fn of_element(node: NodeId, ctx: &dyn PropertyResolver) -> Option<Self> {
+        let Some(prop) = ctx.get_css_property(node, &PropertyId::Display) else {
+            // No stored Display → initial value is block.
+            return Some(Self::Block);
+        };
         match prop {
             lightningcss::properties::Property::Display(display) => match display {
                 Display::Keyword(DisplayKeyword::None) => None,
                 Display::Pair(pair) => match pair.inside {
                     DisplayInside::Flex(_) => {
-                        let dir = match styler
-                            .get_css_property(&PropertyId::FlexDirection(VendorPrefix::None))
+                        let dir = match ctx
+                            .get_css_property(node, &PropertyId::FlexDirection(VendorPrefix::None))
                         {
                             Some(lightningcss::properties::Property::FlexDirection(dir, _)) => dir,
                             _ => FlexDirection::Row,
@@ -68,22 +75,27 @@ impl DisplayType {
                 },
                 _ => Some(Self::Block),
             },
-            _ => None,
+            _ => Some(Self::Block),
         }
     }
 
     /// Return the size formula for an element with this display type.
-    pub fn size(&self, styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
+    pub fn size(
+        &self,
+        node: NodeId,
+        ctx: &dyn PropertyResolver,
+        axis: Axis,
+    ) -> Option<&'static Formula> {
         match self {
-            Self::Block => Some(block::block_size(styler, axis)),
+            Self::Block => Some(block::block_size(node, ctx, axis)),
             Self::Inline => Some(inline_size(axis)),
             Self::Flex(dir, is_inline) => {
                 // Block-level flex containers (`display: flex`) fill parent width
                 // like normal blocks. Only inline-flex uses content-based sizing.
                 if !is_inline && axis == Axis::Horizontal {
-                    Some(block::block_size(styler, axis))
+                    Some(block::block_size(node, ctx, axis))
                 } else {
-                    Some(flex::flex_size(*dir, axis, styler))
+                    Some(flex::flex_size(*dir, axis, node, ctx))
                 }
             }
             Self::Grid => Some(grid::grid_size(axis)),
@@ -91,9 +103,14 @@ impl DisplayType {
     }
 
     /// Return the local offset formula for a child whose parent has this display type.
-    pub fn offset(&self, styler: &dyn StylerAccess, axis: Axis) -> Option<&'static Formula> {
+    pub fn offset(
+        &self,
+        node: NodeId,
+        ctx: &dyn PropertyResolver,
+        axis: Axis,
+    ) -> Option<&'static Formula> {
         match self {
-            Self::Block => Some(block::block_offset(styler, axis)),
+            Self::Block => Some(block::block_offset(node, ctx, axis)),
             Self::Inline => Some(inline_offset(axis)),
             Self::Flex(dir, _is_inline) => Some(flex::flex_offset(*dir, axis)),
             Self::Grid => Some(grid::grid_offset(axis)),
@@ -106,10 +123,6 @@ impl DisplayType {
 // ============================================================================
 
 /// Size formula for an inline element.
-///
-/// Returns InlineWidth/InlineHeight so the resolver's inline aggregation
-/// handles line breaking and text measurement. The inline element's
-/// dimensions are computed during aggregation by measuring its children.
 fn inline_size(axis: Axis) -> &'static Formula {
     match axis {
         Axis::Horizontal => inline_width!(),
@@ -118,8 +131,6 @@ fn inline_size(axis: Axis) -> &'static Formula {
 }
 
 /// Offset formula for children of an inline element.
-///
-/// Children of an inline element flow horizontally (same as inline flow).
 fn inline_offset(axis: Axis) -> &'static Formula {
     match axis {
         Axis::Horizontal => {
@@ -132,36 +143,32 @@ fn inline_offset(axis: Axis) -> &'static Formula {
 use rewrite_core::Subpixel;
 
 /// Check if a node is a block-level element whose parent is inline.
-/// This is the "block-in-inline" case from CSS 2.2 §9.2.1.1 that
-/// requires anonymous block box generation.
-pub(crate) fn is_block_in_inline(styler: &dyn StylerAccess) -> bool {
-    if styler.is_intrinsic() {
+pub(crate) fn is_block_in_inline(node: NodeId, ctx: &dyn PropertyResolver) -> bool {
+    if ctx.is_intrinsic(node) {
         return false;
     }
-    let Some(DisplayType::Block) = DisplayType::of_element(styler) else {
+    let Some(DisplayType::Block) = DisplayType::of_element(node, ctx) else {
         return false;
     };
-    let parent = styler.related(SingleRelationship::Parent);
-    // Parent must be an inline flow element (not the same node, i.e. exists).
-    if parent.node_id() == styler.node_id() {
+    let Some(parent) = ctx.parent(node) else {
+        return false;
+    };
+    if parent == node {
         return false;
     }
     matches!(
-        DisplayType::of_element(parent.as_ref()),
+        DisplayType::of_element(parent, ctx),
         Some(DisplayType::Inline)
     )
 }
 
 /// Check if an inline element contains at least one block-level child.
-/// When true, the inline must be treated as block-level for sizing
-/// and positioning (CSS 2.2 §9.2.1.1).
-pub(crate) fn inline_contains_block(styler: &dyn StylerAccess) -> bool {
-    use rewrite_core::MultiRelationship;
-    let children = styler.related_iter(MultiRelationship::Children);
-    children.iter().any(|child| {
-        !child.is_intrinsic()
+pub(crate) fn inline_contains_block(node: NodeId, ctx: &dyn PropertyResolver) -> bool {
+    let children = ctx.children(node);
+    children.iter().any(|&child| {
+        !ctx.is_intrinsic(child)
             && matches!(
-                DisplayType::of_element(child.as_ref()),
+                DisplayType::of_element(child, ctx),
                 Some(DisplayType::Block)
             )
     })

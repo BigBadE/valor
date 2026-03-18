@@ -236,6 +236,61 @@ fn run_fixture_test(
         eprintln!("    Chrome cache read:     {:>8.2?}", t4 - t3);
         eprintln!("    JSON compare:          {:>8.2?}", t5 - t4);
         eprintln!("    TOTAL:                 {:>8.2?}", t5 - t0);
+
+        // Layout-only benchmark: clear cache and re-resolve all nodes
+        // to measure pure formula resolution speed.
+        {
+            let body_id = {
+                let tree = &page.tree;
+                let mut body = NodeId::ROOT;
+                for child in tree.children(NodeId::ROOT) {
+                    // Find <html>
+                    if matches!(tree.get_node(child), Some(rewrite_html::NodeData::Element { .. })) {
+                        for grandchild in tree.children(child) {
+                            if let Some(rewrite_html::NodeData::Element { tag, .. }) = tree.get_node(grandchild) {
+                                if tree.interner.resolve(tag) == "body" {
+                                    body = grandchild;
+                                }
+                            }
+                        }
+                    }
+                }
+                body
+            };
+
+            let mut all_nodes = Vec::new();
+            fn collect(node: NodeId, tree: &rewrite_html::DomTree, out: &mut Vec<NodeId>) {
+                out.push(node);
+                for child in tree.children(node) {
+                    collect(child, tree, out);
+                }
+            }
+            collect(body_id, &page.tree, &mut all_nodes);
+
+            let num_nodes = all_nodes.len();
+
+            // Warm run (cache populated from serialization)
+            let tw0 = Instant::now();
+            collector.layout.lock().expect("lock").resolve_nodes(&all_nodes);
+            let tw1 = Instant::now();
+
+            // Cold run: clear cache and re-resolve
+            collector.layout.lock().expect("lock").clear_cache();
+            let tc0 = Instant::now();
+            collector.layout.lock().expect("lock").resolve_nodes(&all_nodes);
+            let tc1 = Instant::now();
+
+            // Second cold run for stability
+            collector.layout.lock().expect("lock").clear_cache();
+            let tc2 = Instant::now();
+            collector.layout.lock().expect("lock").resolve_nodes(&all_nodes);
+            let tc3 = Instant::now();
+
+            eprintln!("\n  [layout-only benchmark] ({num_nodes} nodes)");
+            eprintln!("    Warm resolve (cache hits): {:>8.2?}", tw1 - tw0);
+            eprintln!("    Cold resolve #1:           {:>8.2?}", tc1 - tc0);
+            eprintln!("    Cold resolve #2:           {:>8.2?}", tc3 - tc2);
+        }
     }
 
     result

@@ -198,6 +198,12 @@ struct DatabaseSubscriber(Arc<Database>);
 
 impl rewrite_core::Subscriber for DatabaseSubscriber {
     fn on_property(&self, node: rewrite_core::NodeId, property: &rewrite_css::Property<'static>) {
+        // Don't store properties at their CSS initial value — the formula
+        // system treats missing properties as having their default. Skipping
+        // storage keeps the sparse trees genuinely sparse.
+        if rewrite_core::is_css_initial_value(property) {
+            return;
+        }
         // Store with INLINE specificity — the Styler already resolved the
         // cascade, so the property we receive here is the current winner
         // and should always overwrite any previous value.
